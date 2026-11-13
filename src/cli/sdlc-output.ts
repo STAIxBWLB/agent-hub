@@ -104,7 +104,7 @@ function taskBlock(row: any, columns: number | undefined, detail: boolean): Line
   if (row.definition?.name || row.definition?.id) out.push(...pair("stage", row.definition.name ?? row.definition.id, columns, 11, undefined, "  "));
   out.push(...bullets("entry", list(row.entry), columns, undefined, "  "), ...bullets("exit", list(row.exit), columns, undefined, "  "));
   const f = row.findings;
-  if (f) out.push(...pair("findings", `${plural(f.important ?? 0, "important")} (${f.openImportant ?? 0} open), ${plural(f.nit ?? 0, "nit")} (${f.openNit ?? 0} open), ${f.fixed ?? 0} fixed, ${f.falsePositive ?? 0} false positive, ${f.accepted ?? 0} accepted`, columns, 11, f.openImportant ? "attention" : undefined, "  "));
+  if (f) out.push(...pair("findings", `${plural(f.important ?? 0, "important")} (${f.openImportant ?? 0} open), ${plural(f.nit ?? 0, "nit")} (${f.openNit ?? 0} open), ${f.fixed ?? 0} fixed, ${f.falsePositive ?? 0} false positive, ${f.accepted ?? 0} accepted${f.needsValidation ? `, ${f.needsValidation} needs validation (not blocking)` : ""}${f.preExisting ? `, ${f.preExisting} pre-existing (not blocking)` : ""}`, columns, 11, f.openImportant ? "attention" : undefined, "  "));
   const p = row.planConformance;
   if (p) {
     out.push(...pair("plan files", `${p.state}${p.accepted ? ", departure accepted" : ""}, ${list(p.outside).length} outside the plan, ${list(p.untouched).length} planned and untouched`, columns, 11, p.state === "departure" && !p.accepted ? "attention" : undefined, "  "));
@@ -114,6 +114,13 @@ function taskBlock(row: any, columns: number | undefined, detail: boolean): Line
   if (t) {
     out.push(...pair("tests", `${t.applicability === "bug" ? "bug fix" : t.applicability === "not_bug" ? "not a bug fix" : "bug status unknown"}, red-first ${String(t.redFirst).replace("_", " ")}, files ${t.fileState}`, columns, 11, undefined, "  "));
     out.push(...bullets("modified tests", list(t.modifiedTests), columns, undefined, "    "), ...bullets("test blockers", list(t.blockers), columns, "attention", "    "));
+  }
+  const sp = row.securityPass;
+  if (sp) {
+    const shown = sp.state === "required" ? `required (${sp.matched} sensitive path${sp.matched === 1 ? "" : "s"} changed), none recorded at this head`
+      : sp.state === "recorded" ? `recorded at this head (${sp.recorded?.covered ?? 0} covered, ${sp.recorded?.notCovered ?? 0} not covered)`
+      : sp.state === "unknown" ? "unknown (PR file inventory incomplete or unreadable)" : "not required";
+    out.push(...pair("security pass", `${shown}${list(sp.companions).length ? `; companions ${list(sp.companions).join(", ")}` : ""}`, columns, 11, sp.state === "required" || sp.state === "unknown" ? "attention" : undefined, "  "));
   }
   const e = row.evalGate;
   if (e) {
@@ -164,23 +171,47 @@ export function renderSdlcQueue(reply: unknown, columns?: number, _now = Date.no
   if (list(report.conflicts).length) out.push(blank, ...bullets("file conflicts", list(report.conflicts).map((c: any) => `#${c.left} and #${c.right} share ${plural(c.files ?? 0, "file")} (${c.order === "person_required" ? "the person orders them" : "dependency order"})`), columns, "attention"));
   return out;
 }
+/** One line for the audit's unit states, shared by `audit show` and the release readback. */
+function auditStates(a: any): string {
+  const c = a?.counts ?? {};
+  return `${c.covered ?? 0} covered${a?.prior ? ` (${a.prior} prior)` : ""}, ${c.deferred ?? 0} deferred, ${c.out_of_scope ?? 0} out of scope, ${c.planned ?? 0} planned`;
+}
+/** `ahub sdlc audit show`: the ledger's counts first, then each unit, then the findings. An open important finding shows its id and status only, unless the caller is the person. */
+export function renderSdlcAudit(reply: unknown, columns?: number, _now = Date.now()): Span[][] {
+  const a = (reply as any)?.audit;
+  if (!a) return [...heading("Security audit", columns), ...pair("audits", "none started: run ahub sdlc audit start", columns, 10, "muted")];
+  const out: Line[] = [...heading(`Security audit ${a.audit} (task #${a.task})`, columns)];
+  out.push(...pair("source", `${short(a.ref)}, profile ${a.profile}${a.scoped ? ", scoped" : ""}`, columns, 10), ...pair("coverage", `${a.partial ? "partial: " : ""}${auditStates(a)}`, columns, 10, a.partial || a.counts?.planned ? "attention" : undefined));
+  const f = a.findings ?? {};
+  out.push(...pair("findings", `${f.verified ?? 0} verified, ${f.candidate ?? 0} candidate (unverified), ${f.needsValidation ?? 0} needs validation, ${f.rejected ?? 0} rejected, ${f.other ?? 0} other`, columns, 10, f.candidate ? "attention" : undefined));
+  for (const u of list(a.units)) out.push(...pair(String(u.state).replace("_", " "), `${u.unit}${u.prior ? ` (prior audit ${u.prior.audit})` : ""}${u.reason ? `: ${u.reason}` : ""}`, columns, 14, u.state === "planned" ? "attention" : undefined, "  "));
+  for (const item of list(a.items)) out.push(...pair(String(item.status), `${item.id} (${item.severity}, ${item.disposition})${item.withheld ? ", details withheld" : item.path ? ` ${item.path}` : ""}`, columns, 14, item.status === "candidate" ? "attention" : undefined, "  "));
+  if (a.withheld) out.push(...pair("withheld", `${a.withheld} open important finding${a.withheld === 1 ? "" : "s"}: boundary text is shown to the person only`, columns, 10, "muted"));
+  return out;
+}
 /** `ahub sdlc release <repo> [live-issue...]`: source, document, issue and authorization evidence, then what blocks the release. */
 export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.now()): Span[][] {
   const r = (reply as any)?.report ?? {};
   const out: Line[] = [...heading(`Release readiness ${r.repo ?? "unknown repository"}`, columns)];
   const w = 12;
-  out.push(...pair("version", r.version ?? "unknown", columns, w), ...pair("head", short(r.head), columns, w), ...pair("tag", r.tag ? `${r.tag} at ${short(r.tagCommit)}` : "none", columns, w));
+  out.push(...pair("version", r.version ?? (r.releasePolicy ? "undetermined" : "unknown"), columns, w), ...pair("head", short(r.head), columns, w), ...pair("tag", r.tag ? `${r.tag} at ${short(r.tagCommit)}` : "none", columns, w));
   out.push(...pair("source ready", yes(r.sourceReady), columns, w, readyTone(r.sourceReady)), ...pair("native", String(r.native ?? "unverified"), columns, w, "attention"), ...pair("release ready", yes(r.ready), columns, w, readyTone(r.ready)));
   out.push(...pair("commits", `${plural(list(r.commits).length, "commit")} since the last tag`, columns, w));
   if (list(r.mergedPrs).length) out.push(...pair("merged PRs", list(r.mergedPrs).map((p: any) => `#${p.pr}`).join(", "), columns, w));
   const docs = r.documents;
-  out.push(blank, ...pair("documents", docs ? `${docs.fresh ? "fresh" : "not fresh"}, ${plural(docs.errors ?? 0, "error")}, ${plural(list(docs.documents).length, "document")}` : "not read", columns, w, docs?.fresh ? "success" : "attention"));
-  for (const d of list(docs?.documents)) if (d.state !== "fresh") out.push(...pair(d.state, `${d.path ?? "(path withheld)"}${d.dirty ? " (uncommitted changes)" : ""}`, columns, w, "attention", "  "));
+  if (r.releasePolicy?.docsSource === "none") out.push(blank, ...pair("documents", r.releasePolicy.authorization === "matched" ? "none (explicit exemption recorded)" : "none (configured exemption; no matching authorization)", columns, w, "muted"));
+  else {
+    out.push(blank, ...pair("documents", docs ? `${docs.fresh ? "fresh" : "not fresh"}, ${plural(docs.errors ?? 0, "error")}, ${plural(list(docs.documents).length, "document")}` : "not read", columns, w, docs?.fresh ? "success" : "attention"));
+    for (const d of list(docs?.documents)) if (d.state !== "fresh") out.push(...pair(d.state, `${d.path ?? "(path withheld)"}${d.dirty ? " (uncommitted changes)" : ""}`, columns, w, "attention", "  "));
+  }
+  if (r.releasePolicy) out.push(...pair("release policy", `version ${r.releasePolicy.versionSource}, docs ${r.releasePolicy.docsSource}, authorization ${r.releasePolicy.authorization}`, columns, w, r.releasePolicy.authorization === "matched" ? "success" : "attention"));
   if (list(r.liveIssues).length) out.push(blank, ...grid(["ISSUE", "STATE"], list(r.liveIssues).map((i: any) => [s(`#${i.id}`, "issueRef"), s(i.state, i.state === "closed" ? "success" : "attention")]), columns));
   const a = r.authorization;
   if (a) out.push(blank, ...pair("authorization", `${a.state}: version ${a.receipt?.version ?? "unknown"} at ${short(a.receipt?.commit)}, approved ${moment(a.receipt?.at, now)}`, columns, w, a.state === "matched" ? "success" : "attention"));
-  else out.push(blank, ...pair("authorization", "none recorded: run ahub sdlc authorize-release <version>", columns, w, "muted"));
+  else out.push(blank, ...pair("authorization", r.releasePolicy ? `none recorded for ${r.releasePolicy.versionSource}: run ahub sdlc authorize-release <version>` : "none recorded: run ahub sdlc authorize-release <version>", columns, w, "muted"));
   for (const t of list(r.trains)) out.push(...pair(`train #${t.release?.id ?? "?"}`, `${t.readiness?.trigger ?? "unknown"}${list(t.readiness?.blockers).length ? `, ${list(t.readiness.blockers).join("; ")}` : ""}`, columns, w, list(t.readiness?.blockers).length ? "attention" : undefined));
+  const sa = r.securityAudit;
+  if (sa) out.push(blank, ...pair("security audit", `${short(sa.ref)} ${sa.profile}${sa.partial ? " (partial)" : ""}: ${auditStates(sa)}${sa.findings?.candidate ? `, ${sa.findings.candidate} unverified candidate${sa.findings.candidate === 1 ? "" : "s"}` : ""}`, columns, w, sa.partial || sa.counts?.planned ? "attention" : undefined));
   const rm = r.releaseMetrics;
   if (rm) {
     const mean = (values: unknown[]) => { const known = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v)); return known.length ? span(known.reduce((a, b) => a + b, 0) / known.length) : "unknown"; };
@@ -249,7 +280,7 @@ export function renderAuthorization(authorization: unknown, columns?: number, no
   const w = 8;
   return [...heading("Release authorized", columns),
     ...pair("version", a?.version ?? "unknown", columns, w), ...pair("commit", short(a?.commit), columns, w), ...pair("by", a?.by ?? "unknown", columns, w),
-    ...pair("at", moment(a?.at, now), columns, w), ...pair("docs", a?.docs ? `${a.docs.fresh ? "fresh" : "not fresh"}, ${plural(a.docs.documents ?? 0, "document")}, digest ${short(a.docs.digest)}` : "unknown", columns, w),
+    ...pair("at", moment(a?.at, now), columns, w), ...pair("docs", a?.docs?.source === "none" ? "none (explicit exemption)" : a?.docs ? `${a.docs.fresh ? "fresh" : "not fresh"}, ${plural(a.docs.documents ?? 0, "document")}, digest ${short(a.docs.digest)}` : "unknown", columns, w),
     ...pair("id", a?.id ?? "unknown", columns, w, "muted"), blank,
     ...para("A daemon restart revokes this authorization.", columns, "muted")];
 }

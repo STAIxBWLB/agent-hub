@@ -450,7 +450,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <section id="office-section" aria-labelledby="office-title" data-view="office" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">Office mode</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title" data-view="stream" hidden><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
 
-<section aria-labelledby="memory-title" data-view="memory" hidden><div class="section-head"><h2 id="memory-title">Memory</h2><div class="filters"><div id="memory-tiers" class="chips" role="group" aria-label="Memory tier"></div><span id="memory-count" class="meta"></span></div></div><div class="memory-controls"><input id="memory-q" type="search" maxlength="200" placeholder="Search memory" aria-label="Search memory"><select id="memory-kind" aria-label="Filter memory by kind"><option value="">All kinds</option><option value="decision">Decisions</option><option value="contract">Contracts</option><option value="fail">Fails</option><option value="finding">Findings</option></select><select id="memory-peer" aria-label="Filter memory by peer"><option value="">All peers</option></select><select id="memory-machine" aria-label="Filter memory by machine"><option value="">All machines</option></select><select id="memory-since" aria-label="Filter memory by time"><option value="">Any time</option><option value="1">Last day</option><option value="7">Last week</option><option value="30">Last 30 days</option></select><select id="memory-hops" aria-label="Graph neighbourhood depth"><option value="1">1 hop</option><option value="2">2 hops</option></select><label class="memory-code-toggle"><input id="memory-code-neighbours" type="checkbox" aria-describedby="memory-code-help" disabled>Code neighbours (1 hop)</label><span id="memory-code-help" class="meta">Select a symbol to inspect derived code neighbours.</span></div><div id="memory-list" class="task-list" aria-label="Memory entries"></div><div id="memory-graph" class="memory-graph"></div><div id="memory-detail"></div></section>
+<section aria-labelledby="memory-title" data-view="memory" hidden><div class="section-head"><h2 id="memory-title">Memory</h2><div class="filters"><div id="memory-tiers" class="chips" role="group" aria-label="Memory tier"></div><span id="memory-count" class="meta"></span></div></div><p id="memory-sync-status" class="meta" aria-live="polite"></p><div class="memory-controls"><input id="memory-q" type="search" maxlength="200" placeholder="Search memory" aria-label="Search memory"><select id="memory-kind" aria-label="Filter memory by kind"><option value="">All kinds</option><option value="decision">Decisions</option><option value="contract">Contracts</option><option value="fail">Fails</option><option value="finding">Findings</option></select><select id="memory-peer" aria-label="Filter memory by peer"><option value="">All peers</option></select><select id="memory-machine" aria-label="Filter memory by machine"><option value="">All machines</option></select><select id="memory-since" aria-label="Filter memory by time"><option value="">Any time</option><option value="1">Last day</option><option value="7">Last week</option><option value="30">Last 30 days</option></select><select id="memory-hops" aria-label="Graph neighbourhood depth"><option value="1">1 hop</option><option value="2">2 hops</option></select><label class="memory-code-toggle"><input id="memory-code-neighbours" type="checkbox" aria-describedby="memory-code-help" disabled>Code neighbours (1 hop)</label><span id="memory-code-help" class="meta">Select a symbol to inspect derived code neighbours.</span></div><div id="memory-list" class="task-list" aria-label="Memory entries"></div><div id="memory-graph" class="memory-graph"></div><div id="memory-detail"></div></section>
 <section aria-labelledby="compose-title" data-view="message" hidden><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
 <section aria-labelledby="settings-title" data-view="settings" hidden><div class="section-head"><h2 id="settings-title">Settings</h2><span id="settings-session" class="meta" role="status"></span></div><div id="settings"><p class="empty">Waiting for the hub...</p></div></section>
 </div>
@@ -458,7 +458,8 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <section id="projects-panel" aria-labelledby="projects-title" data-view="agents" hidden><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
 <section id="schedules-section" aria-labelledby="schedules-title" data-view="agents" hidden><div class="section-head"><h2 id="schedules-title">Schedules</h2><span id="schedule-count" class="meta"></span></div><div id="schedules"></div></section>
 <section id="rooms-section" aria-labelledby="rooms-title" data-view="agents" data-empty="true" hidden><div class="section-head"><h2 id="rooms-title">Rooms</h2><span id="room-count" class="meta"></span></div><div id="rooms"></div></section>
-<section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
+<section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><p id="runtime-models-notice" class="meta notice-warn" role="status" hidden></p><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
+<section id="results-section" aria-labelledby="results-title" data-view="agents" hidden><div class="section-head"><h2 id="results-title">Results</h2><span id="results-count" class="meta"></span></div><div id="results"></div></section>
 <section aria-labelledby="permissions-title" data-view="agents" hidden><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
 <section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div>
 <div id="usage-content" class="content">
@@ -574,6 +575,8 @@ function initializeDashboardNavigation() {
 let ticket = location.hash.slice(1);
 history.replaceState(null, '', location.pathname);
 const $ = (id) => document.getElementById(id);
+const reviewKit = null;
+const visualKit = null;
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
 let stopped = false, cursor = 0, timer, projectsTimer, eventCount = 0;
 const setConnection = (text, state) => { const node = $('connection'); node.textContent = text; node.dataset.state = state; };
@@ -661,6 +664,10 @@ async function action(payload, button, managerAction = false) {
       return false;
     }
     if (key && pendingStarts.get(key) === pending) clearPendingStart(key);
+    if (['review_comment_put','review_comment_delete','review_comment_send'].includes(payload.action)) {
+      reviewCommentsCache.delete(reviewCommentsCacheKey(boardViewState?.snapshot.tasks?.find(task => task.id === payload.task), captured));
+      if (taskDetailId === payload.task) void refreshReviewComments(taskDetailId);
+    }
     if (!managerMode || captured.generation === viewGeneration) notice(result.text || 'Action accepted.');
     if ((payload.action === 'sdlc_queue' || payload.action === 'sdlc_release') && (stopped || captured.generation !== viewGeneration || captured.projectId !== selectedProjectId || captured.instanceId !== selectedInstanceId)) return false;
     return (payload.action === 'sdlc_queue' || payload.action === 'sdlc_release') ? result.report : true;
@@ -693,9 +700,10 @@ function syncMutationControls() { document.querySelectorAll('button[data-mutatio
 // when that project's first snapshot renders, so a slow or failed first /snapshot reads as loading, not as an empty project.
 const firstLoad = Object.fromEntries(['tasks', 'peers'].map((name) => [name, [...$(name).childNodes].map((node) => node.cloneNode(true))]));
 function resetView(id, instance) {
+  const modelNotice = $('runtime-models-notice'); if (modelNotice) { modelNotice.hidden = true; modelNotice.textContent = ''; }
   saveDraft();
   selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
-  lastSnapshot = null;
+  lastSnapshot = null; reviewCommentsCache.clear();
   officePrev = null; officeDesks.clear(); officeCards.clear(); officeScene = null;
   $('office').replaceChildren(); $('office-section').hidden = true;
   closeTaskDetail(); renderNeedsAttention(null); applyDashboardView();
@@ -1102,6 +1110,7 @@ function keyedStart(name, enter = false) {
 }
 const BOARD_FOCUS_COLUMNS = ['backlog','todo','progress','review','done'];
 let columnFocus, taskDetailId = null;
+const reviewCommentsCache = new Map();
 let planningEdit = null, releaseEdit = null;
 function isClosedTaskState(state) { return state === 'approved' || state === 'cancelled'; }
 const loadedPlanningDates = new Map();
@@ -1273,6 +1282,61 @@ function deliverableLabel(d) {
   const says = { changed: ', changed since review', missing: ', a file is missing', unknown: ', could not be measured', unchanged: ', unchanged when last checked' };
   return base + (says[d.checked.result] ?? says.unknown);
 }
+/* Visual payloads are fetched only by an explicit person click. Source text never becomes HTML. */
+function sameVisualContext(expected) {
+  return !stopped && expected.generation === viewGeneration && expected.projectId === selectedProjectId && expected.instanceId === selectedInstanceId;
+}
+function visualSource(payload) {
+  if (payload.kind === 'mermaid') return payload.source;
+  if (payload.kind === 'comparison') return payload.options.map(option => [option.title,option.summary,...(option.pros || []).map(text => '+ ' + text),...(option.cons || []).map(text => '- ' + text)].filter(Boolean).join('\n')).join('\n\n');
+  if (payload.kind === 'table') return [payload.caption || '', payload.columns.map(column => column.label).join(' | '),...payload.rows.map(row => payload.columns.map(column => String(row[column.key] ?? '')).join(' | '))].filter(Boolean).join('\n');
+  if (payload.kind === 'beforeAfter') { const text = side => 'text' in side ? side.text : 'Image: ' + side.alt + ' (open in agent-console to view)'; return [payload.caption || '', 'Before: ' + text(payload.before), 'After: ' + text(payload.after)].filter(Boolean).join('\n'); }
+  return 'Visual unavailable. Reopen its current project and retry.';
+}
+function renderVisualPayload(mount, payload) {
+  mount.replaceChildren();
+  if (visualKit) {
+    try { const rendered = visualKit(payload); if (rendered) { mount.append(rendered); return; } } catch { /* Older or unavailable host kit falls back to safe source text. */ }
+  }
+  mount.append(el('p', 'Source view. Open this visual in an updated agent-console for rendering.', 'meta'), el('pre', visualSource(payload), 'visual-source'));
+}
+function visualCard(stub) {
+  const captured = context(), card = el('section', undefined, 'detail-group visual-card'), mount = el('div');
+  card.append(el('h4', stub.title || stub.kind || 'Visual', 'detail-heading'));
+  const open = el('button', 'Show visual'); open.type = 'button';
+  open.addEventListener('click', async () => {
+    if (!sameVisualContext(captured)) return;
+    open.disabled = true;
+    const input = {after:0, visual:stub.id};
+    if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+    try {
+      const result = await post('/snapshot', input);
+      if (!sameVisualContext(captured) || !card.isConnected) return;
+      if (result.ok === false || !result.visual || result.visual.id !== stub.id || (managerMode && (result.projectId !== captured.projectId || result.instanceId !== captured.instanceId))) throw new Error('Visual no longer available. Refresh this project and retry.');
+      renderVisualPayload(mount, result.visual.payload);
+    } catch { if (sameVisualContext(captured) && card.isConnected) mount.replaceChildren(el('p','Visual unavailable or no longer public. Refresh this project and retry.','meta')); }
+    finally { if (sameVisualContext(captured)) open.disabled = false; }
+  });
+  card.append(open, mount); return card;
+}
+function taskVisualsSection(task) {
+  const captured = context(), section = el('section', undefined, 'detail-group task-visuals'), mount = el('div'), open = el('button','Show task visuals'); open.type = 'button';
+  section.append(el('h4','Visuals','detail-heading'),open,mount);
+  open.addEventListener('click', async () => {
+    if (!sameVisualContext(captured) || taskDetailId !== task.id) return;
+    open.disabled = true;
+    const input = {after:0, visualTask:task.id}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+    try {
+      const result = await post('/snapshot',input);
+      if (!sameVisualContext(captured) || taskDetailId !== task.id || !section.isConnected) return;
+      if (result.ok === false || !Array.isArray(result.visuals) || (managerMode && (result.projectId !== captured.projectId || result.instanceId !== captured.instanceId))) throw new Error('unavailable');
+      mount.replaceChildren(...result.visuals.map(visualCard));
+      if (!result.visuals.length) mount.append(el('p','No public visuals for this task.','meta'));
+    } catch { if (sameVisualContext(captured) && section.isConnected) mount.replaceChildren(el('p','Visuals unavailable. Refresh the task and retry.','meta')); }
+    finally { if (sameVisualContext(captured)) open.disabled = false; }
+  });
+  return section;
+}
 function deliverablesSection(task) {
   const d = task.deliverables; if (!d?.files?.length) return null;
   const section = el('section', undefined, 'detail-group'); section.append(el('h4', 'Deliverables', 'detail-heading'));
@@ -1280,6 +1344,57 @@ function deliverablesSection(task) {
   const list = el('ul', undefined, 'deliverable-list');
   for (const file of d.files) list.append(el('li', (file.path || 'private file') + ' [' + file.format + (file.version ? ' ' + file.version : '') + '] ' + file.bytes + ' B, sha256 ' + file.sha256.slice(0, 12), 'meta'));
   section.append(list); return section;
+}
+function reviewCommentsSection(task) {
+  const expectedReview = boardContext(), section = el('div', undefined, 'detail-group review-comments'); section.setAttribute('role', 'region'); section.setAttribute('aria-label', 'Review comments'); section.append(el('h4', 'Review comments', 'detail-heading'));
+  const view = boardViewState?.snapshot.reviewComments, current = view?.task === task.id ? view : null;
+  const counts = current?.counts || task.reviewComments;
+  section.append(el('p', counts ? ['draft','sent','resolved','dismissed'].map(key => (counts[key] || 0) + ' ' + key).join(' / ') : 'No review comments.', 'meta'));
+  const writable = !!reviewKit && boardViewState?.snapshot.reviewWritable === true;
+  const refresh = el('button', 'Refresh review comments'); refresh.type = 'button'; refresh.onclick = () => void refreshReviewComments(task.id); section.append(refresh);
+  if (current?.unavailable) section.append(el('p', 'Review comments unavailable. Refresh to try again.', 'meta warn'));
+  if (writable) for (const pkg of current?.packages || []) if (pkg.delivery === 'unconfirmed') {
+    const retry = el('button', 'Retry saved package (' + pkg.count + ' comments)'); retry.type = 'button'; retry.dataset.mutation = 'project';
+    retry.onclick = () => sameBoardContext(expectedReview) && void action({action:'review_comment_send',task:task.id,packageId:pkg.id},retry);
+    section.append(retry);
+  }
+  for (const comment of current?.comments || []) {
+    const thread = comment.thread, id = thread?.id || comment.id, item = el('article', undefined, 'detail-group');
+    const placement = comment.placement?.status || 'unavailable', range = thread && (placement === 'anchored' || placement === 'moved') ? comment.placement?.range || thread.anchor.selectors.find(selector => selector.kind === 'lineRange') : undefined;
+    item.append(el('p', (thread ? thread.anchor.path + (range ? ':' + range.startLine + '-' + range.endLine : '') : 'Comment ' + id) + ' (' + placement + ') / ' + comment.lifecycle, 'meta'));
+    if (thread) item.append(el('p', thread.body), el('p', thread.author + ' / ' + thread.at, 'meta'));
+    if (writable) {
+      if (comment.lifecycle === 'draft' && thread) {
+        const edit = el('textarea'); edit.value = thread.body; edit.maxLength = 2048; edit.setAttribute('aria-label', 'Edit review comment ' + thread.id);
+        const save = el('button', 'Save draft'); save.type='button'; save.dataset.mutation='project';
+        save.onclick = () => sameBoardContext(expectedReview) && void action({action:'review_comment_put',task:task.id,id:thread.id,revision:comment.revision,commit:comment.commit,anchor:thread.anchor,body:edit.value},save);
+        item.append(edit,save);
+      }
+      if (comment.lifecycle !== 'dismissed') item.append(boardButton(comment.lifecycle === 'draft' ? 'Delete draft' : 'Dismiss', {action:'review_comment_delete',task:task.id,id,revision:comment.revision}));
+    }
+    section.append(item);
+  }
+  if (!writable) section.append(el('p', 'Read-only here. Open this task in a current acon console to comment and send.', 'meta'));
+  else {
+    if (counts?.draft) section.append(boardButton('Send draft comments', {action:'review_comment_send',task:task.id}));
+    const label = el('label', 'File to review'), path = el('input'); path.setAttribute('aria-label','Task file path to review'); path.placeholder = 'path/to/document.md'; label.append(path);
+    const mount = el('div'), open = el('button', 'Open review file'); open.type = 'button';
+    const expected = boardContext();
+    open.addEventListener('click', async () => {
+      if (!sameBoardContext(expected)) return;
+      open.disabled = true;
+      try {
+        const result = await reviewKit.snapshot({panel:'review_blob',projectId:selectedProjectId,instanceId:selectedInstanceId,task:task.id,path:path.value,side:'head'});
+        if (!sameBoardContext(expected) || taskDetailId !== task.id) return;
+        if (result.ok === false || !result.doc) throw new Error(result.error || 'Review material unavailable.');
+        mount.replaceChildren(reviewKit.render({doc:result.doc,threads:(current?.comments || []).filter(comment => comment.thread && comment.thread.anchor.path === result.doc.path && comment.thread.anchor.side !== 'base').map(comment => comment.thread),
+          onComment: ({anchor,body}) => sameBoardContext(expected) && action({action:'review_comment_put',task:task.id,commit:result.head,anchor,body})}));
+      } catch (error) { if (sameBoardContext(expected)) notice(error.message, true); }
+      finally { open.disabled = false; }
+    });
+    section.append(label,open,mount);
+  }
+  return section;
 }
 function taskDetail(task, card, stage, ids, overdue) {
   const row = el('article', undefined, 'task-detail'), head = el('div', undefined, 'row-head');
@@ -1317,6 +1432,7 @@ function taskDetail(task, card, stage, ids, overdue) {
   if (links.children.length > 1) row.append(links);
   const code = codeGroupSection(task); if (code) row.append(code);
   const delivered = deliverablesSection(task); if (delivered) row.append(delivered);
+  row.append(reviewCommentsSection(task));
   const controls = el('div', undefined, 'actions');
   if (card.pull && boardViewState?.snapshot.boardCapabilities?.backlog===true) controls.append(boardButton('Pull into To Do', {action:'backlog_pull',id:task.id}));
   if (card.pull && boardViewState?.snapshot.planningCapabilities?.wipPull===true) controls.append(boardButton('Pull within WIP', {action:'planner_pull',id:task.id,revision:task.planningRevision ?? 0,reason:'person requested a WIP-constrained pull'}));
@@ -1327,6 +1443,7 @@ function taskDetail(task, card, stage, ids, overdue) {
     assign.addEventListener('click', () => { if(!sameBoardContext(expected))return notice('The project changed. Use its current board.',true);if(select.value)void action({action:'assign',id:task.id,peer:select.value},assign);else notice('Select a peer before assigning this task.',true); }); controls.append(select,assign);
   }
   if (controls.children.length) row.append(controls);
+  row.append(taskVisualsSection(task));
   return row;
 }
 function taskCard(task, card, stage, ids, overdue, compact = true) {
@@ -1368,7 +1485,7 @@ function setColumnFocus(column) {
   if (boardViewState) renderBoard(boardViewState.snapshot, boardViewState.peers, boardViewState.ids);
 }
 function closeTaskDetail() {
-  taskDetailId = null; const dialog = $('task-detail-dialog'); if (dialog.open) dialog.close();
+  taskDetailId = null; reviewCommentsCache.clear(); const dialog = $('task-detail-dialog'); if (dialog.open) dialog.close();
   $('task-detail-content').replaceChildren(); signatures.delete('task-detail-content');
 }
 function refreshTaskDetail() {
@@ -1379,12 +1496,28 @@ function refreshTaskDetail() {
   const ids = boardViewState.ids.filter(id => ['idle','busy'].includes(boardViewState.peers[id]?.state) && boardViewState.peers[id]?.attached !== false && boardViewState.peers[id]?.rostered !== false);
   const overdue = task.due != null && task.due < Date.now() && !isClosedTaskState(task.state);
   $('task-detail-title').textContent = 'Task #' + task.id;
-  update('task-detail-content', [task, card, stage, ids, overdue, boardContext()], target => target.append(taskDetail(task, card, stage, ids, overdue)));
+  update('task-detail-content', [task, card, stage, ids, overdue, boardContext(), snapshot.reviewComments, snapshot.reviewWritable], target => target.append(taskDetail(task, card, stage, ids, overdue)));
 }
 function openTaskDetail(id) {
   if (stopped || !Number.isSafeInteger(id) || !snapshotValid || !boardViewState?.cards.has(id)) return;
-  switchView('board'); taskDetailId = id; refreshTaskDetail();
+  if (taskDetailId !== id) reviewCommentsCache.clear();
+  switchView('board'); taskDetailId = id; refreshTaskDetail(); void refreshReviewComments(id);
   const dialog = $('task-detail-dialog'); if (taskDetailId !== null && !dialog.open) dialog.showModal();
+}
+function reviewCommentsCacheKey(task, ctx = context()) {
+  return JSON.stringify([ctx.projectId,ctx.instanceId,ctx.generation,task?.id ?? null,task?.reviewStateKey ?? null]);
+}
+async function refreshReviewComments(id) {
+  if (stopped || taskDetailId !== id || !snapshotValid) return;
+  const captured = context(), task = lastSnapshot?.tasks?.find(row => row.id === id), cacheKey = reviewCommentsCacheKey(task, captured), input = {after:cursor, view:'board', reviewTask:id, reviewRefresh:true};
+  if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+  try {
+    const result = await post('/snapshot', input);
+    if (taskDetailId !== id || captured.generation !== viewGeneration || (managerMode && (result.projectId !== captured.projectId || result.instanceId !== captured.instanceId))
+      || reviewCommentsCacheKey(lastSnapshot?.tasks?.find(row => row.id === id), captured) !== cacheKey) return;
+    reviewCommentsCache.set(cacheKey, result.reviewComments || {task:id, unavailable:true});
+    if (lastSnapshot) { lastSnapshot = {...lastSnapshot, reviewComments:reviewCommentsCache.get(cacheKey)}; render(lastSnapshot); }
+  } catch (error) { if (taskDetailId === id) notice('Review comments unavailable: ' + error.message, true); }
 }
 function renderBoard(snapshot, peers, ids) {
   if (columnFocus === undefined) {
@@ -1599,8 +1732,10 @@ function renderRooms(rooms) {
       const peers = el('div', undefined, 'peer-summary');
       for (const peer of room.remotePeers) {
         const id = roomMetadataText(peer.id, /^[a-z][a-z0-9-]{0,31}@[a-z][a-z0-9-]{0,31}$/, 65);
-        const state = ['idle', 'busy', 'paused', 'offline'].includes(peer.state) ? peer.state : 'unknown';
-        peers.append(el('span', id + ': ' + state, 'meta'));
+        const observed = peer.presence ?? peer.state;
+        const state = ['idle', 'busy', 'paused', 'offline', 'unknown'].includes(observed) ? observed : 'unknown';
+        const note = peer.liveness === 'untracked' ? '; liveness not tracked (broker without ephemeral); upgrade the broker to track liveness' : '';
+        peers.append(el('span', id + ': ' + state + note, 'meta'));
       }
       row.append(peers);
     }
@@ -1770,17 +1905,79 @@ function appendRoleDetails(target, peer) {
   if (Array.isArray(peer.capableRoles)) target.append(el('p', 'Capable roles: ' + (peer.capableRoles.join(', ') || 'none'), 'meta'));
   if (typeof peer.ownerIsolation === 'boolean') target.append(el('p', 'Owner isolation: ' + (peer.ownerIsolation ? 'isolated' : 'not isolated: ' + (peer.ownerIsolationNote || 'execution root not verified')), 'meta'));
 }
+function modelUnavailableText() { return 'Runtime models unavailable: could not read a bounded model catalog; run ahub model list for the cause. For a known peer, use ahub model set <peer> <model> or ahub model clear <peer>; repair storage or reduce the retained peer catalog as indicated before listing again.'; }
+function renderModelAvailability(snapshot) {
+  const unavailable = snapshot.runtimeModelsUnavailable === true || snapshot.status?.runtimeModelsUnavailable === true;
+  const notice = $('runtime-models-notice'); notice.hidden = !unavailable; notice.textContent = unavailable ? modelUnavailableText() : '';
+  return unavailable;
+}
+function modelControls(model, sessionUntil, unavailable = false) {
+  const box = el('div', undefined, 'model-controls');
+  if (unavailable) { box.append(el('p', modelUnavailableText(), 'meta notice-warn')); return box; }
+  box.append(el('p', 'Model: ' + (model.effectiveModel || 'not reported') + ' / from ' + model.source + (model.pendingNextTurn ? ' / pending next turn: ' + (model.desiredModel || 'native default') : ''), 'meta'));
+  if (model.unsupported) box.append(el('p', model.unsupported.reason + '; ' + model.unsupported.nextStep, 'meta'));
+  if (managerMode || !(sessionUntil > Date.now())) { box.append(el('p', 'To change the next-turn model, open ahub ui --settings.', 'meta')); return box; }
+  const input = el('input'); input.type = 'text'; input.maxLength = 128; input.autocomplete = 'off'; input.spellcheck = false; input.setAttribute('aria-label', 'Next-turn model for ' + model.peer);
+  const out = el('p', '', 'meta'); out.setAttribute('role', 'status');
+  let busy = false, draftGeneration = 0;
+  const previews = [];
+  const captured = context(), current = () => !stopped && canMutate() && !managerMode && sessionUntil > Date.now() && captured.generation === viewGeneration && captured.projectId === selectedProjectId && captured.instanceId === selectedInstanceId && box.isConnected;
+  const modelToken = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/.test(value);
+  const errorText = (value, fallback) => typeof value === 'string' && value.length <= 2048 && value.trim() && !/[\p{Cc}\p{Cf}]/u.test(value) ? value : fallback;
+  input.addEventListener('input', () => {
+    if (!current()) return;
+    draftGeneration++; busy = false; for (const preview of previews) preview.disabled = false;
+    out.textContent = 'Draft changed; preview again before confirming.';
+  });
+  for (const operation of ['set', 'clear']) {
+    const control = el('button', operation === 'set' ? 'Preview model' : 'Preview clear'); control.type = 'button'; previews.push(control);
+    control.addEventListener('click', async () => {
+      if (busy || !current()) return;
+      const generation = ++draftGeneration, draft = input.value, requestedModel = operation === 'set' ? draft : null;
+      const currentDraft = () => current() && generation === draftGeneration && input.value === draft;
+      out.textContent = '';
+      if (operation === 'set' && !modelToken(draft)) { out.textContent = 'Use a model token of 1 to 128 letters, digits or ._:/@+-; no spaces or leading dash.'; return; }
+      busy = true; for (const preview of previews) preview.disabled = true;
+      try {
+        const result = await post('/action', {action:'model_preview', modelAction:operation, peer:model.peer, ...(operation === 'set' ? {model:draft} : {})});
+        if (!currentDraft()) return;
+        if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Model preview unavailable; reopen ahub ui --settings and retry.');
+        if (result?.ok === false) throw new Error(errorText(result.error, 'Model preview unavailable; reopen ahub ui --settings and retry.'));
+        const candidate = result.confirmation;
+        if (result.ok !== true || result.unconfirmed === true || !candidate || typeof candidate !== 'object' || Array.isArray(candidate) || typeof candidate.token !== 'string' || candidate.token.length > 256 || !candidate.token || candidate.peer !== model.peer || candidate.action !== operation || candidate.appliesFrom !== 'next_turn' || !Number.isFinite(candidate.expiresAt) || !(candidate.expiresAt > Date.now()) || !(candidate.previousModel === null || modelToken(candidate.previousModel)) || !(candidate.nextModel === null || modelToken(candidate.nextModel)) || candidate.nextModel !== requestedModel) throw new Error('Model preview unavailable; reopen ahub ui --settings and retry.');
+        out.textContent = 'Next turn: ' + (candidate.previousModel || 'native default') + ' -> ' + (candidate.nextModel || 'native default') + '. The active turn is unchanged.';
+        const confirm = el('button', 'Confirm next-turn model'); confirm.type = 'button'; out.append(confirm);
+        let confirming = false;
+        confirm.addEventListener('click', async () => {
+          if (confirming || !currentDraft() || !(candidate.expiresAt > Date.now())) return;
+          confirming = true; confirm.disabled = true;
+          try {
+            const applied = await post('/action', {action:'model_confirm', token:candidate.token});
+            if (!currentDraft()) return;
+            if (!applied || typeof applied !== 'object' || Array.isArray(applied)) throw new Error('Model change is unconfirmed; inspect ahub model list before retrying.');
+            if (applied?.ok === false) throw new Error(errorText(applied.error, 'Model change is unconfirmed; inspect ahub model list before retrying.'));
+            if (applied.ok !== true || applied.appliesFrom !== 'next_turn' || applied.unconfirmed === true) throw new Error('Model change is unconfirmed; inspect ahub model list before retrying.');
+            out.textContent = 'Selection saved for the next turn; the active turn is unchanged.';
+          } catch (error) { if (currentDraft()) out.textContent = 'Error: ' + errorText(error?.message, 'Model change is unconfirmed; inspect ahub model list before retrying.'); }
+        }, {once:true});
+      } catch (error) { if (currentDraft()) out.textContent = 'Error: ' + errorText(error?.message, 'Model preview unavailable; reopen ahub ui --settings and retry.'); }
+      finally { if (currentDraft()) { busy = false; for (const preview of previews) preview.disabled = false; } }
+    }); box.append(control);
+  }
+  box.append(input, out); return box;
+}
 function render(snapshot) {
+  const modelUnavailable = renderModelAvailability(snapshot);
   renderNeedsAttention(snapshot);
   const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id], ...(typeof snapshot.status.ownerIsolation?.[id] === 'boolean' ? {ownerIsolation:snapshot.status.ownerIsolation[id],ownerIsolationNote:snapshot.status.ownerIsolationNotes?.[id]} : {})}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
-  update('peers', [peers, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
+  update('peers', [peers, snapshot.runtimeModels, snapshot.status.runtimeModels, modelUnavailable, snapshot.settings?.sessionUntil, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
     peerRows.clear();
     if (!ids.length) { empty(target, 'No peers connected. Start one below, or run ahub claude or ahub codex in a terminal.'); return renderStarts(target, starts); }
     const keyed = keyedStart('peers');
     for (const [id, peer] of Object.entries(peers)) {
-      const row = keyed(id, JSON.stringify([peer, (snapshot.boardLegend || []).find(item => item.peer === id)?.activeTasks]), () => {
+      const row = keyed(id, JSON.stringify([peer, snapshot.runtimeModels, snapshot.status.runtimeModels, modelUnavailable, snapshot.settings?.sessionUntil, (snapshot.boardLegend || []).find(item => item.peer === id)?.activeTasks]), () => {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
       name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
       head.append(name, badge(peer.rostered === false ? peer.state + ' off roster' : peer.state, peerDot[peer.state] || ''));
@@ -1791,6 +1988,8 @@ function render(snapshot) {
       // #878: the session title or current plan item the hub observed, already screened (a stub while private).
       if (typeof peer.doing?.text === 'string' && peer.doing.text) summary.append(el('span', (peer.doing.source === 'label' ? 'Unnamed session: ' : 'Doing: ') + peer.doing.text, 'meta'));
       row.append(head, summary);
+      const model = (snapshot.runtimeModels || snapshot.status.runtimeModels || []).find(item => item.peer === id);
+      if (model && !modelUnavailable) row.append(modelControls(model, snapshot.settings?.sessionUntil, modelUnavailable));
       // A status notice asks a person to act (for example, reattach a native session): it stays visible, never folded away.
       if (typeof peer.statusNotice?.message === 'string' && peer.statusNotice.message) row.append(el('p', peer.statusNotice.message, 'meta notice-warn'));
       const more = el('div', undefined, 'peer-more');
@@ -1855,8 +2054,9 @@ function render(snapshot) {
     }
   });
   renderBench(snapshot.bench);
+  renderResults(snapshot.results);
   renderWorktrees(snapshot.worktrees);
-  renderMemory(snapshot.memory);
+  renderMemory(snapshot.memory, snapshot.memorySync);
   renderSettings(snapshot.settings, snapshot.roster);
   renderUsage(snapshot.usage, snapshot.tasks, snapshot.budget);
   renderSchedules(snapshot.schedules);
@@ -1870,7 +2070,8 @@ function render(snapshot) {
     node.dataset.kind = kind; applyStreamFilter(node);
     if (event.env) { const env = event.env, meta = el('div', '', 'meta'), stamp = el('span'); stamp.dataset.ts = env.ts; stamp.title = time(env.ts); stamp.textContent = rel(env.ts);
       meta.append(stamp, el('span', ' / ' + env.from + ' '), icon('i-arrow', 'to'), el('span', ' ' + (env.to ? env.to.join(', ') : 'all') + ' / ' + env.kind + (event.t !== 'envelope' ? ' / ' + event.t : '') + (event.dropped ? ' / ' + event.dropped : '')));
-      node.append(meta, el('div', env.body, 'body')); }
+      node.append(meta, el('div', env.body, 'body'));
+      if (typeof env.refs?.visual === 'string') node.append(visualCard((snapshot.visuals || []).find(row => row.id === env.refs.visual) || {id:env.refs.visual,kind:'Visual'})); }
     else node.append(el('div', event.peer + ' / ' + event.state, 'meta'));
     stream.append(node); eventCount++; while (stream.children.length > 200) stream.firstElementChild.remove();
   }
@@ -1888,6 +2089,9 @@ async function poll() {
     const input = {after:cursor, memory:memoryInput(), view:currentView}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
     const result = await post('/snapshot', input);
     if (!managerMode || (result.projectId === captured.projectId && result.instanceId === captured.instanceId && captured.generation === viewGeneration)) {
+      const detailTask = taskDetailId === null ? undefined : result.tasks?.find(task => task.id === taskDetailId), detailKey = reviewCommentsCacheKey(detailTask, captured);
+      if (taskDetailId !== null && reviewCommentsCache.has(detailKey)) result.reviewComments = reviewCommentsCache.get(detailKey);
+      else if (taskDetailId !== null) reviewCommentsCache.clear();
       snapshotValid = true; lastSnapshot = result; lastSnapshotAt = Date.now(); render(result); setConnection('Live / updated ' + new Date().toLocaleTimeString(), 'live'); setDisconnected(false);
     }
   }
@@ -2371,6 +2575,35 @@ let streamFilter = '';
 function applyStreamFilter(node) { node.hidden = streamFilter !== '' && node.dataset.kind !== streamFilter; }
 function refreshStreamEmpty() { const has = $('stream').querySelector('.event:not([hidden])') !== null, any = $('stream').querySelector('.event') !== null; $('stream-empty').hidden = has || !any; }
 // #251: benchmark runs on this machine and arm comparisons per suite. Every bar carries its number as text.
+/* #1054 T6: unread results, the runs a person started that settled and have not been seen. The snapshot only READS them: building this list never marks one read (a poll is not a person
+   looking). A receipt is a person's click: Mark read (one), Mark all read, or Mark last unread again (relights the result read last; it lives here and in `ahub results --unread-last`, never in
+   the acon inbox, because a read item leaves the inbox). The title is `<peer>: <outcome word>` and the detail is what the hub built at display (a stub when private, nothing when the request is no
+   longer held); text is set with textContent only. The acon seeing rule (focus, visibility, a second in view) is the shell's and is not here: this panel's marks are explicit clicks. */
+function renderResults(results) {
+  const unread = results && Array.isArray(results.unread) ? results.unread : [];
+  const more = results && Number.isSafeInteger(results.moreUnread) ? results.moreUnread : 0;
+  $('results-count').textContent = results ? unread.length + more + ' unread' : '';
+  update('results', results === undefined ? null : results, (target) => {
+    if (results === undefined) return empty(target, 'Results are shown to the person on a current snapshot.');
+    const tools = el('div', undefined, 'row-head');
+    if (unread.length) tools.append(button('Mark all read', {action: 'results_read_all'}));
+    if (results.canUnread) tools.append(button('Mark last unread again', {action: 'results_unread_last'}));
+    if (!unread.length) target.append(el('p', 'Nothing unread.', 'meta'));
+    for (const item of unread) {
+      const block = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+      head.append(el('span', String(item.title), 'label'));
+      head.append(badge(String(item.outcome), item.outcome === 'done' ? 'ok' : item.outcome === 'failed' ? 'err' : 'warn'));
+      const stamp = el('span'); if (item.settledAt) { stamp.dataset.ts = String(item.settledAt); stamp.title = time(item.settledAt); stamp.textContent = 'settled ' + rel(item.settledAt); } else stamp.textContent = ''; head.append(stamp);
+      if (Number.isFinite(item.ms)) head.append(el('span', Math.round(item.ms / 1000) + 's', 'meta'));
+      head.append(button('Mark read', {action: 'result_seen', id: String(item.id)}));
+      block.append(head);
+      if (item.detail && (item.detail.kind === 'head' || item.detail.kind === 'stub') && typeof item.detail.text === 'string') block.append(el('p', item.detail.text, 'meta'));
+      target.append(block);
+    }
+    if (more > 0) target.append(el('p', more + ' older unread; run ahub results --unread to list them all.', 'meta'));
+    target.append(tools);
+  });
+}
 /* #1057: the worktree shelf. A panel refresh reads nothing from GitHub: the rows come from the hub's cached facts, and only the explicit 'Refresh PR states' button asks it to read PR states. Removal is never a button: the panel shows the command to run in a terminal. */
 function renderWorktrees(shelf) {
   const live = shelf && Array.isArray(shelf.live) ? shelf.live : [], settled = shelf && Array.isArray(shelf.settled) ? shelf.settled : [];
@@ -2552,7 +2785,35 @@ function layout(graph) {
   return pos;
 }
 function selectMemoryNode(node) { memoryQuery.node = memoryQuery.node === node ? '' : node; rerenderMemory(); }
-function renderMemory(memory) {
+function memorySyncLine(sync) {
+  if (!sync || typeof sync.state !== 'string') return 'Machine sync: unknown';
+  const hasTimestamp = sync.at !== undefined, validTimestamp = Number.isSafeInteger(sync.at) && Math.abs(sync.at) <= 8640000000000000;
+  const stamp = hasTimestamp ? ' / last ' + (validTimestamp ? time(sync.at) : 'unknown') : '';
+  if (sync.state === 'not-configured' || sync.state === 'stopped') {
+    const next = sync.state === 'stopped' ? 'retry after hub restart' : 'configure a private sync remote';
+    return 'Machine sync: ' + sync.state + stamp + ' / next: ' + next;
+  }
+  if (sync.state === 'ok' && Number.isSafeInteger(sync.withheldCount) && sync.withheldCount >= 0 && Number.isSafeInteger(sync.exportedCount) && sync.exportedCount >= 0)
+    return 'Machine sync: ok' + stamp + ' / ' + sync.withheldCount + ' row' + (sync.withheldCount === 1 ? '' : 's') + ' withheld locally / ' + sync.exportedCount + ' exported';
+  if (sync.state !== 'failed') return 'Machine sync: ' + (['disabled','unavailable','notrun','ok','unknown'].includes(sync.state) ? sync.state : 'unknown') + stamp;
+  const causes = ['declined','remote','binding','stopped','transport','writer','unknown'];
+  const cause = causes.includes(sync.cause) ? sync.cause : 'unknown';
+  if (cause === 'declined' && sync.placementActive === false) {
+    const declined = Number.isSafeInteger(sync.declinedCount) && sync.declinedCount >= 0 ? String(sync.declinedCount) : 'unknown';
+    return 'machine sync blocked: ' + declined + ' declined rows; per-row placement is not active on this store. Activation is person-only: preview with `amem migrate --sync-placement --dry-run` and declare every writer via --writer-root. Inspect with `ahub memory declined`.';
+  }
+  if (cause === 'writer') {
+    const category = ['running CLI','host package','setup receipt','declared writer','active locator','home floor','writer renewal','unknown'].includes(sync.writerCategory) ? sync.writerCategory : 'unknown';
+    const causeClass = ['missing','changed','unavailable'].includes(sync.writerCauseClass) ? sync.writerCauseClass : 'unavailable';
+    return 'Machine sync: failed (writer attestation refused: ' + category + ', ' + causeClass + ')' + stamp + ' / next: repair the amem install and its host pin, then a person runs amem migrate --sync-placement --dry-run';
+  }
+  const count = Number.isSafeInteger(sync.declinedCount) && sync.declinedCount >= 0 ? ' / ' + sync.declinedCount + ' declined' : '';
+  const ids = cause === 'declined' && sync.declinedIdsKnown === false ? ' / declined ID set unknown' : '';
+  const next = cause === 'declined' ? 'ahub memory declined' : cause === 'remote' ? 'configure a private sync remote' : cause === 'binding' ? 'ahub memory profile-check' : cause === 'stopped' ? 'retry after hub restart' : 'run ahub memory sync as a person';
+  return 'Machine sync: failed (' + cause + count + ')' + stamp + ids + ' / next: ' + next;
+}
+function renderMemory(memory, sync) {
+  $('memory-sync-status').textContent = memorySyncLine(sync);
   memoryCodeToggle();
   const tiers = $('memory-tiers');
   if (!tiers.children.length) for (const [tier, label] of [['short', 'Short-term'], ['long', 'Long-term'], ['goals', 'Long-term tasks']]) {

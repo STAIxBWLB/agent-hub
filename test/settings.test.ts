@@ -461,6 +461,18 @@ test("AC7: the Settings section renders every row from the registry with its sou
   for (const label of ["Confirm removal of kimi", "Stop an active turn now", "Preview kimi: participates"]) expect(root.all().find(n => n.attrs["aria-label"] === label)).toBeDefined();
 });
 
+test("#1292 budget.gate is a registered setting: a number from 0 to 1 that applies at the next quota reading, raising it needs a settings session or a terminal, and a conductor cannot set it", () => {
+  const gate = def("budget.gate");
+  expect(gate).toMatchObject({ type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["budget", "gate"] });
+  expect(checkSettingValue(gate, 0.95)).toBe(0.95);
+  expect(checkSettingValue(gate, null)).toBeNull();
+  for (const bad of [1.5, -0.1, Number.NaN, "0.9"]) expect(() => checkSettingValue(gate, bad)).toThrow("budget.gate takes a number from 0 to 1");
+  expect(settingRefusal(gate, 0.99, "terminal")).toBeUndefined();
+  expect(settingRefusal(gate, 0.99, "settings")).toBeUndefined();
+  expect(settingRefusal(gate, 0.99, "ordinary")).toContain("ahub settings in a terminal");
+  expect(settingRefusal(gate, 0.99, "conductor")).toBe("budget.gate is not an operational conductor setting");
+});
+
 test("checkSettingValue and settingRefusal: the pure rules behind every surface", () => {
   expect(checkSettingValue(def("routing.classes.implement.peers"), ["kimi", "codex"])).toEqual(["kimi", "codex"]);
   expect(checkSettingValue(def("routing.classes.implement.route"), "sy/coding", ["sy/coding"])).toBe("sy/coding");
@@ -737,4 +749,16 @@ test("instruction protection is a live person setting with preview, machine-loca
   expect((await marked.act({ action: "setting", key, value: true })).ok).toBe(true);
   expect((await ordinary.act({ action: "setting", key, value: false })).ok).toBe(false);
   expect((await marked.act({ action: "setting", key, value: false })).ok).toBe(true);
+});
+
+test("#1328 SDLC settings report running and file values without adding writable keys", async () => {
+  const rig = await hub();
+  writeFileSync(rig.file("sdlc.toml"), 'mode = "enforce"\nrequired_checks = ["project gate"]\n');
+  const view = await rig.client.request({ t: "settings_get" });
+  expect(view.sdlc).toEqual({ "sdlc.mode": { value: "off", fileValue: "enforce" }, "sdlc.required_checks": { value: [], fileValue: ["project gate"] } });
+  const tools = await ControlClient.connect(rig.stateDir, { role: "tools", peer: "codex" }); cleanup.push(() => tools.close());
+  expect((await tools.request({ t: "settings_get" })).sdlc).toEqual(view.sdlc);
+  expect((await rig.client.request({ t: "settings_set", key: "sdlc.mode", value: "off" })).ok).toBe(false);
+  writeFileSync(rig.file("sdlc.toml"), 'mode = [');
+  expect((await rig.client.request({ t: "settings_get" })).sdlc["sdlc.mode"]).toMatchObject({ value: "off", fileValue: null, problem: "file unavailable" });
 });

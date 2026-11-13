@@ -1,0 +1,1323 @@
+{
+  "schemaVersion": 1,
+  "purpose": "newly authored public input-sizing API fixtures; no source-port vectors",
+  "cases": [
+    {
+      "id": "empty-messages",
+      "messages": [],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 4,
+      "expectedTokens": 4
+    },
+    {
+      "id": "empty-user",
+      "messages": [
+        {
+          "role": "user",
+          "content": ""
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 11,
+      "expectedTokens": 11
+    },
+    {
+      "id": "ascii-1",
+      "messages": [
+        {
+          "role": "user",
+          "content": "n"
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 11,
+      "expectedTokens": 11
+    },
+    {
+      "id": "ascii-9",
+      "messages": [
+        {
+          "role": "user",
+          "content": "nnnnnnnnn"
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 13,
+      "expectedTokens": 13
+    },
+    {
+      "id": "ascii-38",
+      "messages": [
+        {
+          "role": "user",
+          "content": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 21,
+      "expectedTokens": 21
+    },
+    {
+      "id": "ascii-205",
+      "messages": [
+        {
+          "role": "user",
+          "content": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 62,
+      "expectedTokens": 62
+    },
+    {
+      "id": "null-user",
+      "messages": [
+        {
+          "role": "user",
+          "content": null
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 12,
+      "expectedTokens": 12
+    },
+    {
+      "id": "null-assistant",
+      "messages": [
+        {
+          "role": "assistant",
+          "content": null
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 13,
+      "expectedTokens": 13
+    },
+    {
+      "id": "role-mixture",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Use a compact reply."
+        },
+        {
+          "role": "user",
+          "content": "Name the safe refactor steps."
+        },
+        {
+          "role": "assistant",
+          "content": "Inspect the public contract first."
+        },
+        {
+          "role": "user",
+          "content": "Keep the fallback explicit."
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 62,
+      "expectedTokens": 62
+    },
+    {
+      "id": "unicode-text",
+      "messages": [
+        {
+          "role": "user",
+          "content": "제주🙂café 제주🙂café 제주🙂café 제주🙂café 제주🙂café 제주🙂café 제주🙂café "
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 27,
+      "expectedTokens": 39
+    },
+    {
+      "id": "escaped-text",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a \"quoted\" field\nnext line\twith tab\\suffix"
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 23,
+      "expectedTokens": 23
+    },
+    {
+      "id": "empty-tool-list",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Describe the fixture status."
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "tools": [],
+      "observedBaselineTokens": 21,
+      "expectedTokens": 21
+    },
+    {
+      "id": "one-tool-schema",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Find the azure fixture note."
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup_note",
+            "description": "Find a synthetic note by its label.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          }
+        }
+      ],
+      "observedBaselineTokens": 70,
+      "expectedTokens": 70
+    },
+    {
+      "id": "two-tool-schemas",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Add a synthetic annotation."
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup_note",
+            "description": "Find a synthetic note by its label.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "annotate_note",
+            "description": "Attach a short fixture label.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "observedBaselineTokens": 134,
+      "expectedTokens": 134
+    },
+    {
+      "id": "tool-roundtrip",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Look up the orchard label."
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "own-call-orchid",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"orchid-fixture\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-call-orchid",
+          "content": "Matched five synthetic labels."
+        },
+        {
+          "role": "assistant",
+          "content": "The requested fixture was found."
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup_note",
+            "description": "Find a synthetic note by its label.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          }
+        }
+      ],
+      "observedBaselineTokens": 153,
+      "expectedTokens": 153
+    },
+    {
+      "id": "tool-call-visible-text",
+      "messages": [
+        {
+          "role": "assistant",
+          "content": "Checking a synthetic note.",
+          "tool_calls": [
+            {
+              "id": "own-call-orchid",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"orchid-fixture\"}"
+              }
+            }
+          ]
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 53,
+      "expectedTokens": 53
+    },
+    {
+      "id": "tool-result-alone",
+      "messages": [
+        {
+          "role": "tool",
+          "tool_call_id": "unassociated-fixture",
+          "content": "Synthetic output with no earlier call."
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 30,
+      "expectedTokens": 30
+    },
+    {
+      "id": "explicit-error-result",
+      "messages": [
+        {
+          "role": "tool",
+          "tool_call_id": "own-call-orchid",
+          "content": "Synthetic operation returned a nonzero code.",
+          "is_error": true
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 34,
+      "expectedTokens": 34
+    },
+    {
+      "id": "long-user-text",
+      "messages": [
+        {
+          "role": "user",
+          "content": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 7765,
+      "expectedTokens": 7765
+    },
+    {
+      "id": "long-schema-annotation",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Inventory the synthetic operation."
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup_note",
+            "description": "A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. A bounded synthetic schema description. ",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          }
+        }
+      ],
+      "observedBaselineTokens": 4173,
+      "expectedTokens": 4173
+    },
+    {
+      "id": "history-seventy-two",
+      "messages": [
+        {
+          "role": "user",
+          "content": "note-0 "
+        },
+        {
+          "role": "assistant",
+          "content": "note-1 z"
+        },
+        {
+          "role": "user",
+          "content": "note-2 zz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-3 zzz"
+        },
+        {
+          "role": "user",
+          "content": "note-4 zzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-5 zzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-6 zzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-7 zzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-8 zzzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-9 zzzzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-10 zzzzzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-11 "
+        },
+        {
+          "role": "user",
+          "content": "note-12 z"
+        },
+        {
+          "role": "assistant",
+          "content": "note-13 zz"
+        },
+        {
+          "role": "user",
+          "content": "note-14 zzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-15 zzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-16 zzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-17 zzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-18 zzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-19 zzzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-20 zzzzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-21 zzzzzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-22 "
+        },
+        {
+          "role": "assistant",
+          "content": "note-23 z"
+        },
+        {
+          "role": "user",
+          "content": "note-24 zz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-25 zzz"
+        },
+        {
+          "role": "user",
+          "content": "note-26 zzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-27 zzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-28 zzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-29 zzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-30 zzzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-31 zzzzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-32 zzzzzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-33 "
+        },
+        {
+          "role": "user",
+          "content": "note-34 z"
+        },
+        {
+          "role": "assistant",
+          "content": "note-35 zz"
+        },
+        {
+          "role": "user",
+          "content": "note-36 zzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-37 zzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-38 zzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-39 zzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-40 zzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-41 zzzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-42 zzzzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-43 zzzzzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-44 "
+        },
+        {
+          "role": "assistant",
+          "content": "note-45 z"
+        },
+        {
+          "role": "user",
+          "content": "note-46 zz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-47 zzz"
+        },
+        {
+          "role": "user",
+          "content": "note-48 zzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-49 zzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-50 zzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-51 zzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-52 zzzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-53 zzzzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-54 zzzzzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-55 "
+        },
+        {
+          "role": "user",
+          "content": "note-56 z"
+        },
+        {
+          "role": "assistant",
+          "content": "note-57 zz"
+        },
+        {
+          "role": "user",
+          "content": "note-58 zzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-59 zzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-60 zzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-61 zzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-62 zzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-63 zzzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-64 zzzzzzzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-65 zzzzzzzzzz"
+        },
+        {
+          "role": "user",
+          "content": "note-66 "
+        },
+        {
+          "role": "assistant",
+          "content": "note-67 z"
+        },
+        {
+          "role": "user",
+          "content": "note-68 zz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-69 zzz"
+        },
+        {
+          "role": "user",
+          "content": "note-70 zzzz"
+        },
+        {
+          "role": "assistant",
+          "content": "note-71 zzzzz"
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "observedBaselineTokens": 799,
+      "expectedTokens": 799
+    },
+    {
+      "id": "forty-call-metadata",
+      "messages": [
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "own-batch-0",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-0\"}"
+              }
+            },
+            {
+              "id": "own-batch-1",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-1\"}"
+              }
+            },
+            {
+              "id": "own-batch-2",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-2\"}"
+              }
+            },
+            {
+              "id": "own-batch-3",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-3\"}"
+              }
+            },
+            {
+              "id": "own-batch-4",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-4\"}"
+              }
+            },
+            {
+              "id": "own-batch-5",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-5\"}"
+              }
+            },
+            {
+              "id": "own-batch-6",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-6\"}"
+              }
+            },
+            {
+              "id": "own-batch-7",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-7\"}"
+              }
+            },
+            {
+              "id": "own-batch-8",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-8\"}"
+              }
+            },
+            {
+              "id": "own-batch-9",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-9\"}"
+              }
+            },
+            {
+              "id": "own-batch-10",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-10\"}"
+              }
+            },
+            {
+              "id": "own-batch-11",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-11\"}"
+              }
+            },
+            {
+              "id": "own-batch-12",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-12\"}"
+              }
+            },
+            {
+              "id": "own-batch-13",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-13\"}"
+              }
+            },
+            {
+              "id": "own-batch-14",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-14\"}"
+              }
+            },
+            {
+              "id": "own-batch-15",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-15\"}"
+              }
+            },
+            {
+              "id": "own-batch-16",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-16\"}"
+              }
+            },
+            {
+              "id": "own-batch-17",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-17\"}"
+              }
+            },
+            {
+              "id": "own-batch-18",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-18\"}"
+              }
+            },
+            {
+              "id": "own-batch-19",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-19\"}"
+              }
+            },
+            {
+              "id": "own-batch-20",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-20\"}"
+              }
+            },
+            {
+              "id": "own-batch-21",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-21\"}"
+              }
+            },
+            {
+              "id": "own-batch-22",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-22\"}"
+              }
+            },
+            {
+              "id": "own-batch-23",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-23\"}"
+              }
+            },
+            {
+              "id": "own-batch-24",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-24\"}"
+              }
+            },
+            {
+              "id": "own-batch-25",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-25\"}"
+              }
+            },
+            {
+              "id": "own-batch-26",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-26\"}"
+              }
+            },
+            {
+              "id": "own-batch-27",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-27\"}"
+              }
+            },
+            {
+              "id": "own-batch-28",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-28\"}"
+              }
+            },
+            {
+              "id": "own-batch-29",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-29\"}"
+              }
+            },
+            {
+              "id": "own-batch-30",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-30\"}"
+              }
+            },
+            {
+              "id": "own-batch-31",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-31\"}"
+              }
+            },
+            {
+              "id": "own-batch-32",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-32\"}"
+              }
+            },
+            {
+              "id": "own-batch-33",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-33\"}"
+              }
+            },
+            {
+              "id": "own-batch-34",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-34\"}"
+              }
+            },
+            {
+              "id": "own-batch-35",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-35\"}"
+              }
+            },
+            {
+              "id": "own-batch-36",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-36\"}"
+              }
+            },
+            {
+              "id": "own-batch-37",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-37\"}"
+              }
+            },
+            {
+              "id": "own-batch-38",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-38\"}"
+              }
+            },
+            {
+              "id": "own-batch-39",
+              "type": "function",
+              "function": {
+                "name": "lookup_note",
+                "arguments": "{\"label\": \"fixture-39\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-0",
+          "content": "item-0"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-1",
+          "content": "item-1"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-2",
+          "content": "item-2"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-3",
+          "content": "item-3"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-4",
+          "content": "item-4"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-5",
+          "content": "item-5"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-6",
+          "content": "item-6"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-7",
+          "content": "item-7"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-8",
+          "content": "item-8"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-9",
+          "content": "item-9"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-10",
+          "content": "item-10"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-11",
+          "content": "item-11"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-12",
+          "content": "item-12"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-13",
+          "content": "item-13"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-14",
+          "content": "item-14"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-15",
+          "content": "item-15"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-16",
+          "content": "item-16"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-17",
+          "content": "item-17"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-18",
+          "content": "item-18"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-19",
+          "content": "item-19"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-20",
+          "content": "item-20"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-21",
+          "content": "item-21"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-22",
+          "content": "item-22"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-23",
+          "content": "item-23"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-24",
+          "content": "item-24"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-25",
+          "content": "item-25"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-26",
+          "content": "item-26"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-27",
+          "content": "item-27"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-28",
+          "content": "item-28"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-29",
+          "content": "item-29"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-30",
+          "content": "item-30"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-31",
+          "content": "item-31"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-32",
+          "content": "item-32"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-33",
+          "content": "item-33"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-34",
+          "content": "item-34"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-35",
+          "content": "item-35"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-36",
+          "content": "item-36"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-37",
+          "content": "item-37"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-38",
+          "content": "item-38"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "own-batch-39",
+          "content": "item-39"
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup_note",
+            "description": "Find a synthetic note by its label.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          }
+        }
+      ],
+      "observedBaselineTokens": 1879,
+      "expectedTokens": 1879
+    },
+    {
+      "id": "schema-literal-values",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Pick the violet fixture size."
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "choose_size",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "size": {
+                  "type": "integer",
+                  "enum": [
+                    3,
+                    11,
+                    29
+                  ]
+                },
+                "label": {
+                  "type": "string",
+                  "default": "violet"
+                }
+              },
+              "required": [
+                "size"
+              ]
+            }
+          }
+        }
+      ],
+      "observedBaselineTokens": 73,
+      "expectedTokens": 73
+    },
+    {
+      "id": "schema-null-description",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Read the neutral fixture flag."
+        }
+      ],
+      "constraint": "new-estimate-at-least-observed",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read_flag",
+            "description": "",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        }
+      ],
+      "observedBaselineTokens": 50,
+      "expectedTokens": 50
+    }
+  ],
+  "provenance": {
+    "method": "One approved public API scalar observation on newly authored fixtures; no implementation text or source-port vectors copied",
+    "baselineCommit": "2219e9dbd5861d87bc4bddbe857b3bbfd7a9a07c",
+    "baselineTree": "f432745d3dac6f7f28d856a7d68dcfe015a51cd7",
+    "baselineModuleBlob": "47b97b8dbb6c2294d98657360e0955383ee52ed2",
+    "driverSHA256": "bfed4e2570929b397bee454d5e7521c3bd7c4960ea1ffdca581d83b9d77d08de",
+    "fixtureSourceSHA256": "85203780614f17500d336d85f2c90399d456f7d49fbec10d582cada4146e2682",
+    "resultSHA256": "d551376c2959c948792f34985c44fca5bb4c602c56062f6a1321919b5ee953e9",
+    "effects": {
+      "network": 0,
+      "process": 0,
+      "server": 0,
+      "output": 0,
+      "write": 0
+    }
+  }
+}

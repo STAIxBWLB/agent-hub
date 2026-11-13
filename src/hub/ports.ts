@@ -10,7 +10,7 @@ export const CONTROL = 0;
 export const CODEX_APP = 1;
 export const CODEX_PROXY = 2;
 /** Reserved after sidecar retirement (#553); never bind this offset or move later allocations. */
-export const SWITCHYARD = 3;
+export const RESERVED_SIDECAR = 3;
 
 /** SQLite-backed project allocation; an explicit JSON path retains the legacy utility API under a lock. */
 export function allocatePorts(projectDir: string, registry?: string): number {

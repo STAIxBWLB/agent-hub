@@ -212,24 +212,32 @@ export function stageCurrentRuntime(sourceRoot: string, version: string, home = 
   } finally { if (!registry) owner.close(); }
 }
 
+/** #1253: npm 12 wraps `npm view --json` output for one package in a one-element array; npm 11 printed the value itself. Anything else is not one release. */
+function npmViewJson(stdout: string): unknown {
+  let value: unknown;
+  try { value = JSON.parse(stdout); } catch { return undefined; }
+  if (!Array.isArray(value)) return value;
+  return value.length === 1 ? value[0] : undefined;
+}
+
 export async function registryRelease(version: string, run: RunCommand = runCommand): Promise<{ version: string; integrity: string }> {
   exactVersion(version);
   const result = await run(["npm", "view", `@staix/agent-hub@${version}`, "version", "dist.integrity", "--json"], { timeoutMs: 30_000 });
   if (result.code !== 0) throw new Error(`registry metadata unavailable for @staix/agent-hub@${version}`);
-  const data = JSON.parse(result.stdout);
-  if (data.version !== version || typeof data["dist.integrity"] !== "string" || !data["dist.integrity"].startsWith("sha512-")) {
-    throw new Error("registry returned an unexpected release identity");
+  const data = npmViewJson(result.stdout) as Record<string, unknown> | undefined;
+  const integrity = data?.["dist.integrity"];
+  if (data?.version !== version || typeof integrity !== "string" || !integrity.startsWith("sha512-")) {
+    throw new Error(`registry returned an unexpected release identity for @staix/agent-hub@${version} (expected one release with a sha512 integrity from \`npm view --json\`); check \`npm view @staix/agent-hub@${version} version dist.integrity --json\` and your npm version`);
   }
-  return { version, integrity: data["dist.integrity"] };
+  return { version, integrity };
 }
 
 /** #272: the registry's latest release, the target when `--to` is left out. */
 export async function latestRelease(run: RunCommand = runCommand): Promise<string> {
   const result = await run(["npm", "view", "@staix/agent-hub", "version", "--json"], { timeoutMs: 30_000 });
   if (result.code !== 0) throw new Error("registry metadata unavailable for @staix/agent-hub; name the release with --to <version>");
-  let version: unknown;
-  try { version = JSON.parse(result.stdout); } catch { /* reported below */ }
-  if (typeof version !== "string") throw new Error("registry returned an unexpected latest release; name the release with --to <version>");
+  const version = npmViewJson(result.stdout);
+  if (typeof version !== "string") throw new Error("registry returned an unexpected latest release (expected one version from `npm view --json`); check `npm view @staix/agent-hub version --json`, or name the release with --to <version>");
   return exactVersion(version);
 }
 

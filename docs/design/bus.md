@@ -9,6 +9,8 @@ paths:
   - src/hub/envelope.ts
   - src/hub/limits.ts
   - src/hub/delivery-journal.ts
+  - src/hub/delivery-public.ts
+  - src/hub/memory-policy.ts
   - src/hub/delivery-superseded.ts
   - src/hub/deferred-hub.ts
   - src/cli/reset.ts
@@ -31,7 +33,24 @@ The bus applies limits to a sender, sender-recipient pair, important messages, a
 
 ## Queues and delivery outcomes
 
+`hub_visual` (#1058) publishes only a bounded chat stub naming a local visual
+record through `refs.visual`. Its default audience is the console at FYI priority;
+explicit recipients use existing addressed-message rules. Neither Mermaid source,
+table/comparison bodies nor image bytes are embedded in the envelope or delivery
+journal. A source read is explicit, local to the project and privacy-guarded.
+Visual publication grants no task, native-session, invocation or broker authority.
+Before expensive visual screening or image reads, `Limiter.peek` uses the same
+admission decision as `admit` without changing buckets or repeat history. The
+final `admit` still consumes once against current state before record/publication
+effects; a successful preflight never reserves or grants future delivery.
+
+
 The in-memory bus schedules messages; `DeliveryJournal` durably records an individual transport attempt and the original envelopes behind any rendered output. A peer receipt such as `accepted` or `completed` describes transport, not the corresponding task's acceptance, completion, or approval. That separation lets a timeout or restart remain explicitly uncertain without inventing a task outcome ([#37](https://github.com/STAIxBWLB/agent-hub/issues/37)).
+
+A closed bus returns an empty publication outcome before provenance, privacy,
+journal preflight, observers or queue mutation. Deferred publication has the same
+fence. A storage failure while the bus is open still fails rather than becoming
+an apparently successful empty send.
 
 For #1055, `Bus.onDelivered(peer, originals, deliveryId?)` exposes the existing
 journal delivery ID to the observer at the first positive transport ACK. The
@@ -41,16 +60,266 @@ and an observer exception cannot alter delivery settlement. This supports the
 [ID-only session-title restart binding](adapters.md#session-title-slots) without
 changing dispatch, retry, task acceptance or task-completion authority.
 
+A successful nonempty inbox handout records current-input and bounded named-parent review provenance through `Bus.onPulled(peer, originals)`. This metadata hook does not invoke `onDelivered`, certify native consumption, start a session-title receipt or change completion authority. Presence-only handouts do not release review exclusion, and a mixed quote-bearing batch cannot seed a title binding from its ordinary member. A previously saved binding to an ordinary member of such a batch is also rejected on status and delivery recovery; a fresh ordinary input can establish a safe source. It follows the existing pull handout ceiling: the transport result may still be lost before the client reads it. The separate metadata-only `onSteering(peer, originals)` hook latches quote-bearing input immediately before an actual steer attempt, without creating a native ACK or task/completion evidence. Ordinary additional steer input cannot clear an active review turn's exclusion.
+
+The latest pulled input is kept separately from the last pushed delivery. Observer reads use the pull slot while it is current, but invocation answer matching retains its pushed request through an intervening inbox read; an explicit reply can still name the correct pushed or pulled invocation. A later push replaces the pull slot. Only `resetLastDelivery` after a confirmed native-session change clears both slots; adapter metadata reset/removal preserves the latest pulled input.
+
 Push peers receive bounded batches. Condensation is optional, excludes important, remote, and invocation messages, and keeps `originals` separate from `out` so replies, safe failures, and recovery still refer to what the peer was actually given. On an eligible safe retry, a failed batch falls back to individual envelopes, and a previously failed envelope goes alone so a poison item cannot block its neighbors. These bounds preserve queue progress when summarization or one recipient fails ([#713](https://github.com/STAIxBWLB/agent-hub/issues/713), [#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
 Pull-only peers catch up oldest-first under a byte budget, but the first envelope always goes even when it exceeds that budget so one oversized item cannot starve the queue; push peers use the digest batch limit. Pull records returned envelopes as completed at handout because the tool result is the readback, not a later native receipt. A busy Claude channel can also pull its own messages through `hub_inbox`; that avoids making a long-running turn an unbounded queue lock ([#493](https://github.com/STAIxBWLB/agent-hub/issues/493), [#713](https://github.com/STAIxBWLB/agent-hub/issues/713)).
 
 Delivery uncertainty normally holds the original and is never an automatic replay. The narrow exception is a hub-authored presence or workflow notice proven moot by current task evidence; mixed, unknown, or requested-stop rows remain held. This removes stale notices without treating arbitrary peer messages as seen ([#434](https://github.com/STAIxBWLB/agent-hub/issues/434)). Safe pre-acceptance failures may retry within a bounded attempt policy; uncertain results remain `needs_review` until an explicit resolution. A peer may retry only its own eligible row and only once per immutable retry lineage; an invocation uses its own ledger and is not replayed as an ordinary message retry ([#37](https://github.com/STAIxBWLB/agent-hub/issues/37), [#991](https://github.com/STAIxBWLB/agent-hub/issues/991)).
 
-A peer may settle its own local `needs_review` row as completed or discard while busy, with the observed revision and a public-safe reason; this records a delivery decision and never changes task state or redelivers the original. Another peer, a remote-room actor, or an active `dispatching`/`accepted` row remains refused. Invocation-bearing rows also remain person-settled because a transport action cannot assert the outcome of an invoked operation. `hub_inbox` may pass a `needs_review` hold to return newer queued messages and bounded id/revision metadata naming the held row, while leaving the uncertain originals held. Pause, recovery, lifecycle, storage, and active-delivery fences still apply. This lets the current recipient make progress without treating uncertain work as delivered ([#1079](https://github.com/STAIxBWLB/agent-hub/issues/1079), [#445](https://github.com/STAIxBWLB/agent-hub/issues/445), [#991](https://github.com/STAIxBWLB/agent-hub/issues/991)).
+Failure diagnostics use the bounded, public-safe `failureCause` classes `peer
+offline`, `adapter refused`, `push error`, `turn aborted`, and `timeout`, never
+message text. A legacy absent cause remains unknown. Queue inspection exposes
+this metadata without changing the receipt's state or proving that retry is
+safe. Status counts only unresolved failed rows per peer, excluding rows with
+an explicit resolution even when a retry leaves its parent in `failed`; the
+metadata-only aggregate does not hydrate delivery payloads ([#1178](https://github.com/STAIxBWLB/agent-hub/issues/1178)).
+
+A peer may settle its own local `needs_review` row as completed or discard while busy, with the observed revision and a public-safe reason; this records a delivery decision and never changes task state or redelivers the original. Another peer or a remote-room actor remains refused. Active `dispatching` rows remain refused; an `accepted` row is settleable only by its explicit push channel owner as described below. Invocation-bearing rows also remain person-settled because a transport action cannot assert the outcome of an invoked operation. `hub_inbox` may pass a `needs_review` hold to return newer queued messages and bounded id/revision metadata naming the held row, while leaving the uncertain originals held. Pause, recovery, lifecycle, storage, and active-delivery fences still apply. This lets the current recipient make progress without treating uncertain work as delivered ([#1079](https://github.com/STAIxBWLB/agent-hub/issues/1079), [#445](https://github.com/STAIxBWLB/agent-hub/issues/445), [#991](https://github.com/STAIxBWLB/agent-hub/issues/991)).
+
+`hub_inbox` also offers a read-only view of the authenticated recipient's own held originals (#1328 AC6). It reads `needs_review` rows, plus `accepted` rows only for the current explicit-settlement channel. This is inspection of an uncertain earlier attempt, never a new handout, retry, ACK, resolution or task-offer read. Repeated views leave delivery state, revision, attempt, resolution audit and bus queues unchanged. Normal queued pulls and local failed-push fallback retain their existing semantics; a failed held component cannot discard an already committed normal pull.
+
+The held view selects at most 32 recipient rows with a 33rd-row sentinel and bounds raw UTF-8 JSON in SQL before hydrating originals, using the host's `bus.pull_budget_bytes`; callers cannot choose a recipient, state set or budget. Oversized, truncated and unavailable content is named explicitly. Bodies reuse the public queue body projection: current private or missing tasks and private envelopes are stubs, metadata screening withholds unsafe text, and rendered bodies are sanitized. The owned implementer additionally needs its current launch, execution root, generation and task; review-only item restrictions remain in force. No failure/room/resolution metadata or condensed `out` is added to this body view.
+
+An observer-excluded held view latches observer exclusion in RAM without a durable handout receipt. As a conservative ceiling, readable observer-excluded held inputs (trusted review packages and host-stamped peer chat/status responses) exclude capture/progress across restart until explicit disposition, even if unread; queued/deferred review rows do not acquire this new ceiling. An overflowing or unreadable row/byte window also remains unknown and excluded: a previously viewed row can move outside that window. Unknown storage excludes observers, and incomplete or corrupt legacy provenance withholds held bodies without refreshing or repairing metadata. This can later narrow with host-verified read provenance, never by inventing transport acceptance.
+
+An explicit push channel may settle or discard its own `accepted` row with the observed revision and a public-safe reason. `accepted` means the channel transport accepted the notification, not that the session handled it. If neither a native completion nor an explicit disposition arrives within the configured `bus.accepted_settle_ms` window, the host moves the row to `needs_review` with a fixed timeout cause and never replays it. The channel's `hub_inbox` metadata includes its own accepted and held rows, with ids and revisions, even while an active accepted delivery blocks pulling. An important, task, or review timeout adds one ids-only status notice when a conductor is configured and its existing `conductor.feed` policy is on; `feed: off` remains an explicit opt-out. Timed-out rows stay held until a person or the explicit channel session records a disposition; task state does not settle them ([#1172](https://github.com/STAIxBWLB/agent-hub/issues/1172)).
+
+An `answer` envelope (#1053) is a person's late answer to a question a peer asked with `hub_ask`. The hub builds it: `kind: "answer"`, `from: user`, addressed to the asking peer only, with the deterministic id `answer-<set>` (a republish after a crash is dropped by the bus's own dedupe) and `refs.question`. Code keys on `kind`, never on the sender, and an `answer` never supersedes the question it answers. Its body is the person's text, so the log line, the console tail and the dashboard feed show a fixed stub; only the recipient reads it. A question expiry is a hub `status` notice, never an answer.
 
 Invocation requests and results are single-envelope deliveries, not digest material. A reply is correlated to the request handed to that peer and is captured by the invocation path before ordinary publishing; uncertain outcomes stay with the invocation ledger because a missing result cannot be inferred from a transport receipt ([#445](https://github.com/STAIxBWLB/agent-hub/issues/445), [#991](https://github.com/STAIxBWLB/agent-hub/issues/991)).
 
 ## Cross-project transport
 
 Encrypted rooms add a screened message transport between local project hubs. Room identity, deadlines, and remote provenance stay bound to each delivery; traffic is not merged into a shared board. A separately pinned read-only invocation relay cannot transfer task or approval authority. This keeps remote delivery from acquiring the receiving project's roles or memory ([#941](https://github.com/STAIxBWLB/agent-hub/issues/941), [#992](https://github.com/STAIxBWLB/agent-hub/issues/992)).
+
+## Review observer provenance (#1056)
+
+An admitted person comment package or anchored-finding review request carries the host-only opaque `refs.reviewPackage`. The intended recipient keeps its public body; observer projections show an IDs-only stub. A PII task still uses its existing private stub and authority rules. Peer-supplied review markers are discarded. The bus derives `refs.reviewResponse` for a response to the current delivered review input or a retained named parent, so a direct echo cannot enter logs, stream projections or memory observers as ordinary chat. This marker grants no task, console or PII capability.
+
+The provenance cache retains at most 128 delivered parent IDs per peer and a globally bounded response cache; peer removal drops its parent binding. It holds identifiers only, not excerpts. This boundary attributes current turns and named parents. Arbitrary paraphrases from later vendor-native session history need a native session/turn provenance protocol; content matching is not used to guess them.
+
+Person comment packages retain their terminal delivery evidence for explicit idempotent publication recovery. Reviewer requests use the distinct `reviewer-request-` marker and their terminal rows remain prunable. A saved person package whose latest delivery failed or was discarded refuses explicit resend with that state and queue inspection guidance; it never reports queued success or replays the effect. Owner-addressed review packages and verdicts stay uncertain until an explicit disposition; task or reviewer movement alone is not consumption proof. Durable open sent comments and anchored finding scope protect memory notes naming that task after a restart or intervening chat; they grant no task or PII authority. Capture and other turn-wide observers follow the current delivered review input or an anchored-verdict submission latched to that input, not peer-wide board history. Ordinary new input releases that turn exclusion only where the transport supplies replacement evidence; the restored pull-only rule below still applies. Separate delivery holds retain their own dispositions. The journal retains bounded peer/session hold and release receipts using session/input ID hashes, never text. Completeness and integrity metadata confirm whether absence is meaningful: no matching held record in an intact, readable, complete store is clean, including a new session after restart. Unreadable or corrupt storage remains unknown and excluded. A validated matching release confirms only its own session while legacy coverage is incomplete.
+
+A missing stable native session id does not refuse a review handout. The host records a peer-scoped incomplete marker and keeps an unknown-held scope in RAM, without turning launch, attach or socket ids into a native identity. For a never-identified peer with no positive or incomplete SID row, the next verified ordinary replacement in that daemon run can release that RAM scope and its peer marker. If any earlier positive or incomplete SID row exists while the current SID cannot be matched, delivery still proceeds but the observer state stays unknown and held; an ordinary RAM proof cannot release it. Status names that peer as unidentified and directs reconnection so its real session id can be known. A newly confirmed SID uses its own state; another SID's retained rows are not cleared. Journal write failure still refuses before handout. Presence-only traffic and additional input within a known active held turn cannot clear exclusion.
+
+Legacy coverage becomes complete only when journal evidence shows no unsettled pre-upgrade review-scoped delivery remains; this changes provenance metadata, never delivery disposition or replay. Its bounded candidate set is fixed from preexisting handed work at open/import; guarded deliveries created after that capture do not prolong the current daemon's fence. Reopen/import while coverage is incomplete conservatively recaptures every handed non-terminal row present then, including a newer guarded B; after the original A settles, coverage may therefore remain incomplete and a fresh SID without its own receipt remains unknown until B also reaches a terminal disposition. A timeout to needs_review still requires explicit resolution. This accepted recapture ceiling neither refuses handout nor creates a sticky hold from legacy coverage alone. If this window matters in operation, the upgrade path is a persisted ids-only legacy fence carried across recovery. Legacy coverage alone does not create a sticky restored pull-only hold. For an identified session, a positive held row or that peer's own incomplete marker can restore exclusion. A verified ordinary replacement or confirmed native-session change clears only that peer's incomplete marker; a session change does not discard another session's positive held row. On the first confirmed SID after a sessionless period, any current RAM quote hold is persisted under that SID before the peer marker is cleared. Positive session-bound restored holds remain excluded until confirmed native identity changes. Sessionless peers do not acquire an unbound sticky hold.
+
+Once coverage is complete, NULL clean-session receipts may be pruned because complete absence preserves clean state. Positive and uncertain holds are not evicted to satisfy the 4096-row bound. Integrity metadata and counts are updated atomically with these changes. Public status names unavailable provenance and its next step without exposing note text or raw database errors. There is no automatic corrupt-state reset. Recovery preserves the receipts, integrity metadata and session-bound exclusion.
+
+Role reassignment cannot clear the original recipient's observer exclusion while a review envelope remains queued, recovery-deferred or unsettled. The journal supplies recipient/task-scoped metadata independently of current task roles; explicit disposition ends that delivery scope. Sent person comments independently retain their saved package recipient until resolution or person dismissal.
+
+## Room presence and broker backpressure (#1204 T1)
+
+Ordinary observations reuse an already scheduled coalesced republish instead of
+cancelling it and sealing a new frame on every awaited state flip. Responses and
+forced refresh requests retain priority. A chat flushes earlier deferred presence
+and reserves its own serial slot before yielding, preserving concurrent chat and
+durable-outbox FIFO. Receipts retain their existing durable-commit/ACK path and do
+not wait behind an additional ordinary observation. Actual-send exposure,
+recipient, currency and capacity fences remain unchanged.
+
+Presence carries a signed optional `ephemeral: true` frame header. The broker can
+read this metadata but cannot decrypt the presence body. It retains only the
+latest ephemeral frame per sender for currently connected, ready recipients;
+disconnect and broker restart remove ephemeral recipients. Durable frames keep
+the existing queue caps, TTL and exactly-once receiver admission.
+
+A link skips an unchanged local presence snapshot, except explicit peer refresh
+requests/responses and a fresh connection. One sealed frame is sent at a time
+until its broker storage response, so a refused sequence cannot be overtaken.
+A correlated `queue_full` retains the frame (applications remain in the local
+outbox) and retries after 250 ms, doubling to a 30 s ceiling. Stop/refresh clears
+connection timers; no recipient receipt or application completion is inferred.
+T1 does not change acknowledgement deadlines, restart replay or receipt outbox
+persistence, which belong to T2. Existing layer caps remain authoritative.
+
+### Room wire compatibility (#1204 T1)
+
+Version 1 requests only the ephemeral feature with the WebSocket upgrade header
+`x-agent-hub-ephemeral: 1`. A supporting broker includes `ephemeral: true` in its
+ready response only to an opted-in client, preserving the exact legacy ready
+shape for older hubs. Each new connection starts with the feature disabled.
+Without the advertisement, presence retains the legacy frame shape; dedupe and
+queue_full backoff still apply, but that broker retains presence for offline
+members under its old queue rules. Upgrade the broker for ephemeral retention.
+
+A supporting broker forwards ephemeral presence only to ready members that
+opted in. Older members do not see upgraded members' presence until they upgrade. Application
+chat frames keep the legacy shape. This is the one-bit compatibility bridge;
+current links keep this header unchanged and add the codec opt-in described below.
+
+Ephemeral replacement preserves a recipient's outstanding one-packet transport
+slot until its matching ACK or the original TTL/grace bound expires. Only the
+pending replacement coalesces; a newer observation never refreshes the handed
+packet's deadline. Unsupported recipients never receive the new frame shape.
+
+A refresh request
+remains on non-reply snapshots until all asked members supply validated presence;
+replies never request a reply. The bounded round resets on reconnect or roster
+change. Periodic idle refresh in T3 repairs a crossed request even without a peer-state
+change; latest-per-sender coalescing and the existing dedupe ceiling remain.
+
+## Room liveness and epoch changes (#1204 T3)
+
+Only a connection whose broker negotiated ephemeral presence publishes periodic
+`requestReply` snapshots, every 30 seconds by default. Replies never request
+replies. Three missed local refresh periods (90 seconds) make that member's room
+presence `unknown` in its exposed-peer status. Aging is advisory only: it changes
+no outbound admissibility, native peer state or authority. Sending remains governed
+by the signed roster, exposure, link and Bus proofs; the broker can queue for a
+member that is not live. An explicit signed offline presence keeps its existing
+handling. Freshness uses local observation time, never a saved snapshot or a sender
+clock; restart needs a fresh observation for its displayed liveness. Invalid time
+or clock rollback makes that advisory view unknown without changing transport gates.
+Status computes the advisory view without mutating the clock or delivery state.
+The refresh period and clock are injectable for fixtures.
+
+A legacy broker gets no periodic refresh or aging. Identical-snapshot dedupe and
+state-change publication remain, with at most one final offline observation at
+stop. Its view says `liveness not tracked (broker without ephemeral)` and asks
+the person to upgrade the broker. Optional room-only `presence` and `liveness`
+metadata keep the closed native `PeerState` type unchanged; older readers ignore
+the added fields. No new codec or full capability handshake is introduced; T4
+remains separate.
+
+Stop is asynchronous and idempotent, with a synchronous publication fence. It
+attempts one signed final offline observation behind an already attempted FIFO
+head, then disconnects within two seconds. Durable application intents and
+receipts survive. A blocked or failed final observation falls back to aging at
+supporting brokers; it does not stop a remote process or grant native authority.
+
+Before an actual epoch change, the person preview lists only already sealed,
+unresolved RoomStore delivery ids. The commit quiesces link application
+publication and rechecks that exact id set and the current roster digest.
+RoomStore atomically quarantines old active intents as `needs_review` with the
+existing `boundary_refused` reason and drops their sendable ciphertext. The local
+Bus holds use `room epoch rotated; inspect ahub queue show <id>`; current room status exposes `holdReason: "epoch rotated"`.
+Bus-only unsealed work stays queued. This is no completion, replay or cancellation;
+terminal rows and person dispositions remain unchanged. T2 already supplied the
+crash-gap quarantine; T3 adds the person preview and named local hold.
+
+## Room application retry and settlement (#1204 T2)
+
+Room sends retain one immutable application id and original queue expiry across
+fresh ciphertext attempts. A distinct root delivery may reuse a retained application
+only with the same canonical content hash and peer/recipient tuple, no person
+disposition or permanent hold, and the original creation/expiry times. Legacy
+NULL content hashes refuse cross-root reuse. Receiver admission keeps the existing application-id
+dedupe horizon (30 days / 10,000 identities with settled-first eviction).
+This is exactly once within dedupe ceiling. Automatic resend can reach that
+ceiling after a settled identity is evicted, permitting duplicate admission under
+a fresh ciphertext sequence. Pinning retryable identities or #737 receipt
+confirmation is the upgrade path.
+A typed refusal before durable enqueue requeues the original without uncertainty
+or poison retry accounting. Online readiness and the ACK deadline trigger retries;
+the ACK deadline is not a terminal disposition. Queue TTL or a permanent refusal
+ends automatic sending. An ordinary remote chat uncertainty row does not block later queued work.
+Invocation uncertainty retains its person-only ledger hold and is never automatically
+replayed or settled from late transport evidence. Active invocation receipts update
+only transport metadata, never native execution or task-offer read evidence.
+
+Each retry rechecks current room/member identity, exposure and privacy against the
+saved immutable application. A restart reconstructs active remote deliveries under
+their existing ids rather than treating transport loss as native consumption. A
+late authenticated recipient receipt can settle an unresolved remote hold once,
+with an ids-only event. Person dispositions, stale adapters and changed membership
+remain authoritative; native delivery and task-offer read evidence are unaffected.
+
+Roster, pause, lifecycle and global recovery fences also apply to resends. A
+readiness loss after durable enqueue retains that delivery's id and original TTL;
+confirmed precommit absence can requeue. A restored active journal row with no
+matching row in an intact RoomStore becomes `needs_review` for inspection and is
+never replayed from missing evidence. A failed payload-proof read never schedules
+an immediate retry: transient failures wait for an online or ACK-deadline wake,
+and permanently unavailable ciphertext is held for review with a metadata-only
+transition. Metadata settlement and quarantine remain available while sending is held.
+Authoritative Bus person dispositions are reconciled into RoomStore before
+startup replay and incoming receipt processing. A local transport result may
+remain as evidence beside that disposition, but cannot override it or restart
+sending. Status reads remain read-only.
+
+A completed inbound admission commits its signed receipt ciphertext to the local
+RoomStore outbox before transport ACK of the chat. Pending receipts replay on
+reconnect until broker storage confirmation. Waiting for broker storage before
+chat ACK would deadlock at capacity one. The durable outbox removes T1's RAM-loss
+exception; broker storage and transport ACK still do not prove native execution.
+ACK after durable local commit of either the receipt or the inbox entry.
+Deferred application admission may ACK its durable crypto inbox entry so it does
+not pin broker capacity; later admission commits and replays the same durable
+receipt path before retiring its local work.
+
+## Room codec visibility and sequence diagnostics (#1204 T4)
+
+The room-wide signed sequence counter and durable replay floors stay unchanged.
+A chat addresses one recipient, so another member can legitimately observe a
+numeric gap. The host no longer turns that number into an operator loss notice;
+three-member selective traffic therefore produces no false sequence-gap alarm.
+The low-level replay result remains available to transport tests and does not
+relax authentication, permanent sequence floors or exactly-once application admission.
+
+Codec support is compatibility evidence from fresh authenticated presence, never
+a permission or privacy grant. Every link retains the released
+`x-agent-hub-ephemeral: 1` upgrade header byte for byte and adds
+`x-agent-hub-codecs: 1` in the same WebSocket upgrade. Released brokers ignore
+the codec header and retain ephemeral presence and liveness. A supporting
+broker adds `codecFeatures: true` and the connection's `codecSession` token
+only to an opted-in client's ready response. Legacy ready and presence shapes
+remain unchanged.
+
+Upgraded links keep the existing signed presence payload byte shape and send a
+separate presence snapshot carrying a bounded, sorted `features` list. That
+snapshot has signed `ephemeral: true` and `codecFeatures: true` headers. The
+broker routes it only to clients that opted into codec support; legacy clients
+receive only their original presence grammar. Legacy and codec snapshots have
+separate coalescing groups so neither can replace the other's pending state.
+The signed feature snapshot echoes its connection's `codecSession`; it does not
+request a reply or renew peer-state observations. Ordinary presence does not
+revoke support for that same connection.
+
+Before ciphertext delivery, the broker gives codec-aware recipients a bounded
+`codec_peers` inventory scoped to the current roster digest. A row names an
+authenticated member's current connection token and whether it opted into codec
+advertisements; a null token means the observation is pending or disconnected.
+Replacement, disconnect and roster change invalidate prior connection evidence.
+Only a fresh signed advertisement echoing the current token establishes support;
+a delayed advertisement from another session cannot establish it. New current
+peer-session evidence also triggers a coalesced feature-only advertisement from
+this hub, independently of legacy replies and snapshot dedupe; missed bootstrap
+advertisements therefore do not require unrelated application traffic to recover.
+
+An early ordinary live-state observation from a codec-capable session waits as
+bounded metadata until that session supplies signed codec evidence. Releasing
+it preserves its original local receive time; the signed advertisement does not
+renew liveness. Empty or offline snapshots and known legacy sessions remain
+immediate. The receive-time annotation is host-only and is never accepted from
+the room wire.
+
+The advertised codecs are `chat_v1`, `person_inbox_v1` and `read_invocation_v1`.
+Plain chat and status retain their legacy shape. Person-inbox sends require
+`person_inbox_v1`; invocation kinds require `read_invocation_v1`. Compatibility
+has three states: pending, supported and unsupported. Pending observations defer
+the original Bus queue entry without application, sequence or socket effects;
+the original queue lifetime still bounds this wait. A signed advertisement wakes
+that member's queued feature-required sends as well as retained durable intents.
+The pending path rechecks observations after requeue so an advertisement arriving
+during asynchronous refusal cannot be lost. No timer or grace period grants support.
+The private low-level link API has no Bus queue: it returns a typed not-sent
+pending outcome and the caller retries after signed evidence; it never waits
+inside the serialized receive lane. Codec-aware publication puts signed codec
+evidence before its ordinary peer-state observation on the outbound FIFO.
+Only a known legacy transport, an authenticated legacy member, or a signed
+advertisement missing the required feature refuses with the upgrade-and-reconnect
+step. Support is rechecked across awaited admission and at actual publication.
+Live signed observations are scoped to the current connection and roster; saved,
+stale or replayed presence never grants codec support. Existing native, exposure,
+privacy and invocation authorization checks still decide whether a send is allowed.
+
+## Record final-answer projection (#1320)
+
+The final-answer boundary strips agent-authored `amem:` lines before invocation answer handling, ordinary publication, journaled/shared bodies, digest rendering or console envelope taps. Explicit send tools keep their existing path. Original priority and audience/hop/receipt rules are retained. Stripping runs even when optional capture is disabled or fails. Final dispatch traverses the current `onMessage` observer chain exactly once. A peer/body/options-scoped host marker identifies the final-only raw capture path, is consumed before nested messages and is restored or cleared on exit; no final marker is accepted from a wire envelope. Stale replaced owners cannot route or capture a final answer.
+
+The raw-final capture observer is host-only and limited to a complete, currently owned public turn. Private inputs or outputs, review/observer holds, remote inputs/audiences, invocation answers and unknown parents cannot reach it. Count-only observers cannot change routing. The memory owner applies current policy before storage or selection; captured Record rows remain uncurated reference data. A bounded, ephemeral saved-ID/raw-anchor registry can prove display substitution for generated notes, with no persistence or inference from titles or prose. Restart and eviction preserve unproved old content.

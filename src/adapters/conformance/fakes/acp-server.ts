@@ -8,6 +8,15 @@ import { createInterface } from "node:readline";
 import { KIMI_2_1_1_5H_REFUSAL_PREFIX } from "../../acp-quota.ts";
 
 const delay = Number(process.env.FAKE_ACP_DELAY_MS ?? 20);
+// #1402: `--model-id <id>` reports a current model in the session result, as `models.currentModelId` (Kimi, Jcode, Qwen) or, with `--model-shape config`, as the `model` select of `configOptions`.
+const argAfter = (flag: string) => { const i = process.argv.indexOf(flag); return i >= 0 ? process.argv[i + 1] : undefined; };
+const sessionModelShape = (): Record<string, unknown> => {
+  const id = argAfter("--model-id");
+  if (!id) return {};
+  return argAfter("--model-shape") === "config"
+    ? { configOptions: [{ id: "model", type: "select", currentValue: id, options: [{ value: id, name: id }] }] }
+    : { models: { currentModelId: id, availableModels: [{ modelId: id, name: id }] } };
+};
 let responseBatch: string[] | undefined;
 const send = (m: unknown) => { const line = `${JSON.stringify(m)}\n`; if (responseBatch) responseBatch.push(line); else process.stdout.write(line); };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -223,13 +232,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     if (record > 0) Bun.write(process.argv[record + 1]!, msg.params.sessionId); // argv, not env: the hub scrubs a child's environment
     // what a real agent does while it loads: replay the history, then answer
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: msg.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "replayed history" } } } });
-    send({ jsonrpc: "2.0", id: msg.id, result: { modes } });
+    send({ jsonrpc: "2.0", id: msg.id, result: { modes, ...sessionModelShape() } });
   }
   else if (msg.method === "session/new") {
     modes.currentModeId = arg("--new-mode") ?? "default";
     if (process.env.FAKE_ACP_RECORD) Bun.write(process.env.FAKE_ACP_RECORD, JSON.stringify(msg.params));
     if (process.env.FAKE_ACP_ENV_RECORD) Bun.write(process.env.FAKE_ACP_ENV_RECORD, JSON.stringify({ recovery: process.env.AGENTHUB_RECOVERY_OPERATION, codex: process.env.CODEX_HOME, claude: process.env.CLAUDE_CONFIG_DIR, state: process.env.AGENTHUB_STATE_DIR }));
-    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1", modes } });
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1", modes, ...sessionModelShape() } });
   }
   else if (msg.method === "session/set_mode") {
     modePending = true;

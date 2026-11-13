@@ -1,10 +1,11 @@
+import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { processTable } from "../src/hub/child-process.ts";
 import { join } from "node:path";
 import { rosterPiFixture } from "./fakes/pi-roster-tui.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { PiPeer, type PiExit } from "../src/adapters/pi.ts";
+import { PiPeer, type PiExit, type PiOptions } from "../src/adapters/pi.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { newEnvelope, type EnvelopeOpts } from "../src/hub/envelope.ts";
 
@@ -835,3 +836,107 @@ for (const busyReturn of [false, true]) test(`Pi personal activity invalidates c
     expect((result as Error).message).toContain("session history is not persisted; refusing to recreate it");
   } finally { await f.cleanup(); }
 });
+
+test("Pi captures override before model preparation and clear restores the separate baseline", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-model-test-"));
+  let desired: string | undefined = "dgx/runtime-a", gets = 0, first = true;
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  const applied: (string | undefined)[] = [];
+  const peer: PiPeer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", model: "dgx/coding",
+    cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "relay-token", models: [{ id: "dgx/coding" }, { id: "dgx/runtime-a" }, { id: "dgx/runtime-b" }] },
+    tools: [], executeTool: async () => "ok",
+    getModelOverride: () => { gets++; const model = desired; return { model, applied: () => { applied.push(model); } }; },
+    selectModel: async () => { if (first) { first = false; enter(); await held; } return peer.getBaselineRequestedModel(); },
+  });
+  const settle = async () => {
+    const launch = peer.tuiLaunch!;
+    await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ type: "agent_settled" }) });
+    for (let i = 0; i < 200 && peer.state !== "idle"; i++) await Bun.sleep(5);
+    expect(peer.state).toBe("idle");
+  };
+  try {
+    await peer.start(); expect(gets).toBe(0);
+    const delivery = peer.deliver([newEnvelope("user", "first")]);
+    await entered; desired = "dgx/runtime-b"; expect(applied).toEqual([]); release(); await delivery;
+    expect(peer.getRequestedModel()).toBe("dgx/runtime-a"); expect(peer.getBaselineRequestedModel()).toBe("dgx/coding");
+    await settle();
+    await peer.deliver([newEnvelope("user", "second")]); expect(peer.getRequestedModel()).toBe("dgx/runtime-b"); await settle();
+    desired = undefined;
+    await peer.deliver([newEnvelope("user", "clear")]); expect(peer.getRequestedModel()).toBe("dgx/coding"); await settle();
+    expect(gets).toBe(3); expect(applied).toEqual(["dgx/runtime-a", "dgx/runtime-b", undefined]);
+  } finally { release(); await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+}, 20_000);
+
+test("Pi model ACK invalidated by roster change is not reported applied before the outer guard", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "pi-late-model-")), owner = Bun.spawn(["sleep", "60"]);
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  let applied = 0;
+  const receipts: { state: string; reason?: string }[] = [];
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "tui", backend: "dgx", stopGraceMs: 100,
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/baseline" }] }, tools: [], executeTool: async () => "ok",
+    getModelOverride: () => ({ model: undefined, applied: () => { applied++; } }), selectModel: async () => "dgx/baseline" });
+  peer.onDelivery = receipt => { receipts.push(receipt); };
+  let delivery: Promise<unknown> | undefined;
+  let post: ((route: string, body: unknown) => Promise<Response>) | undefined;
+  try {
+    await peer.start();
+    const launch = peer.tuiLaunch!, url = launch.env.AGENTHUB_PI_BRIDGE_URL!;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    post = (route, body) => fetch(`${url}${route}`, { method: "POST", headers, body: JSON.stringify(body) });
+    expect((await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid,
+      signature: currentSignature(owner.pid), sessionId: "late-model-session", sessionFile: join(stateDir, "personal.jsonl"), fencedPrompt: true })).ok).toBe(true);
+    const setModel = peer.setRequestedModel.bind(peer);
+    // Keep real protocol/owner verification; hold only the outer method's return after its native ACK.
+    peer.setRequestedModel = async model => { await setModel(model); enter(); await held; };
+    delivery = peer.deliver([newEnvelope("user", "withdraw before prompt")], "late-model").then(() => undefined, error => error);
+    const command = (await (await fetch(`${url}/commands`, { headers })).json() as any).command;
+    expect(command.type).toBe("set_model");
+    expect((await post("/ack", { id: command.id, ok: true })).ok).toBe(true);
+    await entered; expect(peer.getRequestedModel()).toBe("dgx/baseline");
+    await peer.detachForRoster(); release(); await delivery;
+    expect(applied).toBe(0); expect(peer.state).toBe("offline");
+    expect(receipts).toContainEqual(expect.objectContaining({ state: "failed_safe", reason: "Pi withdrawn before native dispatch" }));
+  } finally {
+    release();
+    try {
+      owner.kill(); await owner.exited;
+      if (post) await post("/event", { type: "session_shutdown" }).catch(() => undefined);
+    } finally {
+      try { await peer.stop(); }
+      finally { await delivery; rmSync(stateDir, { recursive: true, force: true }); }
+    }
+  }
+}, 20_000);
+
+for (const accepted of [false, true]) test(`Pi ${accepted ? "acknowledges the runtime model only after prompt acceptance" : "does not acknowledge the runtime model after prompt rejection"}`, async () => {
+  const f = await rosterPiFixture();
+  let desired: string | undefined = "dgx/runtime";
+  const applied: (string | undefined)[] = [], receipts: { state: string; reason?: string }[] = [];
+  const options = (f.peer as unknown as { opts: PiOptions }).opts;
+  options.getModelOverride = () => { const model = desired; return { model, applied: () => { applied.push(model); } }; };
+  f.peer.onDelivery = receipt => { receipts.push(receipt); };
+  let delivery: Promise<unknown> | undefined;
+  try {
+    delivery = f.peer.deliver([newEnvelope("user", "fixture runtime model turn")], "model-prompt").then(() => undefined, error => error);
+    const model = await f.next(); expect(model.type).toBe("set_model"); expect(model.modelId).toBe("dgx/runtime"); expect(applied).toEqual([]);
+    expect((await f.ack(model)).ok).toBe(true);
+    const prompt = await f.next(); expect(prompt.type).toBe("prompt"); expect(applied).toEqual([]);
+    if (accepted) expect((await f.ack(prompt)).ok).toBe(true);
+    else expect((await f.post("/ack", { id: prompt.id, ok: false, refusal: { kind: "prompt_not_started", promptId: prompt.id, sessionId: f.sessionId, generation: prompt.generation } })).ok).toBe(true);
+    expect(await delivery).toBeUndefined();
+    expect(applied).toEqual(accepted ? ["dgx/runtime"] : []);
+    if (accepted) {
+      expect(receipts).toContainEqual(expect.objectContaining({ state: "accepted" }));
+      expect((await f.post("/event", { type: "agent_start", generation: 1 })).ok).toBe(true);
+      expect((await f.post("/event", { type: "agent_settled", generation: 1 })).ok).toBe(true); expect(f.peer.state).toBe("idle");
+      desired = undefined;
+      await expect(f.peer.deliver([newEnvelope("user", "fixture clear without baseline")], "model-clear")).rejects.toThrow("ahub restart pi");
+      expect(applied).toEqual(["dgx/runtime"]);
+    } else {
+      expect(f.peer.state).toBe("offline"); expect(receipts).toContainEqual(expect.objectContaining({ state: "failed_safe" }));
+    }
+  } finally { await f.cleanup(); await delivery; }
+}, 20_000);

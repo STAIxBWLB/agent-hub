@@ -26,10 +26,10 @@ export interface NativePreviewContext {
   /** The declared extra instance a `--as <id>` launch selected; its own model fields belong in the preview (#685). */
   instance?: string;
 }
-export interface NativePreviewMetadata { mode: "tui" | "headless"; mcp: { file: string; action: string; changed: boolean; tracked: boolean } }
+export interface NativePreviewMetadata { mode: "tui" | "headless"; mcp: { file: string; action: string; changed: boolean; tracked: boolean }; completionPlugin?: { file: string; action: string; changed: boolean } }
 export type NativePreviewBuilder = (ctx: NativePreviewContext) => NativePreview;
 export interface NativePreview {
-  tool: string; mode?: "tui" | "headless"; mcp?: NativePreviewMetadata["mcp"];
+  tool: string; mode?: "tui" | "headless"; mcp?: NativePreviewMetadata["mcp"]; completionPlugin?: NativePreviewMetadata["completionPlugin"];
   cmd: string; args: string[]; settings: string | undefined; envNames: string[]; warning?: string;
   unresolved: { field: string; reason: string }[]; redaction: string; needs: string[];
 }

@@ -204,10 +204,13 @@ const schema: Record<string, Check> = {
   text_projection: v => { projectionConfig(v); },
   corpus: v => { corpusConfig(v); },
   specs: (v, k) => { block({ enabled: bool, review: words(["off", "report", "require"]), roots: strings, stamps_file: text })(v, k); parseSpecsConfig(v); },
+  // S6 owns this closed schema at the committed candidate boundary; config.local is ignored before runtime publication.
+  release: () => {},
   conductor: block({ feed: words(["own", "all", "off"]), approval_wait_s: number(0, 2_147_483_647 / 1000) }),
   budget: block({ gate: number(0, 1), stale_min: timerMinutes, poll_min: timerMinutes, checkpoint_timeout_s: timerSeconds, kimi_tokens_5h: number(0), wait_max_min: number(0) }),
   context: block({ gate: number(0, 1), stale_min: timerMinutes, max_assignment_used: number(0, 1) }),
-  bus: block({ max_attempts: operationalNumberCheck("bus.max_attempts"), digest_max: operationalNumberCheck("bus.digest_max"), pull_budget_bytes: operationalNumberCheck("bus.pull_budget_bytes"), notes_kept: operationalNumberCheck("bus.notes_kept"), terminal_history_limit: operationalNumberCheck("bus.terminal_history_limit") }),
+  supervision: block({ mode: words(["off", "shadow", "advisory"]) }),
+  bus: block({ max_attempts: operationalNumberCheck("bus.max_attempts"), digest_max: operationalNumberCheck("bus.digest_max"), pull_budget_bytes: operationalNumberCheck("bus.pull_budget_bytes"), notes_kept: operationalNumberCheck("bus.notes_kept"), terminal_history_limit: operationalNumberCheck("bus.terminal_history_limit"), accepted_settle_ms: operationalNumberCheck("bus.accepted_settle_ms") }),
   adapter_timing: block({ acp_tool_ceiling_min: operationalNumberCheck("adapter_timing.acp_tool_ceiling_min"), acp_activity_batch_ms: operationalNumberCheck("adapter_timing.acp_activity_batch_ms"), jcode_steer_timeout_s: operationalNumberCheck("adapter_timing.jcode_steer_timeout_s") }),
   model_relay: block({ cooldown_failures: operationalNumberCheck("model_relay.cooldown_failures"), cooldown_s: operationalNumberCheck("model_relay.cooldown_s"), cooldown_cap_s: operationalNumberCheck("model_relay.cooldown_cap_s"), terminal_history_limit: operationalNumberCheck("model_relay.terminal_history_limit") }),
   console: block({ poll_ms: operationalNumberCheck("console.poll_ms"), notice_ms: operationalNumberCheck("console.notice_ms"), history_limit: operationalNumberCheck("console.history_limit"), pending_stream_limit: operationalNumberCheck("console.pending_stream_limit"), attention_limit: operationalNumberCheck("console.attention_limit") }),
@@ -226,8 +229,11 @@ const schema: Record<string, Check> = {
     else if (key === "remote") remoteRunnerConfig(value);
     else if (/^[a-z][a-z0-9_]{0,47}$/.test(key)) text(value, `${k}.${key}`); else fail(`${k}.${key}`, "unknown key");
   } },
+  visuals: block({ retention_days: number(1, 3650, true) }),
   snapshots: block({ enabled: bool, keep: number(1, 1_000_000, true) }), research: block({ enabled: bool, runners: researchRunners }), bench: block({ enabled: bool }),
   worktrees: block({ quiet_days: number(0, 3650, true), alert_over: number(0, 100_000, true) }),
+  // #1053: how long an unanswered question waits (`ttl_s`, 1 minute to 30 days) and, per adapter kind, how long a `hub_ask` call waits for the person before it answers `pending`.
+  questions: block({ ttl_s: number(60, 2_592_000, true), wait_ms: map(number(1000, 600_000, true)) }),
   peers: (v, k) => { map(block({ start_mode: words(["tui", "headless"]) }), START_MODE_PEERS)(v, k); peerStartConfig(v); },
   terminal: (v, k) => { block({ open: strings })(v, k); terminalTemplate(object(v, k).open); },
   start: (v, k) => { block({ agents: strings })(v, k); if (object(v, k).agents !== undefined) checkStartAgents(object(v, k).agents, `${k}.agents`); },
@@ -255,7 +261,7 @@ export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, 
 }
 export function validateEffectiveConfig(value: unknown, catalog?: ProjectAdapterCatalog): asserts value is HubConfig {
   const raw = { ...object(value, "config") };
-  delete raw.ignored; delete raw.retired; delete raw.permission_default_sources;
+  delete raw.ignored; delete raw.retired; delete raw.releasePolicyNotices; delete raw.permission_default_sources;
   validateRawConfig(raw, undefined, catalog);
   const profile = resolveProfile(raw.profile, raw.profile_overrides);
   for (const key of Object.keys(object(raw.checks, "checks"))) if (!["timeout_s", "runner", "remote", ...CLASSES, ...Object.keys(profile.classes)].includes(key)) fail(`checks.${key}`, "unknown task class");
@@ -274,7 +280,7 @@ const restart: Record<string, string> = {
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
-const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "worktrees", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "pet", "specs"]);
+const live = new Set(["visuals", "action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "worktrees", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "questions", "pet", "specs", "supervision"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {
@@ -323,7 +329,7 @@ export function configChanges(running: HubConfig, next: HubConfig, scopes: reado
       changes.push({ key, before, after, ...(stale ? { applies: "live" as const } : configApply(key, scopes)) });
     }
   };
-  const clean = (v: HubConfig) => Object.fromEntries(Object.entries(v).filter(([key]) => !["ignored", "retired", "permission_default_sources"].includes(key)));
+  const clean = (v: HubConfig) => Object.fromEntries(Object.entries(v).filter(([key]) => !["ignored", "retired", "releasePolicyNotices", "permission_default_sources"].includes(key)));
   walk(clean(running), clean(next), ""); return changes.sort((a, b) => a.key.localeCompare(b.key));
 }
 

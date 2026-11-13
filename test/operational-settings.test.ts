@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { OPERATIONAL_NUMBERS, GROOM_FYI_WINDOW_SETTING, operationalNumber } from "../src/hub/operational-settings.ts";
+import { OPERATIONAL_NUMBERS, BUS_ACCEPTED_SETTLE_MS_SETTING, GROOM_FYI_WINDOW_SETTING, busOperationalReaders, operationalNumber } from "../src/hub/operational-settings.ts";
 import { configApply, validateRawConfig, validateOperationalConfig } from "../src/hub/config-apply.ts";
 import { configTier } from "../src/hub/config-tier.ts";
 import { checkSettingValue, settingDef, settingRefusal, SETTINGS } from "../src/hub/settings.ts";
@@ -36,6 +36,7 @@ test("#489 every operational row has an independent legacy default pin and an op
     "bus.pull_budget_bytes": { legacy: 65_536, scale: 1 },
     "bus.notes_kept": { legacy: 10, scale: 1 },
     "bus.terminal_history_limit": { legacy: 2048, scale: 1 },
+    "bus.accepted_settle_ms": { legacy: 600_000, scale: 1 },
     // #489 H4 (group 3): what each wait was before it became a setting, in milliseconds, written out here and never imported from the code under test.
     "recovery.reconnect_wait_s": { legacy: 600_000, scale: 1000 },
     "recovery.unmanaged_reconnect_wait_s": { legacy: 90_000, scale: 1000 },
@@ -66,13 +67,26 @@ test("#489 every operational row has an independent legacy default pin and an op
     expect(at(DEFAULT_CONFIG, def.path)).toBe(def.defaultValue);
     const separator = def.inventory.indexOf(":");
     const file = def.inventory.slice(0, separator), symbol = def.inventory.slice(separator + 1);
-    const row = inventory.find(line => line.startsWith(`| ${file}:`) && line.includes(`| \`${symbol}\` |`));
-    expect(row?.endsWith("| operational |")).toBe(true);
+    if (def.key === BUS_ACCEPTED_SETTLE_MS_SETTING.key) {
+      // This setting is new behavior, not a conversion of a pre-existing H0 constant.
+      expect(def.inventory).toBe("src/hub/operational-settings.ts:BUS_ACCEPTED_SETTLE_MS_SETTING.defaultValue");
+    } else {
+      const row = inventory.find(line => line.startsWith(`| ${file}:`) && line.includes(`| \`${symbol}\` |`));
+      expect(row?.endsWith("| operational |")).toBe(true);
+    }
     expect(docs).toContain(`\`${def.key}\``);
     expect(SETTINGS.filter(row => row.key === def.key)).toHaveLength(1);
   }
   expect(operationalNumber("protocol")).toBeUndefined();
   expect(operationalNumber("constructor")).toBeUndefined();
+});
+
+test("#1172 accepted channel settlement setting reads the accepted config at each sweep", () => {
+  const config: { bus?: { accepted_settle_ms?: number } } = {};
+  const readers = busOperationalReaders(() => config);
+  expect(readers.acceptedSettleMs()).toBe(600_000);
+  config.bus = { accepted_settle_ms: 15_000 };
+  expect(readers.acceptedSettleMs()).toBe(15_000);
 });
 
 test("#489 schema, startup validation, UI bounds and apply class consume the same fixed row", () => {

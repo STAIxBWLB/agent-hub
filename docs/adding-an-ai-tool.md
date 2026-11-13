@@ -42,7 +42,7 @@ agent-hub supports five transport architectures (`transport` in `AdapterDefiniti
 An adapter exports an object conforming to `AdapterDefinition` in `src/adapters/registry-types.ts`. Read that type as the source of truth: most blocks are declared inline there, so there are no separate `Adapter*Definition` types to import, and some members are required. Its top-level fields are:
 
 - Required: `api` (always `1`), `kind`, `displayName`, `family`, `transport`, `roles`, `trust` (`onPrem`, `hubSandboxed`), `start`, `identity` (`mcp`), `permission`, `session`, `turnEnd`, `cli`, `display`.
-- Optional: `optional`, `defaultOnRoster`, `enabledSwitchStartOnly`, `instances`, `attach`, `reporting`, `routing`, `budget`, `configuration`, `capabilities`, `hooks`, `reviewerVariant`, `reviewer`.
+- Optional: `optional`, `defaultOnRoster`, `enabledSwitchStartOnly`, `instances`, `attach`, `reporting`, `routing`, `budget`, `configuration`, `capabilities`, `hooks`, `reviewerVariant`, `reviewer`, `title`, `titlePersistence`, `questionWaitMs`, `settle`, `modelOverride` (the person's next-turn model override boundary, fixed builtins only), `headlessInstances`, `headlessVariant`, `projection`.
 - Registry load runs `assertDefinitionCoherence` (`src/adapters/registry.ts`) on every definition and reviewer variant, so an incoherent combination fails at load, not at run time.
 
 ### Key Sub-Objects
@@ -88,7 +88,7 @@ The `ahub <kind>` surface: `command`, `startWords(form)`, and for a fixed builti
 `instances.mode` is `headless` (needs a headless `start.create` factory) or `external` (a channel instance started from the person's terminal). A kind with no `instances` policy (Jcode) takes no extra instance, and `validateInstances` refuses a declaration of one. `attach` holds the pull-only forms, external-hello admission and the refusal texts for a TUI that attaches without a driven peer.
 
 #### Peer capability members
-The runtime peer (`PeerAdapter`, `src/hub/peers.ts`) exposes optional members that the daemon reads instead of checking its class (#625 phase 6): `sessionGeneration` (native session identity: absent keeps the owner-token fallback, present but undefined is unknown and refuses bounded checks), `checkpointUsesSessionGeneration` (opt out of generation-fenced checkpoints, as Pi does), `permissionModeState` (the effective native approval state, or `unknown` / `unmanaged`) and `setPermissionMode(mode)` (resolves only after the native side acknowledges). Native safety proofs (Codex proxy and restoration, Claude launch generation) stay in the daemon.
+The runtime peer (`PeerAdapter`, `src/hub/peers.ts`) exposes optional members that the daemon reads instead of checking its class (#625 phase 6): `sessionGeneration` (native session identity: absent keeps the owner-token fallback, present but undefined is unknown and refuses bounded checks), `checkpointUsesSessionGeneration` (opt out of generation-fenced checkpoints, as Pi does), `permissionModeState` (the effective native approval state, or `unknown` / `unmanaged`) and `setPermissionMode(mode)` (resolves only after the native side acknowledges). A driven peer publishes its turn's final answer through `BasePeer.finalAnswer` rather than `onMessage`, so the bus strips `amem:` Record lines before sharing it (#1320); the Record instruction reaches only the owners the daemon binds (see [memory](memory.md#agent-authored-records-1320)). Native safety proofs (Codex proxy and restoration, Claude launch generation) stay in the daemon.
 
 #### `budget`
 Defines quota and context window consumption readers:

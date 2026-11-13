@@ -31,7 +31,7 @@ const out = (result: { stdout: Buffer; stderr: Buffer }) => `${result.stdout.toS
 
 test("each settings flag writes its key to the stated file on a new project (#1065 AC1)", () => {
   const p = fixture(), cwd = p.repo("new");
-  const done = p.run(cwd, ["init", "--agents", "claude,codex", "--sdlc", "enforce", "--coordination", "turn-free", "--no-memory", "--no-snapshots", "--pi", "--autonomy", "off"]);
+  const done = p.run(cwd, ["init", "--agents", "claude,codex", "--sdlc", "enforce", "--required-checks", "unit", "--coordination", "turn-free", "--no-memory", "--no-snapshots", "--pi", "--autonomy", "off"]);
   expect(done.exitCode, out(done)).toBe(0);
   const config = p.json(cwd, "config.json");
   expect(config.coordination).toBe("turn-free");
@@ -40,7 +40,7 @@ test("each settings flag writes its key to the stated file on a new project (#10
   expect(config.pi.enabled).toBe(true);
   expect(config.memory.inject_tokens).toBe(2000); // a neighbour key of a written one is the template's
   expect(p.json(cwd, "config.local.json")).toEqual({ start: { agents: ["claude", "codex"] } });
-  expect(p.text(cwd, "sdlc.toml")).toBe('mode = "enforce"\n');
+  expect(p.text(cwd, "sdlc.toml")).toBe('mode = "enforce"\nrequired_checks = ["unit"]\n');
   expect(loadSdlc(cwd).mode).toBe("enforce");
   expect(loadConfig(cwd).coordination).toBe("turn-free");
 });
@@ -53,7 +53,7 @@ test("every flag of the table writes a different key in the right file, and --me
   expect(p.json(cwd, "config.local.json").start.agents).toEqual([]);
   expect(p.text(cwd, "sdlc.toml")).toBe('mode = "advise"\n');
   // The table lists exactly the flags the CLI owns, so a row added later is reachable and tested through the same path.
-  expect(INIT_SETTING_FLAGS.slice().sort()).toEqual(["--agents", "--autonomy", "--coordination", "--memory", "--no-memory", "--no-pi", "--no-snapshots", "--no-specs", "--pi", "--sdlc", "--snapshots", "--spec-review", "--specs"].sort());
+  expect(INIT_SETTING_FLAGS.slice().sort()).toEqual(["--required-checks", "--research", "--no-research", "--agents", "--autonomy", "--coordination", "--memory", "--no-memory", "--no-pi", "--no-snapshots", "--no-specs", "--pi", "--sdlc", "--snapshots", "--spec-review", "--specs", "--track-config", "--no-track-config"].sort());
   expect(new Set(INIT_SETTINGS.map(row => row.id)).size).toBe(INIT_SETTINGS.length);
 });
 
@@ -146,7 +146,7 @@ test("a flag equal to the current value is a no-op: no row, no write (#1065 AC2)
 
 test("without a flag an existing project keeps every setting: re-running init changes none of them (#1065 AC2)", () => {
   const p = fixture(), cwd = p.repo("keep");
-  expect(p.run(cwd, ["init", "--coordination", "turn-free", "--no-memory", "--agents", "claude", "--sdlc", "enforce"]).exitCode).toBe(0);
+  expect(p.run(cwd, ["init", "--coordination", "turn-free", "--no-memory", "--agents", "claude", "--sdlc", "enforce", "--required-checks", "unit"]).exitCode).toBe(0);
   const before = p.tree(cwd);
   expect(p.run(cwd, ["init"]).exitCode).toBe(0);
   expect(p.tree(cwd)).toEqual(before);
@@ -345,7 +345,7 @@ test("the table is the extension point: each row names its flag, file, key path 
     expect(row.path.length).toBeGreaterThan(0);
     expect(row.allowed.length).toBeGreaterThan(0);
   }
-  expect(INIT_SETTINGS.map(row => row.id)).toEqual(["start.agents", "sdlc.mode", "coordination", "memory.enabled", "snapshots.enabled", "specs.enabled", "specs.review", "pi.enabled"]);
+  expect(INIT_SETTINGS.map(row => row.id)).toEqual(["start.agents", "sdlc.mode", "sdlc.required_checks", "coordination", "memory.enabled", "research.enabled", "snapshots.enabled", "specs.enabled", "specs.review", "pi.enabled"]);
 });
 
 test("planInit and initSettingRows agree, and neither writes (#1065 AC1)", () => {
@@ -357,4 +357,94 @@ test("planInit and initSettingRows agree, and neither writes (#1065 AC1)", () =>
   expect(existsSync(join(cwd, ".agenthub"))).toBe(false);
   init(cwd, undefined, false, false, request);
   expect(JSON.parse(readFileSync(join(cwd, ".agenthub/config.json"), "utf8")).snapshots.enabled).toBe(false);
+});
+
+test("#1328 CLI enforce --yes records fake gh discovered checks and refuses an empty repository without writes", () => {
+  const p = fixture(), cwd = p.repo("checks"), empty = p.repo("empty-checks");
+  const bin = join(p.root, "bin"), log = join(p.root, "gh-reads.jsonl"); mkdirSync(bin);
+  const names = ["check (ubuntu-latest)", "check (macos-latest)", "ci-ok"];
+  writeFileSync(join(bin, "gh"), `#!/usr/bin/env bun\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nconst args = process.argv.slice(2);\nconsole.log(JSON.stringify(args.some(arg => arg.endsWith("/jobs")) ? { total_count: 3, jobs: ${JSON.stringify(names.map(name => ({ name })))} } : args.some(arg => arg.endsWith("/runs")) ? { workflow_runs: [{ id: 7, status: "completed", head_branch: "main" }] } : { default_branch: "main" }));\n`, { mode: 0o755 });
+  expect(hubGitSync(["config", "remote.origin.url", "https://github.com/example/project.git"], { cwd, env: p.env }).status).toBe(0);
+  const done = p.run(cwd, ["init", "--sdlc", "enforce", "--yes", "--autonomy", "off"], { PATH: `${bin}:${p.env.PATH}` });
+  expect(done.exitCode, out(done)).toBe(0);
+  expect(loadSdlc(cwd).requiredChecks).toEqual(names);
+  expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(3);
+  const refused = p.run(empty, ["init", "--sdlc", "enforce", "--yes", "--autonomy", "off"]);
+  expect(refused.exitCode).toBe(1); expect(out(refused)).toContain("nothing was written");
+  expect(existsSync(join(empty, ".agenthub"))).toBe(false); expect(existsSync(join(empty, "AGENTS.md"))).toBe(false);
+});
+
+
+test("#1328 init takes the trusted machine research choice only for a new project and never changes machine defaults", () => {
+  const p = fixture();
+  for (const enabled of [true, false]) {
+    machineDefaults(p, { schema: 1, research: { enabled } });
+    const before = readFileSync(join(p.home, "defaults.json"), "utf8"), cwd = p.repo(`research-${enabled}`);
+    const done = p.run(cwd, ["init", "--yes", "--autonomy", "off"]);
+    expect(done.exitCode, out(done)).toBe(0); expect(loadConfig(cwd).research.enabled).toBe(enabled);
+    if (enabled) expect(p.json(cwd, "config.local.json").research.enabled).toBe(true);
+    expect(readFileSync(join(p.home, "defaults.json"), "utf8")).toBe(before);
+    machineDefaults(p, { schema: 1, research: { enabled: !enabled } });
+    expect(p.run(cwd, ["init", "--autonomy", "off"]).exitCode).toBe(0);
+    expect(loadConfig(cwd).research.enabled).toBe(enabled);
+    expect(p.run(cwd, ["init", enabled ? "--no-research" : "--research"]).exitCode).toBe(0);
+    expect(p.json(cwd, "config.local.json").research.enabled).toBe(!enabled);
+  }
+});
+
+test("#1328 explicit research flags override defaults and preview the local setting without writes", () => {
+  const p = fixture(); machineDefaults(p, { schema: 1, research: { enabled: true } });
+  const cwd = p.repo("research-override");
+  const dry = p.run(cwd, ["init", "--no-research", "--dry-run", "--json"]);
+  expect(dry.exitCode, out(dry)).toBe(0);
+  expect(JSON.parse(dry.stdout.toString()).settings).toContainEqual({ key: "research.enabled", file: "config.local.json", to: false });
+  expect(existsSync(join(cwd, ".agenthub"))).toBe(false); expect(dry.stdout.toString()).not.toContain("Next steps:");
+  expect(p.run(cwd, ["init", "--no-research"]).exitCode).toBe(0); expect(loadConfig(cwd).research.enabled).toBe(false);
+  const conflict = p.run(p.repo("research-conflict"), ["init", "--research", "--no-research"]);
+  expect(conflict.exitCode).toBe(1); expect(out(conflict)).toContain("conflicts with another flag for research.enabled");
+  const setup = p.run(p.repo("setup-conflict"), ["setup", "--research", "--no-research"]);
+  expect(setup.exitCode).toBe(1); expect(out(setup)).toContain("nothing was written");
+});
+
+test("#1328 missing and untrusted machine research stay off, with no implicit machine write", () => {
+  const p = fixture(), missing = p.repo("research-missing");
+  expect(p.run(missing, ["init", "--yes"]).exitCode).toBe(0); expect(loadConfig(missing).research.enabled).toBe(false);
+  expect(existsSync(join(p.home, "defaults.json"))).toBe(false);
+  machineDefaults(p, { schema: 1, research: { enabled: true }, unexpected: true });
+  const before = readFileSync(join(p.home, "defaults.json"), "utf8"), untrusted = p.repo("research-untrusted");
+  expect(p.run(untrusted, ["init", "--yes"]).exitCode).toBe(0); expect(loadConfig(untrusted).research.enabled).toBe(false);
+  expect(readFileSync(join(p.home, "defaults.json"), "utf8")).toBe(before);
+  const refused = p.run(p.repo("enforce-no-write"), ["init", "--sdlc", "enforce", "--yes"]);
+  expect(refused.exitCode).toBe(1); expect(refused.stdout.toString()).not.toContain("Next steps:");
+  expect(existsSync(join(p.root, "enforce-no-write", ".agenthub"))).toBe(false);
+});
+
+test("#1328 successful init prints commit/start guidance and only enabled SDLC modes get person lifecycle commands", () => {
+  const p = fixture();
+  for (const mode of ["off", "advise", "enforce"]) {
+    const cwd = p.repo(`next-${mode}`), flags = ["init", "--sdlc", mode, "--autonomy", "off", ...(mode === "enforce" ? ["--required-checks", "unit"] : [])];
+    const result = p.run(cwd, flags), output = result.stdout.toString();
+    expect(result.exitCode, out(result)).toBe(0);
+    expect(output).toContain("Next steps:"); expect(output).toContain("commit AGENTS.md, .agenthub/config.json"); expect(output).toContain("ahub up or ahub claude"); expect(output).toContain("miss hub pushes");
+    expect(output.includes("ahub sdlc accept <task> --issue <n>")).toBe(mode !== "off");
+    expect(output.includes("ahub sdlc accept-departure <task> <head> <reason...>")).toBe(mode !== "off");
+    expect(output.includes("ahub sdlc merge <task>")).toBe(mode !== "off");
+    const preview = p.run(cwd, [...flags, "--dry-run", "--json"]);
+    expect(preview.exitCode, out(preview)).toBe(0); expect(preview.stdout.toString()).not.toContain("Next steps:");
+    expect(() => JSON.parse(preview.stdout.toString())).not.toThrow();
+  }
+});
+
+
+test("#1328 a pre-existing local research choice wins over a new-project machine default", () => {
+  const p = fixture(); machineDefaults(p, { schema: 1, research: { enabled: true } });
+  const cwd = p.repo("local-research"); mkdirSync(join(cwd, ".agenthub"));
+  const local = '{ "research": { "enabled": false }, "unrelated": "kept" }\n';
+  writeFileSync(join(cwd, ".agenthub/config.local.json"), local);
+  const done = p.run(cwd, ["init", "--yes", "--autonomy", "off"]);
+  expect(done.exitCode, out(done)).toBe(0); expect(loadConfig(cwd).research.enabled).toBe(false);
+  expect(p.text(cwd, "config.local.json")).toBe(local);
+  const machine = readFileSync(join(p.home, "defaults.json"), "utf8");
+  const refused = p.run(cwd, ["setup", "--research"], { AGENTHUB_PEER_ID: "codex" });
+  expect(refused.exitCode).toBe(1); expect(readFileSync(join(p.home, "defaults.json"), "utf8")).toBe(machine);
 });

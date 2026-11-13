@@ -1,7 +1,7 @@
 # Model-free native receipt. Usage: python3 this.py OUTPUT --bun /absolute/bun --claude /absolute/claude [--claude ...]
 import argparse, hashlib, http.server, json, os, pathlib, select, shlex, signal, subprocess, sys, threading
-parser=argparse.ArgumentParser(); parser.add_argument('output'); parser.add_argument('--bun',required=True); parser.add_argument('--claude',action='append',required=True)
-args=parser.parse_args(); ROOT=pathlib.Path(args.output).resolve(); ROOT.mkdir(mode=0o700,parents=False,exist_ok=False)
+parser=argparse.ArgumentParser(); parser.add_argument('output'); parser.add_argument('--bun',required=True); parser.add_argument('--claude',action='append',required=True); parser.add_argument('--runtime-path',help='Explicit isolated runtime PATH; omitted preserves original native and host paths'); parser.add_argument('--expected-version',help='Require an exact candidate version; omitted retains the original version controls')
+args=parser.parse_args(); runtime_path=args.runtime_path if args.runtime_path is not None else '/usr/bin:/bin'; host_path=args.runtime_path if args.runtime_path is not None else '/opt/homebrew/bin:/usr/bin:/bin'; ROOT=pathlib.Path(args.output).resolve(); ROOT.mkdir(mode=0o700,parents=False,exist_ok=False)
 HOST=pathlib.Path(__file__).with_name('claude-shell-wrapper-host.ts').resolve()
 MCP="import sys,json,os,time\nfor line in sys.stdin:\n try: q=json.loads(line)\n except: continue\n method=q.get('method'); rid=q.get('id')\n if rid is None: continue\n if method=='initialize': r={'protocolVersion':'2024-11-05','capabilities':{'tools':{}},'serverInfo':{'name':'fixture','version':'1'}}\n elif method=='tools/list': r={'tools':[{'name':'approve','description':'Person approval fixture','inputSchema':{'type':'object','properties':{'tool_name':{'type':'string'},'input':{'type':'object'},'tool_use_id':{'type':'string'}},'required':['tool_name','input','tool_use_id'],'additionalProperties':False}}]}\n elif method=='tools/call':\n  mode=os.environ['CASE']; args=q.get('params',{}).get('arguments',{})\n  if mode=='timeout': time.sleep(60)\n  if mode=='approval-timeout': time.sleep(.1)\n  if mode=='disconnect': sys.exit(1)\n  if mode=='tool-error':\n   print(json.dumps({'jsonrpc':'2.0','id':rid,'error':{'code':-32000,'message':'fixture hub unavailable'}}),flush=True); continue\n  if mode in ('deny','hook-failure','approval-timeout'): value={'behavior':'deny','message':'no person answered' if mode=='approval-timeout' else 'fixture denied'}\n  else:\n   updated=args.get('input',{})\n   if mode=='normalized' and updated.get('description') in ('probe1','probe2'): updated={'command':os.environ['NORMALIZED'],'description':'host-bound fixture'}\n   value={'behavior':'allow','updatedInput':updated}\n  with open(os.environ['RECEIPT'],'a') as f: print(json.dumps({'arguments':args,'response':value}),file=f)\n  r={'content':[{'type':'text','text':json.dumps(value)}]}\n else: r={}\n print(json.dumps({'jsonrpc':'2.0','id':rid,'result':r}),flush=True)\n"
 (ROOT/'mcp.py').write_text(MCP)
@@ -45,7 +45,7 @@ def stop(process):
     try: os.killpg(process.pid,signal.SIGKILL)
     except ProcessLookupError: pass
    process.wait(timeout=5)
-  return process.returncode==0
+  return process.returncode==0 and empty_group(process.pid)
  except (OSError,subprocess.TimeoutExpired):return False
 
 def empty_group(pid):
@@ -67,8 +67,8 @@ def sha(file):
 results=[]
 for raw_binary in args.claude:
  binary=pathlib.Path(raw_binary).resolve(); identity=ROOT/('identity-'+binary.name); identity.mkdir()
- version=subprocess.run([str(binary),'--version'],env={'HOME':str(identity),'CLAUDE_CONFIG_DIR':str(identity/'config'),'PATH':'/usr/bin:/bin'},capture_output=True,text=True,timeout=10)
- assert version.returncode==0 and version.stdout.strip().split()[0] in ('2.1.309','2.1.310','2.1.314','2.1.316'),(version.returncode,version.stdout)
+ version=subprocess.run([str(binary),'--version'],env={'HOME':str(identity),'CLAUDE_CONFIG_DIR':str(identity/'config'),'PATH':runtime_path},capture_output=True,text=True,timeout=10)
+ assert version.returncode==0 and (version.stdout.strip().split()[0] == args.expected_version if args.expected_version is not None else version.stdout.strip().split()[0] in ('2.1.309','2.1.310','2.1.314','2.1.316','2.1.318','2.1.319','2.1.322')),(version.returncode,version.stdout)
  label=version.stdout.strip().split()[0]; digest=sha(binary)
  for mode in ('context','normalized'):
   d=ROOT/(label+'-'+mode); d.mkdir(); home=d/'home';home.mkdir(); work=d/"work 'quoted'";work.mkdir();(work/'sub').mkdir()
@@ -81,7 +81,7 @@ for raw_binary in args.claude:
    rewritten=''
    if mode=='normalized':
     fixture=d/'host.json';fixture.write_text(json.dumps({'root':str(work),'executable':str(executable)}))
-    helper=subprocess.Popen([str(pathlib.Path(args.bun).resolve()),str(HOST),str(fixture)],env={'HOME':str(home),'PATH':'/opt/homebrew/bin:/usr/bin:/bin','LANG':'C','TERM':'dumb'},stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=open(d/'host.stderr','w'),text=True,start_new_session=True)
+    helper=subprocess.Popen([str(pathlib.Path(args.bun).resolve()),str(HOST),str(fixture)],env={'HOME':str(home),'PATH':host_path,'LANG':'C','TERM':'dumb'},stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=open(d/'host.stderr','w'),text=True,start_new_session=True)
     assert select.select([helper.stdout],[],[],10)[0],'host fixture handshake timeout'
     reply=json.loads(helper.stdout.readline());rewritten=reply['command'];assert isinstance(rewritten,str) and rewritten
    commands=['cd sub && pwd','pwd']+(['pwd'] if mode=='normalized' else [])
@@ -89,7 +89,7 @@ for raw_binary in args.claude:
    threading.Thread(target=srv.serve_forever,daemon=True).start()
    config={'mcpServers':{'fixture':{'command':'/usr/bin/python3','args':[str(ROOT/'mcp.py')],'env':{'CASE':mode,'RECEIPT':str(d/'mcp.jsonl'),'NORMALIZED':rewritten}}}}
    (d/'mcp.json').write_text(json.dumps(config));(d/'settings.json').write_text(json.dumps({'permissions':{'ask':['Bash']}}))
-   native_env={'HOME':str(home),'CLAUDE_CONFIG_DIR':str(home/'config'),'PATH':'/usr/bin:/bin','ANTHROPIC_BASE_URL':'http://127.0.0.1:'+str(srv.server_port),'ANTHROPIC_API_KEY':'synthetic-probe-not-a-credential','CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC':'1','DISABLE_AUTOUPDATER':'1','GIT_DIR':str(d/'poison-git'),'RIPGREP_CONFIG_PATH':str(d/'poison-rg')}
+   native_env={'HOME':str(home),'CLAUDE_CONFIG_DIR':str(home/'config'),'PATH':runtime_path,'ANTHROPIC_BASE_URL':'http://127.0.0.1:'+str(srv.server_port),'ANTHROPIC_API_KEY':'synthetic-probe-not-a-credential','CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC':'1','DISABLE_AUTOUPDATER':'1','GIT_DIR':str(d/'poison-git'),'RIPGREP_CONFIG_PATH':str(d/'poison-rg')}
    argv=[str(binary),'-p','--output-format','stream-json','--verbose','--strict-mcp-config','--mcp-config',str(d/'mcp.json'),'--setting-sources','','--settings',str(d/'settings.json'),'--permission-mode','default','--permission-prompts','host','--permission-prompt-tool','mcp__fixture__approve','--model','claude-sonnet-4-5','Run the fixture commands.']
    native=subprocess.Popen(argv,cwd=work,env=native_env,stdout=open(d/'stdout','w'),stderr=open(d/'stderr','w'),start_new_session=True)
    native.wait(timeout=25);assert native.returncode==0,(native.returncode,(d/'stderr').read_text())
@@ -115,7 +115,7 @@ for raw_binary in args.claude:
    else:
     observed=json.loads(output(1));assert observed['marker']=='HOST_EXECUTABLE' and observed['cwd']==str(work) and observed['executable']==str(executable.resolve()),observed
     assert observed['nativeVars']=={'GIT_DIR':None,'RIPGREP_CONFIG_PATH':None},observed
-    assert observed['peer']=='claude-fixture' and observed['term']=='dumb' and observed['home']==str(home) and observed['path']=='/opt/homebrew/bin:/usr/bin:/bin',observed
+    assert observed['peer']=='claude-fixture' and observed['term']=='dumb' and observed['home']==str(home) and observed['path']==host_path,observed
     assert observed['tmpdir'] and 'ahub-shell-' in observed['tmpdir'] and str(d) not in observed['tmpdir'],observed
     replay_tool,replay=frames['toolu_probe_2'];assert replay.get('is_error') is True and 'host shell execution refused' in json.dumps(replay_tool),frames['toolu_probe_2']
     assert counter.read_text()=='1',counter.read_text()

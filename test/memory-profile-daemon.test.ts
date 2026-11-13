@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CandidateStore, MemoryStore, memoryProjectKey, migrate, realPath, type SyncResult } from "@staix/agent-mem";
+import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon, type DaemonOptions, type HubConfig } from "../src/hub/daemon.ts";
+import { USER } from "../src/hub/envelope.ts";
 import { MemoryTelemetry } from "../src/hub/memory-candidates.ts";
 
 // Real daemon/control transports and the installed package, with synthetic homes only.
@@ -37,10 +39,12 @@ function legacyRows(memoryDir: string): Record<string, string> {
   }));
 }
 
-async function hub(f: ReturnType<typeof fixture>, memory: Partial<HubConfig["memory"]> = {}, options: Partial<DaemonOptions> = {}) {
+async function hub(f: ReturnType<typeof fixture>, memory: Partial<HubConfig["memory"]> = {}, options: Partial<DaemonOptions> = {}, configOverrides: Partial<HubConfig> = {}, useSyncTimers = false) {
+  let syncNow: (() => Promise<void>) | undefined;
   const daemon = await startDaemon({ cwd: f.cwd, stateDir: f.stateDir, projectId: "p-profile", instanceId: "i-profile",
     controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...options,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
+    ...(useSyncTimers ? {} : { memorySyncTrigger: (run: () => Promise<void>) => { syncNow = run; options.memorySyncTrigger?.(run); } }),
+    config: { ...DEFAULT_CONFIG, ...configOverrides, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: true, sync_interval_min: 0, ...memory } } });
   cleanup.push(() => daemon.stop());
   const person = await ControlClient.connect(f.stateDir, { role: "console" }); cleanup.push(() => person.close());
@@ -59,7 +63,7 @@ async function hub(f: ReturnType<typeof fixture>, memory: Partial<HubConfig["mem
     expect(reply.status.memoryProfile).not.toBeNull();
     return reply.status.memoryProfile;
   };
-  return { daemon, person, peer, tools, task, status };
+  return { daemon, person, peer, tools, task, status, syncNow: async () => { if (!syncNow) throw new Error("sync trigger was not bound"); await syncNow(); } };
 }
 
 async function packageCli(argv: string[], cwd: string): Promise<string> {
@@ -71,12 +75,127 @@ async function packageCli(argv: string[], cwd: string): Promise<string> {
 
 test("daemon default binding is shared v1 at AMEM_HOME independently of project state", async () => {
   const f = fixture(), h = await hub(f);
-  expect(await h.status()).toMatchObject({ home: f.memoryDir, profile: "shared-v1", state: "ready", agentMemVersion: "0.20.1" });
+  expect(await h.status()).toMatchObject({ home: f.memoryDir, profile: "shared-v1", state: "ready", agentMemVersion: "0.25.0" });
   expect((await h.task("hub_remember", { text: "shared default synthetic note", kind: "finding" })).ok).toBe(true);
   const store = new MemoryStore(); cleanup.push(() => store.close());
   expect(store.list({ project: f.project }).some(note => note.text === "shared default synthetic note")).toBe(true);
   expect(existsSync(join(f.stateDir, "memory"))).toBe(false);
   expect(existsSync(join(f.memoryDir, "profile.json"))).toBe(false);
+});
+
+test("real daemon publishes automatic machine sync outcomes and logs one line per failure episode", async () => {
+  const f = fixture();
+  const outcomes: SyncResult[] = [
+    { ok: false, pushed: false, entries: 0, error: "push failed: https://secret.invalid/remote" },
+    { ok: false, pushed: false, entries: 0, error: "push failed: https://secret.invalid/remote" },
+    { ok: true, pushed: false, entries: 0 },
+    { ok: false, pushed: false, entries: 0, error: "push failed: https://secret.invalid/remote" },
+  ];
+  const h = await hub(f, { sync_interval_min: 10 }, { memorySync: async () => outcomes.shift()! });
+  expect((await h.status()).sync).toEqual({ state: "notrun" });
+  await h.syncNow();
+  expect((await h.status()).sync).toMatchObject({ state: "failed", cause: "transport", nextStep: "run ahub memory sync as a person" });
+  await h.syncNow();
+  expect((await h.status()).sync.state).toBe("failed");
+  const firstLog = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+  expect(firstLog.match(/hub memory sync failed: transport/g)).toHaveLength(1);
+  expect(firstLog).not.toContain("secret.invalid");
+  await h.syncNow();
+  expect((await h.status()).sync).toMatchObject({ state: "ok" });
+  await h.syncNow();
+  const finalLog = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+  expect(finalLog.match(/hub memory sync failed: transport/g)).toHaveLength(2);
+  const snapshot = await h.person.request({ t: "ui_snapshot", after: 0, view: "memory" });
+  expect(snapshot.memorySync).toMatchObject({ state: "failed", cause: "transport" });
+  expect(JSON.stringify(snapshot.memorySync)).not.toContain("secret.invalid");
+});
+
+test("missing remote and stopped sync results are neutral status outcomes and never failure logs", async () => {
+  const f = fixture();
+  const errors = [
+    "no sync remote: a person sets one with ahub memory sync --remote <private git url>",
+    "no generation sync remote configured",
+    "stopped",
+  ];
+  const h = await hub(f, { sync_interval_min: 10 }, {
+    memorySync: async () => ({ ok: false, pushed: false, entries: 0, error: errors.shift()! }),
+  });
+  for (const [errorState, nextStep] of [
+    ["not-configured", "configure a private sync remote"],
+    ["not-configured", "configure a private sync remote"],
+    ["stopped", "retry after hub restart"],
+  ]) {
+    await h.syncNow();
+    const sync = (await h.status()).sync;
+    expect(sync).toMatchObject({ state: errorState, nextStep });
+    expect(sync).not.toHaveProperty("cause");
+  }
+  const log = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+  expect(log).not.toContain("hub memory sync failed:");
+  expect(log).not.toContain("no generation sync remote configured");
+  expect(log).not.toContain("private git url");
+  const snapshot = await h.person.request({ t: "ui_snapshot", after: 0, view: "memory" });
+  expect(snapshot.memorySync).toMatchObject({ state: "stopped", nextStep: "retry after hub restart" });
+  expect(JSON.stringify(snapshot.memorySync)).not.toContain("private git url");
+});
+
+test("pinned agent-mem sync with no configured remote reports neutral health without failure details", async () => {
+  const f = fixture();
+  const h = await hub(f, { sync_interval_min: 10 });
+
+  await h.syncNow();
+
+  expect((await h.status()).sync).toMatchObject({ state: "not-configured", nextStep: "configure a private sync remote" });
+  const log = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+  expect(log).not.toContain("hub memory sync failed:");
+  expect(log).not.toContain("https://");
+  expect(log).not.toContain("private git url");
+  expect(log).not.toContain("generation sync remote");
+});
+
+test("a synchronous sync-policy construction failure releases the single-flight slot for a corrected retry", async () => {
+  const f = fixture();
+  mkdirSync(f.memoryDir, { recursive: true });
+  const policyFile = join(f.memoryDir, "amem.config.json");
+  writeFileSync(policyFile, "{invalid machine policy");
+  let calls = 0;
+  const h = await hub(f, { sync_interval_min: 10 }, {
+    memorySync: async () => { calls++; return { ok: true, pushed: false, entries: 0 }; },
+  });
+
+  await h.syncNow();
+  expect(calls).toBe(0);
+  expect((await h.status()).sync).toMatchObject({ state: "failed", cause: "unknown" });
+
+  writeFileSync(policyFile, JSON.stringify({ piiPatterns: [] }));
+  await h.syncNow();
+  expect(calls).toBe(1);
+  expect((await h.status()).sync).toMatchObject({ state: "ok" });
+});
+
+test("machine sync screening resolves task paths only for task keys bound to this project", async () => {
+  const f = fixture();
+  // Seed a pre-existing public board row before the private-path policy is loaded by the daemon.
+  const board = new Board(join(f.stateDir, "hub.db"));
+  const seededTask = board.propose(USER, { title: "pre-existing task with private ref", class: "implement", refs: { paths: ["private/own-task.txt"] } });
+  board.close();
+  const taskId = seededTask.id, created = seededTask.created;
+  let foreignAllowed: boolean | undefined, ownDeclined: boolean | undefined;
+  const h = await hub(f, { sync_interval_min: 10 }, {
+    memorySync: async (_store, options) => {
+      if (!options?.screen) throw new Error("sync policy screen missing");
+      const screen = options.screen;
+      const own = { project: f.project, task: `${f.project}#${taskId}@${created}`, title: null, text: "safe synthetic note", about: [], source: "person" };
+      const foreignProject = "foreign.example/repo";
+      const foreign = { ...own, project: foreignProject, task: `${foreignProject}#1@${created}` };
+      foreignAllowed = screen(foreign);
+      ownDeclined = !screen(own);
+      return { ok: true, pushed: false, entries: 0 };
+    },
+  }, { pii: { paths: ["private/own-task.txt"] } });
+  await h.syncNow();
+  expect(foreignAllowed).toBe(true);
+  expect(ownDeclined).toBe(true);
 });
 
 test("migrated daemon bridges legacy and package CLI and tools cross-read and cross-write only the generation", async () => {
@@ -88,7 +207,7 @@ test("migrated daemon bridges legacy and package CLI and tools cross-read and cr
   await migrate({ memoryDir: f.memoryDir, mode: "apply", generation: G, authorizedPerson: true, tty: true });
   const h = await hub(f);
   const receipt = await h.status();
-  expect(receipt).toMatchObject({ home: f.memoryDir, profile: "generation", generation: G, state: "ready", agentMemVersion: "0.20.1" });
+  expect(receipt).toMatchObject({ home: f.memoryDir, profile: "generation", generation: G, state: "ready", agentMemVersion: "0.25.0" });
   expect(receipt.selectorRevision).toMatch(/^[a-f0-9]{64}$/);
   const old = await h.task("hub_memory_show", { ids: [oldId] });
   expect(old.ok).toBe(true); expect(old.text).toContain("legacy synthetic contract");
@@ -121,7 +240,7 @@ for (const invalid of ["invalid selector", "missing generation"] as const) {
     const original = legacyRows(f.memoryDir);
     writeFileSync(join(f.memoryDir, "profile.json"), invalid === "invalid selector" ? "not JSON\n" : JSON.stringify({ schema: "agent-mem.profile/v1", kind: "generation", generation: G }));
     const h = await hub(f);
-    expect(await h.status()).toMatchObject({ state: "unavailable", agentMemVersion: "0.20.1" });
+    expect(await h.status()).toMatchObject({ state: "unavailable", agentMemVersion: "0.25.0" });
     const result = await h.task("hub_remember", { text: "must never fall back to legacy", kind: "finding" });
     expect(`${result.text ?? ""} ${result.error ?? ""}`).not.toContain("saved to shared memory");
     const board = await h.task("hub_task_list", {}); expect(board.ok).toBe(true);
@@ -192,11 +311,11 @@ test("disk status keeps the reduced memory receipt while authenticated console r
   const f = fixture(), legacy = new MemoryStore({ profile: "shared-v1" }); legacy.close();
   await migrate({ memoryDir: f.memoryDir, mode: "apply", generation: G, authorizedPerson: true, tty: true });
   const h = await hub(f), full = await h.status();
-  expect(full).toMatchObject({ home: f.memoryDir, generation: G, profile: "generation", state: "ready", agentMemVersion: "0.20.1" });
+  expect(full).toMatchObject({ home: f.memoryDir, generation: G, profile: "generation", state: "ready", agentMemVersion: "0.25.0" });
   expect(full.selectorRevision).toMatch(/^[a-f0-9]{64}$/);
   expect(typeof full.skippedRows).toBe("number");
   const disk = JSON.parse(readFileSync(join(f.stateDir, "status.json"), "utf8")) as { memoryProfile: Record<string, unknown> };
-  expect(disk.memoryProfile).toMatchObject({ profile: "generation", generation: G.slice(0, 8), state: "ready", agentMemVersion: "0.20.1" });
+  expect(disk.memoryProfile).toMatchObject({ profile: "generation", generation: G.slice(0, 8), state: "ready", agentMemVersion: "0.25.0" });
   for (const field of ["home", "selectorRevision", "skippedRows"]) expect(disk.memoryProfile).not.toHaveProperty(field);
   const rendered = JSON.stringify(disk.memoryProfile);
   expect(rendered).not.toContain(f.memoryDir);
@@ -213,7 +332,7 @@ for (const mode of ["disabled", "unavailable"] as const) {
     }
     const h = await hub(f, { native: mode !== "disabled" });
     const unbound = await h.status();
-    expect(unbound).toMatchObject({ state: mode, home: f.memoryDir, agentMemVersion: "0.20.1" });
+    expect(unbound).toMatchObject({ state: mode, home: f.memoryDir, agentMemVersion: "0.25.0" });
     expect(unbound).not.toHaveProperty("profile");
     expect(unbound).not.toHaveProperty("generation");
     expect(unbound).not.toHaveProperty("selectorRevision");
@@ -234,7 +353,7 @@ test("scheduled memory sync checks the selected profile before invoking the sync
   }) as typeof setInterval;
   let h: Awaited<ReturnType<typeof hub>>;
   try {
-    h = await hub(f, { sync_interval_min: 7 }, { memorySync: () => { calls++; return completed; } });
+    h = await hub(f, { sync_interval_min: 7 }, { memorySync: () => { calls++; return completed; } }, {}, true);
   } finally { globalThis.setInterval = originalInterval; }
   expect(scheduled).toBeDefined();
   scheduled!();

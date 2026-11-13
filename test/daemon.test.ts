@@ -20,6 +20,7 @@ import { factsHook } from "../src/cli/facts-hook.ts";
 import { parse as parseOverlaps } from "../scripts/overlaps.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const cleanup: (() => unknown)[] = [];
@@ -155,10 +156,13 @@ async function dashboardClient(console_: ControlClient, settings = false) {
 }
 
 /** MCP initialization does not imply that the plugin has processed its control welcome (#287). */
-async function connectPlugin(client: Client, env: Record<string, string>, peer: string, expectConnected = true) {
+async function connectPlugin(client: Client, env: Record<string, string>, peer: string, expectConnected = true, syntheticParentEvidence = true) {
+  const wrapper = join(mkdtempSync(join(tmpdir(), "ahub-claude-channel-")), "plugin.ts");
+  cleanup.push(() => rmSync(join(wrapper, ".."), { recursive: true, force: true }));
+  if (syntheticParentEvidence) writeFileSync(wrapper, `import { claudeParentCommandPort } from ${JSON.stringify(join(ROOT, "src/adapters/claude-channel-evidence.ts"))};\nclaudeParentCommandPort.read = () => "claude --dangerously-load-development-channels plugin:agent-hub@agent-hub";\nawait import(${JSON.stringify(join(ROOT, "src/adapters/claude-channel.ts"))});\n`);
   const transport = new StdioClientTransport({
     command: "bun",
-    args: [join(ROOT, "plugins/agent-hub/server.js")], // the shipped bundle, not the source
+    args: syntheticParentEvidence ? [wrapper] : [join(ROOT, "test/fakes/mcp-stdio-parent.ts"), join(ROOT, "plugins/agent-hub/server.js")], // real ordinary parent stays short even when --changed lists many files
     env,
     stderr: "pipe",
   });
@@ -174,14 +178,15 @@ async function connectPlugin(client: Client, env: Record<string, string>, peer: 
   if (expectConnected) await waitConnected();
   return waitConnected;
 }
-/** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. `channelEvidence`: AGENTHUB_CHANNEL, "1" as `ahub claude` sets it, null for none (#205). */
-async function fakeClaude(stateDir: string, channelEvidence: string | null = "1", expectConnected = true) {
+/** A fake Claude Code MCP host. Positive fixtures inject a synthetic direct-parent argv row; the issue #1171 regression uses the real Bun parent. */
+async function fakeClaude(stateDir: string, channelEvidence: string | null = "1", expectConnected = true, syntheticParentEvidence = true) {
   const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
   const channel: any[] = [];
   client.fallbackNotificationHandler = async (n) => void channel.push(n);
-  const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir };
+  const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: ROOT, AGENTHUB_PEER_ID: "claude", AGENTHUB_MODE: "" };
+  for (const name of ["AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID", "AGENTHUB_DELIVERY_ONLY", "CODEX_THREAD_ID"]) delete env[name];
   if (channelEvidence === null) delete env.AGENTHUB_CHANNEL; else env.AGENTHUB_CHANNEL = channelEvidence;
-  const waitConnected = await connectPlugin(client, env, "claude", expectConnected);
+  const waitConnected = await connectPlugin(client, env, "claude", expectConnected, syntheticParentEvidence);
   return { client, channel, waitConnected };
 }
 
@@ -262,6 +267,23 @@ test("claude without channel evidence attaches tools-only: nothing is pushed or 
   expect((await console_.request({ t: "status" })).status.peers.claude.toolsOnly).toBeUndefined();
 });
 
+test("Claude marker inherited by a non-channel parent stays tools-only and queued for hub_inbox (#1171)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const plain = await fakeClaude(stateDir, "1", true, false); // actual parent is Bun, not an ahub claude TUI
+  expect(plain.client.getServerCapabilities()?.experimental?.["claude/channel"]).toBeUndefined();
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  const status = (await console_.request({ t: "status" })).status.peers.claude;
+  expect(status).toMatchObject({ attachMode: "tools-only", attachEvidence: "launch-unverified" });
+  expect((await console_.request({ t: "send", body: "kept for inbox", to: ["claude"] })).targets).toEqual(["claude"]);
+  await until(() => daemon.bus.queued("claude") === 1, "queued delivery");
+  expect(daemon.bus.queueList("claude").some((row) => row.state === "accepted" || row.state === "dispatching")).toBe(false);
+  const read: any = await plain.client.callTool({ name: "hub_inbox", arguments: {} });
+  expect(read.content[0].text).toContain("kept for inbox");
+  await plain.client.close();
+  await until(() => daemon.bus.peers.get("claude")?.state === "offline", "claude detach");
+  expect((await console_.request({ t: "status" })).status.peers.claude).not.toHaveProperty("attachMode");
+});
+
 test("a paused tools-only claude reads nothing through hub_inbox: the budget pause and the console pause name themselves and nothing is journaled (#205)", async () => {
   const { stateDir, daemon, console_ } = await hub();
   const plain = await fakeClaude(stateDir, null);
@@ -270,7 +292,7 @@ test("a paused tools-only claude reads nothing through hub_inbox: the budget pau
   const unread = () => daemon.bus.queueList("claude").every((row) => row.state === "queued");
 
   // Nothing queued and no open work: the budget coordinator pauses without asking for a checkpoint.
-  expect((await console_.request({ t: "budget", set: { peer: "claude", used: 0.95, resetsInMs: 3_600_000 } })).ok).toBe(true);
+  expect((await console_.request({ t: "budget", set: { peer: "claude", used: 0.99, resetsInMs: 3_600_000 } })).ok).toBe(true);
   await until(() => daemon.bus.stateOf("claude") === "paused", "budget pause");
   await console_.request({ t: "send", body: "while over budget", to: ["claude"] });
   expect(await inbox()).toStartWith("not read: paused by the budget coordinator");
@@ -621,25 +643,47 @@ test("an outdated plugin is refused loudly instead of silently dropping digests;
   expect(res).toMatchObject({ ok: true, recorded: true, targets: [] });
 });
 
-// issue #30: the replaced session used to stay detached for good, even after the taker left.
-test("a second session attached as the same peer wins, and the replaced one stands by and takes it back", async () => {
-  const { stateDir, daemon, events } = await hub();
+test("a retained standby only takes the peer after the person requests takeover", async () => {
+  const { stateDir, daemon, events, console_ } = await hub();
   const first = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "first attach");
-  const second = await fakeClaude(stateDir);
-  await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 1, "replacement");
-  await Bun.sleep(2500); // past the replaced side's first retries: it must not fight for a peer someone holds
-  expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(1);
+  const second = await fakeClaude(stateDir, "1", false);
+  let standbyId: string | undefined;
+  for (let n = 0; n < 400 && !standbyId; n++) {
+    const status = await console_.request({ t: "status" });
+    standbyId = status.status.peers.claude.standbySessions?.[0]?.id;
+    if (!standbyId) await Bun.sleep(5);
+  }
+  expect(typeof standbyId).toBe("string");
+  await Bun.sleep(2500); // the retained standby must not fight for a peer someone still holds
+  expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(0);
   expect(daemon.bus.peers.get("claude")?.state).toBe("idle");
-  const held: any = await first.client.callTool({ name: "hub_send", arguments: { text: "x" } });
+  let held: any;
+  for (let n = 0; n < 400; n++) {
+    held = await second.client.callTool({ name: "hub_inbox", arguments: {} });
+    if (held.content[0]?.text?.startsWith('another session is attached to the hub as "claude"')) break;
+    await Bun.sleep(5);
+  }
   expect(held.content[0].text).toStartWith('another session is attached to the hub as "claude"');
+  expect(held.content[0].text).toContain("ahub peer takeover claude");
+
+  expect(await console_.request({ t: "peer_takeover", peer: "claude", standbyId })).toMatchObject({ ok: true, outcome: "requested", standbyId });
+  await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 1, "old owner detached");
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "standby attached");
+  let detached: any;
+  for (let n = 0; n < 400; n++) {
+    detached = await first.client.callTool({ name: "hub_inbox", arguments: {} });
+    if (detached.content[0]?.text?.includes("detached by the person")) break;
+    await Bun.sleep(5);
+  }
+  expect(detached.isError).toBe(true);
+  expect(detached.content[0].text).toContain("detached by the person");
 
   await second.client.close(); // the taking session leaves: the slot is free again
   await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 2, "taker left");
-  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "reclaimed without a restart");
-  await first.waitConnected(2); // this session processed its new welcome, not only the daemon attach
-  const back: any = await first.client.callTool({ name: "hub_send", arguments: { text: "back" } });
-  expect(back.content[0].text).not.toContain("standing by");
+  await Bun.sleep(2500); // the detached session must not silently reclaim after the taker leaves
+  expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(2);
+  expect(daemon.bus.peers.get("claude")?.state).toBe("offline");
 }, 30_000);
 
 // Codex review of #34: the standing-by gate reads status.json, so a hello that is still arriving must show there.
@@ -1070,7 +1114,7 @@ test("budget relay end to end: checkpoint, pause, task to local with the summary
 
   const before = events.length;
   expect((await console_.request({ t: "budget", set: { peer: "ghost", used: 0.5 } })).ok).toBe(false);
-  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.95, resetsInMs: 3_600_000 } });
+  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.99, resetsInMs: 3_600_000 } });
   await until(() => events.slice(before).some((e) => e.t === "envelope" && e.env.kind === "budget" && e.env.to?.[0] === "kimi"), "checkpoint request");
   expect(daemon.bus.stateOf("kimi")).not.toBe("paused"); // checkpoint first, pause second
   expect((await kimiTools.request({ t: "task", op: "hub_checkpoint", args: { summary: "tokenizer done, grammar half done" } })).text).toContain("checkpoint received");
@@ -1080,18 +1124,18 @@ test("budget relay end to end: checkpoint, pause, task to local with the summary
   const notices = () => pushes.filter((p) => p.t === "notice").map((p) => p.line as string);
   expect(notices().some((l) => l.includes("moved from kimi: #1 owner -> local"))).toBe(true);
 
-  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.97, resetsInMs: 3_600_000 } }); // again: nothing happens
+  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.995, resetsInMs: 3_600_000 } }); // again: nothing happens
   await Bun.sleep(50);
   expect(notices().filter((l) => l.includes("kimi paused"))).toHaveLength(1);
   const shown = await console_.request({ t: "budget" });
-  expect(shown.budget.kimi.paused.reason).toContain("95%");
-  expect((await console_.request({ t: "status" })).status.peers.kimi.paused).toContain("budget: 5h window at 95%");
+  expect(shown.budget.kimi.paused.reason).toContain("99%");
+  expect((await console_.request({ t: "status" })).status.peers.kimi.paused).toContain("budget: 5h window at 99%");
   const refused = await console_.request({ t: "resume", peer: "kimi" }); // ahub resume does not override the coordinator
   expect(refused).toMatchObject({ ok: false });
   expect(refused.error).toContain("ahub budget resume kimi");
   const ui = await dashboardClient(console_);
   expect(await ui.post("action", { action: "resume", peer: "kimi" })).toMatchObject({ ok: false });
-  expect((await ui.post("snapshot")).budget.kimi.paused.reason).toContain("95%");
+  expect((await ui.post("snapshot")).budget.kimi.paused.reason).toContain("99%");
 
   await console_.request({ t: "pause", peer: "kimi" }); // the user also pauses it by hand
   await console_.request({ t: "budget", set: { peer: "kimi", used: 0.2 } }); // the mocked reset
@@ -2261,7 +2305,8 @@ test("AC1: an unseen push safely requeues originals for hub_inbox (#434)", async
 test("AC1: a thrown notification keeps needs_review because a write may already have left (#434)", async () => {
   const { stateDir, daemon, console_ } = await hub();
   const wrapper = join(stateDir, "throw-notification.ts");
-  writeFileSync(wrapper, `import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))};
+  writeFileSync(wrapper, `${syntheticClaudeParentEvidenceSetup()}
+import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))};
 const notification = Server.prototype.notification;
 Server.prototype.notification = async function (message, options) {
   if (message.method === "notifications/claude/channel") throw new Error("fixture notification write threw");
@@ -2270,7 +2315,9 @@ Server.prototype.notification = async function (message, options) {
 await import(${JSON.stringify(join(ROOT, "src/adapters/claude-channel.ts"))});
 `);
   const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
-  const transport = new StdioClientTransport({ command: "bun", args: [wrapper], env: { ...process.env as Record<string,string>, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_PROJECT_DIR: ROOT, AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "" }, stderr: "pipe" });
+  const env: Record<string, string> = { ...process.env as Record<string,string>, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_PROJECT_DIR: ROOT, AGENTHUB_CHANNEL: "1", AGENTHUB_MODE: "" };
+  for (const name of ["AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID", "AGENTHUB_DELIVERY_ONLY", "CODEX_THREAD_ID"]) delete env[name];
+  const transport = new StdioClientTransport({ command: "bun", args: [wrapper], env, stderr: "pipe" });
   let diagnostics = "";
   transport.stderr!.on("data", chunk => { diagnostics += chunk.toString(); });
   await client.connect(transport); cleanup.push(() => client.close());

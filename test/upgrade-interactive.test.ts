@@ -1,14 +1,15 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestRelease, newerVersion } from "../src/cli/recovery-package.ts";
 import { endAgents, follow, operationLines, operationScreen, peerKind, planLines, planScreen, resetFlow, stepLabel, type ScreenIO, type UpgradeHost } from "../src/cli/upgrade-interactive.ts";
-import { PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
-import { cancellableWait, nextActions, nextChoices, type Inspection, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { shellQuote } from "../src/cli/terminal-recovery.ts";
+import { PACKAGE_ROOT, reattachPlannedTerminals } from "../src/cli/upgrade-runtime.ts";
+import { cancellableWait, nextActions, nextChoices, planFingerprint, type Inspection, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
-import { operationPath, recoveryRunner, signedRunner, stopSignedRunner, writeOperation } from "../src/hub/recovery-store.ts";
+import { acquireRecoveryLock, operationPath, recoveryRunner, releaseRecoveryLock, signedRunner, stopSignedRunner, writeOperation } from "../src/hub/recovery-store.ts";
 
 // #272. The screens only read, ask and run existing commands, so a scripted terminal and a fake host cover them; what
 // the commands themselves accept is test/upgrade.test.ts's invariant.
@@ -58,6 +59,9 @@ test("without --to the target is the registry's latest release, and only a newer
   expect(calls).toEqual([["npm", "view", "@staix/agent-hub", "version", "--json"]]);
   await expect(latestRelease(async () => ({ code: 1, stdout: "", stderr: "offline" }))).rejects.toThrow("name the release with --to");
   await expect(latestRelease(async () => ({ code: 0, stdout: '["0.12.21","0.12.22"]', stderr: "" }))).rejects.toThrow("unexpected latest release");
+  // #1253: npm 12 wraps one package's value in a one-element array.
+  expect(await latestRelease(async () => ({ code: 0, stdout: '[\n  "0.12.22"\n]\n', stderr: "" }))).toBe("0.12.22");
+  for (const stdout of ["[]", '[["0.12.22"]]', "[0]", "not json"]) await expect(latestRelease(async () => ({ code: 0, stdout, stderr: "" }))).rejects.toThrow("unexpected latest release");
   await expect(latestRelease(async () => ({ code: 0, stdout: '"latest"', stderr: "" }))).rejects.toThrow("exact package version");
   expect([newerVersion("0.12.22", "0.12.21"), newerVersion("0.13.0", "0.12.99"), newerVersion("1.0.0", "0.99.99")]).toEqual([true, true, true]);
   expect([newerVersion("0.12.21", "0.12.21"), newerVersion("0.12.20", "0.12.21"), newerVersion("0.12.21-rc.1", "0.12.21"), newerVersion("0.9.9", "0.12.0")]).toEqual([false, false, false, false]);
@@ -87,7 +91,7 @@ test("apply is offered only without blockers, and an applied plan is followed to
   let applied = 0;
   await planScreen(host({ plan: async () => plan({ blockers: ["claude: unmanaged session cannot reconnect"] }), apply: async () => { applied++; return operation(); } }), blocked.io);
   expect(applied).toBe(0);
-  expect(blocked.asked[0]).toStartWith("Blocked: take the next action each blocker names, then refresh.\n[r] refresh  [k] end agents");
+  expect(blocked.asked[0]).toStartWith("Blocked: take the next action each blocker names, then press [r] refresh.\n[r] refresh  [k] end agents");
   expect(blocked.out.at(-1)).toBe("nothing was changed");
 
   const steps: Partial<RecoveryOperation>[] = [{ phase: "running", step: "stage" }, { phase: "running", step: "prepare:alpha" }, { phase: "running", step: "prepare:alpha" }, { phase: "running", step: "commit:alpha" }, { phase: "completed", step: "completed" }];
@@ -432,4 +436,175 @@ test("#433 tagged failed-origin wait is shown as waiting and retains its fresh-s
     projects: [{ id: "alpha", instanceId: "new-target", phase: "started", terminals: { "restored:codex": { state: "waiting", origin: "failed", binding } } }] });
   expect(operationLines(op, undefined, 0)).toContain("  alpha  started  (restored:codex waiting:failed)");
   expect(nextActions(op)).toContain(`bun ${MAIN} recovery dispose ${ID} --fresh-session codex --reason <text>`);
+});
+
+// #718 (#1179): `ahub upgrade` upgrades one project's daemon and not the global CLI or the plugin, so a completed upgrade ends with the step when the host says either is older.
+const STEP = ["ahub upgrade does not update the global CLI or the shared Claude plugin.", "The global CLI is older than the daemon this upgrade installs (0.6.0): run `bun add -g @staix/agent-hub@0.6.0` and then `ahub setup` yourself."];
+const done = (over: Partial<RecoveryOperation> = {}) => operation({ phase: "completed", step: "completed", updatedAt: 9, ...over });
+
+test("#718 a completed upgrade ends with the step under the 'completed' line, once, through the plan screen and the operation screen", async () => {
+  const afterCompleted = async (op: RecoveryOperation) => op.plan.version === "0.6.0" ? STEP : [];
+  const planned = screen(["a"]);
+  await planScreen(host({ read: () => done(), runner: () => 4242, afterCompleted }), planned.io);
+  expect(planned.out.slice(-3)).toEqual(["upgrade to 0.6.0 completed", ...STEP]);
+  expect(planned.out.filter(line => line === STEP[0])).toHaveLength(1);
+  const resumed = screen([]);
+  expect(await operationScreen(host({ read: () => done(), afterCompleted }), resumed.io, ID)).toBe("completed");
+  expect(resumed.out.slice(-3)).toEqual(["upgrade to 0.6.0 completed", ...STEP]);
+});
+
+test("#718 nothing is added when the host has nothing to say, when it throws, when the operation is a restart, or when the upgrade did not complete", async () => {
+  const quiet = screen([]);
+  await operationScreen(host({ read: () => done(), afterCompleted: () => [] }), quiet.io, ID);
+  expect(quiet.out.at(-1)).toBe("upgrade to 0.6.0 completed");
+  const none = screen([]);
+  await operationScreen(host({ read: () => done() }), none.io, ID);                      // a host without the hook (an older caller)
+  expect(none.out.at(-1)).toBe("upgrade to 0.6.0 completed");
+  const broken = screen([]);
+  expect(await operationScreen(host({ read: () => done(), afterCompleted: () => { throw new Error("claude is not installed"); } }), broken.io, ID)).toBe("completed");
+  expect(broken.out.at(-1)).toBe("upgrade to 0.6.0 completed");                          // advice never fails an upgrade
+  const rejected = screen([]);
+  expect(await operationScreen(host({ read: () => done(), afterCompleted: async () => { throw new Error("probe timed out"); } }), rejected.io, ID)).toBe("completed");
+  const restart = screen([]);
+  await operationScreen(host({ read: () => done({ plan: { ...plan(), kind: "restart" } }), afterCompleted: () => STEP }), restart.io, ID);
+  expect(restart.out.join("\n")).not.toContain("does not update the global CLI");     // a restart installs nothing
+  const blocked = screen(["q"]);
+  await operationScreen(host({ read: () => operation({ phase: "blocked" }), afterCompleted: () => STEP }), blocked.io, ID);
+  expect(blocked.out.join("\n")).not.toContain("does not update the global CLI");
+  const cancelled = screen([]);
+  await operationScreen(host({ read: () => operation({ phase: "cancelled" }), afterCompleted: () => STEP }), cancelled.io, ID);
+  expect(cancelled.out.join("\n")).not.toContain("does not update the global CLI");
+});
+
+// #1246. The plan records the verified orphaned-but-connected panes; the menu's [t] switches exactly those and plans again.
+const orphanRoot = "/alpha";
+const orphan = { peer: "codex", handle: "term_codex", incarnationId: "inc-1", worktreeId: "wt-1", root: orphanRoot };
+const orphanBlocker = "the codex terminal term_codex in /alpha is orphaned but still connected (terminal term_codex); next action: reattach the pane with orca terminal switch --terminal term_codex; then refresh in ahub upgrade ([r] on the plan, [s] on an open operation), or rerun it";
+
+test("#1246 the menu offers [t] for verified orphaned terminals, switches exactly those and plans again without the blocker", async () => {
+  const plans = [plan({ blockers: [orphanBlocker], orphanedTerminals: [orphan] }), plan()];
+  const switched: string[][] = [];
+  const f = screen(["t", "q"]);
+  await planScreen(host({ plan: async () => plans.shift()!, reattachTerminals: async (planned, terminals) => { switched.push(terminals.map((t) => `${planned.project.id}:${t.handle}`)); return ["alpha/codex: terminal term_codex reattached"]; } }), f.io);
+  expect(f.asked[0]).toBe("Blocked: take the next action each blocker names, then press [r] refresh.\n[r] refresh  [t] reattach 1 orphaned terminal  [k] end agents  [j] plan as JSON  [x] reset a project's hub  [q] quit: ");
+  expect(switched).toEqual([["alpha:term_codex"]]);
+  expect(f.out).toContain("  alpha/codex: terminal term_codex reattached");
+  expect(f.asked[1]).toStartWith("[a] apply  [r] refresh"); // the refreshed plan has no orphan blocker
+  expect(f.asked[1]).not.toContain("[t]");
+  expect(f.ran).toEqual([]);
+});
+
+test("#1246 a still-orphaned terminal stays a blocker with its next action, and [t] is offered again", async () => {
+  const blocked = () => plan({ blockers: [orphanBlocker], orphanedTerminals: [orphan] });
+  const f = screen(["t", "q"]);
+  await planScreen(host({ plan: async () => blocked(), reattachTerminals: async () => ["alpha/codex: terminal term_codex is still orphaned after the switch; it stays a blocker"] }), f.io);
+  expect(f.out).toContain("  alpha/codex: terminal term_codex is still orphaned after the switch; it stays a blocker");
+  expect(f.out.filter((line) => line.includes("[s] on an open operation), or rerun it"))).toHaveLength(2);
+  expect(f.asked[1]).toContain("[t] reattach 1 orphaned terminal");
+});
+
+test("#1246 no [t] key without a verified orphaned terminal or on a host that cannot switch, and a typed t does nothing", async () => {
+  const none = screen(["t", "q"]);
+  let called = 0;
+  await planScreen(host({ reattachTerminals: async () => { called++; return []; } }), none.io);
+  expect(none.asked[0]).not.toContain("[t]");
+  const noHost = screen(["t", "q"]);
+  await planScreen(host({ plan: async () => plan({ blockers: [orphanBlocker], orphanedTerminals: [orphan] }) }), noHost.io);
+  expect(noHost.asked[0]).not.toContain("[t]");
+  expect(called).toBe(0);
+});
+
+test("#1246 the plan fingerprint covers the verified orphaned terminals", () => {
+  const body = (extra: object) => { const { fingerprint, ...rest } = plan(extra); return rest; };
+  expect(planFingerprint(body({ orphanedTerminals: [orphan] }))).not.toBe(planFingerprint(body({})));
+  expect(planFingerprint(body({ orphanedTerminals: [orphan] }))).not.toBe(planFingerprint(body({ orphanedTerminals: [{ ...orphan, incarnationId: "inc-2" }] })));
+});
+
+test("#1246 the plan line names the orphaned terminal and both keys", () => {
+  const lines = planLines(plan({ terminals: [], orphanedTerminals: [orphan], blockers: [orphanBlocker], source: source({ peers: [{ id: "codex", state: "idle", threadId: "t1" }] }) }), "0.6.0").join("\n").replace(/\s+/g, " ");
+  expect(lines).toContain("terminal term_codex is orphaned but still connected");
+  expect(lines).toContain("[t]");
+  expect(lines).toContain("press [r] refresh");
+});
+
+function orca(shown: (calls: string[][]) => Record<string, unknown>) {
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv.slice(1));
+    if (argv[2] === "switch") return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminal: shown(calls) } }), stderr: "" };
+  };
+  return { calls, run };
+}
+const live = (patch: Record<string, unknown> = {}) => ({ handle: "term_codex", incarnationId: "inc-1", worktreeId: "wt-1", worktreePath: orphanRoot, connected: true, orphaned: true, ...patch });
+const plannedOrphan = () => plan({ blockers: [orphanBlocker], orphanedTerminals: [orphan] }).projects[0]!;
+
+test("#1246 reattachPlannedTerminals switches only plan-verified handles, once each, and reports a reattached pane", async () => {
+  const f = orca((calls) => live({ orphaned: calls.filter((c) => c[1] === "show").length < 2 }));
+  const stranger = { ...orphan, handle: "term_other" };
+  const lines = await reattachPlannedTerminals(plannedOrphan(), [orphan, stranger], { run: f.run, lock: () => undefined, boundMs: 2_000 });
+  expect(lines).toEqual(["alpha/codex: terminal term_codex reattached", "alpha/codex: terminal term_other is not one the plan verified; not switched. Next: press [r] refresh to re-plan"]);
+  expect(f.calls.filter((c) => c[1] === "switch").map((c) => c[3])).toEqual(["term_codex"]);
+  expect(f.calls.every((c) => c[3] === "term_codex")).toBe(true);
+});
+
+test("#1246 a pane that stays orphaned past the bound, a changed identity and a held lock each stay a blocker", async () => {
+  const stuck = orca(() => live());
+  expect(await reattachPlannedTerminals(plannedOrphan(), [orphan], { run: stuck.run, lock: () => undefined, boundMs: 300 })).toEqual(["alpha/codex: terminal term_codex is still orphaned after the switch; it stays a blocker. Next: inspect it in Orca, then press [r] refresh"]);
+  expect(stuck.calls.filter((c) => c[1] === "switch")).toHaveLength(1);
+  const changed = orca(() => live({ incarnationId: "inc-9" }));
+  expect((await reattachPlannedTerminals(plannedOrphan(), [orphan], { run: changed.run, lock: () => undefined, boundMs: 100 }))[0]).toContain("identity changed");
+  expect(changed.calls.some((c) => c[1] === "switch")).toBe(false);
+  const locked = orca(() => live());
+  expect((await reattachPlannedTerminals(plannedOrphan(), [orphan], { run: locked.run, lock: () => "op-1", boundMs: 100 }))[0]).toContain("op-1 holds the lock). Next: wait for or resume that operation, then press [r] refresh");
+  expect(locked.calls).toEqual([]);
+});
+
+test("#1246 the plan line shell-quotes a handle with a space or a quote", () => {
+  const handle = "term ' with space";
+  const lines = planLines(plan({ terminals: [], orphanedTerminals: [{ ...orphan, handle }], blockers: [orphanBlocker], source: source({ peers: [{ id: "codex", state: "idle", threadId: "t1" }] }) }), "0.6.0").join("\n").replace(/\s+/g, " ");
+  expect(lines).toContain(`orca terminal switch --terminal ${shellQuote(handle)}`);
+});
+
+const OP_X = "44444444-4444-4444-4444-444444444444", OP_LEGACY = "55555555-5555-5555-5555-555555555555";
+// #1246 review: the hold is the project's own (project_locks), read from a real hub home, and every Orca call is bounded by the reattach bound.
+test("#1246 a project-scoped recovery hold on the planned project refuses [t], and another project's hold does not", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "reattach-lock-"));
+  const home = join(dir, "home"), mine = join(dir, "alpha"), other = join(dir, "beta");
+  for (const path of [mine, other]) mkdirSync(path, { recursive: true });
+  const planned = plannedOrphan();
+  planned.project.root = mine;
+  const here = { ...orphan, root: mine };
+  planned.orphanedTerminals = [here];
+  try {
+    acquireRecoveryLock(OP_X, home, other);
+    const free = orca(() => live({ worktreePath: mine, orphaned: false }));
+    expect(await reattachPlannedTerminals(planned, [here], { run: free.run, home, boundMs: 1_000 })).toEqual(["alpha/codex: terminal term_codex reattached"]);
+    releaseRecoveryLock(OP_X, home, other);
+    acquireRecoveryLock(OP_X, home, mine);
+    const held = orca(() => live({ worktreePath: mine }));
+    const lines = await reattachPlannedTerminals(planned, [here], { run: held.run, home, boundMs: 1_000 });
+    expect(lines[0]).toContain(`recovery operation ${OP_X} holds the lock`);
+    expect(held.calls).toEqual([]);
+    releaseRecoveryLock(OP_X, home, mine);
+    acquireRecoveryLock(OP_LEGACY, home);
+    expect((await reattachPlannedTerminals(planned, [here], { run: held.run, home, boundMs: 1_000 }))[0]).toContain(`${OP_LEGACY} holds the lock`);
+    expect(held.calls).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("#1246 every Orca call of a reattach is given at most the bound as its timeout, and a hung show cannot outlast it", async () => {
+  const timeouts: number[] = [];
+  const hung = async (argv: string[], options?: { timeoutMs?: number }) => {
+    timeouts.push(options?.timeoutMs ?? Infinity);
+    if (argv[2] === "switch") return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+    if (timeouts.length === 1) return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminal: live() } }), stderr: "" };
+    return new Promise<never>(() => {}); // a show that never answers and ignores its timeout
+  };
+  const started = Date.now();
+  const lines = await reattachPlannedTerminals(plannedOrphan(), [orphan], { run: hung, lock: () => undefined, boundMs: 400 });
+  expect(Date.now() - started).toBeLessThan(3_000);
+  expect(lines[0]).toContain("not switched or not confirmed");
+  expect(timeouts.length).toBe(3);
+  expect(timeouts.every((ms) => ms <= 400)).toBe(true);
 });

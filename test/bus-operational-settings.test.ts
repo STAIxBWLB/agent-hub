@@ -6,7 +6,7 @@ import { Bus, MAX_ATTEMPTS, DIGEST_MAX, PULL_BUDGET_BYTES, NOTES_KEPT, type BusE
 import { DeliveryJournal, TERMINAL_CAP } from "../src/hub/delivery-journal.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { newEnvelope, noteLine, type Envelope, type PeerState } from "../src/hub/envelope.ts";
-import { busOperationalReaders, OPERATIONAL_NUMBERS, type BusOperationalConfig } from "../src/hub/operational-settings.ts";
+import { BUS_ACCEPTED_SETTLE_MS_SETTING, busOperationalReaders, OPERATIONAL_NUMBERS, type BusOperationalConfig } from "../src/hub/operational-settings.ts";
 import { configApply, validateRawConfig, validateOperationalConfig } from "../src/hub/config-apply.ts";
 import { checkSettingValue, settingDef } from "../src/hub/settings.ts";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
@@ -45,26 +45,28 @@ function bus(config: () => BusOperationalConfig, pullOnly = false) {
   return { b, p };
 }
 
-test("#489 H3 defaults remain the five original constants, and all bounds/apply/UI checks share H1", () => {
+test("#489 H3 defaults remain pinned and #1172 adds a bounded accepted settlement setting", () => {
   expect(defaults).toEqual([3, 10, 65_536, 10, 2048]);
-  expect(rows).toHaveLength(5);
-  for (const [index, row] of rows.entries()) {
-    expect(row.defaultValue).toBe(defaults[index]!);
+  const priorRows = rows.filter(row => row.key !== BUS_ACCEPTED_SETTLE_MS_SETTING.key);
+  expect(priorRows).toHaveLength(5);
+  expect(priorRows.map(row => row.defaultValue)).toEqual(defaults);
+  expect(BUS_ACCEPTED_SETTLE_MS_SETTING).toMatchObject({ min: 1000, max: 86_400_000, defaultValue: 600_000 });
+  for (const row of rows) {
     expect(configApply(row.key)).toEqual({ applies: "live" });
     const def = settingDef(row.key); if (typeof def === "string") throw new Error(def);
-    expect(def).toMatchObject({ min: 1, max: row.max, type: "integer", applies: "live" });
-    for (const value of [1, row.defaultValue, row.max]) {
+    expect(def).toMatchObject({ min: row.min, max: row.max, type: "integer", applies: "live" });
+    for (const value of [row.min, row.defaultValue, row.max]) {
       expect(checkSettingValue(def, value)).toBe(value);
       expect(() => validateRawConfig({ bus: { [row.path[1]!]: value } })).not.toThrow();
       expect(() => validateOperationalConfig({ bus: { [row.path[1]!]: value } })).not.toThrow();
     }
-    for (const value of [0, -1, 1.5, row.max + 1, NaN, Infinity, "2", null]) {
+    for (const value of [row.min - 1, -1, 1.5, row.max + 1, NaN, Infinity, "2", null]) {
       if (value === null) expect(checkSettingValue(def, value)).toBeNull(); // UI inherit removes the local leaf
       else expect(() => checkSettingValue(def, value)).toThrow();
       expect(() => validateRawConfig({ bus: { [row.path[1]!]: value } })).toThrow(row.key);
       expect(() => validateOperationalConfig({ bus: { [row.path[1]!]: value } })).toThrow(row.key);
     }
-    if (row.key !== "bus.max_attempts") expect(row.max).toBe(row.defaultValue); // four existing ceilings only tighten
+    if (row.key !== "bus.max_attempts" && row.key !== BUS_ACCEPTED_SETTLE_MS_SETTING.key) expect(row.max).toBe(row.defaultValue); // existing ceilings only tighten
   }
 });
 
@@ -267,9 +269,10 @@ test("#489 five real daemon settings rows write, inherit and undo through the ex
     const get = async () => (await client.request({ t: "settings_get" })).rows.find((entry: { key: string }) => entry.key === row.key);
     expect(await get()).toMatchObject({ value: row.defaultValue, applies: "live" });
     const set = (value: unknown) => client.request({ t: "settings_set", key: row.key, value, reason: "bus settings regression" });
-    expect((await set(1)).ok).toBe(true);
-    expect((await get()).value).toBe(1);
-    expect(loadConfig(cwd).bus?.[row.path[1] as keyof NonNullable<BusOperationalConfig["bus"]>]).toBe(1);
+    const configuredValue = row.key === BUS_ACCEPTED_SETTLE_MS_SETTING.key ? row.min : 1;
+    expect((await set(configuredValue)).ok).toBe(true);
+    expect((await get()).value).toBe(configuredValue);
+    expect(loadConfig(cwd).bus?.[row.path[1] as keyof NonNullable<BusOperationalConfig["bus"]>]).toBe(configuredValue);
     // Exercise the daemon's constructor wiring as well as its settings projection.
     if (row.key === "bus.max_attempts") {
       const peer = new Peer("claude"), dropped: string[] = [];
@@ -305,7 +308,7 @@ test("#489 five real daemon settings rows write, inherit and undo through the ex
     expect((await set(null)).ok).toBe(true);
     expect((await get()).value).toBe(row.defaultValue);
     expect((await client.request({ t: "settings_undo", reason: "restore bus override" })).ok).toBe(true);
-    expect((await get()).value).toBe(1);
+    expect((await get()).value).toBe(configuredValue);
     expect((await set(null)).ok).toBe(true);
   }
   expect((await client.request({ t: "status" })).status.instanceId).toBe(instance);

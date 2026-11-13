@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync, statSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, readSync as fsReadSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, sep } from "node:path";
 import { realPath } from "../hub/project.ts";
@@ -41,6 +41,10 @@ export interface KimiWireRow {
 
 export type KimiWireRead =
   | { status: "ok"; rows: KimiWireRow[]; /** bytes remain unread because of the per-call bound: read again */ more: boolean }
+  | { status: "unknown"; reason: KimiWireReason };
+
+export type KimiWireSlice =
+  | { status: "ok"; rows: KimiWireRow[]; more: boolean; commit(): void }
   | { status: "unknown"; reason: KimiWireReason };
 
 /** What counts against `budget.kimi_tokens_5h`: new input, cache writes and output. Cache reads are recorded and shown, never counted. */
@@ -88,6 +92,8 @@ export class KimiWireReader {
   private dir: string | undefined;
   private files = new Map<string, FileState>();
   private broken: KimiWireReason | undefined;
+  private bytes = 0;
+  private discovery = 0;
 
   constructor(options: KimiWireOptions) {
     this.home = options.home;
@@ -95,15 +101,34 @@ export class KimiWireReader {
     this.chunk = Math.max(LINE_CAP * 2, options.maxBytes ?? DEFAULT_CHUNK);
   }
 
+  private readBytes(fd: number, buffer: Buffer, offset: number, length: number, position: number): number {
+    const read = fsReadSync(fd, buffer, offset, length, position);
+    this.bytes += read;
+    return read;
+  }
+
   /** The rows written since the last successful read, sub-agents included. */
   read(): KimiWireRead {
+    const slice = this.readSlice();
+    if (slice.status === "unknown") return slice;
+    const { commit, ...read } = slice;
+    commit();
+    return read;
+  }
+
+  /** Numeric I/O observations for deterministic benchmarks; no path, row or native text. */
+  stats(): { bytes: number; discovery: number } { return { bytes: this.bytes, discovery: this.discovery }; }
+
+  /** A successful slice commits its offsets only after the caller has committed every row it returned. */
+  readSlice(): KimiWireSlice {
     if (this.broken) return { status: "unknown", reason: this.broken };
+    this.bytes = 0; this.discovery = 0;
     try {
-      const dir = this.resolve();
+      const dir = this.resolve(); this.discovery++;
       const next = new Map<string, FileState>();
       const rows: KimiWireRow[] = [];
       let more = false, budget = this.chunk;
-      const agents = this.agents(dir);
+      const agents = this.agents(dir); this.discovery++;
       for (const name of this.files.keys()) if (!agents.has(name)) throw new Unknown("missing");
       for (const [name, wire] of agents) {
         const previous = this.files.get(name);
@@ -114,8 +139,8 @@ export class KimiWireReader {
         budget -= result.read;
         more ||= result.more;
       }
-      this.files = next;
-      return { status: "ok", rows, more };
+      let committed = false;
+      return { status: "ok", rows, more, commit: () => { if (!committed) { this.files = next; committed = true; } } };
     } catch (error) {
       const reason: KimiWireReason = error instanceof Unknown ? error.reason : "io-error";
       if (!TRANSIENT.has(reason)) this.broken = reason; // the log no longer matches what was counted: stays unknown for this session
@@ -161,7 +186,7 @@ export class KimiWireReader {
       const buffer = Buffer.allocUnsafe(stat.size);
       let got = 0;
       while (got < stat.size) {
-        const n = readSync(fd, buffer, got, stat.size - got, got);
+        const n = this.readBytes(fd, buffer, got, stat.size - got, got);
         if (n <= 0) break;
         got += n;
       }
@@ -206,7 +231,7 @@ export class KimiWireReader {
       let got = 0;
       while (got < length) {
         let n: number;
-        try { n = readSync(fd, buffer, got, length - got, start + got); } catch { throw new Unknown("io-error"); }
+        try { n = this.readBytes(fd, buffer, got, length - got, start + got); } catch { throw new Unknown("io-error"); }
         if (n <= 0) throw new Unknown("shrunk");
         got += n;
       }
@@ -234,7 +259,7 @@ export class KimiWireReader {
       let got = 0;
       while (got < length) {
         let n: number;
-        try { n = readSync(fd, buffer, got, length - got, state.offset + got); } catch { throw new Unknown("io-error"); }
+        try { n = this.readBytes(fd, buffer, got, length - got, state.offset + got); } catch { throw new Unknown("io-error"); }
         if (n <= 0) break;
         got += n;
       }

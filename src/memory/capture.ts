@@ -1,9 +1,11 @@
+import { reviewCaptureExcluded } from "../hub/memory-policy.ts";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { defaultCapturePeer } from "../adapters/definitions/native-identity-defaults.ts";
-import { BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, HANDOFF_TOOLS, STUDY_TOOLS } from "../hub/hub-tools.ts";
+import { BOUNDED_TASK_TOOLS, LINEAGE_TOOL_NAMES, GUIDANCE_TOOL_NAMES, CAPABILITY_TOOLS, HANDOFF_TOOLS, QUESTION_TOOLS, STUDY_TOOLS } from "../hub/hub-tools.ts";
 import { MEMORY_READ_TOOLS } from "../hub/read-tools.ts";
 import { isDenied } from "../local/deny.ts";
 import type { MemoryClient } from "./client.ts";
+import { stripRecordLines } from "./records.ts";
 
 export interface CaptureOptions {
   project: string;
@@ -38,7 +40,9 @@ export class Capture {
   }
 
   observe(call: { tool: string; args: string; output: string; id: string; paths: string[]; sourceId?: string }): void {
-    if (!this.sessionId || ((MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || BOUNDED_TASK_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || CAPABILITY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || STUDY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || HANDOFF_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_memory_correct") || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_source_read" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_set_title" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_evidence_record" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_evidence_read" || this.opts.skip?.includes(call.tool)) return;
+    if (!this.sessionId || GUIDANCE_TOOL_NAMES.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_audit_report" || LINEAGE_TOOL_NAMES.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || reviewCaptureExcluded(call.tool, call.args) || ((MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || BOUNDED_TASK_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || CAPABILITY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || STUDY_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || HANDOFF_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_memory_correct") || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_source_read" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_set_title" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_evidence_read" || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_evidence_record" || this.opts.skip?.includes(call.tool)) return;
+    // #1053: a question and its answer are the person's and the peer's words: never memory evidence, whatever the call's paths say.
+    if (QUESTION_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) return;
     // Anything that names a denylisted path is kept out of memory entirely, input and output alike.
     if (call.paths.some((p) => isDenied(p, this.opts.deny) || p.split(/\s+/).some((word) => isDenied(word, this.opts.deny)))) return;
     // ponytail: legacy callers without a host sourceId dedupe native ids within a summary interval; all live LocalPeer calls supply invocation identity. Require that port for other hosts.
@@ -59,7 +63,7 @@ export class Capture {
 
   summarize(lastAssistantMessage: string): void {
     if (!this.sessionId) return;
-    void this.client.appendCapture({ project: this.opts.project, cwd: this.opts.cwd, at: new Date().toISOString(), sessionId: this.sessionId, toolUseId: `summary:${++this.sequence}`, agent: this.agentId, event: "Stop", excerpt: lastAssistantMessage, platformSource: this.platformSource });
+    void this.client.appendCapture({ project: this.opts.project, cwd: this.opts.cwd, at: new Date().toISOString(), sessionId: this.sessionId, toolUseId: `summary:${++this.sequence}`, agent: this.agentId, event: "Stop", excerpt: stripRecordLines(lastAssistantMessage), platformSource: this.platformSource });
   }
 
   /** Awaited by the caller: the hub process exits right after stop(), and an unawaited request would die with it. The synchronous published store operation has completed before this promise settles. */

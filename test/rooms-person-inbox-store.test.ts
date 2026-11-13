@@ -169,6 +169,7 @@ for (const version of [1, 2, 3]) test(`schema${version} migration keeps unknown 
   const f = await pair(), human = await incoming(f), native = await incoming(f, chat("native", { to: "codex" }));
   const directory = directories.get(f.guest)!; f.guest.close();
   const db = new Database(join(directory, "rooms.db"));
+  db.exec("DROP TABLE application_attempts; DROP TABLE receipt_outbox; ALTER TABLE application_outbox DROP COLUMN content_hash;");
   db.exec("DROP TABLE person_inbox; ALTER TABLE inbox DROP COLUMN received_at;");
   if (version < 3) db.exec("ALTER TABLE inbox DROP COLUMN receipt_reserve;");
   if (version < 2) db.exec("DROP TABLE application_frames; DROP TABLE applications; DROP TABLE application_outbox;");

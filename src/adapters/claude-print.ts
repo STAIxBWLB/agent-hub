@@ -2,6 +2,7 @@ import { childEnv } from "../hub/child-process.ts";
 import { hubGitSync } from "../hub/git.ts";
 import { changedPathGroups } from "../hub/review-brief.ts";
 import { type Envelope } from "../hub/envelope.ts";
+import { resultModel } from "./print-result-model.ts";
 import { ReviewerPrintPeer, type ReviewerBackend, type ReviewerPrintOptions } from "./reviewer-print.ts";
 
 export interface ClaudePrintUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
@@ -83,6 +84,7 @@ export const claudeReviewerBackend: ReviewerBackend = {
     const row = event as { type?: string; usage?: ClaudePrintUsage } | null;
     return row?.type === "result" ? row.usage : undefined;
   },
+  model: event => (event as { type?: string } | null)?.type === "result" ? resultModel(event) : undefined,
 };
 
 /** Compatibility wrapper for the released Claude transport and its existing tests. */

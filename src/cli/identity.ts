@@ -15,6 +15,9 @@ export const LIVE_TEST_PERSON_REFUSAL = "live-test cannot write person-attribute
 
 /** Person verdicts and user-authored workflow content are never delegated. */
 export function liveTestRefusal(command: string, args: readonly string[], context: { repairedFresh?: boolean } = {}): boolean {
+  if (command === "lineage" && args[0] === "link") return true;
+  if (command === "guidance" && ["create", "withdraw"].includes(args[0] ?? "")) return true;
+  if (command === "model") return true; // #1317: even listing runtime overrides is person-only, never live-test delegated.
   if (command === "sdlc" && (args[0] === "authorize-release" || args[0] === "plan-review" || args[0] === "release-assign" || args[0] === "merge" || args[0] === "train" && args[1] !== "report")) return true;
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
   if (command === "pet" && (args.includes("--window") || args.includes("--palette"))) return false;
@@ -26,7 +29,7 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     // #601: a campaign's draft, revise, approve and close are the person's verdicts; only `show` is a read. Without this an agent shell could run them as the person through `--live-test`.
     || (command === "study" && sub !== "show" && sub !== "experiments")
     || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
-    || (command === "board" && args[0] === "import") || (command === "sdlc" && (args[0] === "record" || args[0] === "accept" || args[0] === "accept-departure"))
+    || (command === "board" && args[0] === "import") || (command === "sdlc" && (args[0] === "record" || args[0] === "accept" || args[0] === "accept-departure" || args[0] === "adopt-merge"))
     || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet"
     // #691: trusting an untested agent CLI version is the person's consent, never a delegated live-test operation.
     || command === "autonomy" || command === "title"
@@ -34,7 +37,13 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || (command === "specs" && args[0] === "stamp")
     // #1057: removing a worktree and its branch is the person's own act, in their own terminal; no delegation, live-test or otherwise, may confirm a tidy.
     || (command === "worktrees" && args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")))
-    || (command === "agents" && !args.every(arg => arg === "--json"));
+    || (command === "agents" && !args.every(arg => arg === "--json"))
+    // #1053: an answer is the person's choice, recorded as the person's; an agent that could run it through `--live-test` would answer its own hub_ask as the person. Any operand answers (the set, a pick, --other); a bare listing stays allowed.
+    || (command === "answer" && args.some(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")))
+    // #1054: a receipt is the person's record that they read a result and clears their unread need; no delegation, live-test or otherwise, may write one. A plain listing stays allowed.
+    || (command === "results" && args.some(arg => arg === "--read" || arg.startsWith("--read=") || arg === "--read-all" || arg === "--unread-last"))
+    // A takeover is a person-authored lifecycle decision; never let an agent delegate it through --live-test.
+    || command === "peer";
 }
 
 export type CliIdentity =
@@ -88,6 +97,8 @@ const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadFor
   room: { list: { displayFlags: ["--json"] }, status: { positional: 1, displayFlags: ["--json"] } },
   queue: { list: { valueFlags: ["--peer"], displayFlags: [...publicReadDisplayFlags, "--all"] } },
   roster: { "": { displayFlags: publicReadDisplayFlags } },
+  // #1411 T2: who holds which flow role, read from the running hub; nothing else takes this command.
+  roles: { "": { displayFlags: sdlcReadDisplayFlags } },
   settings: { "": { displayFlags: ["--json"] }, list: { displayFlags: ["--json"] }, get: { positional: 1, minimum: 1, displayFlags: ["--json"] } },
   // #814 renders these reads for people and keeps JSON as an explicit data format.
   sdlc: { status: { positional: 1, displayFlags: sdlcReadDisplayFlags }, explain: { positional: 1, displayFlags: sdlcReadDisplayFlags }, queue: { positional: 1, minimum: 1, displayFlags: sdlcReadDisplayFlags }, release: { positional: 33, minimum: 1, displayFlags: sdlcReadDisplayFlags } },
@@ -137,6 +148,7 @@ const isPeerReadForm = (command: string, args: readonly string[]): boolean => {
  * The branches above them are the older authority rules and stay unchanged.
  */
 export function classifyPeerCommand(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): PeerCommandAccess {
+  if (command === "model") return "console";
   if (command === "recovery" && recoveryAction(args) === "reattach") return "console";
   const native = catalog?.definitionOf(command) ?? definitionOf(command);
   if (native?.cli.personOnlyFlags?.some(flag => args.includes(flag))) return "console";
@@ -146,9 +158,12 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (conductorOperation(command,args)) return "conductor";
   if (command === "stop") return "console";
   if (command === "sdlc" && ["release-guard", "release-guard-hook"].includes(args[0] ?? "")) return "allowed";
-  // #786, #1063: guarded merge and recording explicitly instructed release consent admit the person or unique configured conductor; the daemon checks the role.
-  if (command === "sdlc" && ["merge", "authorize-release"].includes(args[0] ?? "")) return "conductor";
+  // #786, #1063, #1328: guarded merge, merge adoption and explicitly instructed release consent admit the person or unique configured conductor; the daemon checks the role.
+  if (command === "sdlc" && ["merge", "authorize-release", "adopt-merge"].includes(args[0] ?? "")) return "conductor";
   if (command === "role") return ["list", "show"].includes(args[0] ?? "") ? "allowed" : "console";
+  // The original tools identity reaches Tasks for read visibility or task-scoped link admission.
+  if (command === "lineage") return ["show", "link"].includes(args[0] ?? "") ? "allowed" : "console";
+  if (command === "guidance") return ["create", "list", "show", "withdraw"].includes(args[0] ?? "") ? "allowed" : "console";
   if (command === "task") {
     // #933: cancel, label and role act on the caller's own task only; the daemon refuses another peer's task by role (Tasks.cancel, task_catalog_role, task_label_check).
     if (["propose", "show", "cancel", "label", "role"].includes(args[0] ?? "")) return "allowed";
@@ -188,6 +203,10 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
 
 /** No argument text is included: notices and refusal logs must not copy task text or credentials. */
 export function cliCommandLabel(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): string {
+  if (command === "lineage") return ["show", "link"].includes(args[0] ?? "") ? `lineage ${args[0]}` : "lineage";
+  if (command === "guidance") return ["create", "list", "show", "withdraw"].includes(args[0] ?? "") ? `guidance ${args[0]}` : "guidance";
+  if (command === "model") return ["list", "set", "clear"].includes(args[0] ?? "") ? `model ${args[0]}` : "model";
+  if (command === "peer") return args[0] === "takeover" ? "peer takeover" : "peer";
   if (command === "backlog") return ["list", "add", "pull", "pull-ready", "split", "return", "plan", "pin", "undo"].includes(args[0] ?? "") ? `backlog ${args[0]}` : "backlog";
   if (command === "board" && args[0] === "import") return "board import";
   // #508: the registry's two forms are named in the audit and in a refusal, never their operands (a path or a URL can carry a secret).
@@ -211,10 +230,12 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "usage") return args[0] === "limits" || args[0] === "total" ? `usage ${args[0]}` : "usage";
   if (command === "deliverables") return "deliverables";
   if (command === "title") return "title";
+  // #1054: a result id is the hub's, but the audit names the action only, never the id.
+  if (command === "results") return ["--read-all", "--unread-last"].find(flag => args.includes(flag))?.slice(2) ? `results ${["--read-all", "--unread-last"].find(flag => args.includes(flag))!.slice(2)}` : args.includes("--read") || args.some(arg => arg.startsWith("--read=")) ? "results read" : "results";
   if (command === "specs") return ["list", "check", "covers", "stamp"].includes(args[0] ?? "") ? `specs ${args[0]}` : "specs";
   // #1057: the audit names the subcommand and whether it confirms, never a path, a branch or a fingerprint.
   if (command === "worktrees") return args[0] === "tidy" ? (args.some(arg => arg === "--confirm" || arg.startsWith("--confirm=")) ? "worktrees tidy confirm" : "worktrees tidy") : "worktrees";
-  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
+  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "roles", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "answer", "permission", "results", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "down", "reset", "doctor", "agents", "source", "broker", "schedule", "intake", "learn", "study"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents", "roster", "settings"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
     if (sub && ["propose", "show", "assign", "unassign", "escalate", "cancel", "claim", "label", "list", "add", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "discard", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take", "trust"].includes(sub)) return `${command} ${sub}`;

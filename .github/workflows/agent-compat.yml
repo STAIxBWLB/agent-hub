@@ -1,37 +1,217 @@
 name: agent-compat
 
-# #691: compare published agent CLI versions with the verified sets and keep one issue current. #843: daily.
 on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      dry:
+        description: Run isolated proofs and prepare artifacts, print GitHub changes without applying them
+        type: boolean
+        default: true
 
 permissions:
   contents: read
-  issues: write
+
+concurrency:
+  group: agent-compat
+  cancel-in-progress: false
+  queue: max
 
 jobs:
   watch:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.watch.outputs.matrix }}
+      ahead: ${{ steps.watch.outputs.ahead }}
+      has_runners: ${{ steps.watch.outputs.has_runners }}
+      watch_artifact: ${{ steps.watch_files.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
-      - name: Compare published versions
+      - run: bun install --frozen-lockfile
+      - name: Compare published versions and emit structured candidates
         id: watch
-        run: scripts/agent-compat-step.sh report.md bun scripts/agent-compat-watch.ts
-      - name: Keep the agent-compat issue current
+        run: bun scripts/agent-compat-watch.ts --json --report report.md --output watch.json --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: watch_files
+        with:
+          name: compat-watch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            watch.json
+            report.md
+          if-no-files-found: error
+          retention-days: 7
+
+  harness:
+    needs: watch
+    if: needs.watch.outputs.has_runners == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.watch.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Run the isolated candidate receipt
         env:
-          GH_TOKEN: ${{ github.token }}
-          AHEAD: ${{ steps.watch.outputs.ahead }}
+          COMPAT_ID: ${{ matrix.id }}
+          COMPAT_VERSION: ${{ matrix.version }}
+        run: |
+          set +e
+          bun scripts/compat-receipt.ts "$COMPAT_ID" "$COMPAT_VERSION" --out receipt --disposable-runner
+          status=$?
+          case "$status" in
+            0|1|3) exit 0 ;;
+            *) echo "Receipt did not produce a bounded verdict; next: inspect this job and its missing-artifact result." >&2; exit "$status" ;;
+          esac
+      - name: Retain the receipt even when a required leg failed or was not run
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compat-receipt-${{ matrix.id }}-${{ matrix.version }}
+          path: |
+            receipt/summary.json
+            receipt/receipt.md
+          if-no-files-found: warn
+          retention-days: 7
+
+  prepare:
+    needs: [watch, harness]
+    if: always() && !cancelled() && needs.watch.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      prepared_artifact: ${{ steps.prepared_files.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.watch.outputs.watch_artifact }}
+          path: watch-input
+      - run: mkdir -p receipt-input
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        continue-on-error: true
+        with:
+          pattern: compat-receipt-*
+          path: receipt-input
+          merge-multiple: false
+      - run: bun install --frozen-lockfile
+      # Only this trusted read-only job builds repository code. Native candidate
+      # JS/Markdown are never imported; invalid summaries produce drift only.
+      - name: Validate receipts and prepare the embedded COMPAT bundle
+        env:
+          SOURCE_BASE_SHA: ${{ github.sha }}
+          COMPAT_DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry }}
+        run: |
+          args=(--watch watch-input/watch.json --summaries receipt-input --out prepared --source-base "$SOURCE_BASE_SHA" --date "$(date -u +%F)")
+          if [ "$COMPAT_DRY" = true ]; then args+=(--dry-run); fi
+          node --experimental-strip-types scripts/compat-prepare.ts "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: prepared_files
+        with:
+          name: compat-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: prepared/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [watch, prepare]
+    if: always() && !cancelled() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      # The person selected GITHUB_TOKEN plus an explicit check.yml dispatch.
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # Download exactly the trusted preparer's immutable artifact id, not a
+      # candidate-selected bundle name. No install/build/package code runs here.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.prepared_artifact }}
+          path: prepared
+      - name: Validate the prepared publication before any mutation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_BASE_SHA: ${{ github.sha }}
+          COMPAT_DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry }}
+        run: |
+          args=(--prepared prepared --repo "$GITHUB_REPOSITORY" --source-base "$SOURCE_BASE_SHA" --validate-only)
+          if [ "$COMPAT_DRY" = true ]; then args+=(--dry-run); fi
+          node --experimental-strip-types scripts/compat-publish-run.ts "${args[@]}"
+      - name: Stage the validated watch report and ID lists
+        id: report
+        run: node --input-type=module -e 'import {readFileSync,writeFileSync,appendFileSync} from "node:fs"; const value=JSON.parse(readFileSync("prepared/index.json","utf8")); writeFileSync("report.md", value.watch.report + "\n"); appendFileSync(process.env.GITHUB_OUTPUT, "verified_ids=" + JSON.stringify(value.watch.verified) + "\ncandidate_ids=" + JSON.stringify(value.watch.candidates.map(row => row.id)) + "\n");'
+      - name: Keep the agent-compat issue current
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AHEAD: ${{ needs.watch.outputs.ahead }}
+          COMPAT_PREPARED: prepared
+          COMPAT_VERIFIED: ${{ steps.report.outputs.verified_ids }}
+          COMPAT_CANDIDATES: ${{ steps.report.outputs.candidate_ids }}
+          SOURCE_BASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          number=$(gh issue list --state open --limit 1000 --json number,title | bun scripts/agent-compat-issue.ts)
+          number=$(gh issue list --state open --limit 1000 --json number,title | node --experimental-strip-types scripts/agent-compat-issue.ts)
           if [ "$AHEAD" = "true" ]; then
+            if [ -n "${COMPAT_PREPARED:-}" ]; then
+              node --experimental-strip-types scripts/compat-publish-run.ts --repo "$GITHUB_REPOSITORY" --retain-rows report.md --verified-ids "$COMPAT_VERIFIED" --candidate-ids "$COMPAT_CANDIDATES"
+            fi
             gh label create agent-compat --color FBCA04 --description "agent CLI version drift (#691)" 2>/dev/null || true
             if [ -n "$number" ]; then gh issue edit "$number" --body-file report.md
             else gh issue create --title "agent CLI versions ahead of the verified set" --label agent-compat --body-file report.md; fi
           elif [ -n "$number" ]; then
             gh issue close "$number" --comment "$(cat report.md)"
           fi
+      - name: Publish validated PRs or drift rows, or print the dry plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_BASE_SHA: ${{ github.sha }}
+          COMPAT_DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry }}
+        run: |
+          args=(--prepared prepared --repo "$GITHUB_REPOSITORY" --source-base "$SOURCE_BASE_SHA")
+          if [ "$COMPAT_DRY" = true ]; then args+=(--dry-run); fi
+          node --experimental-strip-types scripts/compat-publish-run.ts "${args[@]}"

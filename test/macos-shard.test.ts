@@ -55,7 +55,7 @@ for (const [os, label] of [["ubuntu", "Ubuntu"], ["macos", "macOS"]] as const) {
       expect(run.exitCode === 0, `${os} reuse: ${proof}`).toBe(proof !== "");
     }
     expect(aggregate.if).toBe("always() && needs.decision.result == 'success' && (needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse')");
-    expect(shard.if).toBe("needs.decision.outputs.run_gate == 'true'");
+    expect(shard.if).toBe(os === "macos" ? MACOS_SHARD_IF : "needs.decision.outputs.run_gate == 'true'");
   });
 
   test(`#548 every ${label} shard retains 1500 s total and 300 s quiet bounds`, () => {
@@ -79,6 +79,25 @@ for (const [os, label] of [["ubuntu", "Ubuntu"], ["macos", "macOS"]] as const) {
     expect(shard.steps.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.if).toContain("failure()");
   });
 }
+
+// #1307: GitHub runs at most 5 macOS jobs at once; a stacked PR's macOS shards wait until it targets the default branch, and the required aggregator fails for it, never passes or skips.
+const MACOS_SHARD_IF = "needs.decision.outputs.run_gate == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.base.ref == github.event.repository.default_branch)";
+
+test("#1307 a stacked PR defers its macOS shards and the required macOS aggregator fails for it, naming the base, the default branch and the fix", () => {
+  const steps = jobs.macos!.steps;
+  const deferred = steps.find(step => step.name === "macOS shards deferred for a stacked PR");
+  expect(deferred?.if).toBe("needs.decision.outputs.run_gate == 'true' && github.event_name == 'pull_request' && github.event.pull_request.base.ref != github.event.repository.default_branch");
+  expect(deferred?.env).toEqual({ BASE: "${{ github.event.pull_request.base.ref }}", DEFAULT: "${{ github.event.repository.default_branch }}" });
+  // It runs before the shard check, so a deferred run fails with its own cause, and the reuse step (run_gate false) is untouched.
+  expect(steps.indexOf(deferred!)).toBeLessThan(steps.findIndex(step => step.name === "Every macOS shard passed"));
+  const run = Bun.spawnSync(["bash", "-c", deferred!.run!], { env: { ...process.env, BASE: "feat/x", DEFAULT: "main" } });
+  expect(run.exitCode).toBe(1);
+  const out = run.stdout.toString();
+  for (const part of ["feat/x", "not main", "push a commit, or close and reopen the PR"]) expect(out).toContain(part);
+  // Ubuntu and seeded legs never wait on the base.
+  expect(jobs["ubuntu-shard"]!.if).toBe("needs.decision.outputs.run_gate == 'true'");
+  expect(jobs["seeded-shard"]!.if).toBe("needs.decision.outputs.run_gate == 'true'");
+});
 
 test("#548 the committed per-file timings have bun's shape, name only test files, and positive whole milliseconds", () => {
   const timings = JSON.parse(readFileSync(new URL("../scripts/test-timings.json", import.meta.url), "utf8")) as { version: number; files: Record<string, number> };
@@ -149,21 +168,34 @@ function runGate(env: Record<string, string>, ...args: string[]) {
     for (const name of ["check-docs.mjs", "check-package.mjs", "check-owned-processes.mjs"]) writeFileSync(join(repo, "scripts", name), `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(`${name}\n`)});\n`);
     writeFileSync(join(repo, "scripts/record-test-process.mjs"), "");
     writeFileSync(join(bin, "warm-git"), `#!/bin/sh\necho "warm-git $*" >> ${JSON.stringify(log)}\nexit ${env.WARM_GIT_EXIT ?? "0"}\n`, { mode: 0o755 });
+    writeFileSync(join(bin, "uname"), `#!/bin/sh\necho "\${FAKE_UNAME_S:-Linux}"\n`, { mode: 0o755 });
     // the fake bun: logs `bun <args>`; a `test` run prints one result line on stderr, which check.sh routes through its progress filter
-    writeFileSync(join(bin, "bun"), `#!/bin/sh\necho "bun $*" >> ${JSON.stringify(log)}\ncase "$1" in test) echo "bun-test-sees AHUB_CHECK_SHARD=\${AHUB_CHECK_SHARD-unset}" >> ${JSON.stringify(log)}; echo "(pass) fake [1ms]" >&2 ;; esac\nexit 0\n`, { mode: 0o755 });
+    writeFileSync(join(bin, "bun"), `#!/bin/sh\necho "bun $*" >> ${JSON.stringify(log)}\ncase "$1" in x) echo "bun-tsc-sees NODE_OPTIONS=\${NODE_OPTIONS-unset}" >> ${JSON.stringify(log)} ;; test) echo "bun-test-sees AHUB_CHECK_SHARD=\${AHUB_CHECK_SHARD-unset}" >> ${JSON.stringify(log)}; echo "(pass) fake [1ms]" >&2 ;; esac\nexit 0\n`, { mode: 0o755 });
     expect(Bun.spawnSync(["git", "init", "-q"], { cwd: repo }).exitCode).toBe(0);
     const run = Bun.spawnSync(["bash", "scripts/check.sh", ...args], { cwd: repo, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, AHUB_CHECK_LOCK_WAIT_S: "0", AHUB_CHECK_SHARD: "", AHUB_CHECK_HANG_S: "60", AHUB_CHECK_WARM_GIT: join(bin, "warm-git"), ...env } });
     const all = (() => { try { return readFileSync(log, "utf8").split("\n").filter(Boolean); } catch { return [] as string[]; } })();
     // `steps` are the commands run; `seen` are the observations the fake bun made about its environment (kept apart so the step-order tests stay about order)
-    return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString(), steps: all.filter(line => !line.startsWith("bun-test-sees")), seen: all.filter(line => line.startsWith("bun-test-sees")) };
+    return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString(), steps: all.filter(line => !line.startsWith("bun-test-sees") && !line.startsWith("bun-tsc-sees")), seen: all.filter(line => line.startsWith("bun-test-sees")), tsc: all.filter(line => line.startsWith("bun-tsc-sees")) };
   } finally { rmSync(repo, { recursive: true, force: true }); }
 }
-const ONCE = ["check-docs.mjs", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/build.mjs --check", "check-package.mjs"];
+const ONCE = ["check-docs.mjs", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/inventory-hardcoded-values.ts --check", "bun scripts/readme-facts.ts", "bun scripts/build.mjs --check", "check-package.mjs"];
+
+test("#1318 Darwin typecheck alone gets the measured 5120 MiB heap and preserves existing NODE_OPTIONS", () => {
+  const darwin = runGate({ FAKE_UNAME_S: "Darwin", NODE_OPTIONS: "--trace-warnings" });
+  expect(darwin.code).toBe(0);
+  expect(darwin.tsc).toEqual(["bun-tsc-sees NODE_OPTIONS=--trace-warnings --max-old-space-size=5120"]);
+  const cleanDarwin = runGate({ FAKE_UNAME_S: "Darwin", NODE_OPTIONS: "" });
+  expect(cleanDarwin.code).toBe(0);
+  expect(cleanDarwin.tsc).toEqual(["bun-tsc-sees NODE_OPTIONS=--max-old-space-size=5120"]);
+  const linux = runGate({ FAKE_UNAME_S: "Linux", NODE_OPTIONS: "--trace-warnings" });
+  expect(linux.code).toBe(0);
+  expect(linux.tsc).toEqual(["bun-tsc-sees NODE_OPTIONS=--trace-warnings"]);
+});
 
 test("#548 an unsharded gate runs every step once, in order, then the whole suite, and ends `check: OK`, as before", () => {
   const run = runGate({});
   expect(run.code).toBe(0);
-  expect(run.steps.filter(step => !step.startsWith("check-owned"))).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/build.mjs --check", "check-package.mjs", "bun test --timeout 20000"]);
+  expect(run.steps.filter(step => !step.startsWith("check-owned"))).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/inventory-hardcoded-values.ts --check", "bun scripts/readme-facts.ts", "bun scripts/build.mjs --check", "check-package.mjs", "bun test --timeout 20000"]);
   expect(run.out).toContain("check: OK");
   expect(run.out).not.toContain("shard");
 });
@@ -172,7 +204,7 @@ test("#548 shard 1 runs the once-only steps and its slice of the suite on the co
   const run = runGate({ AHUB_CHECK_SHARD: "1/4" });
   expect(run.code).toBe(0);
   const steps = run.steps.filter(step => !step.startsWith("check-owned"));
-  expect(steps).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/build.mjs --check", "check-package.mjs", "warm-git --version", "bun test --timeout 20000 --shard=1/4 --timings=scripts/test-timings.json"]);
+  expect(steps).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/inventory-hardcoded-values.ts --check", "bun scripts/readme-facts.ts", "bun scripts/build.mjs --check", "check-package.mjs", "warm-git --version", "bun test --timeout 20000 --shard=1/4 --timings=scripts/test-timings.json"]);
   expect(run.out.trim().split("\n").at(-1)).toBe("check: OK (shard 1/4)");
 });
 

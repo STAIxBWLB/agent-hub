@@ -58,7 +58,6 @@ test("legacy sy route calls the fixed alias directly and warns once across calls
   await ctx.deliver("first turn");
   await ctx.deliver("second turn");
   expect(ctx.model.requests.map(request => request.body.model)).toEqual(Array(4).fill("vllm/fixed"));
-  expect(ctx.model.requests.every(request => !request.headers["x-switchyard-session-id"])).toBe(true);
   const warnings = ctx.lines.filter(line => line.includes("sy/coding") && /deprecated|legacy|unsupported|ignored/i.test(line));
   expect(warnings).toHaveLength(1);
   expect(ctx.said.map(message => message.body)).toEqual(["done", "done"]);

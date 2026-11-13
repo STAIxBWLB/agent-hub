@@ -14,7 +14,7 @@ let messageCount = 0;
 const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
 createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line) as { id?: string; type?: string };
-  if (request.type === "get_state") send({ type: "response", id: request.id, command: "get_state", success: true, data: { isStreaming: false, isCompacting: false, pendingMessageCount: 0, messageCount, sessionId, sessionFile } });
+  if (request.type === "get_state") send({ type: "response", id: request.id, command: "get_state", success: true, data: { ...(option("--model-id") ? { model: { id: option("--model-id"), name: option("--model-id"), api: "openai-completions", provider: "agent-hub-local" } } : {}), isStreaming: false, isCompacting: false, pendingMessageCount: 0, messageCount, sessionId, sessionFile } });
   else if (request.type === "set_model") send({ type: "response", id: request.id, command: "set_model", success: true });
   else if (request.type === "prompt" || request.type === "steer") { messageCount++; send({ type: "response", id: request.id, command: request.type, success: true }); }
 });

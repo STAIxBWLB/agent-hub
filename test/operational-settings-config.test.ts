@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
-import { GROOM_FYI_WINDOW_SETTING } from "../src/hub/operational-settings.ts";
+import { BUS_ACCEPTED_SETTLE_MS_SETTING, GROOM_FYI_WINDOW_SETTING } from "../src/hub/operational-settings.ts";
 import { realPath } from "../src/hub/project.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { settingDef, writeConfigSetting, undoSetting } from "../src/hub/settings.ts";
@@ -35,6 +35,21 @@ test("#489 startup validates operational bounds in both files before merging", (
   writeFileSync(f.shared, JSON.stringify({ tasks: { groom_fyi_window_min: 0 } }));
   writeFileSync(f.file, JSON.stringify({ tasks: { groom_fyi_window_min: 10 } }));
   expect(() => loadConfig(f.cwd)).toThrow(key); // A good local override never masks invalid shared input.
+});
+
+test("#1172 accepted channel settlement timeout validates the closed bus setting in both files", () => {
+  for (const filename of ["config.json", "config.local.json"]) {
+    const f = project(), target = join(f.cwd, ".agenthub", filename);
+    expect(loadConfig(f.cwd).bus?.accepted_settle_ms).toBe(BUS_ACCEPTED_SETTLE_MS_SETTING.defaultValue);
+    for (const value of [999, 86_400_001, 1.5, "600000", null, true, []]) {
+      writeFileSync(target, JSON.stringify({ bus: { accepted_settle_ms: value } }));
+      expect(() => loadConfig(f.cwd)).toThrow(BUS_ACCEPTED_SETTLE_MS_SETTING.key);
+    }
+    for (const value of [1000, 600_000, 86_400_000]) {
+      writeFileSync(target, JSON.stringify({ bus: { accepted_settle_ms: value } }));
+      expect(loadConfig(f.cwd).bus?.accepted_settle_ms).toBe(value);
+    }
+  }
 });
 
 test("#489 settings inherit and undo use the existing local file and loader", () => {

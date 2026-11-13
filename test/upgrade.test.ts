@@ -225,6 +225,14 @@ test("blocked plans cannot create operations and exact versions reject shell/tag
   for (const value of ["latest", "^0.5.0", "0.5.0; echo bad", "../pkg"]) expect(() => exactVersion(value)).toThrow();
   expect(exactVersion("0.5.0-rc.1")).toBe("0.5.0-rc.1");
   await expect(registryRelease("0.5.0", async () => ({ code: 0, stdout: JSON.stringify({ version: "9.0.0", "dist.integrity": "sha512-fake" }), stderr: "" }))).rejects.toThrow("unexpected release");
+  // #1253: npm 11 printed the object, npm 12 wraps it in a one-element array; both are the same release.
+  const release = { version: "0.5.0", "dist.integrity": "sha512-fake" };
+  for (const stdout of [JSON.stringify(release), JSON.stringify([release], null, 2)]) {
+    expect(await registryRelease("0.5.0", async () => ({ code: 0, stdout, stderr: "" }))).toEqual({ version: "0.5.0", integrity: "sha512-fake" });
+  }
+  for (const stdout of ["[]", JSON.stringify([release, release]), JSON.stringify(["0.5.0"]), "null", "not json"]) {
+    await expect(registryRelease("0.5.0", async () => ({ code: 0, stdout, stderr: "" }))).rejects.toThrow("unexpected release identity for @staix/agent-hub@0.5.0");
+  }
 });
 
 test("resume rejects an altered reviewed plan before executing a driver action", async () => {

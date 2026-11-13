@@ -11,7 +11,7 @@ import { runRoomCommand } from "../src/cli/room.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
-import { RoomStore, type RoomState } from "../src/rooms/store.ts";
+import { RoomStore, RoomStoreError, type RoomState } from "../src/rooms/store.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -77,7 +77,8 @@ test("X5 live status and dashboard publish only loaded room metadata without bod
         expect(rows).toHaveLength(1);
         expect(rows[0]).toMatchObject({ name: "test", epoch: "1", memberCount: 1,
           relays: { since: 123456, outbound: 0, inbound: 0, withheld: 0 } });
-        expect(Object.keys(rows[0]).sort()).toEqual(["epoch", "link", "member", "memberCount", "name", "owner", "relays", "remotePeers", "room"]);
+        expect(Object.keys(rows[0]).sort()).toEqual(["epoch", "health", "link", "linkCause", "linkNextStep", "member", "memberCount", "name", "owner", "relays", "remotePeers", "room"]);
+        expect(rows[0].health).toEqual({ refused: { invalid_presence: 0, wrong_epoch: 0, trust_changed: 0, stale: 0, invalid_frame: 0 }, outboxDepth: 0, oldestOutboxAgeMs: null, lastReceiptAgeMs: null });
       }
       expect(JSON.stringify([status, snapshot])).not.toContain(canary);
     }
@@ -88,7 +89,11 @@ test("X5 live status and dashboard publish only loaded room metadata without bod
     const internal = (store as unknown as { rooms: Map<string, RoomState> }).rooms.get("test")!;
     const wire = internal.wire;
     Object.defineProperty(internal, "wire", { configurable: true, get() { getterReads++; throw new Error(canary); } });
-    try { expect(metadata.call(store!)[0]?.members).toBe(1); expect(getterReads).toBe(0); }
+    try {
+      expect(metadata.call(store!)[0]?.members).toBe(1);
+      expect((await f.person.request({ t: "status" })).status.rooms).toHaveLength(1);
+      expect(getterReads).toBe(0);
+    }
     finally { Object.defineProperty(internal, "wire", { configurable: true, enumerable: true, writable: true, value: wire }); }
     for (const name of ["status.json", "hub.log", "events.jsonl"]) expect(readFileSync(join(f.stateDir, name), "utf8")).not.toContain(canary);
   } finally { metrics.mockRestore(); details.mockRestore(); meta.mockRestore(); }
@@ -278,7 +283,7 @@ test("person inbox expiry schedules a retry only after an actual purge and coale
   changed = true; commands.expireInbox(); changed = false; commands.expireInbox();
   await new Promise<void>(resolve => setImmediate(resolve));
   expect(retries).toBe(1);
-  commands.stop();
+  await commands.stop();
 });
 
 
@@ -302,4 +307,18 @@ test("person inbox disposition replies before a blocked network retry and a late
     f.person.close();
     expect(response.ok).toBe(true);
   } finally { release(); await pending; retry.mockRestore(); dispose.mockRestore(); }
+});
+
+test("room status during a store retry preserves the closed cause without a raw exception", async () => {
+  const f = await fixture(); mkdirSync(join(f.stateDir, "rooms"), { recursive: true });
+  const error = new RoomStoreError("busy"); error.message = "PRIVATE_ROOM_ERROR_CANARY";
+  const open = spyOn(RoomStore, "open").mockRejectedValue(error);
+  try {
+    const preview = await f.person.request({ t: "room", op: "preview", action: "create", input: { name: "work", broker: "ws://127.0.0.1:1/" } });
+    expect(preview.ok).toBe(false);
+    const status = await f.person.request({ t: "room", op: "status" });
+    expect(status).toMatchObject({ ok: false, code: "rooms_unavailable", roomsUnavailable: { code: "busy" } });
+    expect(status.roomsUnavailable.nextStep).toContain("competing room store writer");
+    expect(JSON.stringify(status)).not.toContain("CANARY");
+  } finally { open.mockRestore(); }
 });

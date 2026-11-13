@@ -187,3 +187,25 @@ test("a proven live profile takes precedence over an absent default fallback", a
   const result = await f.discover();
   expect(result.homes).toEqual([{ path: f.profile, exists: true, sources: ["recorded-launch"] }]);
 });
+
+
+test("blocked plugin inspection passes the explicit fake HOME and preserves every safe native scope", async () => {
+  const f = fixture(), packageRoot = join(f.root, "package"), alias = join(f.root, "user-alias"); mkdirSync(packageRoot); symlinkSync(f.home, alias);
+  const row = { id: "agent-hub@agent-hub", scope: "managed-future", projectPath: f.home, version: "0.23.1", installPath: join(f.root, "old-cache") };
+  const result = await checkClaudeHome({ path: f.profile, exists: true, sources: ["environment"] }, packageRoot, { ...f.env, HOME: alias }, argv => ({ status: 0,
+    stdout: JSON.stringify(argv.includes("marketplace") ? [{ name: "agent-hub", path: join(f.root, "old-package") }] : [row]) }));
+  expect(result.next).toMatchObject({ blocked: true, argv: [] });
+  for (const field of ["scope", "projectPath", "version", "installPath"] as const) expect(result.next!.why).toContain(`${field}=${JSON.stringify(row[field])}`);
+  expect(result.next!.why).toContain(join(alias, ".agenthub/releases"));
+  expect(result.next!.why).toContain("Do not run 'claude plugin uninstall --scope project' from $HOME");
+  expect(result.plugin).toMatchObject({ notices: [expect.stringContaining("managed-future plugin row preserved")] });
+});
+
+test("unsafe native scope and project metadata cannot forge the blocked refusal display", async () => {
+  const f = fixture(), row = { id: "agent-hub@agent-hub", scope: "project\nFORGED_SCOPE", projectPath: "private\nFORGED_PATH", version: "0.23.1", installPath: join(f.root, "cache") };
+  const result = await checkClaudeHome({ path: f.profile, exists: true, sources: ["environment"] }, f.root, f.env, argv => ({ status: 0,
+    stdout: JSON.stringify(argv.includes("marketplace") ? [{ name: "agent-hub", path: join(f.root, "old-package") }] : [row]) }));
+  expect(result.next).toMatchObject({ blocked: true, argv: [] });
+  expect(result.next!.why).toContain('scope="unknown"'); expect(result.next!.why).toContain('projectPath="unknown"');
+  expect(JSON.stringify(result)).not.toContain("FORGED");
+});

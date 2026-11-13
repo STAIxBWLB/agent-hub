@@ -83,7 +83,18 @@ try {
     if (notes.status !== 0) throw new Error("committed agent notes unavailable");
     noteNames = notes.stdout.split("\0").filter(Boolean);
   } else noteNames = readdirSync(join(root, "docs/agent-notes"));
-  const required = ["README.md", "docs/security.md", "docs/operations.md", "docs/quickstart.md", ...noteNames.filter((name) => name.endsWith(".md")).map((name) => `docs/agent-notes/${name}`)];
+  // #1268: every user-facing page directly under docs/ and docs/addons/ needs a stamp too; an absent directory lists nothing.
+  // The smoke ledger and the retired GSD analysis are dated records with their own evidence, like specs and the changelog.
+  const records = new Set(["docs/smoke.md", "docs/gsd-collaboration-analysis.md"]);
+  const pages = (dir) => {
+    if (!committed) return existsSync(join(root, dir)) ? readdirSync(join(root, dir)) : [];
+    const listed = git("ls-tree", "-z", "--name-only", `${headId}:${dir}`);
+    if (listed.status === 0) return listed.stdout.split("\0").filter(Boolean);
+    if (git("cat-file", "-e", `${headId}:${dir}`).status === 0) throw new Error(`committed ${dir} unavailable`);
+    return [];
+  };
+  const userDocs = ["docs", "docs/addons"].flatMap((dir) => pages(dir).filter((name) => name.endsWith(".md")).map((name) => `${dir}/${name}`)).filter((path) => !records.has(path));
+  const required = [...new Set(["README.md", "docs/security.md", "docs/operations.md", "docs/quickstart.md", ...userDocs, ...noteNames.filter((name) => name.endsWith(".md")).map((name) => `docs/agent-notes/${name}`)])];
   for (const path of required.sort()) if (!Object.hasOwn(manifest.documents, path)) errors.push(`missing manifest entry: ${path}`);
   const pkg = JSON.parse(read("package.json"));
   if (typeof pkg.version === "string" && /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:[+][0-9A-Za-z.-]+)?$/.test(pkg.version)) packageVersion = pkg.version;

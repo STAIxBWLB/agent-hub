@@ -68,8 +68,8 @@
     {
       "id": "roster-o-retained",
       "file": "src/cli/console-state.ts",
-      "search": "return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),",
-      "replacement": "return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === \"offline\" ? undefined : \"info\"), span(row.state, stateTone(row.state)),",
+      "search": "return [id(tags.length ? `${row.id} (${tags.join(\", \")})` : row.id, row.state === \"offline\" ? undefined : \"info\"), span(`${row.rostered === false ? `${row.state} off roster` : row.state}${Array.isArray(row.standbySessions) && row.standbySessions.length ? ` +standby:${row.standbySessions.length}` : \"\"}`, stateTone(row.state)),",
+      "replacement": "return [id(tags.length ? `${row.id} (${tags.join(\", \")})` : row.id, row.state === \"offline\" ? undefined : \"info\"), span(`${row.state}${Array.isArray(row.standbySessions) && row.standbySessions.length ? ` +standby:${row.standbySessions.length}` : \"\"}`, stateTone(row.state)),",
       "testFile": "test/output.test.ts",
       "testName": "retained off-roster status and queue rows say why their work is held (#315)"
     },
@@ -228,8 +228,8 @@
     {
       "id": "roster-request-fence",
       "file": "src/hub/daemon.ts",
-      "search": "    if (c.role !== \"console\" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });",
-      "replacement": "    if (c.role !== \"console\" && c.peer && false) return void reply({ ok: false, error: `${c.peer} is off roster` });",
+      "search": "    if (c.role !== \"console\" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: msg.t === \"task\" && (msg.op === \"hub_visual\" || msg.op === \"hub_visual_show\") ? visualOperational(\"membership\").message : `${c.peer} is off roster` });",
+      "replacement": "    if (c.role !== \"console\" && c.peer && false) return void reply({ ok: false, error: msg.t === \"task\" && (msg.op === \"hub_visual\" || msg.op === \"hub_visual_show\") ? visualOperational(\"membership\").message : `${c.peer} is off roster` });",
       "testFile": "test/roster.test.ts",
       "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
     },
@@ -244,8 +244,8 @@
     {
       "id": "roster-late-attach",
       "file": "src/hub/daemon.ts",
-      "search": "          if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);",
-      "replacement": "          if (sock.readyState === WebSocket.OPEN) ws.attach(sock);",
+      "search": "            if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);",
+      "replacement": "            if (sock.readyState === WebSocket.OPEN) ws.attach(sock);",
       "testFile": "test/roster.test.ts",
       "testName": "a late preface completion cannot attach an off-roster claimant (#315)"
     },
@@ -1092,8 +1092,8 @@
     {
       "id": "override-local-schema",
       "file": "src/adapters/local-worker.ts",
-      "search": "const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== \"hub_delivery_retry\"),",
-      "replacement": "const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(undefined, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== \"hub_delivery_retry\"),",
+      "search": "const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria, this.opts.sdlcAudit).filter(tool => tool.name !== \"hub_delivery_retry\"),",
+      "replacement": "const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(undefined, this.opts.sdlcStages, this.opts.sdlcCriteria, this.opts.sdlcAudit).filter(tool => tool.name !== \"hub_delivery_retry\"),",
       "testFile": "test/local-worker.test.ts",
       "testName": "local worker publishes resolved custom profile classes and selected plan fields to its actual provider (#259)"
     },
@@ -1188,7 +1188,7 @@
     {
       "id": "lifecycle-native-schema",
       "file": "src/adapters/claude-channel.ts",
-      "search": "profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria)",
+      "search": "profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria, lifecycle?.audit)",
       "replacement": "profileTaskTools(profile)",
       "testFile": "test/lifecycle-native.test.ts",
       "testName": "every managed MCP surface advertises the project lifecycle ids in its real tools response (#257)"
@@ -2316,7 +2316,7 @@
     {
       "id": "pet-first-kind-state-consistency",
       "file": "src/cli/pet.ts",
-      "search": "if (row.state === \"waiting\" && ![\"approval\", \"default\"].includes(first?.kind ?? \"\")) return;",
+      "search": "if (row.state === \"waiting\" && ![\"approval\", \"default\", \"question\"].includes(first?.kind ?? \"\")) return;",
       "replacement": "if (false) return;",
       "testFile": "test/pet-summary-validation.test.ts",
       "testName": "pet snapshot state and level require a consistent first structural item"
@@ -3419,9 +3419,9 @@
     },
     {
       "id": "kimi-review-current-ancestor",
-      "file": "src/adapters/kimi-review.ts",
-      "search": "assertCleanCwdAncestors(join(lexicalRoot,\"workspace\"),cwd);",
-      "replacement": "void lexicalRoot;",
+      "file": "src/adapters/kimi-review-policy.ts",
+      "search": "assertCleanCwdAncestors(binding.lexicalCwd, binding.physicalCwd);",
+      "replacement": "void binding.lexicalCwd;",
       "testFile": "test/kimi-review.test.ts",
       "testName": "Kimi current fence refuses an ambient ancestor created after preparation"
     },
@@ -3564,8 +3564,8 @@
     {
       "id": "broker-frame-generation",
       "file": "src/broker/server.ts",
-      "search": "active(client);\n      const result = store.enqueue(proof, client.member!);",
-      "replacement": "void client;\n      const result = store.enqueue(proof, client.member!);",
+      "search": "active(client);\n        const result = store.enqueue(proof, client.member!, onlineRecipients);",
+      "replacement": "void client;\n        const result = store.enqueue(proof, client.member!, onlineRecipients);",
       "testFile": "test/broker-server.test.ts",
       "testName": "socket replacement and shutdown fence a verified packet waiting before store effects"
     },
@@ -3740,10 +3740,10 @@
     {
       "id": "room-presence-exposure-await-fence",
       "file": "src/rooms/link.ts",
-      "search": "if (peers.some(peer => !allowed.has(peer.id))) return;",
-      "replacement": "if (false) return;",
-      "testFile": "test/rooms-link.test.ts",
-      "testName": "a presence exposure removed while encryption waits is withheld before the socket send"
+      "search": "&& peers.every(peer => this.currentPresence(own.exposedPeers).some(value => value.id === peer.id))",
+      "replacement": "&& true",
+      "testFile": "test/rooms-backpressure-732.test.ts",
+      "testName": "queued presence rechecks exposure at actual send and stop clears queue_full backoff"
     },
     {
       "id": "room-durable-counter-restore",
@@ -3844,8 +3844,8 @@
     {
       "id": "queue-pressure-plan-gate-handoff",
       "file": "src/hub/tasks.ts",
-      "search": "const origin = this.d.board.queuePressureStallPage(task.id - 1, 1).rows.find(row => row.task === task.id);",
-      "replacement": "const origin = stall;",
+      "search": "if (this.isHeld(latest)) this.d.board.clearStall(task.id);",
+      "replacement": "if (false) this.d.board.clearStall(task.id);",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "a queue origin hands off to a plan gate after one GitHub read despite unrelated queue wakes"
     },
@@ -4068,8 +4068,8 @@
     {
       "id": "queue-pressure-post-await-policy-handoff",
       "file": "src/hub/tasks.ts",
-      "search": "const transient = replacing && (replacing.cause.kind === \"no-eligible-peer\" || replacing.cause.kind === \"reservation\") && replacing.cause.code !== \"policy\" && (refusal === \"offline\" || refusal === \"not-attached\");",
-      "replacement": "const transient = !!replacing;",
+      "search": "if (this.isHeld(latest)) this.d.board.clearStall(task.id);",
+      "replacement": "if (false) this.d.board.clearStall(task.id);",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "a plan policy refusal still replaces a queue origin when its peer goes offline during the same await"
     },
@@ -4084,7 +4084,7 @@
     {
       "id": "room-x5-live-projection",
       "file": "src/hub/daemon.ts",
-      "search": "    rooms: roomCommands.statusView(),",
+      "search": "    ...roomCommands.statusSnapshot(),",
       "replacement": "    rooms: [],",
       "testFile": "test/rooms-daemon.test.ts",
       "testName": "X5 live status and dashboard publish only loaded room metadata without body title or detail reads"
@@ -4472,6 +4472,22 @@
       "replacement": "...(researchRunners.count || config.research.runners !== undefined ? { researchRunners } : {})",
       "testFile": "test/research-runner-recovery.test.ts",
       "testName": "a two-daemon recovery releases a legacy runner-free integrity snapshot despite a raw runner key"
+    },
+    {
+      "id": "model-person-control-fence",
+      "file": "src/hub/daemon.ts",
+      "search": "        if (c.role !== \"console\") return void reply(modelFailure(\"model overrides are person-only; run ahub model in a person's terminal\"));\n        return void reply(modelCommandSafe(msg, { source: \"cli\", scope: c, current: () => c.authed === true && !c.closed && c.role === \"console\" && sock.readyState === WebSocket.OPEN }));",
+      "replacement": "        if (false) return void reply(modelFailure(\"model overrides are person-only; run ahub model in a person's terminal\"));\n        return void reply(modelCommandSafe(msg, { source: \"cli\", scope: c, current: () => c.authed === true && !c.closed && sock.readyState === WebSocket.OPEN }));",
+      "testFile": "test/daemon-model-overrides.test.ts",
+      "testName": "tools cannot list or mutate override state and no hub tool gains a model mutation"
+    },
+    {
+      "id": "model-ack-order-fence",
+      "file": "src/adapters/codex-appserver.ts",
+      "search": "    if ((this.nativeModels.get(start.thread)?.sequence ?? 0) >= start.sequence) return undefined;",
+      "replacement": "    if (false) return undefined;",
+      "testFile": "test/codex.test.ts",
+      "testName": "an older forwarded model ACK cannot replace a newer accepted hub model or its sticky clear hint"
     }
   ]
 }

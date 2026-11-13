@@ -1,3 +1,11 @@
+/** One host-latched runtime choice; applied binds the captured revision and boundary, never a later value. */
+export interface ModelOverrideSelection {
+  readonly model: string | undefined;
+  applied(nativeModel?: string): void;
+  /** Retire only this still-unacknowledged capture after a definitive native pre-start rejection. */
+  rejected?(): void;
+}
+
 import type { ClaudeImplementerOptions } from "./claude-implementer.ts";
 import type { ReviewerBackend, ReviewerPrintOptions } from "./reviewer-print.ts";
 import type { SettingDef } from "../hub/settings.ts";
@@ -81,6 +89,10 @@ export interface CreateContext<Ports extends DaemonPorts = DaemonPorts> {
   daemon: Ports;
 }
 
+/** `native-stop`: Claude's transcript-verified Stop. `turn-completed`: Codex's `turn/completed` with no active turn. `agent-settled`: Pi's own settled event. `route-outcome`: the local worker's per-decision outcome. `prompt-response`: an ACP `session/prompt` response. `message-stop`: Qwen's TUI `message_stop`. */
+export type SettleSignal = "native-stop" | "turn-completed" | "agent-settled" | "route-outcome" | "prompt-response" | "message-stop";
+export const SETTLE_SIGNALS: readonly SettleSignal[] = Object.freeze(["native-stop", "turn-completed", "agent-settled", "route-outcome", "prompt-response", "message-stop"]);
+
 export interface StartRequest {
   instance: string;
   form?: StartForm;
@@ -122,7 +134,7 @@ export interface ContextReader {
 export type { Capability, CapabilityManifest, SideEffect } from "../hub/capabilities.ts";
 
 export interface NativeFactsInput {
-  event: "SessionStart" | "PreInvocation" | "PostInvocation" | "PreToolUse" | "PostToolUse" | "Stop";
+  event: "SessionStart" | "PreInvocation" | "PostInvocation" | "PreToolUse" | "PostToolUse" | "Stop" | "TurnStarted" | "StopFailure" | "Interrupt" | "SessionEnd" | "TaskStarted" | "Notification";
   phase: "session" | "start" | "pre" | "post" | "stop";
   sessionId: string;
   transcriptPath: string;
@@ -133,16 +145,39 @@ export interface NativeFactsInput {
   invocation?: number;
   fullyIdle?: boolean;
   terminationReason?: string;
+  /** #1402: the hook payload's `modelName` when it is a safe model id; the session's current model, never a per-response one. */
+  model?: string;
+}
+export interface NativeFactsReadOptions {
+  completion?: boolean;
+  sinceOffset?: number;
+  unchanged?: { size: number; mtimeMs: number };
+}
+export interface NativeFactsUsage {
+  id: string;
+  index: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  at?: string;
 }
 export interface NativeFactsTranscript {
-  completion?: { id: string; index: number };
+  completion?: { id: string; index: number; reason?: "completed" | "failed" | "cancelled" };
+  started?: { id: string; index: number; origin: string };
+  background?: number;
   factIds: string[];
+  usage?: NativeFactsUsage[];
+  size?: number;
+  mtimeMs?: number;
+  scannedFrom?: number;
+  unchanged?: boolean;
 }
 /** Fixed native codec and bounded readback, never supplied by project configuration. */
 export interface NativeFactsPort {
   decode(event: string, input: unknown): NativeFactsInput | undefined;
   encode(event: string, text?: string): Record<string, unknown> | undefined;
-  read(session: string, transcript: string): NativeFactsTranscript;
+  read(session: string, transcript: string, options?: NativeFactsReadOptions): NativeFactsTranscript;
 }
 
 /** Only the frozen native seams are extensible; a definition cannot add an arbitrary daemon callback. */
@@ -208,6 +243,14 @@ export interface AdapterDefinition {
   title?: "native" | "hub";
   /** Fixed builtins only: the title slot survives native-session restoration. Absent means ephemeral. */
   titlePersistence?: "native";
+  /** #1053: how long a `hub_ask` call waits for the person before it answers `pending` (milliseconds). MCP peers 45 s, hub-native peers 300 s; config `questions.wait_ms.<kind>` overrides it. Fixed builtins only. */
+  questionWaitMs?: number;
+  /**
+   * #1054: the code-verified signal that ends a peer's logical run, declared per definition. ABSENT means the adapter creates no completion: nothing is guessed (owner
+   * decision 2026-11-04). Fixed builtins only (`assertNativeCapabilityScope`): a project or external definition cannot claim one. A definition with a pull-only form (Kimi's TUI)
+   * declares it for its headless form only, because the daemon starts no run for a peer that attached pull-only.
+   */
+  settle?: { signal: SettleSignal };
   /** External module data-only opt-in. The verified loader derives the internal instances policy from it (#754). */
   headlessInstances?: { form: "headless"; roles: readonly ("implementer" | "verifier" | "reviewer")[] };
   /** Declaration admission only; execution-root and runtime owner proof remain host responsibilities. */
@@ -288,6 +331,8 @@ export interface AdapterDefinition {
     validateEffective?(raw: Record<string, unknown>, fail: (key: string, reason: string) => never): void;
   };
   capabilities?: { manifest?(peer: PeerAdapter): Promise<CapabilityManifest>; watch?: boolean };
+  /** Fixed factory support only; the host still checks the actual native surface and form. */
+  modelOverride?: { readonly boundary: "turn"; readonly acp?: import("./acp-model-policy.ts").AcpModelPolicy };
   /** Stable host projection order and planner eligibility, independent of default task roles. */
   projection?: { roleRank?: number; startRank?: number; helpRank?: number; plannerEligible?: boolean };
   cli: {

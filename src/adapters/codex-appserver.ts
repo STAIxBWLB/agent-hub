@@ -1,8 +1,12 @@
+import type { ModelOverrideSelection } from "./registry-types.ts";
+import { isNativeModelToken } from "./model-token.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import type { PermissionMode } from "../hub/permission-mode.ts";
+import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import { BasePeer, type FrontendProxyPort } from "../hub/peers.ts";
+import type { ModelObservation } from "../hub/events.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import type { ContextReader } from "./registry-types.ts";
@@ -24,6 +28,10 @@ function confirmsReadOnlySandbox(value: unknown): boolean {
 /** A counter Codex reported: a finite non-negative number, otherwise 0 (an absent kind is not a negative delta). */
 const counter = (value: unknown): number => { const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : 0; };
 export interface CodexOptions {
+  /** Host-only choice sampled once at the next turn/review boundary. */
+  getModelOverride?: () => ModelOverrideSelection;
+  /** Successful explicit native-client choice; never acknowledgement of a hub override revision. */
+  onNativeModelApplied?: (model: string) => void;
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
   proxyPort: number;
   permissionMode?: PermissionMode;
@@ -77,12 +85,18 @@ export interface CodexOptions {
   log?: (line: string) => void;
 }
 
+interface ModelStartOrder { thread: string; sequence: number; changing: boolean }
 interface Link {
   launchId?: string;
   tui: ServerWebSocket<Link>;
   up: WebSocket;
   backlog: string[]; // TUI frames that arrived before the upstream socket opened
   approvalIds: Set<string | number>; // intercepted native ids stay tombstoned for this socket lifetime
+  modelStarts: Map<string | number, ModelStartOrder & { epoch: number; nativeStarted?: true; selection?: ModelOverrideSelection; explicit?: string; clientModel: boolean } | null>;
+  /** One drained rejection candidate, never an unbounded history while another request hangs. */
+  rejectedModelSelection?: { selection: ModelOverrideSelection; epoch: number; thread: string };
+  /** Untracked/reused requests cannot prove a sticky default until a later explicit model ACK. */
+  modelUnknownAfter?: number;
   tracked: Map<string | number, string>; // request id -> method, for thread/start and thread/resume
   /** Correlated native initial policy, retained even before this instance gains the planner role. */
   readOnlyThread?: string;
@@ -105,6 +119,11 @@ export class CodexPeer extends BasePeer {
   get actionGated(): boolean { return this.opts.actionGate !== undefined; }
   private readonly nativeApprovalPolicies = new Map<string, unknown>();
   private readonly overriddenApprovals = new Set<string>();
+  private readonly nativeModels = new Map<string, { sequence: number; model?: string }>();
+  /** #1402: the model each thread reported (`thread/start`, `thread/resume`) or was started with (an accepted `turn/start`), and the model Codex rerouted the running turn to. Never invented. */
+  private readonly threadModels = new Map<string, string>();
+  private reroutedModel: string | undefined;
+  private modelStartSequence = 0;
   private readonly restoringApprovals = new Map<string | number, string>();
   private proc: ChildProcess | undefined;
   private server: Server<Link> | undefined;
@@ -135,7 +154,7 @@ export class CodexPeer extends BasePeer {
   }
   private unboundAccepted = false;
   private nextId = -1;
-  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer"; expectedTurnId?: string; afterTurn?: () => void; invalidate?: (reason: string) => void }>();
+  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error, failureCause?: DeliveryFailureCause) => void; deliveryId?: string; kind?: "deliver" | "steer"; modelStart?: ModelStartOrder; expectedTurnId?: string; afterTurn?: () => void; invalidate?: (reason: string, failureCause?: DeliveryFailureCause) => void }>();
   private usageTimer: ReturnType<typeof setInterval> | undefined;
   private injected: Envelope | undefined; // the hub envelope that started the current turn, if any
   private answering: Envelope[] = []; // everything delivered or steered into the current turn: who its answer is for
@@ -188,6 +207,7 @@ export class CodexPeer extends BasePeer {
   }
 
   async start(): Promise<void> {
+    this.nativeModels.clear(); this.threadModels.clear(); this.reroutedModel = undefined; this.modelStartSequence = 0;
     const upstream = this.opts.upstreamUrl ?? (await this.spawnAppServer());
     try {
       this.server = Bun.serve<Link>({
@@ -254,22 +274,31 @@ export class CodexPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not injectable` });
       return Promise.reject(new Error(`${this.id} is not injectable`));
     }
-    const text = this.render(envs);
     const id = this.nextId--, epoch = this.deliveryEpoch, session = this.contextEpoch;
     this.setState("busy"); // claim the turn now so the bus stops draining
     return new Promise<void>((resolve, reject) => {
+      let selection: ModelOverrideSelection | undefined;
+      try {
+        selection = this.opts.getModelOverride?.();
+        if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new Error("runtime model must be one bounded native token");
+      } catch (error) {
+        this.setState("idle");
+        if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "runtime model selection unavailable" });
+        reject(error); return;
+      }
+      const modelStart: ModelStartOrder = { thread: this.threadId, sequence: ++this.modelStartSequence, changing: selection?.model !== undefined };
       let invalidated = false;
       const retiredAtCancel = new Set<string>();
-      const invalidate = (reason: string) => {
+      const invalidate = (reason: string, failureCause?: DeliveryFailureCause) => {
         if (invalidated) return;
         invalidated = true;
         for (const turn of [...this.activeTurns, ...this.turnDeliveries.keys()]) if (!turn.startsWith("unknown:")) retiredAtCancel.add(turn);
         envs = []; // only the late native-id callback survives, never the cancelled audience/prompt
-        if (deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason });
+        if (deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason, ...(failureCause ? { failureCause } : {}) });
         reject(new Error(reason));
       };
       this.pending.set(id, {
-        deliveryId, kind: "deliver", invalidate,
+        deliveryId, kind: "deliver", modelStart, invalidate,
         resolve: (result) => {
           const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
           if (invalidated || epoch !== this.deliveryEpoch || session !== this.contextEpoch || link !== this.link) {
@@ -278,6 +307,8 @@ export class CodexPeer extends BasePeer {
               (!retiredAtCancel.has(nativeTurn) || this.retiredTurns.has(nativeTurn))) this.retireTurn(nativeTurn);
             return;
           }
+          const acceptedModel = this.acceptModelStart(modelStart, selection?.model, true);
+          if (acceptedModel) try { selection?.applied(acceptedModel.model); } catch { /* Native acceptance remains authoritative. */ }
           this.primed = true;
           this.injected = replyParent(envs);
           this.answering = [...envs];
@@ -306,14 +337,17 @@ export class CodexPeer extends BasePeer {
         const pending = this.pending.get(id); this.pending.delete(id);
         pending?.reject(new Error(`${this.id} is not injectable`)); return;
       }
+      const text = this.render(envs, true);
       link.up.send(
-        JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }] }, id) }),
+        JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }], ...(selection?.model === undefined ? {} : { model: selection.model }) }, id) }),
       );
     });
   }
 
-  private render(envs: Envelope[]): string {
-    return this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}`;
+  private render(envs: Envelope[], record = false): string {
+    const base = this.primed ? "" : this.opts.preamble ?? "";
+    const preamble = record ? this.turnRecordPrompt(base) : base;
+    return preamble ? `${preamble}\n\n${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
   }
 
   /** `important` while a turn runs: feed it into that turn. Rejects when there is no steerable turn or app-server refuses. */
@@ -330,9 +364,9 @@ export class CodexPeer extends BasePeer {
     return new Promise<void>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const settle = () => { clearTimeout(timer); this.steers.delete(id); };
-      const fail = (e: Error) => {
+      const fail = (e: Error, failureCause?: DeliveryFailureCause) => {
         settle();
-        if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
+        if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message, ...(failureCause ? { failureCause } : {}) });
         reject(e);
       };
       this.pending.set(id, {
@@ -342,7 +376,7 @@ export class CodexPeer extends BasePeer {
           timer = setTimeout(() => {
             const pending = this.pending.get(id);
             this.pending.delete(id);
-            pending?.reject(new Error("steer unanswered: RPC timeout"));
+            pending?.reject(new Error("steer unanswered: RPC timeout"), "timeout");
           }, this.opts.steerTimeoutMs ?? 10_000);
           timer.unref?.();
         } : undefined,
@@ -410,17 +444,17 @@ export class CodexPeer extends BasePeer {
       this.opts.log?.(UNIDENTIFIED_CANCELLATION_NOTICE);
     }
     for (const turnId of known) this.retireTurn(turnId);
-    for (const pending of pendingStarts) pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed");
+    for (const pending of pendingStarts) pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed", "timeout");
     this.activeTurns.clear();
     this.unboundAccepted = false;
-    for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
-    for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
+    for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout", failureCause: "timeout" });
+    for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout", failureCause: "timeout" });
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.injected = undefined;
     this.answering = [];
     this.lastAnswer = "";
     this.deltas.clear();
-    this.abandonSteers("turn went silent");
+    this.abandonSteers("turn went silent", "timeout");
     if (this.unidentifiedCancellation) this.setState("offline");
     else super.onWatchdog();
   }
@@ -432,11 +466,11 @@ export class CodexPeer extends BasePeer {
   }
 
   /** A steer nobody answered must not vanish: rejecting it sends the envelope back to the queue. */
-  private abandonSteers(reason: string): void {
+  private abandonSteers(reason: string, failureCause?: DeliveryFailureCause): void {
     for (const id of this.steers) {
       const p = this.pending.get(id);
       this.pending.delete(id);
-      p?.reject(new Error(`steer unanswered: ${reason}`));
+      p?.reject(new Error(`steer unanswered: ${reason}`), failureCause);
     }
   }
 
@@ -493,7 +527,7 @@ export class CodexPeer extends BasePeer {
 
   private attach(tui: ServerWebSocket<Link>, upstream: string): void {
     const up = new WebSocket(upstream);
-    const link: Link = { tui, up, backlog: [], tracked: new Map(), approvalIds: new Set(), ...(tui.data.launchId ? { launchId: tui.data.launchId } : {}) };
+    const link: Link = { tui, up, backlog: [], tracked: new Map(), modelStarts: new Map(), approvalIds: new Set(), ...(tui.data.launchId ? { launchId: tui.data.launchId } : {}) };
     this.claimedTui = link;
     tui.data = link;
     up.onopen = () => {
@@ -504,6 +538,7 @@ export class CodexPeer extends BasePeer {
   }
 
   private detach(link: Link): void {
+    link.rejectedModelSelection = undefined;
     this.abortActionWaits(link);
     link.up.close();
     if (this.claimedTui === link) this.claimedTui = undefined;
@@ -587,6 +622,54 @@ export class CodexPeer extends BasePeer {
     if (thread !== undefined && !failed && this.permissionMode === "ask") this.overriddenApprovals.delete(thread);
   }
 
+  private nativeModelHint(thread: string): string | undefined {
+    const known = this.nativeModels.get(thread);
+    if (!known?.model || (this.link?.modelUnknownAfter ?? 0) >= known.sequence) return undefined;
+    const unsettled = [...this.pending.values()].flatMap(value => value.modelStart ? [value.modelStart] : []);
+    for (const value of this.link?.modelStarts.values() ?? []) if (value) unsettled.push(value);
+    if (unsettled.some(value => value.thread === thread && value.changing && value.sequence > known.sequence)) return undefined;
+    return known.model;
+  }
+
+  /** Shared by hub and forwarded starts: response arrival order never rewrites a later accepted start. */
+  private acceptModelStart(start: ModelStartOrder, model: string | undefined, inherit: boolean): { model?: string } | undefined {
+    // Even an older successful start protects its shared capture from pre-start retirement.
+    if (this.link) this.link.rejectedModelSelection = undefined;
+    if ((this.nativeModels.get(start.thread)?.sequence ?? 0) >= start.sequence) return undefined;
+    const actual = model ?? (inherit ? this.nativeModelHint(start.thread) : undefined);
+    this.nativeModels.set(start.thread, { sequence: start.sequence, ...(actual === undefined ? {} : { model: actual }) });
+    this.rememberThreadModel(start.thread, actual);
+    // ponytail: keep at most 128 thread receipts; older defaults are unknown until native model readback is added.
+    if (this.nativeModels.size > 128) this.nativeModels.delete(this.nativeModels.keys().next().value!);
+    return actual === undefined ? {} : { model: actual };
+  }
+
+  private rememberThreadModel(thread: string, model: unknown): void {
+    if (typeof model !== "string" || !model) return;
+    this.threadModels.delete(thread); this.threadModels.set(thread, model);
+    if (this.threadModels.size > 128) this.threadModels.delete(this.threadModels.keys().next().value!);
+  }
+
+  /**
+   * #1402: what the native surface reported for the turn that just ended, read once at its `turn_end`. A `model/rerouted` notification names the model Codex served for the turn (`served`);
+   * otherwise the thread's reported or accepted model (`session`). Codex's `thread/start`, `thread/resume` and `turn/start` replies carry no per-response model, so nothing here is `served` unless
+   * Codex said so; an absent field records nothing. Verified against the app-server schema of codex-cli 0.167.2.
+   */
+  observedModel(): ModelObservation | undefined {
+    const served = this.reroutedModel; this.reroutedModel = undefined;
+    if (served) return { model: served, evidence: "served" };
+    const session = this.threadModels.get(this.threadId);
+    return session ? { model: session, evidence: "session" } : undefined;
+  }
+
+  private retireRejectedModelSelection(link: Link): void {
+    const candidate = link.rejectedModelSelection;
+    if (!candidate || link !== this.link || candidate.epoch !== this.contextEpoch || candidate.thread !== this.threadId ||
+        link.modelStarts.size || [...this.pending.values()].some(value => value.modelStart)) return;
+    link.rejectedModelSelection = undefined;
+    try { candidate.selection.rejected?.(); } catch { /* Retirement never changes the native rejection. */ }
+  }
+
   private fromTui(link: Link, raw: string): void {
     const msg = parse(raw);
     if (msg?.id !== undefined && !msg.method && link.approvalIds.has(msg.id)) return;
@@ -596,6 +679,30 @@ export class CodexPeer extends BasePeer {
     if (msg?.method === "turn/interrupt" && link === this.link) this.abortActionWaits(link, typeof msg.params?.turnId === "string" ? msg.params.turnId : undefined);
     if (msg?.method === "turn/start" && msg.params && link === this.link) {
       const thread = typeof msg.params.threadId === "string" ? msg.params.threadId : this.threadId;
+      // An explicit native choice wins. A missing client model may use the already captured host override.
+      let selection: ModelOverrideSelection | undefined;
+      const explicit = msg.params.model !== undefined;
+      if (!explicit) {
+        try {
+          selection = this.opts.getModelOverride?.();
+          if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new Error("invalid model");
+        } catch {
+          if (msg.id !== undefined) link.tui.send(JSON.stringify({ id: msg.id, error: { code: -32000, message: "runtime model selection unavailable; check the peer model setting and retry" } }));
+          return;
+        }
+        if (selection?.model !== undefined) { msg.params = { ...msg.params, model: selection.model }; raw = JSON.stringify(msg); }
+      }
+      const modelStart: ModelStartOrder = { thread, sequence: ++this.modelStartSequence, changing: explicit || selection?.model !== undefined };
+      if (typeof msg.id === "string" || typeof msg.id === "number") {
+        if (link.modelStarts.has(msg.id)) {
+          link.modelStarts.set(msg.id, null); // reused outstanding id cannot identify an accepted model revision
+          link.modelUnknownAfter = modelStart.sequence;
+        }
+        // ponytail: at most 64 in-flight ACKs per link; overflow keeps defaults unknown until a later explicit model ACK.
+        else if (link.modelStarts.size < 64) link.modelStarts.set(msg.id, { ...modelStart, epoch: this.contextEpoch, clientModel: explicit,
+          ...(selection ? { selection } : {}), ...(explicit && isNativeModelToken(msg.params.model) ? { explicit: msg.params.model } : {}) });
+        else link.modelUnknownAfter = modelStart.sequence;
+      } else link.modelUnknownAfter = modelStart.sequence;
       // A resumed TUI can echo the sticky hub overlay. The restoring turn must use the kept baseline.
       const restoring = this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread);
       if (msg.params.approvalPolicy != null && !restoring) this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
@@ -631,7 +738,29 @@ export class CodexPeer extends BasePeer {
       this.pending.delete(msg.id);
       if (msg.error) p?.reject(new Error(msg.error.message ?? "app-server rejected the request"));
       else p?.resolve(msg.result);
+      if (msg.error) this.retireRejectedModelSelection(link);
       return; // ours: the TUI never asked for it
+    }
+    if (msg.id !== undefined && !msg.method && link.modelStarts.has(msg.id)) {
+      const selected = link.modelStarts.get(msg.id);
+      // A reused id has no trustworthy response correlation. Keep its tombstone until reattach;
+      // the first reply cannot prove that all duplicate requests rejected before native execution.
+      if (selected !== null) link.modelStarts.delete(msg.id);
+      if (selected && link === this.link && selected.epoch === this.contextEpoch && selected.thread === this.threadId) {
+        if (msg.error) {
+          // The final rejecting request may have an explicit client model and no selection.
+          // Retain only one still-unaccepted candidate until the known outstanding receipts drain.
+          if (selected.selection && !selected.nativeStarted && (this.nativeModels.get(selected.thread)?.sequence ?? 0) < selected.sequence)
+            link.rejectedModelSelection = { selection: selected.selection, epoch: selected.epoch, thread: selected.thread };
+        } else {
+          const acceptedModel = this.acceptModelStart(selected, selected.explicit ?? selected.selection?.model, !selected.clientModel);
+          if (acceptedModel) try {
+            if (selected.explicit !== undefined) this.opts.onNativeModelApplied?.(selected.explicit);
+            else selected.selection?.applied(acceptedModel.model);
+          } catch { /* Native acceptance remains authoritative. */ }
+        }
+      }
+      if (msg.error) this.retireRejectedModelSelection(link);
     }
     if (typeof msg.result?.userAgent === "string") this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
     const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
@@ -645,6 +774,7 @@ export class CodexPeer extends BasePeer {
         const thread = msg.result.thread.id;
         if (!this.overriddenApprovals.has(thread) && msg.result.approvalPolicy != null) this.nativeApprovalPolicies.set(thread, msg.result.approvalPolicy);
         this.adopt(link, msg.result.thread.id, tracked === "thread/start");
+        this.rememberThreadModel(msg.result.thread.id, msg.result.model);
       }
     }
     else if (msg.method) this.onNotification(link, msg.method, msg.params ?? {});
@@ -742,6 +872,7 @@ export class CodexPeer extends BasePeer {
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.tokenTotal = undefined; this.tokenKinds = undefined;
     this.freshThread = fresh;
+    link.rejectedModelSelection = undefined;
     this.link = link;
     this.threadId = threadId;
     this.onDoing?.("reset");
@@ -820,6 +951,8 @@ export class CodexPeer extends BasePeer {
       return;
     }
     if (this.unidentifiedCancellation) return; // native traffic is still forwarded to its TUI; hub attribution is fenced
+    // #1402: a reroute is the model of the turn it names, so it passes both fences above (a retired turn or a fenced cancellation never becomes a later turn's served model).
+    if (method === "model/rerouted") { if (typeof params.toModel === "string" && params.toModel) this.reroutedModel = params.toModel; return; }
     const unknownTurn = () => [...this.activeTurns].some(id => id.startsWith("unknown:"));
     if (method === "thread/tokenUsage/updated") {
       const reader = this.opts.contextReader;
@@ -839,6 +972,11 @@ export class CodexPeer extends BasePeer {
       return;
     }
     if (method === "turn/started") {
+      this.reroutedModel = undefined; // a reroute whose turn end was never read cannot carry into another turn
+      link.rejectedModelSelection = undefined;
+      // The notification has no request id. Conservatively protect every outstanding capture on
+      // this bound thread rather than retiring a possibly accepted selection on a later RPC error.
+      for (const start of link.modelStarts.values()) if (start && start.thread === this.threadId) start.nativeStarted = true;
       const nativeTurn = params.turn?.id ?? `unknown:${Date.now()}`;
       this.unboundAccepted = false;
       this.activeTurns.add(nativeTurn);
@@ -889,7 +1027,7 @@ export class CodexPeer extends BasePeer {
       this.deltas.clear();
       // Addressed like every other adapter's answer (issue #3): each sender it answers, including one steered in;
       // the bus maps a condensed delivery's `digest` back to the senders it replaced, a steer beside it or not.
-      if (this.lastAnswer) this.onMessage?.(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {});
+      if (this.lastAnswer) this.finalAnswer(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {}, params.turn?.status === "completed");
       this.lastAnswer = "";
       this.setState("idle");
     }

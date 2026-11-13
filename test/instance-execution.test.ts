@@ -98,7 +98,7 @@ test("the git calls of one resolution share a single budget instead of one timeo
   expect(resolveInstanceExecutionCwd(f.project, "codex-2", decl, ["implementer"], catalog)).toBe(want);
   // Each git call is handed what is LEFT of the allowance as its own timeout, so a hung git cannot hold the loop past the allowance.
   const timeouts: number[] = [], seen = ticking();
-  const recording = ((args: string[], options: { timeout?: number }) => { timeouts.push(options.timeout!); return hubGitSync(args, options as never); }) as typeof hubGitSync;
+  const recording = ((args: string[], options: { timeout?: number }) => { timeouts.push(options.timeout!); return hubGitSync(args, options as never); }) as unknown as typeof hubGitSync;
   expect(resolveInstanceExecutionCwd(f.project, "codex-2", decl, ["implementer"], catalog, 1000, seen.now, recording)).toBe(want);
   expect(timeouts).toEqual([900, 800, 700, 600]); // 1000 ms minus 100 ms per read of the clock before each of the four calls
   // No allowance at all refuses before any git runs.

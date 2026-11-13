@@ -82,3 +82,16 @@ test("ahub kimi --mode tui writes the bundle the daemon reports (#502)", async (
   expect(hub.requests).toContain("start");
   expect(bundleIn(join(hub.cwd, ".kimi-code/mcp.json"))).toContain(DAEMON_BUNDLE);
 });
+
+test("a refused completion bridge still launches the plain Kimi TUI", async () => {
+  const hub = fakeHub({ roster: [{ peer: "kimi", on: true }], peers: {}, pluginBundle: DAEMON_BUNDLE });
+  expect(Bun.spawnSync(["git", "init", "-q", hub.cwd]).exitCode).toBe(0);
+  const stand = join(hub.cwd, "stand-in.sh"), marker = join(hub.cwd, "stand-in-ran");
+  writeFileSync(stand, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.5.2; exit 0; fi\ntouch '${marker}'\n`, { mode: 0o755 });
+  writeFileSync(join(hub.cwd, ".agenthub/config.local.json"), JSON.stringify({ kimi_cmd: [stand] }));
+  const run = await hub.run("kimi", "--mode", "tui");
+  expect(run.code).toBe(0);
+  expect(existsSync(marker)).toBe(true);
+  expect(run.err).toContain("Continuing without completion receipts");
+  expect(existsSync(join(hub.cwd, ".kimi-code/plugins/managed/agent-hub"))).toBe(false);
+});

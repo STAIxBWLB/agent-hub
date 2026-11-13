@@ -1,9 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import type { ChatMessage } from "../../src/omniroute/client.ts";
 import type { HubRoute } from "../../src/models/route/config.ts";
-import { DEFAULT_PLANNING_PROMPT } from "../../src/models/route/plan-execute.ts";
+import { planningInstruction as DEFAULT_PLANNING_PROMPT } from "../../src/models/route/hub-prompts.ts";
 import { HubRouteRuntime, type RouteEvent, type RouteHost } from "../../src/models/route/runtime.ts";
-import { parseAdvisorVerdict } from "../../src/models/route/text.ts";
+import type { RouteTurnContext } from "../../src/models/route/labels.ts";
+import { parseAdvisorReply as parseAdvisorVerdict } from "../../src/models/route/judge-replies.ts";
 import { effectiveLocalRoute, type Routing } from "../../src/hub/routing.ts";
 import { canonicalJson, sha256 } from "./routing-corpus.ts";
 
@@ -184,7 +185,36 @@ export interface TurnResult { tier: Tier | "same" | "none"; model: string | null
 export type CaseResult = { error: string } | { turns: TurnResult[] } | { route: string | null; model: string };
 export interface Score { pass: boolean; detail?: string }
 
-async function runRouteCase(c: RouteCase, routing: Routing): Promise<CaseResult> {
+/** Optional model-free proof controls; absent ports preserve canonical execution scheduling. */
+export interface ModelRoutingProofPorts {
+  beforeJudgeReply?(): Promise<void>;
+  choicePrepared?(ready: Promise<void>): void;
+  observeRoute?(event: Readonly<RouteEvent>): void;
+  turnContext?: RouteTurnContext;
+  observeExecute?(call: Readonly<{ model: string; messages: readonly ChatMessage[]; judge: boolean; maxTokens?: number }>): void;
+}
+
+function frozenProofCopy<T>(value: T): T {
+  const copy = structuredClone(value);
+  const freeze = (item: unknown): void => {
+    if (!item || typeof item !== "object" || Object.isFrozen(item)) return;
+    for (const child of Object.values(item)) freeze(child);
+    Object.freeze(item);
+  };
+  freeze(copy); return copy;
+}
+
+/** Own collector: judge metadata never becomes executor scoring input. Proof taps have no authority. */
+export function createRouteObservationCollector(events: RouteEvent[], observe?: (event: Readonly<RouteEvent>) => void): (event: RouteEvent) => void {
+  return event => {
+    if (event.decisionTarget !== "judge") events.push(event);
+    if (observe) {
+      try { observe(frozenProofCopy(event)); } catch { /* read-only proof taps have no scoring authority */ }
+    }
+  };
+}
+
+async function runRouteCase(c: RouteCase, routing: Routing, ports?: ModelRoutingProofPorts): Promise<CaseResult> {
   const config = routing.hub_routes?.[c.route] as HubRoute | undefined;
   if (!config) return { error: `the policy has no route ${c.route}` };
   const calls: { model: string; judge: boolean; planned: boolean }[] = [], events: RouteEvent[] = [];
@@ -192,16 +222,23 @@ async function runRouteCase(c: RouteCase, routing: Routing): Promise<CaseResult>
   const host: RouteHost = {
     onCampus: async () => c.onCampus ?? true,
     staySwitch: () => ({ stay_switch: routing.stay_switch, max_switch_prefill_tokens: routing.max_switch_prefill_tokens }),
-    onRoute: event => { events.push(event); },
-    execute: async (model, messages, judge) => {
+    onRoute: createRouteObservationCollector(events, ports?.observeRoute),
+    execute: async (model, messages, judge, _signal, maxTokens) => {
       calls.push({ model, judge, planned: !judge && messages[0]?.role === "system" && messages[0].content === DEFAULT_PLANNING_PROMPT });
+      if (ports?.observeExecute) {
+        try { ports.observeExecute(frozenProofCopy({ model, messages, judge, ...(maxTokens === undefined ? {} : { maxTokens }) })); }
+        catch { /* read-only proof taps cannot change a scripted reply */ }
+      }
+      if (judge && ports?.beforeJudgeReply) await ports.beforeJudgeReply();
       return { message: { role: "assistant", content: judge ? replies.shift() ?? "" : "ok" } };
     },
   };
-  const runtime = new HubRouteRuntime(host);
+  const runtime = new HubRouteRuntime(host, undefined, ports?.choicePrepared ? { choicePrepared: ports.choicePrepared } : undefined);
   const efficient = config.efficient ?? "fast", capable = config.capable ?? "coding";
   const turns: TurnResult[] = [];
-  for (const turn of c.turns) {
+  if (ports?.turnContext) runtime.beginTurn(ports.turnContext);
+  let completed = false;
+  try { for (const turn of c.turns) {
     replies = [...(turn.judge ?? [])];
     const from = calls.length, eventFrom = events.length, signal = new AbortController().signal, scope = turn.scope ?? "s";
     let feedback: string | undefined;
@@ -213,16 +250,16 @@ async function runRouteCase(c: RouteCase, routing: Routing): Promise<CaseResult>
     let outcome: TurnResult["outcome"] = "none";
     if (turn.op === "review" && judged > 0) outcome = feedback !== undefined ? "redo" : parseAdvisorVerdict(turn.judge?.[0] ?? "")?.kind === "approve" ? "approve" : "failed";
     turns.push({ tier, model, source: event?.source ?? null, staySwitch: event?.staySwitch ?? null, judgeCalls: judged, outcome, planned: main.some(call => call.planned), prefillRecorded: event?.prefillTokens !== undefined });
-  }
+  } completed = true; } finally { if (ports?.turnContext) runtime.endTurn(ports.turnContext.turn, completed ? "completed" : "failed"); }
   return { turns };
 }
-export async function runCase(c: ModelRoutingCase, routing: Routing): Promise<CaseResult> {
+export async function runCase(c: ModelRoutingCase, routing: Routing, ports?: ModelRoutingProofPorts): Promise<CaseResult> {
   if (c.kind === "judge") return { error: "a judge case is scored only by the live receipt" };
   if (c.kind === "selection") {
     const policy = routing.classes[c.class as keyof Routing["classes"]];
     return { route: effectiveLocalRoute(routing.local.route, policy?.route, policy?.fixed_model) ?? null, model: policy?.fixed_model ?? routing.local.fixed_model };
   }
-  try { return await runRouteCase(c, routing); } catch (error) { return { error: `the route threw: ${(error as Error).message}` }; }
+  try { return await runRouteCase(c, routing, ports); } catch (error) { return { error: `the route threw: ${(error as Error).message}` }; }
 }
 export function scoreCase(c: RouteCase | SelectionCase, result: CaseResult): Score {
   if ("error" in result) return { pass: false, detail: result.error };

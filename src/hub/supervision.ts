@@ -1,3 +1,4 @@
+import { queueResolveCommand } from "./person-command.ts";
 import { isClosedTaskState, type HistoryEntry, type Task, type TaskMoveReason, type TaskStall } from "./board.ts";
 import { sanitize, type Kind, type Priority } from "./envelope.ts";
 
@@ -96,6 +97,8 @@ export class SupervisionFeed {
     else if (event === "approved") {
       this.milestone(task.id, "review", { ...fields, verdict: "approved" });
       this.milestone(task.id, "approved", fields);
+    } else if (event === "merged outside the hub" && task.state === "approved") {
+      this.milestone(task.id, "approved", { by: entry.by, owner: task.owner });
     } else if (event === "idle sweep" && entry.sweep) this.milestone(task.id, "sweep", { ...fields, sweep: entry.sweep.kind });
     else if (event === "reassigned") this.milestone(task.id, "moved", fields);
     else if (["assigned", "accepted", "declined", "escalated"].includes(event)) this.milestone(task.id, event as SupervisionMilestone, fields);
@@ -137,11 +140,11 @@ export class SupervisionFeed {
     return sent;
   }
 
-  needsReview(peer: string, deliveryId: string): boolean {
+  needsReview(peer: string, deliveryId: string, command: string | (() => string) = () => queueResolveCommand({ id: deliveryId, peer })): boolean { // a thunk is built only when the notice is sent, not on every tick
     const conductor = this.recipient();
     const key = `${conductor}:${peer}:${deliveryId}`;
     if (!conductor || this.holds.has(key)) return false;
-    const sent = this.send(`hold:${peer}:${deliveryId}`, `${peer}: needs_review hold; delivery ${deliveryId}; ask the person to resolve it with ahub queue resolve`, "important");
+    const sent = this.send(`hold:${peer}:${deliveryId}`, `${peer}: needs_review hold; delivery ${deliveryId}; give the person this command exactly as printed: ${typeof command === "string" ? command : command()}`, "important");
     if (sent) this.holds.add(key);
     return sent;
   }

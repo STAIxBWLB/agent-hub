@@ -1,5 +1,28 @@
-import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt, type EvidenceLinkV1 } from "./research-evidence.ts";
+import { requireConductor } from "./conductor.ts";
+import { pathCandidates } from "@staix/agent-mem";
+import { renderGuidanceVariantV1 } from "./guidance-variants.ts";
+import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-probe-store.ts";
+import { GuidanceProbeError, GUIDANCE_PROBE_STOP_TIMEOUT_MS, GUIDANCE_PROBE_FENCE_INTERVAL_MS, guidanceProbeCanonical, guidanceProbeManifestKey,
+  parseGuidanceProbeRegistration, parseGuidanceProbeReceiptExport, probeHash, probeSha256, probeInteger, probeSessionGeneration,
+  type ProbeChildBinding, type ProbeStoredState, type ProbePublicReceipt, type ProbePublicStatus, type ProbeHostBinding,
+  type ProbeReceiptExport, type ProbeExportSlot, type ProbeReceiptV1, type ProbeRetentionState,
+  type ProbeAdmissionRecheck, type ProbeReservation, type ProbeSlot, type GuidanceProbeFakePorts, type GuidanceProbeManifestV1, type ProbeWorkerFramePreparer } from "./guidance-probes.ts";
+import { GuidanceVariantError, GUIDANCE_PAGE_MAX_RECORDS, GUIDANCE_REPLY_MAX_BYTES, guidanceVariantSectionDiff, guidanceProtectedSectionNames, parseGuidancePageResult, parseGuidanceDiffResult, parseGuidanceListQuery, parseGuidanceIdQuery, guidancePageCursor, guidancePageAfter, guidanceVariantMetadata, parseGuidanceVariantV1, validateGuidanceVariantV1, parseGuidanceSelector, type GuidanceVariantV1, type GuidanceStoredRecord, type GuidanceSelector, type GuidanceIdSelector, type GuidanceWriteFence, type GuidanceWriteReceipt, type GuidanceCurrent, type GuidancePublicRecord, type GuidancePageResult, type GuidanceDiffResult, type GuidanceReadResult } from "./guidance-variants.ts";
+import { buildEntryDiagnostic } from "./build-entry.ts";
 import { taskShowAllowed } from "./conductor.ts";
+import { executionOwnerSnapshot, parseOwnerLineageQuery, type ExecutionLineageOwnerPorts } from "./execution-lineage-owner.ts";
+import { readExecutionLineage, type LineageResult } from "./execution-lineage.ts";
+import { parseExecutionLinkInput, taskExecutionReference, executionLinkActor, executionReferenceDigest, type ExecutionLinkInput } from "./execution-links.ts";
+import { executionReferenceKey, executionText, EXECUTION_REFERENCE_LIMITS, type ExecutionReferenceV1 } from "./execution-reference.ts";
+import type { JournalDelivery } from "./delivery-journal.ts";
+import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt, type EvidenceLinkV1 } from "./research-evidence.ts";
+import type { ActionMeta, ReviewAnchor } from "@staix/agent-console/contract";
+import { parseReviewAnchor, reviewAnchorErrorMessage, anchorStatus, type ReviewAnchorStatus } from "./review-anchor.ts";
+import type { ReviewMaterialBatch } from "./review-material.ts";
+import { isReviewObserverExcluded } from "./memory-policy.ts";
+import { renderFindingAnchor } from "./review-brief.ts";
+import { reviewCommentFields, reviewCommentNumber, reviewCommentId, reviewCommentIds, reviewCommentHead, reviewCommentBody, reviewCommentAuthor, privateReviewAnchor, reviewThreadProjection, renderReviewComment, REVIEW_PACKAGE_BYTES, REVIEW_COMMENT_LIMIT,
+  type ReviewCommentRecord, type ReviewCommentFence, type ReviewCommentMutation, type ReviewCommentCounts, type ReviewCommentView } from "./review-comments.ts";
 import { evidenceOriginKeys, type EvidenceSourceRead } from "./source-read.ts";
 import type { SourceMeta } from "./sources.ts";
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt } from "./research-runner.ts";
@@ -7,6 +30,7 @@ import { approvalBinding, approvalText } from "./task-approval.ts";
 import type { InvocationRow } from "./invocations.ts";
 import type { ContextAdmission } from "./context-window.ts";
 import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueueBackpressureStatus, type QueuePressure } from "./queue-backpressure.ts";
+import { generatedRecordAnchors, type GeneratedNoteProof } from "../memory/record-provenance.ts";
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
@@ -16,12 +40,16 @@ import { parseExperimentProtocol, parseExperimentAttempt, parseExperimentEvent, 
 import { parseComparisonPlan, comparisonPlanHash, comparisonProjection, evaluatorIdentityHash, protocolApprovalBindingMatches, type ComparisonPlanV1 } from "./research-experiments.ts";
 import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
 import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit, HandoffOutboundRow } from "./board.ts";
-import { HANDOFF_EVENTS, HandoffRefusal, followBackLine, handoffEventFor, parseHandoff, type HandoffEvent } from "./handoff.ts";
+import { HANDOFF_EVENTS, HANDOFF_KEY, HandoffRefusal, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, type HandoffEvent } from "./handoff.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { evalAdvice, evalGapBlockers, evalRequiredChecks, readEvalFor } from "./eval-gate.ts";
+import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequestLine, SECURITY_CHECKLIST, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
+import { AUDIT_PROFILES, applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, needsVerification, parseUnitReports, seedLedger, unitId, verificationRefusal, type AuditFinding, type AuditProfile, type AuditSummary, type CarryLookup, type PublicAuditFinding } from "./security-audit.ts";
+import type { AuditSource } from "./audit-source.ts";
+import { matchConfigPath } from "./eval-gate.ts";
 import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, CostScopeError, type CostPlan, type ReviewCost } from "./cost-governance.ts";
@@ -38,18 +66,19 @@ import { NoWriteTurns } from "./no-writes.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
-import { guardedMerge, mergeModeFor, mergeView, type MergeView } from "./sdlc-merge.ts";
+import { adoptMergeGates, guardedMerge, mergeModeFor, mergeView, readAdoptMergeEvidence, requiredChecksFor, type MergeView } from "./sdlc-merge.ts";
 import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
 import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-scope.ts";
-import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
-import { readReleaseReadiness } from "./sdlc-release.ts";
-import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
-import { matchesPolicy, policyRealPath, insideRoot } from "./path-policy.ts";
+import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, findingFollowUps, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
+import { readReleaseReadiness, type ReleaseReportPolicy } from "./sdlc-release.ts";
+import { loadRoleCatalog, roleIdentity, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
+import { matchesPolicy, matchesPolicyLexically, policyRealPath, insideRoot } from "./path-policy.ts";
 import { isDenied } from "../local/deny.ts";
 import { foldSegment, isHubWritePath } from "./permission-mode.ts";
 import { correctionInput, resolveVisibleMemory } from "./memory-candidates.ts";
 import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
+import { createMemorySyncPolicy } from "./memory-sync-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { criteriaView, unmetCriteriaIds, workflowHash } from "./workflow.ts";
 import { candidateCard, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS, overridesDiff, parseCandidateCard, selectGroups, type CriterionGroup } from "./learning.ts";
@@ -67,12 +96,12 @@ import { checkDeliverables, DeliverableRefusal, hashDeliverables, vetDeliverable
 import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
-import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
-import { parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
+import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type NoteInput, type Scope, type Tier } from "@staix/agent-mem";
+import { HOST_SPEC_ACCEPTANCE_CARRY, HOST_MERGE_ADOPTION, parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type SpecAcceptanceCandidate, type SpecAcceptanceCommit, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
-import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, writesRepository, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
+import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, writesRepository, ownerRoleOfClass, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
@@ -87,7 +116,11 @@ import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
-import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
+import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState, localSupersedingTask, storedSpecAcceptance, carriedSpecAcceptance } from "./sdlc.ts";
+
+/** #1176: refusals for an agent that reaches a person-run card by a path other than the pull gate. */
+const PERSON_RUN_SPLIT = "a person-run card is the person's to split: its children would be unmarked cards an agent could take (the person's own split marks every child person-run)";
+const PERSON_RUN_ACCEPT = (id: number) => `task #${id} is a person-run leg: no agent accepts it (it waits on the person: live receipts, their accounts or approvals). The person runs it or clears the mark with ahub backlog plan`;
 
 function requireLocalTaskPeer(peer: unknown): void {
   if (isRemotePeerId(peer)) throw new PreEffectToolRefusal("remote peers have no local task authority");
@@ -97,6 +130,12 @@ export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
 export type EvidenceReadOrigins = { state: "known"; group: string; groups: number } | { state: "unknown" };
 export type EvidenceReadResult = EvidenceReceipt & ({ status: "private" | "stale" | "unavailable" }
   | { status: "resolved"; link: EvidenceLinkV1; excerpt: string; excerptSha256: string; locator: EvidenceLinkV1["locator"]; origins: EvidenceReadOrigins });
+
+/** What `hub_remember` carries (#802: one shape for `remember` and `rememberOutcome`). */
+export interface RememberInput { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown; approach?: unknown; symptom?: unknown; cause?: unknown; evidence?: unknown; retry_when?: unknown }
+
+interface SpecGateRead { task: Task; edit?: SpecEdit; carry?: object; }
+interface SpecCarryProof { by: PeerId; task: number; scope: string; commit: SpecAcceptanceCommit; current: () => boolean; }
 
 interface PreparedSpecInspection {
   report?: SpecTaskReport;
@@ -109,7 +148,24 @@ interface PreparedSpecInspection {
 
 export interface ReleaseWindow { at: number; host: boolean; quota: boolean; idle: boolean; reasons: string[]; current?: () => boolean; close?: () => Promise<void>; }
 
+/** #1403 A4: the audit as a caller reads it. `withheld` counts open important findings whose text the view leaves out. */
+export interface AuditView extends AuditSummary {
+  units: { unit: string; state: string; prior?: { audit: number; head: string }; reason?: string }[];
+  items: PublicAuditFinding[];
+  withheld?: number;
+  /** Findings in this report that were already verified or rejected, so the hub left them as decided. */
+  notUpdated?: string[];
+}
 export interface TasksDeps {
+  /** Private host-owned probe ledger and fixture ports. No configuration, wire or model-selected runner. */
+  guidanceProbes?: {
+    store: GuidanceProbeStore;
+    fakePorts?: GuidanceProbeFakePorts;
+    prepareWorkerFrame?: ProbeWorkerFramePreparer;
+    prepareEditorFrame?: (state: ProbeStoredState, slot: ProbeSlot) => string | Promise<string>;
+    session?: (by: PeerId) => { generation: string | number; nativeSession: string | null; requestConnectionId: string; current: () => void } | undefined;
+    timer?: { set(callback: () => void, ms: number): unknown; clear(handle: unknown): void };
+  };
   adapterCatalog?: ProjectAdapterCatalog;
   /** Host-bound evidence only; absent/expired observations never admit a release cut. */
   releaseWindow?: () => Promise<ReleaseWindow>;
@@ -131,6 +187,8 @@ export interface TasksDeps {
   ownerIsolation?: () => Readonly<Record<string, boolean>>;
   cwd: string;
   project: string;
+  /** Startup-bound namespace/key and an already-open exact-id journal read; never query-controlled. */
+  executionLineage?: { projectKey: string; cursorKey: string; readDelivery?(id: string): JournalDelivery | undefined };
   profile?: ProfileName;
   profileData?: ProjectProfile;
   piiPaths?: string[];
@@ -163,7 +221,10 @@ export interface TasksDeps {
   specsRead?: (action: "check" | "covers", paths: readonly string[]) => SpecsCheckReport | SpecsCoverReport;
   /** Host-verified existing symbols at this task's admitted completion head; never plan guesses. */
   memorySymbolNodes?: (task: Task) => MemorySymbolNodes | undefined;
-  sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
+  /** Host-only release report selector; derives its answer from committed policy and the in-memory authorization ledger. */
+  sdlc?: { config: () => SdlcConfig; gh?: SdlcGh; reportPolicy?: (head: string, repo: string) => ReleaseReportPolicy | undefined };
+  /** #1403 A4: read-only git for the security audit (the checkout's head and changed paths); absent means the audit commands are unavailable. */
+  auditSource?: AuditSource;
   /** #785 P1b: the per-head CI watcher's bounds; tests shorten them, the defaults are `CI_WATCH_*` in `ci-watch.ts`. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   /** #785 P1c: `tasks.auto_pull`, read at each capacity release so a reload applies to the next one; absent or false pulls nothing. */
@@ -179,6 +240,10 @@ export interface TasksDeps {
   observerExcludedTurn?: (peer: PeerId) => boolean;
   /** #223 R4: the hub's reading of a verdict's context (`fresh` only for a reviewer session started for this review). */
   reviewContext?: (by: PeerId, task: number) => "fresh" | "continuing" | undefined;
+  /** Current-turn input carries review material or anchored findings; it expires on the next ordinary input. */
+  reviewObserverInput?: (peer: PeerId) => boolean;
+  /** Latch an anchor-bearing hub_review input before its first await or effect, even if the verdict is refused. */
+  onReviewObserverInput?: (peer: PeerId) => void;
   /** #852: what a reviewer reads. `code` (the fixed sandboxed reviewers by default, or a local `review_scope`) reads the code only; unset or `full` also runs tests and reads CI. */
   reviewScope?: (peer: PeerId) => ReviewScope;
   /** #223 R2: a reviewer-only instance gets review facts, not the builder's done summary. */
@@ -196,7 +261,7 @@ export interface TasksDeps {
   /** Captured native profile fence at our memory operation boundaries; no board mutation. */
   memoryCheck?: () => void;
   /** #258: the hub's own store, the project name it files entries under (the git chain) and the repo `#N` issues belong to. */
-  store?: { store: MemoryStore; project: string; repo: string; deny?: string[]; onNote?: (id: string) => void };
+  store?: { store: MemoryStore; project: string; repo: string; deny?: string[]; onNote?: (id: string) => void; onGeneratedNote?: (entry: GeneratedNoteProof) => void };
   /** a line for the human: console tail and hub.log */
   notify: (line: string) => void;
   /** The completion check configured for a class, if any (local config only; issue #7). */
@@ -210,12 +275,16 @@ export interface TasksDeps {
   /** Hands one peer a line that rides on its next delivery, without a turn of its own (issue #6). */
   tell?: (peer: PeerId, line: string) => void;
   /** Structured overlap records for telemetry (issue #40); the notice line stays for the human. */
+  /** #1054: a completion check this peer owned just ended (its ownership is already cleared), so a run that waited on it may settle. Advisory: a throw is ignored. */
+  checkEnded?: (owner: PeerId) => void;
   recordOverlap?: (task: number, owner: PeerId, others: { task: number; owner: PeerId; paths: string[]; symbols?: string[] }[]) => void;
   /** Quota per peer from fresh readings (issue #36): routing drains the windows that reset soonest first. */
   quota?: () => Record<PeerId, { headroom: number; resetsAt?: number }>;
   /** Optional persisted task/run execution limits (issue #102). */
   executionBudget?: ExecutionBudget;
   /** Project-scoped immutable-source metadata, read only before a study transaction. */
+  /** Host-scoped immutable-head/material batch; supports host-staged completion refs/sdlc, never client-staged Task objects. The shared reader owns file authorization and budgets. */
+  reviewMaterials?: (task: Task, requests: readonly { path: string; side?: "base" | "head" }[]) => Promise<ReviewMaterialBatch>;
   studySource?: (id: string) => { id: string; sha256: string; private: boolean } | undefined;
   /** Host-owned screened snapshot read, never a public source-read excerpt reconstructed as a projection. */
   evidenceSourceRead?: (by: PeerId, link: EvidenceLinkV1, current: () => boolean) => Promise<EvidenceSourceRead>;
@@ -463,7 +532,261 @@ export interface DeliverableRow {
   files: { id: string; path?: string; format: string; version?: string; sha256: string; bytes: number; private?: true; state?: DeliverableStatus["state"] }[];
 }
 
+/** Detect an own anchor field without invoking model-provided accessors or proxy traps. */
+function hasReviewAnchorInput(raw: unknown): boolean {
+  if (raw === undefined || !Array.isArray(raw)) return false;
+  if (types.isProxy(raw)) return true;
+  try {
+    if (Object.getPrototypeOf(raw) !== Array.prototype || Object.getOwnPropertySymbols(raw).length || raw.length > 64) return true;
+    const descriptors = Object.getOwnPropertyDescriptors(raw);
+    for (let index = 0; index < raw.length; index++) {
+      const entry = descriptors[String(index)];
+      if (!entry || !Object.hasOwn(entry, "value") || !entry.enumerable) return true;
+      const item: unknown = entry.value;
+      if (!item || typeof item !== "object") continue;
+      if (types.isProxy(item)) return true;
+      const prototype = Object.getPrototypeOf(item);
+      if (prototype !== Object.prototype && prototype !== null) return true;
+      if (Object.getOwnPropertyDescriptor(item, "anchor")) return true;
+    }
+    return false;
+  } catch { return true; }
+}
+
+interface GuidanceProbeRuntime {
+  id: string; by: PeerId; controller: AbortController; current: () => ProbeAdmissionRecheck;
+  requestedRevision: number; variantId?: string;
+  reservation?: ProbeReservation; promise?: Promise<ProbePublicReceipt>; stopPromise?: Promise<void>;
+  launched: boolean; launchSettled: boolean; stopSettled: boolean; stopKnown: boolean; stopRequested: boolean;
+  watch?: { handle: unknown }; failure?: Error;
+}
 export class Tasks {
+  private guidanceProbeStopping = false;
+  private guidanceProbeAdmissions = 0;
+  private readonly guidanceProbeActive = new Map<string, GuidanceProbeRuntime>();
+  private readonly findingPlacements = new WeakMap<ReviewReadiness, { binding: string; placements: Map<string, ReviewAnchorStatus>; placementOnly: boolean }>();
+  private findingPlacementBinding(task: Task): string {
+    return JSON.stringify([task.id, task.created, this.reviewHead(task), task.refs.paths, task.plan, this.reviewFindingSets(task)]);
+  }
+  private async prepareFindingPlacements(task: Task, refs: TaskRefs | undefined, guard: () => unknown): Promise<Map<string, ReviewAnchorStatus>> {
+    const staged = { ...task, refs: { ...task.refs, ...cleanRefs(refs) } }, placements = new Map<string, ReviewAnchorStatus>();
+    const findings = findingsForHead(this.reviewFindingSets(staged), this.findingHead(staged)).filter(item => item.anchor && !this.reviewPathPrivate(item.anchor.path) && this.findingTextAllowed(staged, [item]));
+    if (this.isPii(staged) || !findings.length || !this.d.reviewMaterials) return placements;
+    try {
+      const batch = await this.reviewBatch(staged, findings.map(item => item.anchor!));
+      guard();
+      if (batch.head === this.reviewHead(staged)) for (const item of findings) placements.set(item.id, this.reviewPlacement(item.anchor!, batch));
+    } catch { guard(); } // Optional placement failure is unavailable, never invented coordinates.
+    return placements;
+  }
+  private reviewObserverTurn(by: PeerId, task?: number): boolean {
+    try {
+      if (this.d.reviewObserverInput?.(by) === true || this.d.bus.lastDeliveredTo(by).some(isReviewObserverExcluded)) return true;
+      if (task === undefined) return false;
+      return this.d.board.hasReviewObserverScope(by, task) || this.d.bus.hasUnsettledReviewScope(by, task);
+    } catch { return true; }
+  }
+  async reviewCommentPut(by: PeerId, input: unknown, meta?: ActionMeta): Promise<ReviewCommentMutation> {
+    const author = this.reviewPerson(by, meta), check = this.requestCheck(by, () => this.reviewCommentHold());
+    const fields = this.reviewInput(input, ["task", "id", "revision", "commit", "anchor", "body"]);
+    let taskId: number, id: string, expected: number | undefined, commit: string, anchor: ReviewAnchor, body: string;
+    try {
+      taskId = reviewCommentNumber(fields.task, "task"); id = fields.id === undefined ? `comment-${crypto.randomUUID()}` : reviewCommentId(fields.id);
+      expected = fields.id === undefined ? undefined : reviewCommentNumber(fields.revision, "revision");
+      if (fields.id === undefined && fields.revision !== undefined) throw new Error("unexpected revision");
+    } catch { throw new PreEffectToolRefusal("review task, comment id or revision is invalid; refresh the task review and use its current id and revision, or omit both for a new draft"); }
+    try { commit = reviewCommentHead(fields.commit); }
+    catch { throw new PreEffectToolRefusal("review commit must be a current full lowercase SHA; refresh the task review before saving"); }
+    try { anchor = parseReviewAnchor(fields.anchor); }
+    catch (error) { throw new PreEffectToolRefusal(`${reviewAnchorErrorMessage(error)}; refresh the review and recreate the draft`); }
+    try { body = reviewCommentBody(fields.body); }
+    catch { throw new PreEffectToolRefusal("review comment body must be nonempty and at most 2048 UTF-8 bytes; edit the body before saving"); }
+    return this.commentWrite(async () => {
+      check(); const before = this.reviewContext(taskId), rows = this.d.board.reviewComments(taskId, before.task.created), old = rows.find(row => row.thread.id === id);
+      if (expected !== undefined && (!old || old.lifecycle !== "draft" || old.revision !== expected)) throw new PreEffectToolRefusal("review draft changed or was sent; refresh the draft list before editing");
+      if (old && old.commit !== commit) throw new PreEffectToolRefusal("draft is anchored to an earlier head; delete it and create a new draft against the current task head");
+      if (expected === undefined && rows.length >= REVIEW_COMMENT_LIMIT) throw new PreEffectToolRefusal("task review already has 64 comments; remove an unused draft before adding another");
+      const strip = () => { if (this.reviewPathPrivate(anchor.path)) { try { anchor = privateReviewAnchor(anchor); } catch { throw new PreEffectToolRefusal("private review path needs an existing lineRange or structural selector; select a safe anchor before retrying"); } } };
+      strip(); const privateRecord = this.reviewTaskPrivate(before.task) || this.reviewPathPrivate(anchor.path), batch = privateRecord ? undefined : await this.reviewBatch(before.task, [anchor]);
+      if (batch && batch.head !== commit) throw new PreEffectToolRefusal("review task head moved; delete this draft and recreate it against the current full commit");
+      if (!privateRecord) {
+        const material = batch!.materials.find(row => row.path === anchor.path && row.side === (anchor.side ?? "head"));
+        if (!material || material.state !== "available") throw new PreEffectToolRefusal("review anchor material is unavailable; refresh the task review and choose a currently available file before saving");
+        if (anchor.contentHash !== material.contentHash || JSON.stringify(anchor.projection ?? null) !== JSON.stringify(material.projection ?? null)) throw new PreEffectToolRefusal("review anchor content hash or projection differs from the immutable file; refresh the review and recreate the draft on the current material");
+      }
+      check(); const current = this.reviewContext(taskId);
+      if (current.key !== before.key || this.reviewHead(current.task) !== commit || batch && batch.head !== commit) throw new PreEffectToolRefusal("review task head changed; delete this draft and recreate it against the current head before saving");
+      strip(); const record: ReviewCommentRecord = { task: taskId, taskCreated: current.task.created, commit, lifecycle: "draft", revision: (old?.revision ?? 0) + 1, private: false,
+        thread: { id, anchor, body, author, at: new Date(this.d.now?.() ?? Date.now()).toISOString() } };
+      record.private = this.reviewRecordPrivate(current.task, record);
+      check(); const saved = this.d.board.putReviewComment(record, current.fence, expected);
+      return { task: taskId, id, revision: saved.revision, lifecycle: saved.lifecycle };
+    });
+  }
+  async reviewCommentDelete(by: PeerId, input: unknown, meta?: ActionMeta): Promise<ReviewCommentMutation> {
+    this.reviewPerson(by, meta); const check = this.requestCheck(by, () => this.reviewCommentHold()), fields = this.reviewInput(input, ["task", "id", "revision"]);
+    let task: number, id: string, revision: number;
+    try { task = reviewCommentNumber(fields.task, "task"); id = reviewCommentId(fields.id); revision = reviewCommentNumber(fields.revision, "revision"); }
+    catch { throw new PreEffectToolRefusal("review delete identity is invalid; refresh the list and use its current id and revision"); }
+    return this.commentWrite(async () => {
+      check(); const context = this.reviewContext(task), record = this.d.board.reviewComments(task, context.task.created).find(row => row.thread.id === id);
+      if (!record || record.lifecycle !== "dismissed" && record.revision !== revision) throw new PreEffectToolRefusal("review comment changed; refresh its current revision before deleting or dismissing");
+      const result = this.d.board.deleteReviewComment(id, revision, context.fence);
+      return { task, id, revision: result.record.revision, ...(result.deleted ? { deleted: true as const } : { lifecycle: result.record.lifecycle }) };
+    });
+  }
+  async reviewCommentList(by: PeerId, input: unknown): Promise<{ task: number; counts: ReviewCommentCounts; comments: ReviewCommentView[]; packages: import("./review-comments.ts").ReviewCommentPackageView[] }> {
+    if (this.commentsStopped) throw new PreEffectToolRefusal("review comments are stopping; reopen the task review after the hub restarts");
+    this.reviewPerson(by); const fields = this.reviewInput(input, ["task"]), taskId = reviewCommentNumber(fields.task, "task"), before = this.reviewContext(taskId);
+    const counts = this.d.board.reviewCommentCounts(taskId, before.task.created), records = this.d.board.reviewComments(taskId, before.task.created);
+    const packages = this.d.board.reviewCommentPackages(taskId, before.task.created);
+    if (this.reviewTaskPrivate(before.task)) return { task: taskId, counts, comments: [], packages };
+    const candidates = records.filter(row => !this.reviewRecordPrivate(before.task, row));
+    if (!candidates.length) return { task: taskId, counts, comments: [], packages };
+    let batch: ReviewMaterialBatch;
+    try { batch = await this.reviewBatch(before.task, candidates.map(row => row.thread.anchor)); } catch { batch = { head: "", materials: [] }; }
+    if (this.commentsStopped) return { task: taskId, counts, comments: [], packages };
+    const current = this.reviewContext(taskId);
+    if (current.key !== before.key) throw new PreEffectToolRefusal("review task changed while reading; refresh the task review");
+    const latest = this.d.board.reviewComments(taskId, current.task.created);
+    if (latest.length !== records.length || records.some(row => !latest.some(fresh => fresh.thread.id === row.thread.id && fresh.revision === row.revision))) throw new PreEffectToolRefusal("review comments changed while reading; refresh the task review");
+    const comments = candidates.flatMap<ReviewCommentView>(record => {
+      const placement = this.reviewPlacement(record.thread.anchor, batch);
+      if (this.reviewRecordPrivate(current.task, record)) return [];
+      if (placement.status === "unavailable") return [{ thread: reviewThreadProjection(record), task: taskId, commit: record.commit, lifecycle: record.lifecycle, revision: record.revision, ...(record.sentAt ? { sentAt: record.sentAt } : {}), placement: { status: "unavailable" } }];
+      return [{ thread: reviewThreadProjection(record), task: taskId, commit: record.commit, lifecycle: record.lifecycle, revision: record.revision, ...(record.sentAt ? { sentAt: record.sentAt } : {}), placement }];
+    });
+    return { task: taskId, counts, comments, packages };
+  }
+  async reviewCommentSend(by: PeerId, input: unknown, meta?: ActionMeta): Promise<{ task: number; packageId: string; count: number; delivery: "queued" | "unconfirmed" }> {
+    this.reviewPerson(by, meta); const check = this.requestCheck(by, () => this.reviewCommentHold()), fields = this.reviewInput(input, ["task", "ids", "packageId"]), taskId = reviewCommentNumber(fields.task, "task");
+    if (fields.packageId !== undefined) {
+      if (fields.ids !== undefined) throw new PreEffectToolRefusal("choose either saved packageId or draft ids; refresh the person review and retry one operation");
+      let packageId: string;
+      try { if (typeof fields.packageId !== "string" || !/^review-[a-f0-9-]{36}$/.test(fields.packageId)) throw new Error(); packageId = fields.packageId; }
+      catch { throw new PreEffectToolRefusal("review package id is invalid; select a saved package from the current person review list"); }
+      return this.commentWrite(async () => {
+        check(); const context = this.reviewContext(taskId), packet = this.d.board.reviewCommentPackage(packageId);
+        if (!packet || packet.task !== taskId || packet.taskCreated !== context.task.created || packet.owner !== context.task.owner) throw new PreEffectToolRefusal("saved review package is unavailable for this task owner; refresh the task review and inspect the existing package history");
+        if (!packet.body || !packet.envelopeId || !packet.trace || packet.ts === undefined) throw new PreEffectToolRefusal(`saved review package ${packageId} predates recoverable delivery; inspect the owner's queue and sent comments before drafting a new package`);
+        if (!context.task.owner || context.task.owner === USER || context.task.owner === HUB) throw new PreEffectToolRefusal("saved review package has no current agent owner; assign the open task before retrying");
+        if (isClosedTaskState(context.task.state)) throw new PreEffectToolRefusal("review package cannot be sent because the task is closed; reopen the task review before sending");
+        const env = { id: packet.envelopeId, trace: packet.trace, hop: 0, from: HUB, to: [packet.owner], kind: "review" as const, priority: "important" as const, body: packet.body,
+          refs: { task: String(taskId), taskRecipient: "owner" as const, reviewPackage: packageId }, ts: packet.ts };
+        check();
+        const status = this.d.bus.reviewEnvelopeStatus(env.id);
+        if (status === "unknown") throw new PreEffectToolRefusal("saved review package delivery history is unavailable; inspect ahub queue list --peer " + packet.owner + " and sent comments before retrying");
+        if (status === "failed" || status === "discarded") throw new PreEffectToolRefusal(`saved review package delivery is ${status}; inspect ahub queue list --peer ${packet.owner} and ahub queue show <delivery-id> before retrying`);
+        if (status === "absent") {
+          if (packet.publicationEvidenceVersion !== 1) throw new PreEffectToolRefusal(`saved review package ${packageId} has no retained delivery proof; inspect the owner's queue and sent comments before retrying`);
+          if (packet.visibleIds === undefined) throw new PreEffectToolRefusal("saved review package has no privacy binding; inspect the owner's queue and sent comments, then dismiss or recreate the package");
+          const records = this.d.board.reviewComments(taskId, context.task.created);
+          if (packet.ids.some(id => records.find(row => row.thread.id === id)?.lifecycle !== "sent")) throw new PreEffectToolRefusal("saved review package comments are no longer all sent; inspect the owner's queue and dismiss or recreate the package");
+          if (packet.visibleIds.length && (this.reviewTaskPrivate(context.task)
+            || packet.visibleIds.some(id => { const record = records.find(row => row.thread.id === id); return !record || this.reviewRecordPrivate(context.task, record); }))) {
+            throw new PreEffectToolRefusal("saved review package is private under current policy; inspect the owner's queue, dismiss the old comments, and create a new package only after review privacy is clear");
+          }
+        }
+        try {
+          const targets = this.d.bus.publishReviewEnvelope(env);
+          if (!targets.includes(packet.owner)) throw new Error("owner not queued");
+        } catch {
+          const current = this.d.bus.reviewEnvelopeStatus(env.id);
+          if (current === "failed" || current === "discarded") throw new PreEffectToolRefusal(`saved review package delivery is ${current}; inspect ahub queue list --peer ${packet.owner} and ahub queue show <delivery-id> before retrying`);
+          throw new PreEffectToolRefusal("saved review package delivery history is unavailable or publication failed; inspect ahub queue list --peer " + packet.owner + " and sent comments before retrying");
+        }
+        this.d.board.markReviewCommentPackageQueued(packageId);
+        return { task: taskId, packageId, count: packet.ids.length, delivery: "queued" };
+      });
+    }
+    let ids: string[] | undefined;
+    try { ids = fields.ids === undefined ? undefined : reviewCommentIds(fields.ids); } catch { throw new PreEffectToolRefusal("review send ids are invalid; select current distinct draft ids"); }
+    return this.commentWrite(async () => {
+      check(); const before = this.reviewContext(taskId), owner = before.task.owner;
+      if (!owner || owner === USER || owner === HUB) throw new PreEffectToolRefusal("review package needs an agent owner; assign the task before sending comments");
+      if (isClosedTaskState(before.task.state)) throw new PreEffectToolRefusal("review comments can only be sent while the task is open; reopen the task review before sending");
+      const records = this.d.board.reviewComments(taskId, before.task.created), selected = ids === undefined ? records.filter(row => row.lifecycle === "draft") : ids.map(id => records.find(row => row.thread.id === id));
+      if (!selected.length || selected.some(row => !row || row.lifecycle !== "draft")) throw new PreEffectToolRefusal("review send needs current draft comments; refresh the list and select draft ids");
+      const drafts = selected as ReviewCommentRecord[], privateTask = this.reviewTaskPrivate(before.task), publicDrafts = drafts.filter(row => !this.reviewRecordPrivate(before.task, row));
+      const batch = privateTask || !publicDrafts.length ? undefined : await this.reviewBatch(before.task, publicDrafts.map(row => row.thread.anchor));
+      check(); const current = this.reviewContext(taskId);
+      if (current.key !== before.key) throw new PreEffectToolRefusal("review task or owner changed; refresh the review before sending");
+      const latest = this.d.board.reviewComments(taskId, current.task.created);
+      if (drafts.some(row => { const fresh = latest.find(value => value.thread.id === row.thread.id); return !fresh || fresh.lifecycle !== "draft" || fresh.revision !== row.revision; })) throw new PreEffectToolRefusal("review drafts changed; refresh the list before sending");
+      const unavailable = privateTask ? [] : publicDrafts.filter(row => this.reviewPlacement(row.thread.anchor, batch!).status === "unavailable");
+      if (unavailable.length) throw new PreEffectToolRefusal(`review material is unavailable for ${unavailable.map(row => row.thread.id).join(", ")}; refresh the task review and retry after the anchored file is available`);
+      const packageId = `review-${crypto.randomUUID()}`, envelopeId = crypto.randomUUID(), trace = crypto.randomUUID(), ts = Date.now();
+      const body = privateTask ? `Task #${taskId}: ${drafts.length} person review comments are kept on the board; private text is withheld.`
+        : [`Person review comments for task #${taskId} (${drafts.length}). Address these comments; report resolved ids in hub_task_done.`, ...drafts.map(row => {
+          if (this.reviewRecordPrivate(current.task, row)) return renderReviewComment(row, { status: "unavailable" }, false);
+          return renderReviewComment(row, this.reviewPlacement(row.thread.anchor, batch!), true);
+        })].join("\n\n");
+      if (Buffer.byteLength(body, "utf8") > REVIEW_PACKAGE_BYTES) throw new PreEffectToolRefusal("review package exceeds 12000 presentation bytes; select fewer ids before sending");
+      let packageHead: string;
+      try { packageHead = reviewCommentHead(batch?.head ?? this.reviewHead(current.task)); }
+      catch { throw new PreEffectToolRefusal("review package has no current immutable head; refresh the task review before sending"); }
+      check(); this.d.board.sendReviewComments(drafts, { id: packageId, task: taskId, taskCreated: current.task.created, ids: drafts.map(row => row.thread.id),
+        visibleIds: privateTask ? [] : publicDrafts.map(row => row.thread.id), owner, head: packageHead, at: new Date(this.d.now?.() ?? Date.now()).toISOString(), body,
+        envelopeId, trace, ts, delivery: "unconfirmed", publicationEvidenceVersion: 1 }, current.fence);
+      let delivery: "queued" | "unconfirmed" = "unconfirmed";
+      this.releaseNotice(`task #${taskId}: review package ${packageId} publication unconfirmed; inspect ahub queue list --peer ${owner} before any retry`, () => {
+        try { const targets = this.d.bus.publishResult({ id: envelopeId, trace, hop: 0, from: HUB, to: [owner], kind: "review", priority: "important", body,
+          refs: { task: String(taskId), taskRecipient: "owner", reviewPackage: packageId }, ts }); if (!targets.targets.includes(owner)) throw new Error("not queued"); this.d.board.markReviewCommentPackageQueued(packageId); delivery = "queued"; }
+        catch { throw new Error("publication may be unconfirmed; inspect the saved queue before any explicit retry"); }
+      });
+      return { task: taskId, packageId, count: drafts.length, delivery };
+    });
+  }
+  private commentWrites = 0;
+  private commentsStopped = false;
+  private readonly commentDrain = new Set<() => void>();
+  reviewCommentsPending = (): number => this.commentWrites;
+  async stopReviewComments(): Promise<void> { this.commentsStopped = true; if (this.commentWrites) await new Promise<void>(resolve => this.commentDrain.add(resolve)); }
+  private reviewCommentHold(): string | undefined {
+    try { if (this.commentsStopped || this.d.cancellationHeld?.() || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return "review comment writes are held; wait for recovery or shutdown to settle before retrying"; }
+    catch { return "review comment admission is unavailable; inspect ahub status before retrying"; }
+    return undefined;
+  }
+  private async commentWrite<T>(write: () => Promise<T>): Promise<T> {
+    this.commentWrites++;
+    try { return await write(); } finally { if (--this.commentWrites === 0) { for (const resolve of this.commentDrain) resolve(); this.commentDrain.clear(); } }
+  }
+  private reviewPerson(by: PeerId, meta?: ActionMeta): string {
+    if (by !== USER) throw new PreEffectToolRefusal("only the console person may change review comments; use the person's task review surface");
+    try { return reviewCommentAuthor(meta); } catch { throw new PreEffectToolRefusal("verified person identity is unavailable; reopen the authenticated console review before retrying"); }
+  }
+  private reviewTaskPrivate(task: Task): boolean {
+    try { return task.signals.includes("pii") || task.signals.includes("pii_path") || this.isPii(task); } catch { return true; }
+  }
+  private reviewPathPrivate(path: string): boolean {
+    try { return isDenied(path, this.d.deny) || matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? [], true) || this.publicMetadataText(path) !== true; } catch { return true; }
+  }
+  private reviewRecordPrivate(task: Task, record: ReviewCommentRecord): boolean {
+    try { return record.private || this.reviewTaskPrivate(task) || this.reviewPathPrivate(record.thread.anchor.path) || this.publicMetadataText(JSON.stringify(record.thread)) !== true; } catch { return true; }
+  }
+  private reviewContext(id: unknown): { task: Task; fence: ReviewCommentFence; key: string } {
+    const task = this.need(id, false, true, true), fence: ReviewCommentFence = { task: task.id, taskCreated: task.created, flow: task.history.length, owner: task.owner, ...(this.reviewHead(task) ? { head: this.reviewHead(task) } : {}) };
+    return { task, fence, key: JSON.stringify([fence, this.reviewTaskPrivate(task)]) };
+  }
+  private reviewInput(input: unknown, keys: readonly string[]): Record<string, unknown> {
+    try { return reviewCommentFields(input, keys); } catch { throw new PreEffectToolRefusal("review comment input is invalid; use only the operation's current task, ids, revision and bounded comment fields"); }
+  }
+  private async reviewBatch(task: Task, anchors: readonly ReviewAnchor[]): Promise<ReviewMaterialBatch> {
+    if (!this.d.reviewMaterials) throw new PreEffectToolRefusal("review material reader is unavailable; reopen the task review with the current hub before retrying");
+    const requests = [...new Map(anchors.map(anchor => [JSON.stringify([anchor.path, anchor.side ?? "head"]), { path: anchor.path, ...(anchor.side ? { side: anchor.side } : {}) }])).values()];
+    try { const batch = await this.d.reviewMaterials(task, requests); reviewCommentHead(batch.head); return batch; }
+    catch { throw new PreEffectToolRefusal("review material or immutable head is unavailable; refresh the task review before retrying"); }
+  }
+  private reviewPlacement(anchor: ReviewAnchor, batch: ReviewMaterialBatch): ReviewAnchorStatus {
+    const material = batch.materials.find(row => row.path === anchor.path && row.side === (anchor.side ?? "head"));
+    if (!material) return { status: "unavailable" };
+    try { return anchorStatus(anchor, material); } catch { return { status: "unavailable" }; }
+  }
+  private reviewCommentResolve(by: PeerId, task: Task, input: unknown): string[] | undefined {
+    if (input === undefined) return undefined;
+    try { const ids = reviewCommentIds(input); if (ids.length && by !== task.owner) throw new Error("not owner"); this.d.board.reviewCommentResolution(task, ids); return ids; }
+    catch { throw new PreEffectToolRefusal("comment resolution requires the task owner and sent comment ids; refresh the task review before hub_task_done"); }
+  }
   private readonly planReviewRequests = new Map<number, string>();
   private readonly repositories: TaskRepositories;
   private readonly incomingBacklog = new Set<number>();
@@ -490,7 +813,7 @@ export class Tasks {
   constructor(private readonly d: TasksDeps) {
     this.ciWatchers = new CiWatchers({
       ...d.ciWatch,
-      poll: watch => pollCi(watch, watch.head, d.sdlc?.config().requiredChecks ?? [], d.sdlc?.gh ?? sdlcGh),
+      poll: watch => pollCi(watch, watch.head, d.sdlc ? requiredChecksFor(d.sdlc.config(), watch.repo) : [], d.sdlc?.gh ?? sdlcGh),
       current: watch => this.ciWatchCurrent(watch),
       finish: (watch, outcome) => this.ciCompleted(watch, outcome),
     });
@@ -773,7 +1096,8 @@ export class Tasks {
 
   private findingTextAllowed(task: Task, items: readonly ReviewFinding[]): boolean {
     return this.candidateTextAllowed(JSON.stringify(items), task)
-      && items.every(item => !item.path || !matchesPolicy(this.d.cwd, item.path, this.d.piiPaths ?? [], true));
+      && items.every(item => (!item.path || !matchesPolicy(this.d.cwd, item.path, this.d.piiPaths ?? [], true))
+        && (!item.anchor || !this.reviewPathPrivate(item.anchor.path)));
   }
 
   /** Host-authored proposals contain only cleared IDs, integer task references and fixed instruction targets. */
@@ -929,6 +1253,37 @@ export class Tasks {
     for (const id of created) this.releaseNotice(`task #${id}: recurring review finding amendment proposed in the backlog`);
   }
 
+  /**
+   * #1403 A1, B4: on approval, one backlog card per open Important finding that did not block it. A `needs_validation` security finding gets one read-only `triage` card that names its blocker
+   * (the missing fact); a `pre_existing` one gets one `plan` card. Marker-deduplicated like the recurring-finding cards and held to the same privacy gates. The card carries the task id, the
+   * finding id and pass, and for a hypothesis its blocker: never the boundary fields or the path, which stay on the task's own review history (the repository is public, and the hub opens no issue).
+   */
+  private proposeFindingFollowUps(task: Task, by: PeerId, withheld: boolean): void {
+    if (withheld || this.isPii(task) || this.d.privateTurn?.(by)) return;
+    const { validation, preExisting } = findingFollowUps(this.reviewFindingSets(task));
+    if (!validation.length && !preExisting.length) return;
+    const visible = (item: ReviewFinding) => !task.history.some(entry => entry.withheld && entry.reviewFindings?.items.some(value => value.id === item.id)) && this.findingTextAllowed(task, [item]);
+    const keys = new Set(this.d.board.list().filter(row => (row.class === "plan" || row.class === "triage") && row.history[0]?.by === HUB)
+      .flatMap(row => row.detail?.split("\n").filter(line => line.startsWith("Finding follow-up key: ")) ?? []));
+    const created: number[] = [];
+    // No await separates the durable dedupe read from creation; a repeated approval sees the first card.
+    for (const [kind, items] of [["validation", validation], ["pre-existing", preExisting]] as const) for (const item of items.filter(visible)) {
+      const key = `Finding follow-up key: ${task.id}:${item.pass}:${item.id}:${kind}`;
+      if (keys.has(key)) continue;
+      const ref = `${item.pass}:${item.id}`;
+      const title = kind === "validation" ? `Validate security finding ${ref} from task #${task.id}: read-only triage` : `Pre-existing finding ${ref} from task #${task.id}: plan a fix`;
+      const detail = kind === "validation"
+        ? `${key}\nTask #${task.id} was approved with the important security finding ${ref} still a hypothesis. Blocker, the fact that settles it: ${item.blocker ?? "not recorded"}\nRead-only triage: settle that fact from source or a sandboxed check and report whether the finding is confirmed or false. Do not edit files, branches or the board, and open no issue: the person decides where a security finding is published. Details are in ahub task show ${task.id}.`
+        : `${key}\nTask #${task.id} was approved with the important finding ${ref} marked pre_existing: that change did not introduce it, so it did not block the approval. Backlog card for the planner: decide whether and how to plan a fix. Details are in ahub task show ${task.id}.`;
+      const draft = { title, detail, refs: {} };
+      const signals = this.signalsFor(draft);
+      if (this.isPii({ signals }) || !this.candidateTextAllowed(`${title}\n${detail}`)) continue;
+      const proposal = this.d.board.propose(HUB, { ...draft, class: kind === "validation" ? "triage" : "plan", backlog: true, signals });
+      this.incomingBacklog.add(proposal.id); keys.add(key); created.push(proposal.id);
+    }
+    for (const id of created) this.releaseNotice(`task #${id}: finding follow-up proposed in the backlog`);
+  }
+
   private publicClaimBindings(task: Task): ReturnType<typeof taskClaimIdentity>[] | undefined {
     const claims = task.plan?.claims;
     if (task.profile !== "research" || task.signals.includes("pii") || task.signals.includes("pii_path")
@@ -944,7 +1299,8 @@ export class Tasks {
     const plannerBinding = history.findLast(h => h.planner === task.planner && h.plannerReason !== undefined);
     const ownerBinding = history.findLast(h => h.owner === task.owner && ["assigned", "reassigned", "escalated", "backlog pulled"].includes(h.event));
     const reviewerBinding = history.findLast(h => ["assigned", "reassigned", "escalated", "done", "reviewer changed", "reviewer unavailable"].includes(h.event));
-    const rest = { ...taskRest,
+    const reviewComments = this.d.board.reviewCommentCounts(task.id, task.created);
+    const rest = { ...taskRest, ...(Object.values(reviewComments).some(Boolean) ? { reviewComments } : {}),
       ...(plannerBinding?.plannerReason && ["rotation", "named", "kept", "none"].includes(plannerBinding.plannerReason) ? { plannerReason: plannerBinding.plannerReason } : {}),
       ...(ownerBinding?.reason && TASK_MOVE_REASONS.includes(ownerBinding.reason) ? { ownerReason: ownerBinding.reason === "manual" && ownerBinding.event === "reassigned" && ownerBinding.by !== HUB ? "named" : ownerBinding.reason } : {}),
       ...(reviewerBinding?.reviewerReason && ["rotation", "implementer skip", "unavailable skip", "same-family fallback"].includes(reviewerBinding.reviewerReason) ? { reviewerReason: reviewerBinding.reviewerReason } : reviewerBinding?.event === "reviewer changed" && reviewerBinding.reason === "manual" ? { reviewerReason: "named" } : {}),
@@ -1477,9 +1833,10 @@ export class Tasks {
 
   private weights(cls: TaskClass, task?: Task, projectedHealth?: ReturnType<Tasks["health"]>) {
     const now = Date.now();
+    const entryDiagnostic = task ? this.entryDiagnostic(task) : undefined;
     const quota = this.d.quota?.();
     const health = projectedHealth ?? this.health(), clock = health.now ?? now;
-    return { ...health, ...(task && this.hasPersonReservation(task) && task.reserved ? { queueReservedHold: task.reserved } : {}), planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task), ...(task.planner ? { keptPlanner: task.planner } : {}) } : {}), now: clock, demoted: this.demoted(cls, clock), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
+    return { ...health, ...(entryDiagnostic ? { entryDiagnostic } : {}), ...(task && this.hasPersonReservation(task) && task.reserved ? { queueReservedHold: task.reserved } : {}), planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task), ...(task.planner ? { keptPlanner: task.planner } : {}) } : {}), now: clock, demoted: this.demoted(cls, clock), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
   }
 
   /**
@@ -1893,8 +2250,19 @@ export class Tasks {
     if (by !== USER && !this.d.roles?.[by]?.includes("planner") && this.d.operational?.(by) !== true) throw new HandoffRefusal("no_authority", "a handoff needs the person, a configured planner or the conductor");
   }
 
+  /**
+   * #734 (AC6): who may ask the origin to catch up now (`ahub task handoff --sync`). The person, or the conductor acting on the person's instruction: the same bar as `handoffOutAuthority`
+   * without the planner role, because a sync starts no work and files nothing, but it does ask other projects' hubs, which a planner agent has no need to trigger.
+   */
+  handoffSyncAuthority(by: PeerId): void {
+    requireLocalTaskPeer(by);
+    if (by !== USER && this.d.operational?.(by) !== true) throw new HandoffRefusal("no_authority", "a handoff sync is the person's or the conductor's: ask them to run `ahub task handoff --sync`");
+  }
+
   /** ORIGIN side: remember what was handed over, once the target answered with its task id. */
   handoffSent(by: PeerId, target: { projectId: string }, remoteTask: number, title: string, localTask?: number): void {
+    // #731: a row that already exists is never reset to "proposed": a replayed answer can arrive after the target's own event for the same task was recorded.
+    if (this.d.board.handoffOutboundFor(target.projectId, remoteTask)) return;
     this.d.board.recordHandoffOutbound({ remoteProject: target.projectId, remoteTask, originPeer: by, ...(localTask === undefined ? {} : { localTask }), title: title.slice(0, 300), state: "proposed" });
   }
 
@@ -1903,7 +2271,7 @@ export class Tasks {
    * The request was parsed closed by the origin and is parsed again here, because a control message is data from another process: the body is bounded, control characters are refused and the
    * text is sanitized before it is stored. A `[pii]` result is refused whole, and nothing is left behind.
    */
-  async handoffIn(origin: { projectId: unknown; peer: unknown; taskId?: unknown }, input: unknown, fence: () => string | undefined = () => undefined): Promise<{ task: number; state: string; note?: string }> {
+  async handoffIn(origin: { projectId: unknown; peer: unknown; taskId?: unknown }, input: unknown, fence: () => string | undefined = () => undefined): Promise<{ task: number; state: string; note?: string; replayed?: true }> {
     const request = parseHandoff({ ...(input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : { invalid: true }), project: "local" });
     if (typeof origin.projectId !== "string" || !origin.projectId || origin.projectId.length > 200 || typeof origin.peer !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(origin.peer)
       || origin.taskId !== undefined && (!Number.isSafeInteger(origin.taskId) || (origin.taskId as number) < 1)) throw new HandoffRefusal("invalid", "handoff origin is malformed");
@@ -1911,9 +2279,21 @@ export class Tasks {
     // The fence is asked right before the board write and after every await: a recovery that began while the PII screen was pending must find nothing written (agent-hub#1030, review).
     const held = (): void => { const reason = fence(); if (reason) throw new HandoffRefusal("invalid", reason); };
     held();
+    // #731 (agent-hub#1203): a request key this origin already used answers with the task it made, before the duplicate check (which would refuse it as a duplicate of itself) and before any PII screen
+    // or write. The same key for a different request is refused, never answered with a task the caller did not ask for.
+    const key = request.handoffKey, digest = handoffRequestDigest(request, origin.taskId as number | undefined);
+    const replay = (): { task: number; state: string; replayed: true } | undefined => {
+      const existing = key === undefined ? undefined : this.d.board.handoffOriginByKey(origin.projectId as string, key);
+      const task = existing && this.d.board.get(existing.taskId);
+      if (!existing || !task) return undefined;
+      if (existing.digest !== null && existing.digest !== digest) throw new HandoffRefusal("invalid", "that handoff key was already used for a different request: hand the task off again with a new key");
+      return { task: task.id, state: task.state, replayed: true };
+    };
+    const early = replay();
+    if (early) return early;
     // The spec issue the caller named is kept in the task itself, as its own line: the target's planner reads it from the detail, and `ahub task show` shows it there.
     const issueLine = request.issue === undefined ? "" : `spec issue: #${request.issue} in this repository`;
-    const detail = sanitize([request.detail, issueLine, `[handed off from project ${origin.projectId} by ${origin.peer}${origin.taskId === undefined ? "" : ` (their task #${origin.taskId})`}]`].filter(Boolean).join("\n\n"));
+    const detail = sanitize([request.detail, issueLine, request.duplicate_ok === undefined ? "" : `duplicate acknowledged by the sender: ${request.duplicate_ok}`, `[handed off from project ${origin.projectId} by ${origin.peer}${origin.taskId === undefined ? "" : ` (their task #${origin.taskId})`}]`].filter(Boolean).join("\n\n"));
     const refs: TaskRefs = { ...(request.paths.length ? { paths: request.paths } : {}) };
     const signals = this.signalsFor({ title: request.title, detail, refs, plan: {} });
     if (signals.includes("pii")) throw new HandoffRefusal("pii_task", "the handed-off text matches a PII pattern; it is not stored here");
@@ -1921,8 +2301,20 @@ export class Tasks {
     const screened = screening ? await this.screenCall(screenText({ title: request.title, detail: [detail, ...request.paths].join("\n"), plan: {} })) : undefined;
     held();
     if (screening && (!screened || screened.label !== "clear")) throw new HandoffRefusal("pii_task", "the handed-off text could not be cleared by the PII screen; it is not stored here");
-    let task = this.d.board.propose(HUB, { title: request.title, detail, class: request.class, refs, plan: {}, signals });
-    this.d.board.setHandoffOrigin(task.id, { projectId: origin.projectId, peer: origin.peer, ...(origin.taskId === undefined ? {} : { originTask: origin.taskId as number }) });
+    // The first attempt may have committed while this one waited for the screen (the origin's timeout does not stop it): ask again, with nothing awaited between here and the write below.
+    const late = replay();
+    if (late) return late;
+    // #1175: a spec issue that already has open work here is refused before any row exists, so a duplicate is never offered to an owner or escalated by the sweep. This runs after the last
+    // await and writes nothing before it, so the check and the proposal below see one board; a `[pii]` task is left out, so no private task id is named to another project.
+    if (request.issue !== undefined && request.duplicate_ok === undefined) {
+      const open = duplicateIssueTasks(this.d.board.list().filter(row => !this.isPii(row)).map(row => ({ id: row.id, state: row.state, title: row.title, detail: row.detail, refs: row.refs, external: row.external, sdlc: row.sdlc })), request.issue, this.d.repository);
+      if (open.length) throw new HandoffRefusal("duplicate", duplicateRefusalText(request.issue, open));
+    }
+    // #731 (H9): the proposal and its origin row are one board transaction. A request with no key (an older origin) is written the same way, without a key, so it is never left without its origin either.
+    const made = this.d.board.proposeHandoff(HUB, { title: request.title, detail, class: request.class, refs, plan: {}, signals },
+      { projectId: origin.projectId, peer: origin.peer, ...(origin.taskId === undefined ? {} : { originTask: origin.taskId as number }), ...(key === undefined ? {} : { key, digest }) });
+    if (made.replayed) return { task: made.task.id, state: made.task.state, replayed: true };
+    let task = made.task;
     // From here the task and its origin are saved, so nothing below may fail the handoff: the origin must learn the task id, or the target keeps work nobody can track.
     try { task = this.linkOnWrite(task); } catch { /* the lifecycle link is advice */ }
     try { this.d.notify(`task ${this.publicTitle(task)} handed off from project ${origin.projectId} by ${origin.peer}`); } catch { /* never throw after a board write */ }
@@ -1941,20 +2333,34 @@ export class Tasks {
     return origin ? { projectId: origin.projectId, peer: origin.peer, originTask: origin.originTask } : undefined;
   }
 
-  /** ORIGIN side: the target reported a state change. Records it and tells the origin peer with one `kind: task` envelope. Idempotent: a state already recorded sends nothing. */
+  /**
+   * ORIGIN side: the target reported a state change. Records it and tells the origin peer with one `kind: task` envelope. Idempotent: a state already recorded sends nothing.
+   * #733: an event may carry `seq`, the target task's flow revision. One that is not newer than the stored sequence changes nothing and sends nothing (an `in_review` that arrives after
+   * `approved` cannot reopen the row), decided inside the board write; an event without one (an older target) applies as before.
+   */
   handoffEvent(input: unknown): { recorded: boolean } {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new HandoffRefusal("invalid", "handoff event must be a data object");
     const e = input as Record<string, unknown>;
     if (typeof e.projectId !== "string" || !e.projectId || e.projectId.length > 200 || !Number.isSafeInteger(e.remoteTask) || (e.remoteTask as number) < 1
-      || typeof e.state !== "string" || !(HANDOFF_EVENTS as readonly string[]).includes(e.state)) throw new HandoffRefusal("invalid", "handoff event is malformed");
+      || typeof e.state !== "string" || !(HANDOFF_EVENTS as readonly string[]).includes(e.state)
+      || e.seq !== undefined && (!Number.isSafeInteger(e.seq) || (e.seq as number) < 1)) throw new HandoffRefusal("invalid", "handoff event is malformed");
     const row = this.d.board.handoffOutboundFor(e.projectId, e.remoteTask as number);
     if (!row) throw new HandoffRefusal("invalid", "no handoff of ours is recorded for that task");
+    const seq = e.seq as number | undefined;
     const pr = Number.isSafeInteger(e.pr) && (e.pr as number) > 0 ? e.pr as number : undefined, head = typeof e.head === "string" && /^[0-9a-f]{40}$/.test(e.head) ? e.head : undefined;
-    if (row.state === e.state && (pr === undefined || pr === row.pr) && (head === undefined || head === row.head)) return { recorded: false };
-    this.d.board.recordHandoffOutbound({ remoteProject: row.remoteProject, remoteTask: row.remoteTask, originPeer: row.originPeer, ...(row.localTask === null ? {} : { localTask: row.localTask }), title: row.title, state: e.state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }) });
+    if (seq !== undefined && row.seq !== null && seq <= row.seq) return { recorded: false };
+    if (row.state === e.state && (pr === undefined || pr === row.pr) && (head === undefined || head === row.head)) {
+      // Nothing to tell the peer, but a newer sequence is still kept, so a later stale event is judged against it.
+      if (seq !== undefined && (row.seq === null || seq > row.seq)) this.d.board.recordHandoffOutbound({ remoteProject: row.remoteProject, remoteTask: row.remoteTask, originPeer: row.originPeer, ...(row.localTask === null ? {} : { localTask: row.localTask }), title: row.title, state: row.state, seq });
+      return { recorded: false };
+    }
+    const written = this.d.board.recordHandoffOutbound({ remoteProject: row.remoteProject, remoteTask: row.remoteTask, originPeer: row.originPeer, ...(row.localTask === null ? {} : { localTask: row.localTask }), title: row.title, state: e.state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }), ...(seq === undefined ? {} : { seq }) });
+    if (!written.applied) return { recorded: false };   // a newer event won the race between the read above and this write
     const body = followBackLine(row.remoteTask, e.state as HandoffEvent, { pr, head });
     if (row.originPeer !== USER && row.originPeer !== HUB) {
-      try { this.d.bus.publish(newEnvelope(HUB, body, { to: [row.originPeer], kind: "task", priority: "important", refs: { task: String(row.localTask ?? row.remoteTask) } })); }
+      // #731 (H3): the envelope names the REMOTE task and no local one. `refs.task` made the bus judge it against whatever local task has that number (or the origin's own task it came from), so a
+      // cancelled or approved local task of the same number dropped a state change that was about another project's task.
+      try { this.d.bus.publish(newEnvelope(HUB, body, { to: [row.originPeer], kind: "task", priority: "important", refs: { handoff: { project: row.remoteProject, task: row.remoteTask } } })); }
       catch { /* never throw after a board write */ }
     }
     return { recorded: true };
@@ -1964,9 +2370,9 @@ export class Tasks {
    * TARGET side, catch-up (#1030 design 4): the origin asks for the current state of the tasks it handed us, by id, after it was down. Answers only for tasks whose recorded origin IS the asking
    * project, and only with the same fields a live event carries (the event name, a PR number, a full head), so an origin learns nothing it could not have been told live.
    */
-  handoffStatesFor(projectId: unknown, taskIds: unknown): { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string }[] {
+  handoffStatesFor(projectId: unknown, taskIds: unknown): { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string; seq: number }[] {
     if (typeof projectId !== "string" || !projectId || projectId.length > 200 || !Array.isArray(taskIds) || taskIds.length > 200 || !taskIds.every(id => Number.isSafeInteger(id) && id > 0)) throw new HandoffRefusal("invalid", "handoff state request is malformed");
-    const out: { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string }[] = [];
+    const out: { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string; seq: number }[] = [];
     for (const id of taskIds as number[]) {
       const origin = this.d.board.handoffOrigin(id), task = origin?.projectId === projectId ? this.d.board.get(id) : undefined;
       if (!task) continue;
@@ -1974,17 +2380,28 @@ export class Tasks {
       const state = entry ? handoffEventFor(entry.event, task.state) ?? "proposed" : "proposed";
       const pr = typeof task.sdlc?.pr === "number" && Number.isSafeInteger(task.sdlc.pr) && task.sdlc.pr > 0 ? task.sdlc.pr : undefined;
       const rawHead = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead, head = typeof rawHead === "string" && /^[0-9a-f]{40}$/.test(rawHead) ? rawHead : undefined;   // the owner's commit, else the receipt's head; only a full SHA crosses
-      out.push({ task: id, state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }) });
+      // #733: the task's current flow revision (its history length), the same number a live event carries, so a catch-up answer and a late live event are ordered against each other.
+      out.push({ task: id, state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }), seq: Math.max(1, task.history.length) });
     }
     return out;
   }
 
+  /**
+   * TARGET side (#731): where the task a handoff key made stands, for an origin whose request got no answer. Answers only the asking project, and only the fields a live event carries; nothing is
+   * written. `undefined` means this target holds no task for that key.
+   */
+  handoffStateByKey(projectId: unknown, key: unknown): { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string; seq: number } | undefined {
+    if (typeof projectId !== "string" || !projectId || projectId.length > 200 || typeof key !== "string" || !HANDOFF_KEY.test(key)) throw new HandoffRefusal("invalid", "handoff key lookup is malformed");
+    const found = this.d.board.handoffOriginByKey(projectId, key);
+    return found ? this.handoffStatesFor(projectId, [found.taskId])[0] : undefined;
+  }
+
   /** ORIGIN side: record what a target answered to the catch-up, and tell the origin peer about a change this project missed while it was down. */
-  handoffCaughtUp(projectId: string, rows: { task: number; state: string; pr?: number; head?: string }[]): number {
+  handoffCaughtUp(projectId: string, rows: { task: number; state: string; pr?: number; head?: string; seq?: number }[]): number {
     let changed = 0;
     for (const row of rows) {
       if (!(HANDOFF_EVENTS as readonly string[]).includes(row.state)) continue;
-      try { if (this.handoffEvent({ projectId, remoteTask: row.task, state: row.state, ...(row.pr === undefined ? {} : { pr: row.pr }), ...(row.head === undefined ? {} : { head: row.head }) }).recorded) changed++; }
+      try { if (this.handoffEvent({ projectId, remoteTask: row.task, state: row.state, ...(row.pr === undefined ? {} : { pr: row.pr }), ...(row.head === undefined ? {} : { head: row.head }), ...(row.seq === undefined ? {} : { seq: row.seq }) }).recorded) changed++; }
       catch { /* a row we hold no handoff for is not ours */ }
     }
     return changed;
@@ -2587,7 +3004,7 @@ export class Tasks {
   private topReservedReady(peer: PeerId, planner?: PeerId, pullable = false): Task | undefined {
     const now = this.d.now?.() ?? Date.now();
     return this.d.board.list().filter(card => (pullable ? card.state === "backlog" : ["backlog", "proposed"].includes(card.state)) && !card.owner && card.reserved === peer
-      && (planner === undefined || this.taskPlanner(card).includes(planner)) && !plannedStartPending(card, now) && !(pullable && this.isPii(card)) && !card.pinned && !card.draft && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
+      && (planner === undefined || this.taskPlanner(card).includes(planner)) && !plannedStartPending(card, now) && !(pullable && this.isPii(card)) && !card.pinned && !card.needsPerson && !card.draft && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
       && (card.release == null || ["planning", "active"].includes(this.d.board.release(card.release)?.state ?? ""))).sort(this.readyOrder)[0];
   }
 
@@ -2662,7 +3079,7 @@ export class Tasks {
       if (excluded.includes(peer)) continue;
       const queue = this.d.bus.queueSummary(peer), wip = this.wip(peer, task.id), limit = this.wipLimit(peer);
       if (wip >= limit) parts.push(`${peer} WIP full (${wip}/${limit}); no eligible planner WIP capacity`);
-      else if (queue.heldBy) parts.push(`${peer} has a held queue (a delivery is held; resolve it with ahub queue list)`);
+      else if (queue.heldBy) parts.push(`${peer} has a held queue (delivery ${queue.heldBy} is held; ahub queue show ${queue.heldBy} prints the full resolve command for the person)`);
       else if (queue.needsReview > 0) parts.push(`${peer} has ${queue.needsReview} delivery(ies) in needs_review`);
       const refusal = queueBackpressure(peer, pressure.queueBackpressure, peerEntry(pressure.queues, peer), pressure.now ?? NaN);
       if (refusal) parts.push(`${peer} ${refusal.reason}`);
@@ -2694,6 +3111,8 @@ export class Tasks {
       const task = this.d.board.get(input.id);
       if (task?.draft) throw new PreEffectToolRefusal(`task #${task.id} is an intake draft; the person approves it first`);
       if (!task || (task.planningRevision ?? 0) !== input.revision || task.state !== "backlog" || task.owner || !taskCanPlan(task) || task.pinned) throw new PreEffectToolRefusal("planner pull changed, pinned or already started");
+      // #1176: the one gate every agent pull passes (a planner's hub_backlog_pull and the opt-in auto pull alike): a person-run leg is never pulled into an agent's To Do.
+      if (task.needsPerson) throw new PreEffectToolRefusal(`task #${task.id} is a person-run leg: it waits on the person (live receipts, their accounts or approvals), so no agent is offered it; the person runs it or clears the mark with ahub backlog plan`);
       this.planningAuthority(planner, task);
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (task.release != null && (!release || ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull requires unfrozen release scope");
@@ -2921,7 +3340,11 @@ export class Tasks {
         if (!this.isPii(task) && !this.publicMetadataText(JSON.stringify(patch.sdlc))) throw new PreEffectToolRefusal("planning identity metadata is private or sensitive");
       }
       if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("closed work is final");
+      // #1176: marking a card an agent already owns (an offer in its queue, or work it accepted) would leave the agent on it: the offer is not withdrawn by a mark. Refused, with the way out named.
+      if (patch.needsPerson === true && !task.needsPerson && (task.owner || !["backlog", "proposed"].includes(task.state))) throw new PreEffectToolRefusal(`task #${task.id} is already ${task.owner ? `${task.state} with ${task.owner}` : task.state}: take it off the agent first (its owner declines the offer, or ahub task cancel ${task.id} --reason <text>), then mark it person-run`);
       if (by !== USER && (task.state !== "backlog" || !taskCanPlan(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
+      // #1176: whether a leg is the person's to run is the person's call, set or cleared: an agent that could clear the mark would put the card back in front of an agent.
+      if (by !== USER && (Object.hasOwn(patch, "needsPerson") || task.needsPerson)) throw new PreEffectToolRefusal("a person-run card is the person's to mark and plan: ask the person (ahub backlog plan <id> <revision> '{\"needsPerson\":true|false}' <reason>)");
       if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
       if (by !== USER && Object.hasOwn(patch, "reserved") && this.hasPersonReservation(task)) throw new PreEffectToolRefusal("a person's reservation is retained");
       if (Object.hasOwn(patch, "deps") || Object.hasOwn(patch, "reserved")) {
@@ -3045,6 +3468,8 @@ export class Tasks {
     const validate = () => {
       const parent = this.d.board.get(id);
       if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || by !== USER && parent.pinned) throw new PreEffectToolRefusal("split changed, pinned or already started");
+      // #1176: children are unmarked cards an agent could take, so an agent's split would turn person-only work into agent work. Checked here, which runs before the screen and again after it, and in the board's transaction.
+      if (by !== USER && parent.needsPerson) throw new PreEffectToolRefusal(PERSON_RUN_SPLIT);
       const release = parent.release == null ? undefined : this.d.board.release(parent.release);
       if (parent.release != null && (!release || ["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("split release scope is frozen or final");
       authority(parent);
@@ -3069,6 +3494,7 @@ export class Tasks {
         const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: parent.role } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string, ...(parent.profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
         const fields: PlanningFields = {};
         for (const key of ["priority", "release", "plannedStart", "due"] as const) if (parent[key] !== undefined) fields[key] = parent[key];
+        if (parent.needsPerson) fields.needsPerson = true; // #1176: only the person gets here (above), and each child of a person-run leg is a person-run leg until the person says otherwise
         return { ...draft, fields };
       });
       return { parent, drafts };
@@ -3742,6 +4168,8 @@ export class Tasks {
         catch (e) { this.releaseNotice(`task ${this.publicTitle(task)}: could not record the dropped study offer: ${e instanceof Error ? e.message : String(e)}`); }
         return false;
       }
+      // #1176: an offer queued before the card was marked is dropped at delivery, not handed to the agent.
+      if (env.kind === "task" && env.refs.taskOffer !== undefined && task?.needsPerson && task.owner === peer) return false;
       if (task?.state === "cancelled") return env.kind === "task" && typeof env.refs.taskCancelled === "number" && env.refs.taskCancelled === task.cancelled?.flowRevision;
       if (env.refs.taskRecipient === "planner") return !!task && this.taskPlanner(task).includes(peer);
       if (env.refs.planReview !== undefined) return !!task && !isClosedTaskState(task.state) && (task.planningRevision ?? 0) === env.refs.planReview
@@ -4002,13 +4430,14 @@ export class Tasks {
       task = current; // Reviewer-only and quiet bookkeeping updates do not supersede ownership authority.
       if (gap) {
         this.requestIndependentPlanReview(current);
-        this.releaseNotice(`task ${this.publicTitle(current)}: ${gap}; planner: call hub_planner_groom then hub_plan_review`);
+        const entry = mode === "enforce" ? this.entryDiagnostic(current, gap) ?? `${gap}; planner: hub_plan_review` : `${gap}; planner: call hub_planner_groom then hub_plan_review`;
+        this.releaseNotice(`task ${this.publicTitle(current)}: ${entry}`);
         if (mode === "enforce") {
           if (opts.claim && opts.namedOwner === by) stagedClaimGap = gap;
           else {
-            if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${gap}; planner: call hub_planner_groom then hub_plan_review`); // #601, before the stall write
-            this.reportStall(current, { kind: "no-eligible-peer", code: "policy" });
-            return current;
+            if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${entry}`); // #601, before hold bookkeeping
+            this.holdReady(current, "build entry", entry);
+            return this.d.board.get(current.id) ?? current;
           }
         }
       }
@@ -4514,10 +4943,19 @@ export class Tasks {
     } catch { return undefined; }
   }
 
-  /** Why a proposal's named owner (a self-claim included) did not get it, from the stall its proposal recorded (#601); undefined when it did. */
+  /** Guidance is separate from candidate choice: offers retain their existing plan-only gate. */
+  private entryDiagnostic(task: Task, planGap?: string): string | undefined {
+    if (this.d.sdlc?.config().mode !== "enforce" || !this.isBuildTask(task) || this.isPii(task)) return undefined;
+    return buildEntryDiagnostic(task, planGap);
+  }
+
+  /** Proposal entry guidance first; otherwise explain an unassigned named owner from its recorded peer stall (#601). */
   namedOwnerNote(task: Task, named: PeerId | undefined, by: PeerId): string | undefined {
     requireLocalTaskPeer(by);
-    if (!named || task.owner || task.state !== "proposed") return undefined;
+    if (task.state !== "proposed") return undefined;
+    const entry = this.entryDiagnostic(task);
+    if (entry) return `task #${task.id}: SDLC build entry blocked: ${entry}`;
+    if (!named || task.owner) return undefined;
     const stall = this.d.board.stalls().find(row => row.task === task.id);
     if (!stall) return undefined;
     const code = stall.cause.refusals?.find(row => row.peer === named)?.code ?? (stall.cause.peer === named ? stall.cause.code : undefined);
@@ -4580,6 +5018,9 @@ export class Tasks {
       const before = context(); if (before.status) return stub(before.status);
       if (!this.d.evidenceSourceRead) return stub("unavailable");
       const current = () => { try { const next = context(); return !next.status && next.key === before.key; } catch { return false; } };
+      // A returned passage can be quoted by any later tool or final answer in this input.
+      // Reuse the host review-input exclusion before crossing the async read boundary.
+      try { if (by !== USER) this.d.onReviewObserverInput?.(by); } catch { return stub("unavailable"); }
       let read: EvidenceSourceRead;
       try { read = await this.d.evidenceSourceRead(by, link, current); }
       catch { check(); const after = context(); return stub(after.status ?? "unavailable"); }
@@ -4617,6 +5058,655 @@ export class Tasks {
       // Connected registered origins express provenance grouping only, never independent corroboration or source quality.
       return { state: "known", group: `origin:${createHash("sha256").update(JSON.stringify([...group].sort())).digest("hex").slice(0, 32)}`, groups: groups.length };
     } catch { return unknown; }
+  /** Pure read screen: never resolve an address or a path to decide whether to publish it. */
+  private lineageMetadata(text: string): boolean {
+    try {
+      if (!this.nameable(text) || looksSecret(text)) return false;
+      const policy = [...this.d.piiPaths ?? [], ...this.d.deny ?? []];
+      if (!policy.length) return true;
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { return false; } // direct stored paths have no alias proof
+      const strings = (value: unknown): string[] => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : value && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
+      // ponytail: a path-shaped opaque field has no cached alias proof. Withhold it until owner-maintained
+      // public metadata can prove it without filesystem discovery on this read path.
+      return strings(parsed).every(value => !/[\\/]|\.[a-zA-Z]/.test(value) && !matchesPolicyLexically(this.d.cwd, value, policy));
+    } catch { return false; }
+  }
+
+  private lineageVisible(by: PeerId, task: Task): boolean {
+    try {
+      if (this.d.privateTurn?.(by) || this.d.reviewObserverInput?.(by) || this.reviewTaskPrivate(task)) return false;
+      if (this.d.piiPaths?.length && ((task.refs.paths?.length ?? 0) || (task.plan?.paths?.length ?? 0) || (task.plan?.sections?.length ?? 0))) return false;
+      if (this.repositories.cachedScope(task.refs)?.key !== this.repositories.project.key) return false;
+      return by === USER || this.d.bus.isRostered(by) && taskShowAllowed(by, task, this.d.roles, this.isConfiguredPlanner(by));
+    } catch { return false; }
+  }
+
+  private lineagePorts(by: PeerId): ExecutionLineageOwnerPorts | undefined {
+    const binding = this.d.executionLineage;
+    if (!binding) return undefined;
+    // Agent-wide roles do not grant diagnostic authority over a hidden or staged source.
+    const diagnostics = by === USER;
+    // ponytail: raw50 event pages cannot prove current field privacy after policy narrowing.
+    // Refuse by policy alone until a privacy-aware page source supplies a complete public projection.
+    let eventProjectionSupported = false;
+    try { eventProjectionSupported = !this.d.piiPaths?.length && !this.d.deny?.length && !this.d.routing().signals.pii_patterns.length; } catch { /* unknown current policy cannot admit event projection */ }
+    return { project: this.d.project, projectKey: binding.projectKey, cursorKey: binding.cursorKey,
+      scope: createHash("sha256").update(by).digest("hex"), diagnostics, eventProjectionSupported,
+      task: id => this.d.board.get(id), visible: task => this.lineageVisible(by, task), metadata: text => this.lineageMetadata(text),
+      links: task => this.d.board.executionReferences(binding.projectKey, task.id, task.created),
+      delivery: binding.readDelivery,
+      attempt: id => this.d.board.experimentAttempt(id), events: (id, after, limit) => this.d.board.experimentEvents(id, after, limit),
+      receipts: id => this.d.board.runnerReceipts(id), attemptStatus: id => this.d.board.experimentAttemptStatus(id) };
+  }
+
+  /** Read one explicit owner neighborhood; unauthorized, private and missing roots are indistinguishable. */
+  executionLineage(by: PeerId, input: unknown): LineageResult {
+    if (!executionLinkActor(by) || by === HUB || by === "admin") return { state: "unavailable" };
+    try {
+      const check = this.requestCheck(by);
+      if (this.d.privateTurn?.(by) || this.d.reviewObserverInput?.(by)) return { state: "unavailable" };
+      const ports = this.lineagePorts(by);
+      if (!ports) return { state: "unavailable" };
+      let query;
+      try { query = parseOwnerLineageQuery(input); }
+      catch { return ports.diagnostics ? { state: "unavailable", reason: "invalid" } : { state: "unavailable" }; }
+      const snapshot = executionOwnerSnapshot(ports, query);
+      check();
+      if (this.d.privateTurn?.(by) || this.d.reviewObserverInput?.(by)) return { state: "unavailable" };
+      if (snapshot.task) {
+        const current = this.d.board.get(snapshot.task.id);
+        if (!current || current.created !== snapshot.task.created || current.history.length !== snapshot.task.history.length || !this.lineageVisible(by, current)) return { state: "unavailable" };
+      }
+      return readExecutionLineage(snapshot.source, snapshot.query);
+    } catch { return { state: "unavailable" }; }
+  }
+
+  private guidanceProbeTimer(): NonNullable<NonNullable<TasksDeps["guidanceProbes"]>["timer"]> {
+    return this.d.guidanceProbes?.timer ?? {
+      set: (callback, ms) => { const timer = setTimeout(callback, ms); timer.unref?.(); return timer; },
+      clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    };
+  }
+  /** Owned in-process work only, not persisted held lanes or a quiescence assertion. */
+  guidanceProbesPending = (): number => this.guidanceProbeAdmissions + this.guidanceProbeActive.size;
+  async stopGuidanceProbes(): Promise<void> {
+    this.guidanceProbeStopping = true;
+    const active = [...this.guidanceProbeActive.values()];
+    for (const entry of active) this.guidanceProbeAbort(entry, "observation", true);
+    if (this.guidanceProbesPending() === 0) return;
+    await this.guidanceProbeDrain(active);
+    if (this.guidanceProbesPending() !== 0) throw new Error("guidance probe admission drain is unconfirmed; retain project storage and explicitly retry after owned callbacks settle");
+  }
+  private async guidanceProbeDrain(active: GuidanceProbeRuntime[]): Promise<void> {
+    const settled = Promise.allSettled(active.flatMap(entry => [entry.promise, entry.stopPromise].filter((value): value is Promise<ProbePublicReceipt> | Promise<void> => value !== undefined)));
+    let timeout: { handle: unknown } | undefined;
+    try {
+      await Promise.race([settled, new Promise<never>((_resolve, reject) => {
+        timeout = { handle: this.guidanceProbeTimer().set(() => reject(new Error("guidance probe stop is unconfirmed after the owned drain bound; retain the held lane and explicitly drain after its fixture callbacks settle")), GUIDANCE_PROBE_STOP_TIMEOUT_MS) };
+      })]);
+      if (active.some(entry => this.guidanceProbeActive.get(entry.id) === entry)) throw new Error("guidance probe stop evidence is unknown; retain owned handles and explicitly retry the drain after matching fixture stop evidence");
+    } finally { if (timeout !== undefined) this.guidanceProbeTimer().clear(timeout.handle); }
+  }
+  private guidanceProbeClearWatch(entry: GuidanceProbeRuntime): void {
+    if (entry.watch !== undefined) { this.guidanceProbeTimer().clear(entry.watch.handle); entry.watch = undefined; }
+  }
+  private guidanceProbeRetire(entry: GuidanceProbeRuntime): void {
+    if (this.guidanceProbeActive.get(entry.id) !== entry || !entry.launchSettled || entry.stopRequested && (!entry.stopSettled || !entry.stopKnown)) return;
+    this.guidanceProbeClearWatch(entry); this.guidanceProbeActive.delete(entry.id);
+  }
+  private guidanceProbeAbort(entry: GuidanceProbeRuntime, reason: "elapsed" | "observation", explicitStop = false): void {
+    if (this.guidanceProbeActive.get(entry.id) !== entry) return;
+    this.guidanceProbeClearWatch(entry);
+    if (entry.reservation) {
+      try { this.d.guidanceProbes!.store.latchHold(entry.reservation, reason); }
+      catch { entry.failure = new Error("guidance probe hold bookkeeping is unconfirmed; inspect retained state before any further work"); }
+    }
+    entry.controller.abort();
+    if (!entry.launched || !entry.reservation) { this.guidanceProbeRetire(entry); return; }
+    if (entry.stopRequested && (!entry.stopSettled || entry.stopKnown || !explicitStop)) return;
+    const reservation = entry.reservation, ports = this.d.guidanceProbes!.fakePorts!;
+    entry.stopRequested = true; entry.stopSettled = false; entry.stopKnown = false;
+    entry.stopPromise = (async () => {
+      try {
+        const result = await ports.stop({ reservation }, new AbortController().signal);
+        entry.stopKnown = result?.stopped === "known_fixture" && guidanceProbeCanonical(result.reservation) === guidanceProbeCanonical(reservation);
+        if (!entry.stopKnown) entry.failure = new Error("guidance probe stop evidence is unknown; inspect the owned reservation and explicitly drain without replaying it");
+      } catch { entry.failure = new Error("guidance probe stop failed; retain owned handles and explicitly drain before closing project storage"); }
+      finally { entry.stopSettled = true; this.guidanceProbeRetire(entry); }
+    })();
+  }
+  private guidanceProbeWatch(entry: GuidanceProbeRuntime): void {
+    if (this.guidanceProbeActive.get(entry.id) !== entry || entry.controller.signal.aborted) return;
+    try {
+      entry.current();
+      const state = this.d.guidanceProbes!.store.read({ projectKey: this.guidanceProject(), id: entry.id });
+      if (!state || !entry.reservation || state.firstReservedAt === null) throw new Error("owned probe clock is unavailable");
+      const now = this.d.now?.() ?? Date.now(), elapsed = now - state.firstReservedAt;
+      if (!probeInteger(elapsed) || elapsed < state.counters.elapsedHighWaterMs || state.admissionHold !== "none") { this.guidanceProbeAbort(entry, "elapsed"); return; }
+      const remaining = state.registration.manifest.limits.elapsedMs - elapsed;
+      if (remaining <= 0) { this.guidanceProbeAbort(entry, "elapsed"); return; }
+      entry.watch = { handle: this.guidanceProbeTimer().set(() => {
+        if (this.guidanceProbeActive.get(entry.id) !== entry || entry.controller.signal.aborted) return;
+        entry.watch = undefined; this.guidanceProbeWatch(entry);
+      }, Math.min(GUIDANCE_PROBE_FENCE_INTERVAL_MS, remaining)) };
+    } catch { this.guidanceProbeAbort(entry, "observation"); }
+  }
+  private guidanceProbeProjection(state: ProbeStoredState, already = false): ProbePublicStatus {
+    const holds = state.admissionHold !== "none" || state.counters.usageUnknown;
+    const authoring: ProbePublicStatus["authoring"] = state.sessions.some(item => item.child?.authoring === "uncontrolled") ? "uncontrolled"
+      : state.sessions.some(item => item.child?.authoring === "admitted_fixture") ? "admitted_fixture" : "unknown";
+    const launchedSessions = state.sessions.filter(item => item.coverage.launchExposed);
+    const verifiedCoverage = launchedSessions.length > 0 && launchedSessions.every(item => item.coverage.coverageVerified)
+      && state.sessions.filter(item => item.state === "closed_fixture").every(item => item.coverage.coverageVerified)
+      && state.sessions.every(item => item.state !== "failed_known" || item.coverage.preLaunchFailure || item.coverage.coverageVerified);
+    const evidence: ProbePublicReceipt["evidence"] = state.counters.workerAttempts + state.counters.editorAttempts === 0 ? "declaration"
+      : holds || !verifiedCoverage || state.sessions.some(item => ["reserved", "running", "unknown_held"].includes(item.state)) ? "unknown" : "fixture";
+    return { ...state.receipt, already, taskId: state.registration.manifest.task.id,
+      experimentId: this.guidancePublicField(state.registration.manifest.experimentId), evidence,
+      counters: { ...state.counters }, cancelRequested: state.cancelRequested, notNeeded: state.notNeeded, authoring,
+      comparable: state.receipt.state === "closed_fixture" && !holds && verifiedCoverage && authoring === "admitted_fixture" };
+  }
+  private guidanceProbeReceipt(state: ProbeStoredState, already = false): ProbePublicReceipt {
+    const { counters: _counters, cancelRequested: _cancelRequested, notNeeded: _notNeeded, comparable: _comparable, authoring: _authoring, ...result } = this.guidanceProbeProjection(state, already);
+    return result;
+  }
+  private guidanceProbeState(by: PeerId, id: string, check: () => void): ProbeStoredState {
+    check();
+    if (!probeSha256(id)) throw new PreEffectToolRefusal("guidance probe id is invalid; use the exact registered content id");
+    if (!this.d.guidanceProbes) throw new PreEffectToolRefusal("guidance probe storage is unavailable; restart a supporting hub before retrying");
+    const state = this.d.guidanceProbes.store.read({ projectKey: this.guidanceProject(), id });
+    if (!state) throw new PreEffectToolRefusal("guidance probe is unavailable; inspect a registered declaration in this project");
+    this.guidanceProbeTask(by, state.registration.manifest.task, false); check(); return state;
+  }
+  private guidanceProbeHost(by: PeerId, manifest: GuidanceProbeManifestV1, request: ReturnType<Tasks["guidanceProbeRequest"]>, history?: ProbeHostBinding): ProbeHostBinding {
+    request.check();
+    const projectKey = this.guidanceProject();
+    if (projectKey !== manifest.projectKey) throw new PreEffectToolRefusal("guidance probe project changed; register within the current project namespace");
+    const task = this.guidanceProbeTask(by, manifest.task, history === undefined);
+    const binding = { projectKey, actor: by, task: { id: task.id, created: task.created, flowRevision: task.history.length },
+      sessionGeneration: request.generation, nativeSession: request.nativeSession, requestConnectionId: request.requestConnectionId };
+    // A narrowing cancellation carries its original baseline as history, never a new applicability grant.
+    if (history) return { ...binding, role: history.role, baselineGuidance: history.baselineGuidance };
+    const role = this.guidanceRole(task);
+    return { ...binding, role: { id: role.id, layer: role.layer, baselineSha256: role.hash }, baselineGuidance: taskRoleText(role) };
+  }
+  private guidanceProbeSnapshotClear(state: ProbeStoredState["registration"]): boolean {
+    return Object.entries(state.snapshots).every(([field, value]) => {
+      const text = field === "dataPolicy" ? guidanceProbeCanonical(value) : value as string;
+      return this.nameable(text) && !looksSecret(text);
+    });
+  }
+  private guidanceProbeRenderedClear(text: string): boolean {
+    if (!this.nameable(text) || looksSecret(text)) return false;
+    const policy = [...this.d.deny ?? [], ...this.d.piiPaths ?? []];
+    if ([...pathCandidates(text)].some(candidate => matchesPolicyLexically(this.d.cwd, candidate, policy))) return false;
+    return !policy.some(entry => {
+      const literal = entry.replace(/^\.\//, "").split(/[*?[\]{}]/)[0]!.replace(/\/+$/, "");
+      return /[/\s]/.test(literal) && text.includes(literal);
+    });
+  }
+  async guidanceProbeRegister(by: PeerId, value: unknown): Promise<ProbePublicReceipt> {
+    const request = this.guidanceProbeRequest(by), registration = parseGuidanceProbeRegistration(value);
+    if (!registration) throw new PreEffectToolRefusal("guidance probe declaration is invalid or oversized; use the closed V1 envelope without trimming its snapshots");
+    const binding = this.guidanceProbeHost(by, registration.manifest, request);
+    if (!this.guidanceProbeSnapshotClear(registration)) throw new PreEffectToolRefusal("guidance probe inputs are private; register public task-local inputs in a current public session");
+    this.guidanceProbeAdmissions++;
+    let wrote = false;
+    try {
+      const saved = this.d.guidanceProbes!.store.register(registration, binding, () => {
+        if (!this.guidanceProbeSnapshotClear(registration)) throw new PreEffectToolRefusal("guidance probe input policy changed; inspect its current public scope before retrying");
+        return this.guidanceProbeHost(by, registration.manifest, request);
+      });
+      wrote = !saved.already;
+      const state = this.guidanceProbeState(by, saved.id, request.check);
+      return this.guidanceProbeReceipt(state, saved.already);
+    } catch (error) {
+      if (!wrote && (error instanceof PreEffectToolRefusal || error instanceof GuidanceProbeError && error.reason !== "storage")) throw error;
+      throw new Error("guidance probe registration is unconfirmed; inspect retained state before explicitly retrying");
+    }
+    finally { this.guidanceProbeAdmissions--; }
+  }
+  async guidanceProbeShow(by: PeerId, id: string): Promise<ProbePublicStatus> {
+    const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);
+    request.check();
+    const status = this.guidanceProbeProjection(state);
+    // T3 (#1226): the sealed receipts can only make the verdict stricter, never grant one the older expression refused. The reasons and the denominator stay in
+    // the store's private status; public show keeps just this flag. A store that cannot be read is not comparable.
+    if (!status.comparable) return status;
+    let sealedComparable = false;
+    try { sealedComparable = this.d.guidanceProbes!.store.outcome({ projectKey: this.guidanceProject(), id: state.receipt.id })?.comparability.comparable === true; } catch { /* fail closed */ }
+    return sealedComparable ? status : { ...status, comparable: false };
+  }
+  /**
+   * T4 (#1226): the producer receipt reader and export. The same person/conductor, session and task fences as `guidanceProbeShow`, and read-only: it launches,
+   * reserves, writes and prunes nothing. It carries the status, the outcome denominator and the sealed receipts, each re-verified against its own digest by the
+   * Store, so a tampered row refuses the whole read instead of being skipped. Output names are model-written, so each receipt passes the same screen as any
+   * other public field; one that fails is replaced by its digest alone and the slot says `withheld`. A retained directory is a state, never a path.
+   */
+  async guidanceProbeReceipts(by: PeerId, id: string): Promise<ProbeReceiptExport> {
+    const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);
+    request.check();
+    const store = this.d.guidanceProbes!.store, key = { projectKey: this.guidanceProject(), id: state.receipt.id };
+    const status = await this.guidanceProbeShow(by, id);
+    let receipts: ProbeReceiptV1[], outcome: ReturnType<GuidanceProbeStore["outcome"]>, retention: Map<string, ProbeRetentionState>;
+    try { receipts = store.receipts(key); outcome = store.outcome(key); retention = store.retentionStates(key); }
+    catch (error) { if (error instanceof GuidanceProbeError) throw error; throw new GuidanceProbeError("storage"); }
+    if (!outcome) throw new GuidanceProbeError("storage");
+    request.check();
+    const bySlot = new Map(receipts.map(item => [item.slotId, item]));
+    const slots: ProbeExportSlot[] = state.registration.manifest.slots.map((slot, index) => {
+      const session = state.sessions[index]!, receipt = bySlot.get(slot.id);
+      const shown = receipt !== undefined && this.guidanceProbeReceiptClear(receipt);
+      return { slotId: slot.id, stage: slot.stage, role: slot.role, arm: slot.arm, state: session.state, receipt: shown ? receipt : null,
+        receiptDigest: receipt?.digest ?? null, withheld: receipt !== undefined && !shown, retention: retention.get(slot.id) ?? "none" };
+    });
+    // The sealed verdict can only make the public one stricter, exactly as in `show`: a status that already refused stays refused.
+    const comparable = status.comparable && outcome.comparability.comparable;
+    const result: ProbeReceiptExport = { v: 1, status: { ...status, comparable }, comparable, reasons: outcome.comparability.reasons, counts: outcome.counts, slots };
+    // What leaves this process is what the consumer's parser will accept: a result that does not round-trip is a storage fault, never a partial answer.
+    const checked = parseGuidanceProbeReceiptExport(JSON.parse(JSON.stringify(result)));
+    if (!checked) throw new GuidanceProbeError("storage");
+    return checked;
+  }
+  /** Every free-text name a receipt carries (output paths, exclusions, the served model) must pass the public-field screen; the digest alone is kept otherwise. */
+  private guidanceProbeReceiptClear(receipt: ProbeReceiptV1): boolean {
+    const names = [receipt.experimentId, receipt.slotId, receipt.servedModel ?? "", ...receipt.output.entries.map(item => item.relative), ...receipt.output.excluded.map(item => item.relative)];
+    return names.every(text => text === "" || this.guidanceFieldAllowed(text));
+  }
+  async guidanceProbeStart(by: PeerId, id: string, revision: number, variantId?: string): Promise<ProbePublicReceipt> {
+    const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);
+    const host = this.guidanceProbeHost(by, state.registration.manifest, request);
+    if (!probeInteger(revision) || variantId !== undefined && !probeSha256(variantId))
+      throw new PreEffectToolRefusal("guidance probe start selector is invalid; use its current CAS revision and exact G1 id");
+    const dependency = this.d.guidanceProbes!;
+    // No production runner: refuse before original-child selection, G1 raw read, binding, reservation or timer.
+    if (!dependency.fakePorts) throw new PreEffectToolRefusal("guidance probe runner is unavailable in production T1; use fake-only fixtures, not a live launch");
+    const key = { projectKey: host.projectKey, id }, original = dependency.store.startSelector(key, revision);
+    if (original && (original.actor !== by || original.sessionGeneration !== host.sessionGeneration || original.nativeSession !== host.nativeSession
+      || original.requestConnectionId !== host.requestConnectionId)) throw new PreEffectToolRefusal("guidance probe original start belongs to another request session; inspect its retained id without replaying it");
+    const slot = original ? state.registration.manifest.slots.find(item => item.id === original.slotId)
+      : state.registration.manifest.slots.find(item => state.sessions.find(session => session.slotId === item.id)?.state === "planned");
+    if (!slot) throw new PreEffectToolRefusal("guidance probe has no eligible slot; inspect its retained terminal or held state");
+    if (original && original.variantId !== (variantId ?? null)) throw new PreEffectToolRefusal("guidance probe original selector differs; inspect its original G1 id without rebinding the start");
+    const needsVariant = slot.role === "worker" && slot.arm !== "baseline";
+    if (needsVariant !== (variantId !== undefined)) throw new PreEffectToolRefusal("guidance probe next worker needs its existing G1 id only; use --variant for the next non-baseline worker");
+    const current = (): ProbeAdmissionRecheck => {
+      const fresh = this.guidanceProbeHost(by, state.registration.manifest, request);
+      if (!this.guidanceProbeSnapshotClear(state.registration)) throw new PreEffectToolRefusal("guidance probe input privacy changed; retain its declaration and use current public inputs");
+      return { host: fresh, ...(variantId === undefined ? {} : { child: this.guidanceProbeVariantBinding(by, this.guidanceProbeTask(by, state.registration.manifest.task, true), variantId) }) };
+    };
+    const prepared = current();
+    const active = this.guidanceProbeActive.get(id);
+    if (active) {
+      if (active.requestedRevision !== revision || active.variantId !== variantId)
+        throw new PreEffectToolRefusal("another owned probe attempt is still settling; inspect its state before explicitly starting the next stage");
+      const captured = active.current().host;
+      if (captured.actor !== host.actor || captured.sessionGeneration !== host.sessionGeneration || captured.nativeSession !== host.nativeSession
+        || captured.requestConnectionId !== host.requestConnectionId)
+        throw new PreEffectToolRefusal("guidance probe active start belongs to another request session; inspect its retained id without replaying it");
+      // Frame preparation has not granted a reservation. A duplicate is only a read of truthful current metadata.
+      if (!active.reservation) return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), true);
+      const replay = dependency.store.reserveSession({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, current);
+      if (replay.kind !== "existing") throw new Error("guidance probe start is unconfirmed; inspect retained state before any further work");
+      return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), true);
+    }
+    const entry: GuidanceProbeRuntime = { id, by, requestedRevision: revision, ...(variantId === undefined ? {} : { variantId }), controller: new AbortController(), current, launched: false, launchSettled: false,
+      stopRequested: false, stopSettled: false, stopKnown: false };
+    this.guidanceProbeActive.set(id, entry);
+    const ports: GuidanceProbeFakePorts = {
+      launch: async (input, effects, signal) => {
+        entry.reservation = input.reservation;
+        this.guidanceProbeWatch(entry);
+        if (signal.aborted) throw new Error("owned probe was aborted before launch");
+        entry.launched = true;
+        return dependency.fakePorts!.launch(input, effects, signal);
+      },
+      stop: (input, signal) => dependency.fakePorts!.stop(input, signal),
+      ...(dependency.fakePorts.discardRetained ? { discardRetained: record => dependency.fakePorts!.discardRetained!(record) } : {}),
+    };
+    let reserved = false, returned = false;
+    const runner = new GuidanceProbeFixtureHost(dependency.store, { ports, revalidate: current, now: () => this.d.now?.() ?? Date.now(),
+      prepareWorkerFrame: dependency.prepareWorkerFrame, prepareEditorFrame: dependency.prepareEditorFrame, onReserved: () => { reserved = true; } });
+    entry.promise = (async () => {
+      try {
+        const saved = await runner.start({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, entry.controller.signal);
+        returned = true;
+        if (saved.state === "unknown_held" && entry.launched) {
+          this.guidanceProbeAbort(entry, "observation", true);
+          if (!entry.stopPromise) throw new Error("owned probe stop was not recorded; retain the held lane and explicitly inspect its outcome");
+          await entry.stopPromise;
+        }
+        request.check();
+        if (entry.failure) throw entry.failure;
+        return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), saved.already);
+      } catch (error) {
+        this.guidanceProbeAbort(entry, "observation");
+        if (!reserved && !returned && (error instanceof PreEffectToolRefusal || error instanceof GuidanceProbeError && error.reason !== "storage")) throw error;
+        throw new Error("guidance probe attempt outcome is unconfirmed; inspect its retained id without replaying work");
+      } finally { entry.launchSettled = true; this.guidanceProbeClearWatch(entry); this.guidanceProbeRetire(entry); }
+    })();
+    return entry.promise;
+  }
+  async guidanceProbeCancel(by: PeerId, id: string, revision: number): Promise<ProbePublicReceipt> {
+    const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);
+    if (!probeInteger(revision)) throw new PreEffectToolRefusal("guidance probe cancellation revision is invalid; inspect its current CAS revision");
+    const current = () => this.guidanceProbeHost(by, state.registration.manifest, request, state.binding), host = current();
+    try {
+      const saved = this.d.guidanceProbes!.store.cancelIntent({ key: { projectKey: host.projectKey, id }, expectedRevision: revision, host }, current);
+      const entry = this.guidanceProbeActive.get(id);
+      if (entry) { this.guidanceProbeAbort(entry, "observation", true); await this.guidanceProbeDrain([entry]); }
+      request.check();
+      return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), saved.already);
+    } catch { throw new Error("guidance probe cancellation is unconfirmed; inspect its retained intent and owned drain before retrying"); }
+  }
+  private guidanceProbeRequest(by: PeerId): { check: () => void; generation: number | string; nativeSession: string | null; requestConnectionId: string } {
+    const request = this.guidanceRequest(by, "probe");
+    if (!this.personOrConductor(by)) throw new PreEffectToolRefusal("guidance probes require the person or current configured conductor; use an admitted operational session");
+    const session = this.d.guidanceProbes?.session?.(by);
+    if (!session || !probeSessionGeneration(session.generation) || !executionText(session.requestConnectionId, EXECUTION_REFERENCE_LIMITS.id)
+      || session.nativeSession !== null && !executionText(session.nativeSession, EXECUTION_REFERENCE_LIMITS.id))
+      throw new PreEffectToolRefusal("guidance probe request session is unavailable; reconnect through a current authenticated project connection");
+    const sessionCurrent = session.current;
+    const current = () => {
+      sessionCurrent(); request();
+      if (this.guidanceProbeStopping) throw new PreEffectToolRefusal("guidance probe admission is stopping; inspect retained work after the owned drain");
+      if (this.d.reviewOnly?.(by)) throw new PreEffectToolRefusal("guidance probes are unavailable in a review-only context; use a current public operational session");
+      if (by !== USER) {
+        try { requireConductor(by, this.d.roles); }
+        catch { throw new PreEffectToolRefusal("guidance probe conductor authority changed; refresh the configured role before retrying"); }
+        if (!this.d.bus.isRostered(by)) throw new PreEffectToolRefusal("guidance probe conductor is not currently rostered; restore current membership before retrying");
+      }
+    };
+    current(); return { check: current, generation: session.generation, nativeSession: session.nativeSession, requestConnectionId: session.requestConnectionId };
+  }
+  private guidanceProbeTask(by: PeerId, selected: { id: number; created: number; flowRevision: number }, admission: boolean): Task {
+    const task = this.guidanceTask(by, { taskId: selected.id, taskCreated: selected.created }, false);
+    if (admission && (task.history.length !== selected.flowRevision || !["in_progress", "changes_requested"].includes(task.state)))
+      throw new PreEffectToolRefusal(`guidance probe admission is stale or task state is ${task.state}; accept current work in in_progress or changes_requested and reload its revision`);
+    return task;
+  }
+  /** Actual probe actor only; the source owner validates/hydrates G1, never an impersonated read or separate SQL parser. */
+  private guidanceProbeVariantBinding(by: PeerId, task: Task, variantId: string): ProbeChildBinding {
+    if (by !== USER) {
+      try { requireConductor(by, this.d.roles); }
+      catch { throw new PreEffectToolRefusal("guidance probe conductor authority changed; reconnect in a current operational session"); }
+      if (!this.d.bus.isRostered(by)) throw new PreEffectToolRefusal("guidance probe conductor membership changed; restore current roster membership before retrying");
+    }
+    const current = this.guidanceProbeTask(by, { id: task.id, created: task.created, flowRevision: task.history.length }, true);
+    if (!probeSha256(variantId)) throw new PreEffectToolRefusal("guidance probe variant selector is invalid; choose an existing current G1 content id");
+    const project = this.guidanceProject(), role = this.guidanceRole(current);
+    const experiment = this.guidanceStorage("read", () => this.d.board.guidanceVariantLocation(project, current.id, current.created, variantId));
+    const record = experiment === undefined ? undefined : this.guidanceStorage("read", () => this.d.board.guidanceVariants(project, current.id, current.created, experiment)).find(item => item.variant.id === variantId);
+    if (!record || record.withdrawn || record.variant.flowRevision !== current.history.length || record.variant.baseline.roleId !== role.id
+      || record.variant.baseline.layer !== role.layer || record.variant.baseline.sha256 !== role.hash)
+      throw new PreEffectToolRefusal("guidance probe G1 is unavailable, withdrawn or stale; separately admit a current owner/person variant before retrying");
+    const guidance = renderGuidanceVariantV1(record.variant);
+    if (!this.guidanceProbeRenderedClear(guidance))
+      throw new PreEffectToolRefusal("guidance probe handoff text is private; use a current public G1 before retrying");
+    return { variantId, candidateSha256: record.variant.candidate.sha256, guidanceSha256: probeHash(guidance), guidance,
+      task: { id: current.id, created: current.created, flowRevision: current.history.length },
+      role: { id: role.id, layer: role.layer, baselineSha256: role.hash }, authoring: "uncontrolled", sourceSessionId: null };
+  }
+
+  private guidanceRequest(by: PeerId, mode: "guidance" | "probe" = "guidance"): () => void {
+    if (!executionText(by, EXECUTION_REFERENCE_LIMITS.id) || !executionLinkActor(by) || by === HUB || by === "admin")
+      throw new PreEffectToolRefusal("guidance requires a current local task actor; ask the task owner or the person");
+    const request = this.requestCheck(by, () => this.studyHold());
+    const peer = by === USER ? undefined : this.d.bus.peers.get(by), generation = peer?.sessionGeneration, session = peer?.nativeSession;
+    const delivery = () => this.d.bus.lastDeliveredTo(by).map(item => item.id).join("\n"), delivered = mode === "guidance" ? delivery() : undefined;
+    const check = () => {
+      request();
+      if (this.d.privateTurn?.(by) || this.reviewObserverTurn(by))
+        throw new PreEffectToolRefusal("guidance is unavailable during private or review input; retry in a public owner context");
+      if (by !== USER && (!peer || this.d.bus.peers.get(by) !== peer || "sessionGeneration" in peer && generation === undefined
+        || peer.sessionGeneration !== generation || peer.nativeSession !== session || mode === "guidance" && delivery() !== delivered))
+        throw new PreEffectToolRefusal("guidance request session changed or is unavailable; reload the task in the current session before retrying");
+    };
+    check(); return check;
+  }
+  private guidanceTask(by: PeerId, selector: Pick<GuidanceSelector, "taskId" | "taskCreated">, write: boolean): Task {
+    const task = this.guidanceStorage("read", () => this.d.board.get(selector.taskId));
+    if (!task) throw new PreEffectToolRefusal("guidance task is unavailable; read a current task in this project before retrying");
+    if (task.created !== selector.taskCreated || !this.lineageVisible(by, task) || this.reviewObserverTurn(by, task.id))
+      throw new PreEffectToolRefusal("guidance task is unavailable; refresh the current public task and privacy context before retrying");
+    if (write && (isClosedTaskState(task.state) || by !== USER && (task.owner !== by || task.state === "in_review"
+      || !this.d.roles?.[by]?.includes(ownerRoleOfClass(task.class)) || !this.d.bus.isRostered(by))))
+      throw new PreEffectToolRefusal("guidance changes require the current task owner outside review, or the person, on an open task; refresh the task before retrying");
+    return task;
+  }
+  private guidanceProject(): string {
+    const key = this.d.executionLineage?.projectKey;
+    if (!key) throw new PreEffectToolRefusal("guidance project storage is unavailable; inspect hub status before retrying");
+    return key;
+  }
+  private guidanceRole(task: Task) {
+    let role;
+    try { role = taskRole(task.role, task.class, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
+    catch { throw new Error("guidance catalog validation is unavailable; inspect the current task role and catalog before retrying"); }
+    if (!role) throw new PreEffectToolRefusal("guidance requires a current catalog task role; select a task role before proposing a variant");
+    return role;
+  }
+  private guidancePublic(record: GuidanceStoredRecord | { variant: GuidanceVariantV1 }): boolean {
+    const { evidenceRefs, ...text } = record.variant;
+    // Opaque evidence addresses never become filesystem/producer lookup instructions.
+    return this.publicMetadataText(JSON.stringify(text)) && evidenceRefs.every(reference => this.lineageMetadata(JSON.stringify(reference)));
+  }
+  /** Unknown storage/readback failures never certify a pre-effect refusal, even when SQLite rolled back. */
+  private guidanceStorage<T>(operation: "read" | "write", action: () => T): T {
+    try { return action(); }
+    catch { throw new Error(`guidance storage ${operation} failed; inspect the retained task experiment and its outcome before retrying`); }
+  }
+  private guidanceFence(by: PeerId, task: Task): GuidanceWriteFence {
+    return { by, at: this.d.now?.() ?? Date.now(), taskId: task.id, taskCreated: task.created, flowRevision: task.history.length,
+      owner: task.owner, state: task.state, roleId: task.role };
+  }
+  private guidanceFieldAllowed(text: string): boolean {
+    try { return this.nameable(text) && !looksSecret(text) && this.lineageMetadata(JSON.stringify(text)); }
+    catch { return false; }
+  }
+  private guidancePublicField(text: string): string { return this.guidanceFieldAllowed(text) ? text : "withheld"; }
+  private guidanceExperimentFor(projectKey: string, task: Task, selector: Pick<GuidanceSelector, "taskId" | "taskCreated" | "id"> & { experimentId?: string }): string | undefined {
+    return selector.experimentId ?? (selector.id ? this.guidanceStorage("read", () => this.d.board.guidanceVariantLocation(projectKey, task.id, task.created, selector.id!)) : undefined);
+  }
+  private guidanceCurrent(task: Task): GuidanceCurrent { return { taskId: task.id, taskCreated: task.created, flowRevision: task.history.length }; }
+  private guidanceReadFence(by: PeerId, selector: Pick<GuidanceSelector, "taskId" | "taskCreated">, task: Task, check: () => void): Task {
+    check(); const current = this.guidanceTask(by, selector, false);
+    if (JSON.stringify([current.created, current.history.length, current.owner, current.reviewer, current.state, current.role])
+      !== JSON.stringify([task.created, task.history.length, task.owner, task.reviewer, task.state, task.role])) throw new Error("guidance read binding changed");
+    return current;
+  }
+  private guidanceEvidence(by: PeerId, task: Task, records: readonly GuidanceStoredRecord[]): GuidancePublicRecord["evidence"][] {
+    const ports = this.lineagePorts(by), projectKey = this.guidanceProject();
+    return records.map(record => record.variant.evidenceRefs.map(reference => {
+      let known = false;
+      if (ports && reference.tool === "ahub" && reference.projectKey === projectKey) {
+        const snapshot = executionOwnerSnapshot(ports, { root: reference, task: { id: task.id, created: task.created } });
+        known = snapshot.source.health === "ready" && snapshot.source.nodes.some(node => executionReferenceKey(node.ref) === executionReferenceKey(reference));
+      }
+      return { key: executionReferenceDigest(reference), status: known ? "declared" as const : "unavailable" as const };
+    }));
+  }
+  private guidanceProjection(by: PeerId, task: Task, record: GuidanceStoredRecord, evidence: GuidancePublicRecord["evidence"]): GuidancePublicRecord {
+    return { ...guidanceVariantMetadata(record.variant), experimentId: this.guidancePublicField(record.variant.experimentId),
+      status: record.withdrawn ? "withdrawn" : "declared", applicable: this.guidanceApplicable(by, task, record),
+      rationale: { problemHypothesis: this.guidancePublicField(record.variant.rationale.problemHypothesis), expectedObservableDifference: this.guidancePublicField(record.variant.rationale.expectedObservableDifference) }, evidence };
+  }
+  private guidanceReceipt(saved: { record: GuidanceStoredRecord; already: boolean }): GuidanceWriteReceipt {
+    const value = saved.record.variant;
+    return { id: value.id, taskId: value.taskId, experimentId: this.guidancePublicField(value.experimentId), status: saved.record.withdrawn ? "withdrawn" : "declared", already: saved.already };
+  }
+  /** Immutable declarations only. Neither creation nor readback changes effective role guidance. */
+  async guidanceVariantCreate(by: PeerId, input: unknown): Promise<GuidanceWriteReceipt> {
+    const check = this.guidanceRequest(by);
+    let variant: Readonly<GuidanceVariantV1>;
+    try { variant = parseGuidanceVariantV1(input); } catch { throw new PreEffectToolRefusal("invalid guidance variant; use the closed V1 record and current task identity before retrying"); }
+    return this.studyWrite(async () => {
+      const context = () => {
+        check();
+        const task = this.guidanceTask(by, variant, true), projectKey = this.guidanceProject(), role = this.guidanceRole(task);
+        if (!this.guidancePublic({ variant })) throw new PreEffectToolRefusal("guidance text or evidence metadata is private; use public task-local metadata before retrying");
+        const experiment = this.guidanceStorage("read", () => this.d.board.guidanceExperiment(projectKey, task.id, task.created, variant.experimentId));
+        const records = this.guidanceStorage("read", () => this.d.board.guidanceVariants(projectKey, task.id, task.created, variant.experimentId));
+        try {
+          validateGuidanceVariantV1(variant, { projectKey, taskId: task.id, taskCreated: task.created, flowRevision: task.history.length,
+            experimentId: variant.experimentId, actor: by, baseline: experiment?.baseline ?? variant.baseline,
+            currentBaseline: roleIdentity(role), variantIds: records.map(item => item.variant.id) });
+        } catch (error) {
+          if (error instanceof GuidanceVariantError) throw new PreEffectToolRefusal("guidance variant or frozen baseline is invalid or changed; reload the task and use a new experiment for a changed baseline");
+          throw new Error("guidance validation is unavailable; inspect the task experiment before retrying");
+        }
+        return { task, key: JSON.stringify([task.created, task.history.length, task.owner, task.state, task.role, roleIdentity(role), experiment?.baseline ?? variant.baseline]) };
+      };
+      const before = context();
+      if (this.screenOn() && (await this.screenCall(JSON.stringify(variant))).label !== "clear")
+        throw new PreEffectToolRefusal("guidance privacy screening did not clear the proposal; retry with public metadata when local screening is available");
+      const current = context();
+      if (before.key !== current.key) throw new PreEffectToolRefusal("guidance context changed during admission; reload the task and experiment before retrying");
+      check();
+      const saved = this.guidanceStorage("write", () => this.d.board.recordGuidanceVariant(variant, this.guidanceFence(by, current.task)));
+      return this.guidanceReceipt(saved);
+    });
+  }
+  async guidanceVariantWithdraw(by: PeerId, input: unknown): Promise<GuidanceWriteReceipt> {
+    const check = this.guidanceRequest(by);
+    let selector: GuidanceSelector | GuidanceIdSelector;
+    try { try { selector = parseGuidanceSelector(input, true); } catch { selector = parseGuidanceIdQuery(input, true); } }
+    catch { throw new PreEffectToolRefusal("invalid guidance withdrawal; name a current task epoch, flow revision and existing variant selector"); }
+    return this.studyWrite(async () => {
+      check(); const task = this.guidanceTask(by, selector, true), projectKey = this.guidanceProject();
+      if (task.history.length !== selector.flowRevision) throw new PreEffectToolRefusal("guidance task revision changed; reload the task before withdrawing");
+      const experimentId = this.guidanceExperimentFor(projectKey, task, selector);
+      const record = experimentId === undefined ? undefined : this.guidanceStorage("read", () => this.d.board.guidanceVariants(projectKey, task.id, task.created, experimentId)).find(item => item.variant.id === selector.id);
+      if (!record) throw new PreEffectToolRefusal("guidance variant is unavailable; refresh the task experiment before withdrawing");
+      check();
+      const saved = this.guidanceStorage("write", () => this.d.board.withdrawGuidanceVariant(projectKey, experimentId!, selector.id!, this.guidanceFence(by, task)));
+      return this.guidanceReceipt(saved);
+    });
+  }
+  private guidanceApplicable(by: PeerId, task: Task, record: GuidanceStoredRecord): boolean {
+    try {
+      if (record.withdrawn || isClosedTaskState(task.state) || by !== USER && task.owner !== by || by !== USER && task.state === "in_review") return false;
+      const value = record.variant, role = this.guidanceRole(task);
+      return value.flowRevision === task.history.length && value.baseline.roleId === role.id && value.baseline.layer === role.layer
+        && value.baseline.sha256 === role.hash && (by === USER || this.d.roles?.[by]?.includes(ownerRoleOfClass(task.class)) === true);
+    } catch { return false; }
+  }
+  /** Historical data can be visible without being applicable. No model, external resolver or delivery runs here. */
+  guidanceVariantRead(by: PeerId, input: unknown): GuidanceReadResult {
+    try {
+      const check = this.guidanceRequest(by), selector = parseGuidanceSelector(input);
+      check(); const task = this.guidanceTask(by, selector, false), projectKey = this.guidanceProject();
+      const experimentId = this.guidanceExperimentFor(projectKey, task, selector);
+      if (experimentId === undefined) return { state: "unavailable" };
+      const records = this.d.board.guidanceVariants(projectKey, task.id, task.created, experimentId);
+      const selected = selector.id ? records.filter(item => item.variant.id === selector.id) : records;
+      if (!selected.length) return { state: "unavailable" };
+      const evidence = this.guidanceEvidence(by, task, selected), current = this.guidanceReadFence(by, selector, task, check);
+      if (this.guidanceExperimentFor(projectKey, current, selector) !== experimentId) return { state: "unavailable" };
+      const fresh = this.d.board.guidanceVariants(projectKey, current.id, current.created, experimentId);
+      const currentSelected = selector.id ? fresh.filter(item => item.variant.id === selector.id) : fresh;
+      if (JSON.stringify(selected) !== JSON.stringify(currentSelected)) return { state: "unavailable" };
+      const result: GuidanceReadResult = { state: "available", records: currentSelected.map((record, index) => this.guidanceProjection(by, current, record, evidence[index]!)) };
+      check();
+      return result;
+    } catch { return { state: "unavailable" }; }
+  }
+  /** Public T3 detail: private selection, screened editable fields, no raw snapshot readback. */
+  guidanceVariantDiff(by: PeerId, input: unknown): GuidanceDiffResult {
+    try {
+      const check = this.guidanceRequest(by), selector = parseGuidanceIdQuery(input);
+      const task = this.guidanceTask(by, selector, false), projectKey = this.guidanceProject(), experimentId = this.guidanceExperimentFor(projectKey, task, selector);
+      if (experimentId === undefined) return { state: "unavailable" };
+      const record = this.d.board.guidanceVariants(projectKey, task.id, task.created, experimentId).find(item => item.variant.id === selector.id);
+      if (!record) return { state: "unavailable" };
+      const evidence = this.guidanceEvidence(by, task, [record]), current = this.guidanceReadFence(by, selector, task, check);
+      if (this.guidanceExperimentFor(projectKey, current, selector) !== experimentId) return { state: "unavailable" };
+      const fresh = this.d.board.guidanceVariants(projectKey, current.id, current.created, experimentId).find(item => item.variant.id === selector.id);
+      if (!fresh || JSON.stringify(fresh) !== JSON.stringify(record)) return { state: "unavailable" };
+      const result = parseGuidanceDiffResult({ state: "available", current: this.guidanceCurrent(current), record: this.guidanceProjection(by, current, fresh, evidence[0]!),
+        sections: guidanceVariantSectionDiff(fresh.variant, text => this.guidanceFieldAllowed(text)), protectedSections: guidanceProtectedSectionNames() });
+      check(); return result;
+    } catch { return { state: "unavailable" }; }
+  }
+  /** Fixed indexed keyset pages; cursor contains only an existing public variant id and authenticated context. */
+  guidanceVariantList(by: PeerId, input: unknown): GuidancePageResult {
+    try {
+      const check = this.guidanceRequest(by), query = parseGuidanceListQuery(input), task = this.guidanceTask(by, query, false), projectKey = this.guidanceProject();
+      const key = this.d.executionLineage?.cursorKey; if (!key) return { state: "unavailable" };
+      const context = { ...this.guidanceCurrent(task), projectKey, actor: by };
+      const after = query.cursor ? guidancePageAfter(key, context, query.cursor) : "";
+      if (after && !this.d.board.guidanceVariantLocation(projectKey, task.id, task.created, after)) return { state: "unavailable" };
+      const page = this.d.board.guidanceVariantPage(projectKey, task.id, task.created, after), selected = page.slice(0, GUIDANCE_PAGE_MAX_RECORDS);
+      const evidence = this.guidanceEvidence(by, task, selected), current = this.guidanceReadFence(by, query, task, check);
+      const fresh = this.d.board.guidanceVariantPage(projectKey, current.id, current.created, after);
+      if (JSON.stringify(page) !== JSON.stringify(fresh)) return { state: "unavailable" };
+      const records: GuidancePublicRecord[] = [];
+      for (const [index, record] of selected.entries()) {
+        const candidate = this.guidanceProjection(by, current, record, evidence[index]!);
+        const sized = { state: "available", current: this.guidanceCurrent(current), records: [...records, candidate], truncated: true, cursor: guidancePageCursor(key, context, candidate.id) };
+        if (Buffer.byteLength(JSON.stringify(sized)) > GUIDANCE_REPLY_MAX_BYTES) break;
+        records.push(candidate);
+      }
+      const truncated = records.length < page.length;
+      if (truncated && !records.length) return { state: "unavailable" };
+      const result = parseGuidancePageResult({ state: "available", current: this.guidanceCurrent(current), records, truncated,
+        ...(truncated ? { cursor: guidancePageCursor(key, context, records.at(-1)!.id) } : {}) });
+      check(); return result;
+    } catch { return { state: "unavailable" }; }
+  }
+
+  /** Future probe admission must capture its own current runtime/turn fence; this boolean is no handoff receipt. */
+  guidanceVariantApplicable(by: PeerId, input: unknown): boolean {
+    try {
+      const selected = parseGuidanceIdQuery(input), read = this.guidanceVariantDiff(by, selected);
+      return read.state === "available" && read.record.applicable;
+    } catch { /* Existing explicit experiment selectors keep the T2 metadata-only path. */ }
+    try { if (parseGuidanceSelector(input).id === undefined) return false; } catch { return false; }
+    const read = this.guidanceVariantRead(by, input);
+    return read.state === "available" && read.records.length === 1 && read.records[0]!.applicable;
+  }
+
+  /** A declaration carries no resolver, runner attestation, review approval or model-execution authority. */
+  async linkExecutionReference(by: PeerId, input: unknown): Promise<{ id: string; taskId: number; reference: ExecutionReferenceV1; strength: "declared"; already: boolean }> {
+    if (!executionLinkActor(by) || by === HUB || by === "admin") throw new PreEffectToolRefusal("execution links require a current local task actor; ask the person or the task owner to record the declaration");
+    const check = this.requestCheck(by, () => this.studyHold() ? "execution links are held; inspect ahub status and retry after recovery or shutdown" : undefined);
+    let proposed: ExecutionLinkInput;
+    try { proposed = parseExecutionLinkInput(input); } catch { throw new PreEffectToolRefusal("execution link fields are invalid; refresh the task identity and use a bounded execution reference"); }
+    return this.studyWrite(async () => {
+      const context = () => {
+        check();
+        const ports = this.lineagePorts(by);
+        if (!ports) throw new PreEffectToolRefusal("execution reference storage is unavailable; inspect ahub status before retrying");
+        let task: Task;
+        try { task = this.studyParent(proposed.taskId); } catch { throw new PreEffectToolRefusal("execution link task is unavailable in this project; refresh ahub task show before retrying"); }
+        const role = by === task.owner ? ownerRoleOfClass(task.class) : by === task.reviewer ? "reviewer" : undefined;
+        if (by !== USER && (!role || !this.d.roles?.[by]?.includes(role) || !this.d.bus.isRostered(by))) throw new PreEffectToolRefusal("execution links require the task's current owner or reviewer role; ask that peer or the person to record the declaration");
+        if (!this.lineageVisible(by, task)) throw new PreEffectToolRefusal("execution links require a public task outside private or review input; refresh the current task policy before retrying");
+        if (task.created !== proposed.taskCreated || task.history.length !== proposed.flowRevision) throw new PreEffectToolRefusal("execution link task identity or revision changed; refresh ahub task show before retrying");
+        const from = proposed.from ?? taskExecutionReference(ports.projectKey, task.id, task.created);
+        const scope = { id: task.id, created: task.created };
+        const origin = executionOwnerSnapshot(ports, { root: from, task: scope });
+        if (origin.source.health !== "ready" || !origin.source.nodes.some(node => executionReferenceKey(node.ref) === executionReferenceKey(from))) throw new PreEffectToolRefusal("execution link origin is not recorded in this task; select an existing public task-scoped reference");
+        if (proposed.reference.tool === "ahub") {
+          const target = executionOwnerSnapshot(ports, { root: proposed.reference, task: scope });
+          if (target.source.health !== "ready" || !target.source.nodes.some(node => executionReferenceKey(node.ref) === executionReferenceKey(proposed.reference))) throw new PreEffectToolRefusal("local execution target is not recorded in this task; select a verified task-scoped reference");
+        }
+        const metadata = JSON.stringify([from, proposed.reference]);
+        if (!this.publicMetadataText(metadata)) throw new PreEffectToolRefusal("execution reference metadata is private or sensitive; use public metadata before retrying");
+        return { ports, task, from, metadata, key: JSON.stringify([task.created, task.history.length, task.owner, task.reviewer, task.state, origin.source.revision]) };
+      };
+      const before = context();
+      if (this.screenOn()) {
+        const result = await this.screenCall(before.metadata);
+        if (result.label !== "clear") throw new PreEffectToolRefusal("execution reference privacy screening did not clear the metadata; retry with public metadata when screening is available");
+      }
+      check();
+      const current = context();
+      if (current.key !== before.key) throw new PreEffectToolRefusal("execution link authority or source changed during admission; refresh the task and source references before retrying");
+      const saved = this.d.board.recordExecutionReference(current.ports.projectKey, { ...proposed, from: current.from }, { by, at: this.d.now?.() ?? Date.now() });
+      return { id: saved.record.id, taskId: saved.record.taskId, reference: saved.record.reference, strength: "declared", already: saved.already };
+    });
   }
 
   /** T1 records declared provenance only; no locator resolution or #901 judgment is manufactured. */
@@ -4704,7 +5794,10 @@ export class Tasks {
       this.checkFlowRevision(task, input.expectedFlowRevision, true);
       if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal(`task #${task.id} is already ${task.state}`);
       if (by !== USER && this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("cancellation on ordinary work is unavailable during a private turn");
-      if (by !== USER) {
+      if (by !== USER && this.conductorHandoffCancel(by, task)) { /* #1175: the receiving conductor's own authority over a handed-off task nobody accepted; the board write below records it as the actor */ }
+      else if (by !== USER) {
+        // The conductor without the planner role is refused with its own rule (#1175): the planner sentence below would point it at a role it does not hold.
+        if (this.configuredManualConductor(by) && !this.d.roles?.[by]?.includes("planner")) throw new PreEffectToolRefusal("the conductor may cancel only a task another project handed off that nobody has accepted (no owner, branch, commit, PR, check, done or verdict) while the conductor is on the roster; for any other task the person runs `ahub task cancel <id> --reason <text>`");
         this.planningAuthority(by, task);
         const proposer = task.history.find(h => h.event === "proposed" || h.event === "backlogged")?.by;
         // #812 AC5: back in proposed or backlog with no execution evidence (the `hub_backlog_return_untouched` test: no branch, commit, PR, local check, done, verdict or reopen), an accepted-then-declined task is cancellable; any such evidence keeps today's refusal.
@@ -4734,6 +5827,16 @@ export class Tasks {
     return next;
   }
 
+  /**
+   * #1175: the receiving project's configured conductor may cancel a task another project handed it, while nobody has accepted it and it has no execution evidence (the same bar as the
+   * planner's own-work rule, `taskHasStarted` and `taskHasWorkEvidence`). It is re-asked inside both validations of `cancel`, so authority that ended during the privacy screen writes
+   * nothing. The origin hears the cancel through the existing follow-back, which reads the history entry and carries no text.
+   */
+  private conductorHandoffCancel(by: PeerId, task: Task): boolean {
+    return this.configuredManualConductor(by) && this.d.bus.isRostered(by) && this.d.board.handoffOrigin(task.id) !== undefined && ["proposed", "backlog"].includes(task.state)
+      && !taskHasStarted(task) && !taskHasWorkEvidence(task) && !this.isPii(task);
+  }
+
   /** A slot freed for `peer` (cancel, untouched return): its held ready tasks are offered in priority order, and the cap stops the offers (#655). */
   private async releaseHeld(peer: PeerId | null | undefined): Promise<void> {
     if (!peer) return;
@@ -4749,6 +5852,7 @@ export class Tasks {
     const haveQueueOrigins = this.queuePressureKnown !== false && this.d.board.queuePressureStallPage(0, 1).afterTask > 0;
     for (const t of [...this.d.board.list("proposed")].sort(this.readyOrder)) {
       if (t.owner) { this.d.board.clearStall(t.id); continue; }
+      if (t.needsPerson) { this.d.board.clearStall(t.id); continue; } // #1176: waiting on the person is the intent, not a stall: no owner is wanted, so none is reported missing
       const cancelledDependency = t.deps?.find(id => this.d.board.get(id)?.state === "cancelled");
       if (cancelledDependency) { this.reportStall(t, { kind: "cancelled-dependency", dependency: cancelledDependency, code: "cancelled" }); continue; }
       const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned = this.plannerPullRecord(t)?.pull === true;
@@ -4779,6 +5883,7 @@ export class Tasks {
     try {
       const t = this.d.board.get(stale.id);
       if (!t || t.state !== "proposed" || t.owner || this.personUnassigned(t) || this.offered.has(t.id)) return;
+      if (t.needsPerson) return; // #1176: a person-run leg is never offered to an agent, whatever made it ready
       if (plannedStartPending(t, this.d.now?.() ?? Date.now())) return;
       const planned = this.plannerPullRecord(t)?.pull === true;
       const selected = planned ? this.plannerAssignment(t, true).owner : undefined;
@@ -5406,7 +6511,9 @@ export class Tasks {
    */
   async recordSdlc(by: PeerId, id: unknown, input: unknown): Promise<Task> {
     const requestCheck = this.requestCheck(by);
-    if (!input || typeof input !== "object" || Array.isArray(input) || !("deliverables" in input)) return this.recordLifecycle(by, id, input);
+    const spec = await this.specStageGate(by, id, input);
+    requestCheck();
+    if (!input || typeof input !== "object" || Array.isArray(input) || !("deliverables" in input)) return this.recordLifecycle(by, id, input, undefined, spec?.carry);
     const { deliverables, ...receipt } = input as Record<string, unknown>;
     const task = this.need(id, false, true);
     if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
@@ -5415,12 +6522,12 @@ export class Tasks {
     requestCheck();
     const current = this.need(id, false, true);
     if (current.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed while its deliverables were hashed; record them again");
-    return this.recordLifecycle(by, id, receipt, records);
+    return this.recordLifecycle(by, id, receipt, records, spec?.carry);
   }
 
-  recordLifecycle(by: PeerId, id: unknown, input: unknown, deliverables?: DeliverableRecord[]): Task {
+  recordLifecycle(by: PeerId, id: unknown, input: unknown, deliverables?: DeliverableRecord[], specCarry?: object): Task {
     requireLocalTaskPeer(by);
-    const task = this.need(id, false, true);
+    const task = this.stagedSpec(by, this.need(id, false, true), specCarry);
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const next = sdlcReceipt(input, task.sdlc, config, VERSION);
     const definition = stageDefinition(config, next.stage);
@@ -5452,12 +6559,12 @@ export class Tasks {
     if (next.reviewedHead !== undefined && (next.reviewedHead !== task.sdlc?.reviewedHead || (suppliedHead && artifactChanged))) this.mine(task, by, "reviewer", true);
     const departure = task.history.findLast(h => h.by === USER && h.planDeparture)?.planDeparture;
     const invalidatesDeparture = !!departure && (artifactChanged || next.localHead !== task.sdlc?.localHead && next.localHead !== undefined && next.localHead !== departure.head || next.reviewedHead !== task.sdlc?.reviewedHead && next.reviewedHead !== undefined && next.reviewedHead !== departure.head);
-    return this.d.board.update(task.id, by, "lifecycle", { sdlc: next }, undefined, { ...this.planObservation({ ...task, sdlc: next }), ...(invalidatesDeparture ? { planDepartureInvalidated: true } : {}), ...(deliverables ? { deliverables } : {}) });
+    return this.commitSpecCarry(by, specCarry, task.id, by, "lifecycle", { sdlc: next }, undefined, { ...this.planObservation({ ...task, sdlc: next }), ...(invalidatesDeparture ? { planDepartureInvalidated: true } : {}), ...(deliverables ? { deliverables } : {}) });
   }
 
   /** The board as the merge queue and the guarded merge read it (#786): ids, dependencies, privacy, receipts, findings and plans. */
   private deliveryLinks(config: SdlcConfig): DeliveryTask[] {
-    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), latestHead: this.reviewHead(t), approval: approvalBinding(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
+    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), latestHead: this.reviewHead(t), approval: approvalBinding(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), ...(config.mode === "off" || !config.security || this.isPii(t) ? {} : { securityPass: t.history.findLast(entry => entry.securityPass && !entry.withheld && (entry.event === "approved" || entry.event === "changes_requested"))?.securityPass }), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
   }
 
   /**
@@ -5508,6 +6615,214 @@ export class Tasks {
     }
     return report;
   }
+
+  /** #1403 A4: a summary of the newest audit for the release report: ref, profile, partial and unit counts, never a finding or a path. */
+  auditLine(): AuditSummary | undefined {
+    const audit = this.d.board.audits(1)[0];
+    return audit ? auditSummary({ audit: audit.id, task: audit.task, ref: audit.ref, profile: audit.profile, scoped: audit.scoped, at: audit.at }, audit.units, this.d.board.auditFindings(audit.id)) : undefined;
+  }
+
+  private auditCarry(head: string, source: AuditSource): CarryLookup {
+    const audits = this.d.board.audits(32, true), changed = new Map<string, string[] | undefined>();
+    const since = (base: string) => { if (!changed.has(base)) changed.set(base, source.changed(base, head)); return changed.get(base); };
+    return (surface, companion) => {
+      const id = unitId(surface, companion);
+      for (const audit of audits) {
+        const unit = audit.units.find(row => row.unit === id);
+        // The newest audit that lists the unit decides: a scoped audit that left it out says nothing, but a deferred, out-of-scope or still planned unit plans it again.
+        if (!unit) continue;
+        if (unit.state !== "covered") return undefined;
+        const base = unit.prior?.head ?? audit.ref, origin = unit.prior?.audit ?? audit.id, paths = since(base);
+        // Unknown never carries: an unreadable change list, or a changed path under the surface, plans the unit again.
+        return paths && !paths.some(path => matchConfigPath(surface, path)) ? { audit: origin, head: base } : undefined;
+      }
+      return undefined;
+    };
+  }
+
+  /**
+   * #1403 A4: `ahub sdlc audit start`. The person or the one configured conductor files one read-only `review` task whose brief lists the ledger, and the hub seeds the ledger in `hub.db`
+   * (surface x companion, `planned`, or `covered (prior)` for a surface whose paths are unchanged since its last covered state). Nothing is written until every check has passed.
+   */
+  async auditStart(by: PeerId, input: { profile?: unknown; since?: unknown }, fence?: () => string | undefined): Promise<{ task: number; audit: number; units: number; planned: number; carried: number; partial: boolean; ref: string }> {
+    const check = this.requestCheck(by, fence);
+    if (by !== USER && (!this.configuredManualConductor(by) || !this.d.bus.isRostered(by))) throw new PreEffectToolRefusal("only the person or the current configured conductor may start a security audit; ask the person to run ahub sdlc audit start");
+    if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("a security audit cannot start in a private turn; finish that turn and retry ahub sdlc audit start");
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    if (config.mode === "off") throw new PreEffectToolRefusal("security audits need the lifecycle on: set sdlc.mode to advise or enforce in .agenthub/sdlc.toml");
+    if (!config.security) throw new PreEffectToolRefusal("security audits need a [security] table in .agenthub/sdlc.toml (paths and companions)");
+    const source = this.d.auditSource;
+    if (!source) throw new PreEffectToolRefusal("this hub has no git source to read for an audit; start the hub from a git checkout of the project and retry ahub sdlc audit start");
+    const profile = input.profile === undefined ? "standard" : input.profile;
+    if (typeof profile !== "string" || !(AUDIT_PROFILES as readonly string[]).includes(profile)) throw new PreEffectToolRefusal(`profile is one of ${AUDIT_PROFILES.join(", ")}`);
+    const head = source.head();
+    if (!head) throw new PreEffectToolRefusal("the checkout's head commit could not be read; run the audit from a git checkout with a commit");
+    let scoped: string[] | undefined;
+    if (input.since !== undefined) {
+      if (typeof input.since !== "string" || !input.since.trim() || input.since.length > 200) throw new PreEffectToolRefusal("--since names a commit, tag or branch of this checkout");
+      const base = source.resolve(input.since.trim());
+      if (!base) throw new PreEffectToolRefusal("--since does not name a commit in this checkout");
+      scoped = source.changed(base, head);
+      if (!scoped) throw new PreEffectToolRefusal("the paths changed since that ref could not be listed completely; narrow --since or run an unscoped audit");
+    }
+    if (this.d.board.list().some(t => t.class === "review" && t.title.startsWith("Security audit (") && !isClosedTaskState(t.state) && t.state !== "approved" && this.d.board.auditOfTask(t.id, t.created))) throw new PreEffectToolRefusal("a security audit is already open; finish or cancel it first");
+    const units = seedLedger(config.security, profile as AuditProfile, { ...(scoped ? { scoped } : {}), carry: this.auditCarry(head, source) });
+    if (!units.length) throw new PreEffectToolRefusal("no configured security surface has a changed path in that scope; nothing to audit");
+    const partial = auditIsPartial(profile as AuditProfile, scoped !== undefined);
+    const inline = units.filter(u => !u.prior).slice(0, 40), cut = units.filter(u => !u.prior).length - inline.length;
+    const brief = auditBrief([...inline, ...units.filter(u => u.prior)], { profile: profile as AuditProfile, partial, checklist: SECURITY_CHECKLIST, ref: head }) + (cut > 0 ? `\n(${cut} more units: hub_audit_report {id: <this task>, show: true} lists the ledger)` : "");
+    check();
+    const task = await this.propose(by, { title: `Security audit (${profile}${scoped ? ", scoped" : ""}) at ${head.slice(0, 12)}`, detail: brief, class: "review" }, undefined, undefined, fence);
+    let audit: number;
+    try {
+      if (this.isPii(task)) throw new PreEffectToolRefusal("the audit brief matched a private-data pattern; rename the configured surface");
+      audit = this.d.board.auditCreate({ task: task.id, taskCreated: task.created, ref: head, ...(typeof input.since === "string" ? { since: input.since.trim() } : {}), profile, scoped: scoped !== undefined, by, at: this.d.now?.() ?? Date.now(), units });
+    } catch (error) {
+      // The ledger is the audit: a task without one would be an empty promise, so it is cancelled rather than left to run.
+      await this.cancel(task.id, by, { reason: "security audit ledger could not be created" }).catch(() => undefined);
+      throw error;
+    }
+    return { task: task.id, audit, units: units.length, planned: units.filter(u => !u.prior).length, carried: units.filter(u => u.prior).length, partial, ref: head };
+  }
+
+  private auditView(audit: NonNullable<ReturnType<Board["audit"]>>, full: boolean): AuditView {
+    const findings = this.d.board.auditFindings(audit.id);
+    const summary = auditSummary({ audit: audit.id, task: audit.task, ref: audit.ref, profile: audit.profile, scoped: audit.scoped, at: audit.at }, audit.units, findings);
+    return { ...summary, units: audit.units.map(u => ({ unit: u.unit, state: u.state, ...(u.prior ? { prior: u.prior } : {}), ...(u.reason ? { reason: u.reason } : {}) })), items: findings.map(row => auditFindingView(row, full)), ...(full ? {} : { withheld: findings.filter(row => !!auditFindingView(row, false).withheld).length }) };
+  }
+
+  /** `ahub sdlc audit show`: the newest audit, or the one named. The full view (open important boundary text included) is the person's alone; a conductor reads the public one. */
+  auditShow(by: PeerId, id?: unknown): AuditView | undefined {
+    if (by !== USER && (!this.configuredManualConductor(by) || !this.d.bus.isRostered(by))) throw new PreEffectToolRefusal("the audit readback is for the person or the configured conductor");
+    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("the audit readback is unavailable in a private turn");
+    const audit = id === undefined ? this.d.board.audits(1)[0] : Number.isSafeInteger(id) && (id as number) > 0 ? this.d.board.audit(id as number) : undefined;
+    if (id !== undefined && !audit) throw new PreEffectToolRefusal("no such security audit");
+    return audit ? this.auditView(audit, by === USER) : undefined;
+  }
+
+  /**
+   * #1403 A4, A5: `hub_audit_report`. The assigned auditor (the audit task's owner) reports a state per unit and its findings; the hub alone writes the ledger. A reviewer-role peer that did
+   * not file a `confirmed` important finding verifies or rejects it; until then it stays a `candidate`. Boundary text of an open important finding is read only through this tool by the
+   * auditor, a reviewer-role peer or the person, and never rides a message to anyone else.
+   */
+  async auditReport(by: PeerId, input: { id?: unknown; units?: unknown; findings?: unknown; verify?: unknown; show?: unknown }, fence?: () => string | undefined): Promise<AuditView> {
+    const check = this.requestCheck(by, fence);
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    if (config.mode === "off" || !config.security) throw new PreEffectToolRefusal("audit reports need the lifecycle on and a [security] table in .agenthub/sdlc.toml");
+    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("audit reports are unavailable in a private turn: their text must not leave this machine");
+    if (!Number.isSafeInteger(input.id) || (input.id as number) <= 0) throw new PreEffectToolRefusal("hub_audit_report needs the audit task id");
+    const task = this.d.board.get(input.id as number), audit = task ? this.d.board.auditOfTask(task.id, task.created) : undefined;
+    if (!task || !audit) throw new PreEffectToolRefusal("no security audit on that task");
+    if (this.isPii(task)) throw new PreEffectToolRefusal("that task is private");
+    const isOwner = by !== USER && task.owner === by && task.state === "in_progress";
+    const reviewerRole = by !== USER && (this.d.roles?.[by] ?? []).includes("reviewer") && this.d.bus.isRostered(by);
+    const writes = input.units !== undefined || input.findings !== undefined, verifies = input.verify !== undefined;
+    if (!writes && !verifies && input.show !== true) throw new PreEffectToolRefusal("give units and findings (the auditor), verify (a second reviewer) or show: true");
+    if (writes && !isOwner) throw new PreEffectToolRefusal("only the assigned auditor reports units and findings, while the audit task is in progress");
+    if (verifies && !(reviewerRole || by === USER)) throw new PreEffectToolRefusal("only a reviewer-role peer or the person verifies a finding");
+    if (verifies && (task.state === "cancelled" || task.state === "backlog")) throw new PreEffectToolRefusal("the audit task is closed");
+    if (!isOwner && !reviewerRole && by !== USER) throw new PreEffectToolRefusal("only the auditor, a reviewer-role peer or the person reads an audit report");
+    const when = this.d.now?.() ?? Date.now();
+    let units = audit.units, filed: { finding: ReviewFinding; foundBy: string; at: number }[] = [];
+    const decisions: { finding: string; verdict: "verified" | "rejected" }[] = [];
+    if (input.units !== undefined) {
+      try { units = applyUnitReports(audit.units, parseUnitReports(input.units, audit.units), by, when); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid units"); }
+    }
+    if (input.findings !== undefined) {
+      let parsed: ReviewFinding[];
+      try { parsed = parseReviewFindings(input.findings, { person: false, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS, contract: "required" }); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid findings"); }
+      if (parsed.some(item => item.pass !== "security")) throw new PreEffectToolRefusal("an audit takes security findings only (pass: security)");
+      if (parsed.some(item => item.anchor !== undefined)) throw new PreEffectToolRefusal("anchors belong to review verdicts; name the file in path");
+      const text = JSON.stringify(parsed);
+      if (!this.nameable(text) || this.screenOn() && (await this.screenCall(text)).label !== "clear") throw new PreEffectToolRefusal("finding text was not cleared for the audit ledger: it matches a private-data pattern or the PII screen did not clear it");
+      filed = parsed.map(finding => ({ finding, foundBy: by, at: when }));
+    }
+    if (input.verify !== undefined) {
+      if (!Array.isArray(input.verify) || !input.verify.length || input.verify.length > 32) throw new PreEffectToolRefusal("verify is a list of 1 to 32 {finding, verdict: verified|rejected}");
+      const stored = this.d.board.auditFindings(audit.id);
+      for (const item of input.verify as unknown[]) {
+        const record = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : undefined;
+        if (!record || Object.keys(record).some(key => key !== "finding" && key !== "verdict") || typeof record.finding !== "string" || (record.verdict !== "verified" && record.verdict !== "rejected")) throw new PreEffectToolRefusal("each verify entry is {finding: <id>, verdict: verified|rejected}");
+        const refusal = verificationRefusal(stored.find(row => row.finding.id === record.finding), by);
+        if (refusal) throw new PreEffectToolRefusal(`${record.finding.slice(0, 80)}: ${refusal}`);
+        decisions.push({ finding: record.finding, verdict: record.verdict });
+      }
+      if (new Set(decisions.map(d => d.finding)).size !== decisions.length) throw new PreEffectToolRefusal("a finding is decided once per call");
+    }
+    check();
+    const now = this.d.board.audit(audit.id), nowTask = this.d.board.get(task.id);
+    if (!now || !nowTask || nowTask.owner !== task.owner || nowTask.state !== task.state || JSON.stringify(now.units) !== JSON.stringify(audit.units)) throw new PreEffectToolRefusal("the audit changed while the report was checked; read it again and retry");
+    // One transaction: a unit report, its findings and the verifications land together or not at all.
+    const skipped = this.d.board.auditApply(audit.id, { units: writes ? units : undefined, findings: filed, decisions, by });
+    if (skipped === undefined) throw new PreEffectToolRefusal("a finding was decided meanwhile; read the audit again and retry");
+    const full = this.d.board.audit(audit.id)!;
+    return { ...this.auditView(full, true), ...(skipped.length ? { notUpdated: skipped } : {}) };
+  }
+
+  /** #1328 T3: approve a merge observed outside the hub, without attributing a verdict to a reviewer. */
+  async adoptMerge(by: PeerId, id: unknown, pr: unknown, fence?: () => string | undefined): Promise<{ task: number; state: "approved" }> {
+    const check = this.requestCheck(by, fence);
+    const authority = () => {
+      check();
+      if (by !== USER && (!this.configuredManualConductor(by) || !this.d.bus.isRostered(by)))
+        throw new PreEffectToolRefusal("only the person or the current configured conductor may adopt a merge; ask the person to run ahub sdlc adopt-merge");
+      if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("merge adoption is unavailable in a private turn; finish that turn and retry ahub sdlc adopt-merge");
+      if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError)
+        throw new PreEffectToolRefusal("hub recovery, storage or task writes are held; clear the hold before retrying ahub sdlc adopt-merge");
+    };
+    authority();
+    if (!Number.isSafeInteger(pr) || (pr as number) <= 0) throw new PreEffectToolRefusal("merge adoption needs a positive PR number; run ahub sdlc adopt-merge <task> --pr <n>");
+    if (!Number.isSafeInteger(id) || (id as number) <= 0) throw new PreEffectToolRefusal("merge adoption needs a positive task id; run ahub sdlc adopt-merge <task> --pr <n>");
+    const task = this.d.board.get(id as number);
+    if (!task) throw new PreEffectToolRefusal("merge adoption task does not exist; inspect ahub task list and choose the task to adopt");
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined), head = this.reviewHead(task);
+    const identity = (row: Task) => JSON.stringify([row, this.isPii(row)]);
+    const before = identity(task), policy = JSON.stringify(config);
+    const current = () => {
+      authority();
+      const now = this.d.board.get(task.id);
+      if (!now || identity(now) !== before || JSON.stringify(this.d.sdlc?.config() ?? sdlcConfig(undefined)) !== policy)
+        throw new PreEffectToolRefusal("task, privacy or SDLC policy changed during merge adoption; reload the task and retry ahub sdlc adopt-merge");
+      if (this.isPii(now) || now.signals.includes("pii") || now.signals.includes("pii_path")) throw new PreEffectToolRefusal("a private task cannot send merge evidence to GitHub; keep its approval local through the person's review workflow");
+      return now;
+    };
+    current();
+    if (task.draft) throw new PreEffectToolRefusal(`task #${task.id} is a ${task.state} intake draft; approve the intake through ahub intake approve before retrying ahub sdlc adopt-merge`);
+    if (task.state === "proposed" || task.state === "backlog") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}; assign and accept it first, then retry ahub sdlc adopt-merge`);
+    if (task.state === "approved" || task.state === "cancelled") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state} and already closed; inspect ahub task show ${task.id} and choose an active task instead`);
+    if (!head || !/^[a-f0-9]{40}$/.test(head)) throw new PreEffectToolRefusal("the task has no recorded full head; record its full commit SHA before retrying ahub sdlc adopt-merge");
+    const scope = this.repositories.scope(task.refs), repo = task.sdlc?.repo ?? (scope.key.startsWith("repo:") ? scope.key.slice("repo:".length) : undefined);
+    if (!repo || this.repositories.scope({ repo }).key !== scope.key || task.sdlc?.pr !== undefined && task.sdlc.pr !== pr)
+      throw new PreEffectToolRefusal("PR repository or number differs from the task's recorded artifact, or its repository is unknown; record its correct repository and PR before retrying ahub sdlc adopt-merge");
+    const receipt = { ...task.sdlc, stage: lifecycleStage(config, "merge"), repo, pr: pr as number, head };
+    const important = () => findingTally(findingsForHead(this.reviewFindingSets(current()), head)).openImportant > 0;
+    if (important()) throw new PreEffectToolRefusal("open Important finding blocks merge adoption; resolve the finding and record its disposition before retrying ahub sdlc adopt-merge");
+    const deadline = performance.now() + 20_000;
+    const run: SdlcGh = async (args, timeout, cwd, cap) => {
+      current();
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new PreEffectToolRefusal("merge evidence read timed out; restore GitHub access and retry ahub sdlc adopt-merge");
+      const result = await (this.d.sdlc?.gh ?? sdlcGh)(args, Math.min(timeout ?? 10_000, remaining), cwd, cap);
+      current();
+      return result;
+    };
+    const evidence = await readAdoptMergeEvidence(receipt, run);
+    const now = current();
+    const gates = adoptMergeGates(evidence, head, requiredChecksFor(config, repo));
+    if (gates.length) throw new PreEffectToolRefusal(gates.join("; "));
+    const capacity = this.capacityBefore(now);
+    current(); // No await between the last authority/privacy/flow check and the sole approval write.
+    const next = this.d.board.adoptMerge(now.id, by, receipt, head, now.history.length, HOST_MERGE_ADOPTION);
+    this.cohorts.closed(next.id);
+    this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id);
+    this.writePlannerNotices(next, capacity, true);
+    this.releaseNotice(`task #${next.id}: merged outside the hub; approved`);
+    await this.releaseDependents(next);
+    return { task: next.id, state: "approved" };
+  }
+
   private readonly mergesInFlight = new Set<number>();
   /** #786: who may ask for a guarded merge. The hub's own approval trigger acts as HUB; a peer must be the one configured conductor. */
   private mergeAuthority(by: PeerId): boolean {
@@ -5657,7 +6972,7 @@ export class Tasks {
     } catch { /* an approval never fails because of the merge check */ }
   }
   async releaseReadiness(repo: string, liveIssues: number[]) {
-    const report = await readReleaseReadiness(this.d.cwd, repo, liveIssues, { gh: this.d.sdlc?.gh });
+    const report = await readReleaseReadiness(this.d.cwd, repo, liveIssues, { gh: this.d.sdlc?.gh, reportPolicy: this.d.sdlc?.reportPolicy });
     if (report.documents) report.documents.documents = report.documents.documents.map(d => {
       if (d.path && (!this.nameable(d.path) || matchesPolicy(this.d.cwd, d.path, this.d.piiPaths ?? [], true))) { const { path: _privatePath, ...metadata } = d; return metadata; }
       return d;
@@ -5668,6 +6983,8 @@ export class Tasks {
     const publicShipped = this.d.board.releases().filter(release => !rowsNow.some(task => task.release === release.id && this.isPii(task)));
     const metrics = publicShipped.some(release => release.state === "shipped") ? releaseMetrics(publicShipped, rowsNow.filter(task => !this.isPii(task))) : undefined;
     if (metrics) report.releaseMetrics = metrics;
+    const audit = this.auditLine();
+    if (audit) report.securityAudit = audit;
     const trains = this.d.board.releases().filter(release => release.train && ["active", "frozen"].includes(release.state));
     if (trains.length) {
       const planned = trains.map(release => {
@@ -5723,6 +7040,16 @@ export class Tasks {
     const latest = task.history.findLastIndex(h => h.by === USER && h.event === "plan departure accepted" && h.planDeparture);
     return latest > invalidated && task.history[latest]!.planDeparture!.generation === this.departureGeneration
       && task.history[latest]!.planDeparture!.scope === this.planScopeIdentity(task) ? [task.history[latest]!.planDeparture!] : [];
+  }
+  /**
+   * #1403 A2: whether this PR needs a recorded security pass, from the same complete file inventory plan conformance reads. The record is the latest one on a verdict of this task, bound to the head it
+   * reviewed; `proposed` is the pass on the verdict being written (not on the board yet). A PII task and an off lifecycle compute nothing.
+   */
+  private securityView(task: Task, evidence: PrEvidence | undefined, proposed?: SecurityPassRecord): SecurityPassView | undefined {
+    const config = this.d.sdlc?.config();
+    if (!config || config.mode === "off" || !config.security || this.isPii(task)) return undefined;
+    const recorded = proposed ?? task.history.findLast(entry => entry.securityPass && !entry.withheld && (entry.event === "approved" || entry.event === "changes_requested"))?.securityPass;
+    return securityPassView(config.security, evidence, recorded);
   }
   private planReport(task: Task, evidence?: PrEvidence) {
     const rawReport = planConformance(this.isPii(task) ? undefined : this.planPaths(task), this.isPii(task) ? undefined : evidence);
@@ -5801,7 +7128,7 @@ export class Tasks {
     if (this.planIdentity(current) !== this.planIdentity(task) || current.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed during lifecycle readback");
     this.capturePlanRead(current, evidence);
     return sdlcStatus(config, current.sdlc, evidence, this.workflowView(current), edit, this.isPii(current) ? [] : this.reviewFindingSets(current), current.refs.commit,
-      config.mode !== "off" ? this.planReport(this.d.board.get(current.id)!, evidence) : undefined, integrity, evalResult);
+      config.mode !== "off" ? this.planReport(this.d.board.get(current.id)!, evidence) : undefined, integrity, evalResult, this.securityView(current, evidence));
   }
 
   /** #481 S1: only build work starts from an accepted spec. */
@@ -5810,7 +7137,8 @@ export class Tasks {
   }
   private specText(task: Task, state: Exclude<SpecState, "current">, verb: "blocked" | "advice"): string {
     const issue = task.sdlc?.issue;
-    const why = issue ? SPEC_STATE_TEXT[state].replace("<task>", String(task.id)).replace("<n>", String(issue)) : "spec issue unknown: record repo and issue with hub_sdlc_record, then the person accepts it with ahub sdlc accept";
+    const diagnostic = verb === "blocked" && !this.isPii(task) && state === "missing" ? buildEntryDiagnostic(task) : undefined;
+    const why = diagnostic ?? (issue ? SPEC_STATE_TEXT[state].replace("<task>", String(task.id)).replace("<n>", String(issue)) : "spec issue unknown: record repo and issue with hub_sdlc_record, then the person accepts it with ahub sdlc accept");
     return `task #${task.id}: SDLC build entry ${verb}: ${why}`;
   }
 
@@ -5826,19 +7154,137 @@ export class Tasks {
     return this.d.board.update(task.id, USER, "spec accepted", { sdlc: next }, `issue #${next.issue}, body last edited ${spec.edit.lastEditedAt ?? "never"}`);
   }
 
+  private readonly specCarries = new WeakMap<object, SpecCarryProof>();
+  /** Opaque host proof only: a virtual receipt never changes the stored row or its flow. */
+  private stagedSpec(by: PeerId, task: Task, token?: object, preEffect = true): Task {
+    if (!token) return task;
+    try {
+      const proof = this.specCarries.get(token);
+      if (!proof || proof.by !== by || proof.task !== task.id) throw new Error("unknown or consumed host spec carry proof");
+      if (!proof.current() || task.sdlc?.repo !== proof.commit.acceptance.repo || task.sdlc.issue !== proof.commit.acceptance.issue
+        || this.specAcceptanceScope(task.refs) !== proof.scope || !this.specAcceptancePublic(task)) throw new Error("task or source changed during staged spec admission");
+      return { ...task, sdlc: { ...task.sdlc, acceptance: proof.commit.acceptance } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "staged spec admission changed";
+      throw new (preEffect ? PreEffectToolRefusal : Error)(`${message}; inspect the current task and held deliveries before repeating this action`);
+    }
+  }
+  /** Called only at an admitted outer write; later failures keep ordinary post-effect error semantics. */
+  private commitSpecCarry(caller: PeerId, token: object | undefined, ...args: Parameters<Board["update"]>): Task {
+    if (!token) return this.d.board.update(...args);
+    const [id, by, event, patch, note, extra, revision, codeSymbolsAuthority, adoptionAuthority] = args;
+    const stored = this.need(id, false, false);
+    if (by !== caller && !(by === HUB && ["integration requested", "integration unresolved", "integrated"].includes(event))) throw new Error("spec carry event actor differs from its admitted caller; inspect the current task and held deliveries before repeating this action");
+    this.stagedSpec(caller, { ...stored, ...patch, refs: { ...stored.refs, ...patch.refs } }, token, false);
+    const proof = this.specCarries.get(token)!;
+    const next = this.d.board.updateWithSpecAcceptance(proof.commit, HOST_SPEC_ACCEPTANCE_CARRY,
+      id, by, event, patch, note, extra, revision ?? stored.history.length, codeSymbolsAuthority, adoptionAuthority);
+    this.specCarries.delete(token);
+    return next;
+  }
+
+  /** No cold repository probes or source task hydration participate in consent authority. */
+  private specAcceptanceScope(refs: TaskRefs): string | undefined {
+    return this.repositories.cachedScope(refs)?.key
+      ?? (!refs.repo && !(refs.paths ?? []).some(isAbsolute) ? this.repositories.project.key : undefined);
+  }
+  private specAcceptancePublic(task: Pick<Task, "refs" | "signals">): boolean {
+    try {
+      const normalized = cleanRefs(task.refs);
+      if (["repo", "branch", "commit"].some(key => task.refs[key as keyof TaskRefs] !== normalized[key as keyof TaskRefs])
+        || JSON.stringify(task.refs.paths ?? []) !== JSON.stringify(normalized.paths ?? [])) return false;
+      return !task.signals.includes("pii") && !task.signals.includes("pii_path")
+        && this.publicMetadataText(JSON.stringify(task.refs)) === true
+        && !(task.refs.paths ?? []).some(path => this.reviewPathPrivate(path));
+    } catch { return false; }
+  }
+  /** Carry uses the existing owner/reviewer/stage-planner authority, without admitting a stage write. */
+  private specAcceptanceActor(by: PeerId, task: Task, receipt = task.sdlc, stageInput?: Record<string, unknown>): boolean {
+    if (by === USER) return true;
+    if (!this.d.bus.isRostered(by)) return false;
+    let role = by === task.owner ? ownerRoleOfClass(task.class) : undefined;
+    if (stageInput) {
+      const config = this.d.sdlc?.config() ?? sdlcConfig(undefined), definition = receipt && stageDefinition(config, receipt.stage);
+      const planners = this.taskPlanner(task), planner = planners.includes(by);
+      const plannerStage = Object.keys(stageInput).every(key => ["stage", "repo", "issue"].includes(key))
+        && (definition?.actor === "planner" || definition?.actor === "owner/planner") && planner;
+      if (by !== task.owner && by !== task.reviewer && !plannerStage) return false;
+      if (config.mode === "enforce" && config.definitions) {
+        const actor = definition?.actor;
+        const acts = actor === "owner" ? by === task.owner : actor === "reviewer" ? by === task.reviewer
+          : actor === "planner" ? planner : actor === "owner/planner" && (by === task.owner || planner);
+        if (!acts) return false;
+      }
+      role ??= by === task.reviewer ? "reviewer" : "planner";
+    }
+    return !!role && (!this.d.roles || this.d.roles[by]?.includes(role) === true);
+  }
+  /** One strict host observation serves both the carry decision and the ordinary spec verdict. */
+  private async readSpecAcceptance(by: PeerId, task: Task, receipt = task.sdlc, allowCarry = true, stageInput?: Record<string, unknown>): Promise<SpecGateRead> {
+    const unchanged: SpecGateRead = { task };
+    const accepted = receipt?.acceptance;
+    if (accepted) return { ...unchanged, edit: !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined };
+    if (!allowCarry || !receipt?.repo || !receipt.issue || receipt.repo !== task.sdlc?.repo || receipt.issue !== task.sdlc?.issue) return unchanged;
+    const check = this.requestCheck(by), scope = this.specAcceptanceScope(task.refs);
+    const policy = () => {
+      const routing = this.d.routing();
+      return JSON.stringify([this.d.roles, this.d.deny, this.d.piiPaths, routing.constraints, routing.signals.pii_patterns, this.d.sdlc?.config()]);
+    };
+    const actorPublic = () => !this.d.privateTurn?.(by) && this.specAcceptanceActor(by, task, receipt, stageInput);
+    if (!scope || isClosedTaskState(task.state) || !actorPublic() || !this.specAcceptancePublic(task)
+      || this.publicMetadataText(receipt.repo) !== true) return unchanged;
+    const eligible = (source: SpecAcceptanceCandidate) => {
+      const consent = storedSpecAcceptance(source.acceptance);
+      return !source.withheld && source.id < task.id && localSupersedingTask(source.supersededBy) === task.id
+        && this.specAcceptancePublic(source) && this.specAcceptanceScope(source.refs) === scope
+        && typeof source.repo === "string" && source.repo.toLowerCase() === receipt.repo!.toLowerCase() && source.issue === receipt.issue
+        && !!consent && consent.repo.toLowerCase() === receipt.repo!.toLowerCase() && consent.issue === receipt.issue;
+    };
+    const snapshot = (value: Task) => JSON.stringify([value.created, value.state, value.class, value.reviewer, value.planner, value.refs, value.signals]);
+    const beforeTask = snapshot(task), sources = this.d.board.specAcceptanceCandidates(task.id), beforePolicy = policy();
+    const planners = JSON.stringify(this.taskPlanner(task));
+    if (!sources.complete || !sources.rows.some(eligible)) return unchanged;
+    const edit = await readSpecEdit(receipt.repo, receipt.issue, this.d.sdlc?.gh);
+    check();
+    if (this.specMoved(task)) return unchanged;
+    const currentTask = this.need(task.id, false, true);
+    if (snapshot(currentTask) !== beforeTask || !actorPublic() || !this.specAcceptancePublic(currentTask) || policy() !== beforePolicy
+      || JSON.stringify(this.taskPlanner(task)) !== planners || this.specAcceptanceScope(task.refs) !== scope) return unchanged;
+    const current = this.d.board.specAcceptanceCandidates(task.id);
+    if (!current.complete || JSON.stringify(current.rows) !== JSON.stringify(sources.rows)) return unchanged;
+    for (const source of current.rows) {
+      if (!eligible(source)) continue;
+      const acceptance = carriedSpecAcceptance(storedSpecAcceptance(source.acceptance)!, { repo: receipt.repo, issue: receipt.issue }, edit);
+      if (!acceptance) continue;
+      Object.freeze(acceptance); // The virtual receipt must not expose mutable host-consent fields.
+      const token = Object.freeze({});
+      this.specCarries.set(token, { by, task: task.id, scope, commit: { source: source.id, cancellationRevision: source.cancellationRevision, acceptance }, current: () => {
+        check();
+        const now = this.need(task.id, false, true), latest = this.d.board.specAcceptanceCandidates(task.id);
+        const donor = latest.rows.find(row => row.id === source.id);
+        return now.history.length === task.history.length && now.owner === task.owner && JSON.stringify(now.sdlc) === JSON.stringify(task.sdlc)
+          && snapshot(now) === beforeTask && actorPublic() && policy() === beforePolicy
+          && JSON.stringify(this.taskPlanner(now)) === planners && latest.complete && JSON.stringify(latest.rows) === JSON.stringify(sources.rows)
+          && !!donor && eligible(donor);
+      } });
+      return { task: { ...task, sdlc: { ...task.sdlc!, acceptance } }, edit, carry: token };
+    }
+    return { ...unchanged, edit };
+  }
+
   /** Build entry with a live readback of the spec's body edit time (#481 S1): enforce refuses, advise notifies, off does nothing. */
-  async specGate(by: PeerId, id: unknown): Promise<void> {
+  async specGate(by: PeerId, id: unknown, prospectiveRefs?: TaskRefs): Promise<SpecGateRead | undefined> {
     requireLocalTaskPeer(by);
     const task = this.need(id, false, true);
     if (!this.specGated(task) || task.owner !== by && by !== USER) return; // accept reports its own refusals
-    const accepted = task.sdlc?.acceptance;
-    const edit = accepted && !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined;
+    const result = await this.readSpecAcceptance(by, task, task.sdlc, !prospectiveRefs || this.specAcceptanceScope(prospectiveRefs) === this.specAcceptanceScope(task.refs));
     if (this.specMoved(task)) return;
-    this.specVerdict(task, task.sdlc?.issue ? specState(task.sdlc, edit) : "missing");
+    this.specVerdict(result.task, result.task.sdlc?.issue ? specState(result.task.sdlc, result.edit) : "missing");
+    return result.carry ? result : undefined;
   }
 
   /** #481 S1: a build stage change by an agent re-reads the body edit time first, as accept does. */
-  async specStageGate(by: PeerId, id: unknown, input: unknown): Promise<void> {
+  async specStageGate(by: PeerId, id: unknown, input: unknown): Promise<SpecGateRead | undefined> {
     requireLocalTaskPeer(by);
     const task = this.need(id, false, true), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off" || by === USER || !input || typeof input !== "object" || !("stage" in input)) return;
@@ -5848,10 +7294,11 @@ export class Tasks {
     try { next = sdlcReceipt(lifecycleInput, task.sdlc, config, VERSION); } catch { return; } // recordLifecycle reports an invalid receipt
     const definition = stageDefinition(config, next.stage);
     if (next.stage === task.sdlc?.stage || !definition || canonicalStage(definition.base) !== "build") return;
-    const accepted = next.acceptance;
-    const edit = accepted && !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined;
+    const result = await this.readSpecAcceptance(by, task, next, true, lifecycleInput);
     if (this.specMoved(task)) return;
-    this.specVerdict(task, next.issue ? specState(next, edit) : "missing");
+    if (result.carry) next.acceptance = result.task.sdlc!.acceptance;
+    this.specVerdict(result.task, next.issue ? specState(next, result.edit) : "missing");
+    return result.carry ? result : undefined;
   }
 
   /**
@@ -5877,7 +7324,7 @@ export class Tasks {
 
   /** The eval record the last approval-time lifecycle read produced for a task; consumed by the verdict that follows it. */
   private readonly evalRecords = new Map<number, string>();
-  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string, findings?: readonly ReviewFindingSet[], refileHead?: RefileHeadGuard): Promise<PrEvidence | undefined> {
+  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string, findings?: readonly ReviewFindingSet[], refileHead?: RefileHeadGuard, securityPass?: SecurityPassRecord): Promise<PrEvidence | undefined> {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off") return;
     const receipt = task.sdlc && { ...task.sdlc, ...(reviewedHead ? { reviewedHead } : {}) };
@@ -5915,7 +7362,7 @@ export class Tasks {
     if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state || this.isPii(current) !== this.isPii(task)) return;
     this.capturePlanRead(current, evidence);
     const planReport = this.planReport(current, evidence);
-    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit, planReport, integrity, evalResult);
+    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit, planReport, integrity, evalResult, this.securityView(current, evidence, transition === "approval" ? securityPass : undefined));
     // #481 S5: review entry keeps the eval gate's own blockers (its check, and in enforce its evidence gaps), like the premature-review rule does for the ordinary required checks.
     const evalNames = evalRequiredChecks(config, evidence).filter(name => !config.requiredChecks.includes(name));
     const evalBlocker = (blocker: string) => evalNames.some(name => blocker.startsWith(`required check ${name}:`)) || evalGapBlockers(status.evalGate).includes(blocker);
@@ -5925,7 +7372,7 @@ export class Tasks {
     const gate = status.evalGate;
     if (transition === "approval" && gate?.state === "passed" && gate.passRate !== undefined && gate.suite !== undefined && !this.isPii(task)) this.evalRecords.set(task.id, `Eval gate: ${gate.check} passed at ${evidence!.head.slice(0, 12)}, pass rate ${gate.passRate}, suite ${gate.suite}`);
     else this.evalRecords.delete(task.id);
-    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport), ...testIntegrityBlockers(integrity), ...evalAdvice(status.evalGate)])];
+    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport), ...testIntegrityBlockers(integrity), ...evalAdvice(status.evalGate), ...securityPassBlockers(status.securityPass)])];
     if (config.mode === "advise" && advice.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : advice.join("; ")}`);
     return evidence;
   }
@@ -5955,34 +7402,36 @@ export class Tasks {
     const metadata = acceptRefs(refs);
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
+    if (by !== USER && task.needsPerson) throw new PreEffectToolRefusal(PERSON_RUN_ACCEPT(task.id)); // #1176: before any spec or plan-review work is spent on it
     const proposedPlan = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
     this.validatePlanSources(proposedPlan && Object.keys(proposedPlan).length ? proposedPlan : task.plan);
     this.acceptanceCapacity(task, 0, "check"); // #1080: an urgent task may still take unaccepted offers; `accept` does that, after its gates
     if (metadata && !this.isPii(task) && (!this.nameable(metadata.repo!) || looksSecret(metadata.repo!) || this.aboutPrivatePath("", metadata.repo!, task))) throw new PreEffectToolRefusal("this repository metadata is private or sensitive and is not kept");
-    const draft = metadata ? { ...task, refs: { ...task.refs, ...metadata } } : task;
+    let draft = metadata ? { ...task, refs: { ...task.refs, ...metadata } } : task;
     this.warmRepository(draft);
     if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "off" || !this.isBuildTask(task)) return this.accept(by, id, plan, metadata);
-    await this.specGate(by, id);
-    await this.planEntryGate(by, draft);
+    const spec = await this.specGate(by, id, draft.refs);
+    if (spec?.carry) draft = metadata ? { ...spec.task, refs: { ...spec.task.refs, ...metadata } } : spec.task;
+    await this.planEntryGate(by, draft, spec?.carry);
     requestCheck();
     const current = this.need(id, false, true);
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during build admission");
     this.reviewedAdmissions.set(current.id, { flow: current.history.length, owner: current.owner });
-    try { return this.accept(by, id, plan, metadata); }
+    try { return this.accept(by, id, plan, metadata, spec?.carry); }
     finally { this.reviewedAdmissions.delete(current.id); }
   }
 
   /** Spec and plan readbacks share the caller's original task snapshot until the final acceptance write. */
-  private async planEntryGate(by: PeerId, task: Task): Promise<void> {
+  private async planEntryGate(by: PeerId, task: Task, specCarry?: object): Promise<void> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off" || !this.isBuildTask(task)) return;
     const gap = await this.planReviewGap(task);
     if (mode === "advise" && !task.sdlc?.planReview?.scope) this.releaseNotice(`task ${this.publicTitle(task)}: cost scope unspecified`);
-    const current = this.need(task.id, false, true);
+    const current = this.stagedSpec(by, this.need(task.id, false, true), specCarry);
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during plan readback");
-    if (gap && mode === "enforce") throw new PreEffectToolRefusal(gap);
+    if (gap && mode === "enforce") throw new PreEffectToolRefusal(this.entryDiagnostic(current, gap) ?? gap);
     if (gap) this.releaseNotice(`task ${this.publicTitle(current)}: ${gap}`);
   }
 
@@ -6081,12 +7530,14 @@ export class Tasks {
    * With a plan, the owners of overlapping tasks get it as a ride-along line, and an overlap only the plan reveals is
    * announced like one found at assignment (issue #31).
    */
-  accept(by: PeerId, id: unknown, plan?: unknown, refs?: unknown): Task {
+  accept(by: PeerId, id: unknown, plan?: unknown, refs?: unknown, specCarry?: object): Task {
     requireLocalTaskPeer(by);
     const metadata = acceptRefs(refs);
-    const task = this.need(id, false, true);
+    const task = this.stagedSpec(by, this.need(id, false, true), specCarry);
     this.mine(task, by, "owner", true);
     this.ready(task, true);
+    // #1176: a person-run leg is never an agent's to accept, whatever offer or owner it carries from before it was marked.
+    if (by !== USER && task.needsPerson) throw new PreEffectToolRefusal(PERSON_RUN_ACCEPT(task.id));
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
     // Models send null or {} for an optional field they leave empty: neither replaces a plan.
     const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
@@ -6124,7 +7575,7 @@ export class Tasks {
     let next: Task;
     try {
       this.acceptanceCapacity(task, 0, "displace"); // #1080: every gate has passed; synchronous from here to the accept write
-      next = this.linkOnWrite(this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) })); // #723: refs.repo may have just arrived
+      next = this.linkOnWrite(this.commitSpecCarry(by, specCarry, task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) })); // #723: refs.repo may have just arrived
     } catch (error) { undoWorktree?.(); throw error; }
     this.captureOwnerAcceptance(next);
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);
@@ -6367,6 +7818,9 @@ export class Tasks {
   /** Checks queued or running, until their result is on the board: a recovery commit waits for them. */
   checksPending = () => this.pendingChecks;
 
+  /** #1054: completion checks queued or running for work this peer owns, so a run is not settled while its own check is still going. */
+  checksOwnedBy = (peer: PeerId): number => { let n = 0; for (const owner of this.checking.values()) if (owner === peer) n++; return n; };
+
   /** Whether a completion check is still running for this task. */
   isChecking = (id: number) => this.checking.has(id);
 
@@ -6422,11 +7876,13 @@ export class Tasks {
     if (state !== "OPEN" && state !== "CLOSED") throw new PreEffectToolRefusal(`task #${task.id}: PR merge state unavailable; cannot reopen approval`);
   }
 
-  async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown, specAck?: unknown): Promise<Task> {
+  async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown, specAck?: unknown, resolved?: unknown): Promise<Task> {
     const observerExcluded = this.observerExcluded(by);
     const requestCheck = this.requestCheck(by);
     const initial = this.need(id, false, true);
     this.mine(initial, by, "owner", true);
+    const reviewObserverTurn = this.reviewObserverTurn(by, initial.id);
+    const resolvedReviewComments = this.reviewCommentResolve(by, initial, resolved);
     let refresh: CompletionRefresh | undefined;
     if (initial.state === "in_review" || initial.state === "approved") {
       const commit = cleanRefs(refs).commit;
@@ -6445,7 +7901,9 @@ export class Tasks {
     const refileHead: RefileHeadGuard | undefined = !submittedCommit && initial.sdlc?.repo && initial.sdlc.pr && this.hasReviewHistory(initial) && !this.isPii(initial)
       ? { recorded: this.ownerReviewHead(initial) } : undefined;
     const draft = refresh ?? (submittedCommit && /^[a-f0-9]{40}$/.test(submittedCommit) ? { commit: submittedCommit } : undefined);
-    const valid = () => { requestCheck(); return this.completionDraft(this.completionCurrent(id, by, true, refresh), draft); };
+    let specCarry: object | undefined;
+    const write = (...args: Parameters<Board["update"]>) => { const result = this.commitSpecCarry(by, specCarry, ...args); specCarry = undefined; return result; };
+    const valid = () => { requestCheck(); const current = this.stagedSpec(by, this.completionDraft(this.completionCurrent(id, by, true, refresh), draft), specCarry); if (resolvedReviewComments !== undefined) this.reviewCommentResolve(by, current, resolvedReviewComments); return current; };
     if (initial.state === "approved") { await this.unmergedForReopen(initial, valid); valid(); }
     // #509a: a bad claim (a claimed hash, an outside or denied path, a missing file) is refused before any effect, with nothing recorded.
     const claims = deliverables === undefined ? undefined : this.deliverableClaims(deliverables, valid());
@@ -6457,18 +7915,18 @@ export class Tasks {
     task = valid();
     // #481 S1: done without a separate accept starts build work too: the same live spec check as accept, before any write.
     if (task.state === "proposed" || task.state === "changes_requested") {
-      const admission = task;
-      await this.specGate(by, task.id);
-      await this.planEntryGate(by, admission);
+      const admission = await this.specGate(by, task.id, { ...task.refs, ...cleanRefs(refs) });
+      specCarry = admission?.carry;
+      await this.planEntryGate(by, admission?.carry ? admission.task : task, specCarry);
       task = valid();
     }
     // #694: stage the identities the hub can verify; the gates read them, and only the admitted done persists them.
     const link = this.d.sdlc && this.d.sdlc.config().mode !== "off" ? await this.identityLink(task, refs) : undefined;
-    const current = () => this.withLink(valid(), link, refs);
+    const current = () => this.stagedSpec(by, this.withLink(valid(), link, refs), specCarry);
     task = current();
     let reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review", undefined, undefined, refileHead); task = current(); }
-    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !task.reviewer, refileHead) : undefined;
+    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.stagedSpec(by, this.withLink(this.completionDraft(staged, draft), link, refs), specCarry), !task.reviewer, refileHead) : undefined;
     task = current();
     if (refileHead && (this.d.sdlc?.config().mode ?? "off") === "off") {
       const currentHead = await this.currentPrHeadForReview(task, current);
@@ -6496,11 +7954,11 @@ export class Tasks {
       const ig = cohort!.integration;
       if (ig?.task === task.id && ig.offer) this.d.ackFacts?.(task.owner!, ig.offer); // this call is the proof the request arrived
       const r = this.cohorts.completion(cohort!, task, { gen, tree: this.tree(cohort!), factsCurrent: this.d.factsCurrent?.(task.owner!) ?? true, handed: handedAt(task) });
-      if (r.action === "request") return this.d.board.update(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
+      if (r.action === "request") return write(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
       if (r.action === "unresolved") {
         this.d.notify(`task ${this.publicTitle(task)}: turn-free integration unresolved after ${MAX_REQUESTS} requests (${r.why}); its done is recorded, check the overlapping work by hand`);
-        task = this.withLink(this.d.board.update(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
-      } else if (r.integrated) task = this.withLink(this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
+        task = this.withLink(write(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
+      } else if (r.integrated) task = this.withLink(write(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
     } else if (cohort?.held.size && !this.isPii(task)) {
       // No integration step for this member (silence lifted, a PII task open): the notices the silence held stand in
       // for it (issue #107, AC4).
@@ -6508,9 +7966,9 @@ export class Tasks {
       if (evidence && by === USER) this.d.notify(`task ${this.publicTitle(task)} done by the console; overlapping work finished meanwhile:\n${evidence}`);
       else if (evidence) this.doneNotes.set(task.id, `Overlapping work finished while you worked (no turn-free integration step ran):\n${evidence}`);
     }
-    if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
+    if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(write(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
-    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh, specInspection);
+    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh, specInspection, false, resolvedReviewComments, reviewObserverTurn);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     if (refresh?.state === "approved") { await this.unmergedForReopen(task, valid); task = current(); }
     this.checking.set(task.id, task.owner);
@@ -6520,13 +7978,13 @@ export class Tasks {
     const storedRefs = { ...task.refs, ...checkedRefs };
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
     this.assertSpecInspection(specInspection, { ...task, refs: storedRefs }, by);
-    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}), ...(specInspection.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const pending = write(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}), ...(specInspection.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     if (refresh) { this.ciWatchers.cancel(pending.id); this.heldReviews.delete(pending.id); }
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
     this.checkQueue = this.checkQueue
-      .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld, specInspection))
+      .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld, specInspection, resolvedReviewComments, reviewObserverTurn))
       .catch((e: Error) => {
         this.releaseNotice(`task #${pending.id}: its check result could not be recorded: ${e.message}`);
         this.releaseNotice(`task #${pending.id}: its owner retry notice could not be published`, () => {
@@ -6629,9 +8087,11 @@ export class Tasks {
     return { ...(key ? { checkKey: key } : {}), ...(match ? { missingKeys: Number(match[2]) } : {}) };
   }
 
-  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean, specInspection: PreparedSpecInspection): Promise<void> {
+  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean, specInspection: PreparedSpecInspection, resolvedReviewComments?: string[], reviewObserverExcluded = false): Promise<void> {
     const result = await this.d.runCheck!(command).catch((e: Error) => ({ code: null, timedOut: false, interrupted: false, tail: e.message }));
+    const checkOwner = this.checking.get(id);
     this.checking.delete(id);
+    if (checkOwner) { try { queueMicrotask(() => { try { this.d.checkEnded?.(checkOwner); } catch { /* advisory */ } }); } catch { /* advisory */ } }
     const task = this.d.board.get(id);
     if (!task) return;
     const outcome = `${command} -> ${result.interrupted ? "interrupted by a hub stop" : result.timedOut ? "timed out" : `exit ${result.code ?? "?"}`}`;
@@ -6656,7 +8116,7 @@ export class Tasks {
       this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim(), { ...this.checkProvenance(task, result.tail), ...(withheld ? { withheld: true } : {}) });
       if (refileForSpecs) { this.requestSpecRefile(task); return; }
       // The output goes to the reviewer with the done note, not into shared memory: nobody screened it.
-      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld, undefined, undefined, undefined, undefined, undefined, undefined, specInspection, true);
+      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld, undefined, undefined, undefined, undefined, undefined, undefined, specInspection, true, resolvedReviewComments, reviewObserverExcluded);
       return;
     }
     this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim(), { ...this.checkProvenance(task, result.tail), ...(withheld ? { withheld: true } : {}) });
@@ -6664,11 +8124,11 @@ export class Tasks {
     if (task.owner) this.d.board.recordOutcome(task.owner, task.class, false);
     this.contradict(task);
     this.d.notify(`task ${this.publicTitle(task)}: its check failed (${outcome}); it stays with ${task.owner ?? by}`);
-    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${!withheld && result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii);
+    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${!withheld && result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii, "owner", this.reviewObserverTurn(by, id));
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}, refresh?: CompletionRefresh, specInspection?: PreparedSpecInspection, asyncCheckCompletion = false): Promise<Task> {
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}, refresh?: CompletionRefresh, specInspection?: PreparedSpecInspection, asyncCheckCompletion = false, resolvedReviewComments?: string[], reviewObserverExcluded = false): Promise<Task> {
     requestCheck();
     if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
     // A check's completion carries the records its `done (checking)` bound: the same bytes the owner delivered, not a later read.
@@ -6715,14 +8175,15 @@ export class Tasks {
     this.warmRepository({ ...task, refs: storedRefs });
     const noWrites = this.noWritesRecorded({ ...task, refs: storedRefs });
     const capacity = this.capacityBefore(task);
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    reviewObserverExcluded ||= this.reviewObserverTurn(by, task.id);
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     const memorySymbols = this.completionMemorySymbols(next);
-    this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\nChanged-symbol memory anchors: ${memorySymbols.state === "known" ? memorySymbols.nodes.length : "unknown (no complete code facts)"}\n${summary ?? ""}`, withheld, memorySymbols);
-    this.tellCompleted(next, summary, withheld);
+    this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\nChanged-symbol memory anchors: ${memorySymbols.state === "known" ? memorySymbols.nodes.length : "unknown (no complete code facts)"}\n${summary ?? ""}`, withheld || reviewObserverExcluded, memorySymbols);
+    this.tellCompleted(next, summary, withheld || reviewObserverExcluded);
     if (!reviewer) {
       this.settleMemory(next);
       if (next.owner) this.d.board.recordOutcome(next.owner, next.class, true); // approved without a review is a success too
@@ -6832,7 +8293,8 @@ export class Tasks {
   /** Review admission is separate from brief construction (#228). All refusals precede the requesting done's writes. */
   private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean, stage: (task: Task) => Task = task => task, prepareOnly = false, refileHead?: RefileHeadGuard): Promise<ReviewReadiness | undefined> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
-    if (mode === "off" && !this.d.prepareReviewBrief) return undefined;
+    const anchored = this.reviewFindingSets(task).some(set => set.items.some(item => item.anchor));
+    if (mode === "off" && !this.d.prepareReviewBrief && !anchored) return undefined;
     let quietDrift = false;
     const guard = () => {
       if (actor !== USER && actor !== task.owner) {
@@ -6857,7 +8319,14 @@ export class Tasks {
       catch { /* Optional code facts must not refuse a review. */ }
       guard();
     }
-    if (mode === "off" || prepareOnly) return undefined;
+    if (prepareOnly) return undefined;
+    if (mode === "off") {
+      if (!anchored) return undefined;
+      const placements = await this.prepareFindingPlacements(task, refs, guard);
+      const admission: ReviewReadiness = { ready: false, blockers: [] };
+      this.findingPlacements.set(admission, { binding: this.findingPlacementBinding({ ...task, refs: { ...task.refs, ...cleanRefs(refs) } }), placements, placementOnly: true });
+      return admission;
+    }
     const expected = cleanRefs(refs).commit ?? task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
     const read: SdlcGh = (args, timeout, cwd, cap) => {
       guard();
@@ -6866,7 +8335,7 @@ export class Tasks {
     };
     const evidence: ReviewReadiness = this.isPii(task)
       ? { ready: false, blockers: ["private review readiness unavailable"] }
-      : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc?.config().requiredChecks ?? []) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc?.config().requiredChecks ?? []) : { ready: false, blockers: ["review PR identity missing"] };
+      : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc ? requiredChecksFor(this.d.sdlc.config(), task.sdlc.repo) : [], task.sdlc.repo) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc ? requiredChecksFor(this.d.sdlc.config(), task.sdlc.repo) : []) : { ready: false, blockers: ["review PR identity missing"] };
     const currentHead = refileHead && !evidence.head && task.sdlc ? await readSdlcPrHead(task.sdlc, read) : evidence.head;
     const current = guard();
     const admitted: ReviewReadiness = quietDrift ? { ready: false, blockers: ["review readiness unknown: task changed during readback"] } : evidence;
@@ -6879,6 +8348,10 @@ export class Tasks {
       if (mode === "enforce") throw new (preEffect ? PreEffectToolRefusal : Error)(message);
       this.releaseNotice(message);
     }
+    if (anchored) {
+      const placements = await this.prepareFindingPlacements(task, refs, guard);
+      this.findingPlacements.set(admitted, { binding: this.findingPlacementBinding({ ...task, refs: { ...task.refs, ...cleanRefs(refs) } }), placements, placementOnly: false });
+    }
     return admitted;
   }
 
@@ -6888,7 +8361,7 @@ export class Tasks {
    * admission of a PII task being only a stub. Every word comes from the hub's own readiness read; blockers are fixed hub strings, never PR text.
    */
   private hubVerifiedBlock(task: Task, admission?: ReviewReadiness): string {
-    if (!admission || this.isPii(task)) return "";
+    if (!admission || this.isPii(task) || this.findingPlacements.get(admission)?.placementOnly) return "";
     const head = admission.head ?? this.reviewHead(task) ?? "unknown head";
     if (admission.ready) {
       const names = admission.checks?.length ? admission.checks.join(", ") : "the required checks";
@@ -6915,6 +8388,9 @@ export class Tasks {
     const cachedPlanRead = this.planReads.get(task.id);
     const planRead = this.planReport(task, cachedPlanRead?.identity === this.planReadIdentity(task) && cachedPlanRead.evidence.head === this.findingHead(task) ? cachedPlanRead.evidence : undefined);
     const conformanceText = mode !== "off" ? this.screen(task, `Plan conformance: ${JSON.stringify(planRead)}`, "plan conformance", reviewer) + "\n" : "";
+    // #1403 A2: from the same cached PR read as plan conformance. No cached read is `unknown`, never "not required", so a missing readback still points the reviewer at the checklist.
+    const securityLine = mode !== "off" ? securityRequestLine(this.securityView(task, cachedPlanRead?.identity === this.planReadIdentity(task) && cachedPlanRead.evidence.head === this.findingHead(task) ? cachedPlanRead.evidence : undefined)) : undefined;
+    const securityText = securityLine ? this.screen(task, securityLine, "security pass", reviewer) + "\n" : "";
     const profile = (task.profile ?? "dev") === (this.d.profile ?? "dev") ? profileData(this.d.profileData ?? task.profile ?? "dev") : profileData(task.profile);
     const target = plan ? `the plan (${plan})` : task.detail ? "the task detail above" : "the task title";
     const noCheckWording = profile.name === "research" || profile.name === "writing"
@@ -6970,7 +8446,13 @@ export class Tasks {
     const findings = reviewOnly ? task.history.filter(h => h.event === "changes_requested" && h.note).map(h => `- ${h.by}: ${this.screen(task, h.note!, "review note", reviewer, h.withheld)}`) : [];
     const carried = findingsForHead(this.reviewFindingSets(task), this.findingHead(task)).filter(item => item.severity === "important" && item.disposition === "open");
     const visible = this.isPii(task) ? [] : carried.filter(item => this.findingTextAllowed(task, [item]) && !task.history.some(entry => entry.withheld && entry.reviewFindings?.items.some(value => value.id === item.id)));
-    const carriedText = carried.length ? `Open Important findings carried until explicitly dispositioned: ${carried.length}\n${visible.map(({ id, pass, severity, path }) => JSON.stringify({ id, pass, severity, ...(path ? { path } : {}) })).join("\n")}${visible.length < carried.length ? "\nSome finding details withheld." : ""}\n` : "";
+    const prepared = admission && this.findingPlacements.get(admission);
+    const placements = prepared?.binding === this.findingPlacementBinding(task) ? prepared.placements : undefined;
+    // ponytail: rare synchronous role re-offers without an async admission show unavailable until refreshed; no old location is guessed.
+    const carriedText = carried.length ? `Open Important findings carried until explicitly dispositioned: ${carried.length}\n${visible.map(item => {
+      const { id, pass, severity, path } = item, legacy = JSON.stringify({ id, pass, severity, ...(path ? { path } : {}) });
+      return item.anchor ? legacy + "\n" + renderFindingAnchor(item, this.reviewPathPrivate(item.anchor.path) ? { status: "unavailable" } : placements?.get(id) ?? { status: "unavailable" }) : legacy;
+    }).join("\n")}${visible.length < carried.length ? "\nSome finding details withheld." : ""}\n` : "";
     const guidance = this.roleGuidance(task, reviewer, true);
     let projection = "";
     try { const text = this.d.projectedReview?.(task); if (text) projection = this.screen(task, sanitize(text), "document projection", reviewer); }
@@ -6978,8 +8460,11 @@ export class Tasks {
     const brief = this.briefText(task);
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
     const checkout = mainCheckoutWarning(this.d.cwd, this.publicMetadataText);
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${rulingsBlock}${verified}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
-    return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${securityText}${rulingsBlock}${verified}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
+    const comments = this.d.board.reviewCommentCounts(task.id, task.created);
+    const quoteMaterial = task.history.some(entry => entry.reviewFindings?.items.some(item => item.anchor !== undefined))
+      || comments.sent + comments.resolved + comments.dismissed > 0;
+    return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(quoteMaterial ? { reviewPackage: `reviewer-request-${crypto.randomUUID()}` } : {}), ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
   }
 
   /** #785 P1b: remember a review the hub held as premature, so a green CI at this exact head can re-offer it once. Also watches that head. */
@@ -7161,7 +8646,11 @@ export class Tasks {
     } catch { return prefix("Review brief unavailable: it could not be built."); }
   }
 
-  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
+  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown, securityPass?: unknown): Promise<Task> {
+    if (by !== USER && hasReviewAnchorInput(findings)) {
+      try { this.d.onReviewObserverInput?.(by); }
+      catch { throw new PreEffectToolRefusal("the anchored review input could not be privately scoped; retry after ordinary new input"); }
+    }
     const observerExcluded = this.observerExcluded(by);
     const requestCheck = this.requestCheck(by);
     if (typeof id !== "number" && !(typeof id === "string" && /^\s*\d+\s*$/.test(id))) this.need(id, false, true);
@@ -7173,7 +8662,9 @@ export class Tasks {
     let conformanceIdentity: string | undefined;
     let reviewRound: number | undefined;
     let withdrawalRevision: number | undefined;
-    const withdrawing = this.need(id, false, true).state === "approved" && verdict === "changes_requested";
+    const before = this.need(id, false, true);
+    const reviewObserverTurn = this.reviewObserverTurn(by, before.id);
+    const withdrawing = before.state === "approved" && verdict === "changes_requested";
     const valid = (): Task => {
       requestCheck();
       const refused = authority?.();
@@ -7201,8 +8692,19 @@ export class Tasks {
     if (withdrawing) withdrawalRevision = initial.history.length;
     if (withdrawing) { await this.unmergedForReopen(initial, valid); valid(); }
     let parsed: ReviewFinding[];
-    try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS }); }
+    try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS, contract: mode === "off" ? "off" : "required" }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
+    // #1403 A2: the field exists only under an enabled lifecycle (off neither advertises nor accepts it), and only on a verdict that can carry it. Validated before any board effect.
+    let securityRecord: SecurityPassRecord | undefined;
+    if (securityPass !== undefined) {
+      if (mode === "off") throw new PreEffectToolRefusal("security_pass is not available: the lifecycle is off (set sdlc.mode to advise or enforce in .agenthub/sdlc.toml)");
+      try { securityRecord = parseSecurityPass(securityPass); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid security_pass"); }
+    }
+    const anchorPrivacy = new Map(parsed.flatMap(item => item.anchor ? [[item.anchor.path, this.reviewPathPrivate(item.anchor.path)] as const] : []));
+    try { parsed = parsed.map(item => item.anchor && anchorPrivacy.get(item.anchor.path) ? { ...item, anchor: privateReviewAnchor(item.anchor) } : item); }
+    catch { throw new PreEffectToolRefusal("private finding path needs an existing lineRange or structural selector; remove quoted selectors and retry"); }
+    const observerExcluded = reviewObserverTurn || parsed.some(item => item.anchor !== undefined);
     // #852 AC3 (amended): a code-scope reviewer's changes_requested is always recorded, never refused. Without an open structured finding it is
     // evidence-only: it does not count toward rejections or escalation, the task returns to its owner as usual, and the conductor gets one ids-only
     // notice. The rule is structural (a finding with disposition open), never a reading of the unmet text.
@@ -7220,6 +8722,7 @@ export class Tasks {
       const identity = (task: Task) => JSON.stringify({ owner: task.owner, reviewer: task.reviewer, commit: task.refs.commit, receipt: task.sdlc, resolvedHead: this.findingHead(task), private: this.isPii(task), findings: this.reviewFindingSets(task) });
       const original = identity(initial);
       findingGuard = task => {
+        if ([...anchorPrivacy].some(([path, privatePath]) => this.reviewPathPrivate(path) !== privatePath)) throw new PreEffectToolRefusal("review path privacy changed; refresh the task review and retry");
         if (identity(task) !== original) throw new PreEffectToolRefusal("task review identity, privacy or findings changed during the verdict; review current work again");
         if (by !== USER && suppliedFindings && this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("structured review of ordinary work is unavailable during a private turn");
         if (parsed.filter(item => item.severity === "nit").length > (this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS)) throw new PreEffectToolRefusal("review nit cap exceeded");
@@ -7257,7 +8760,12 @@ export class Tasks {
     }
     if (head !== undefined && resolvedHead && findingHead !== resolvedHead) throw new PreEffectToolRefusal(`task #${initial.id}: supplied review head ${findingHead} differs from recorded task head ${resolvedHead}; owner must re-file hub_task_done with refs.commit set to the supplied full SHA before review`);
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
-    const withheld = observerExcluded || await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: parsed }) : note, valid())
+    // The configured PII screen sees reviewer prose and anchor metadata, but never immutable source selectors or projection content.
+    const screenFindings = parsed.map(({ anchor, ...finding }) => ({ ...finding, ...(anchor ? { anchor: {
+      path: anchor.path, ...(anchor.side ? { side: anchor.side } : {}), ...(anchor.contentHash ? { contentHash: anchor.contentHash } : {}),
+      ...(anchor.projection ? { projection: anchor.projection } : {}),
+    } } : {}) }));
+    const withheld = observerExcluded || await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: screenFindings }) : note, valid())
       || parsed.length > 0 && !this.findingTextAllowed(initial, parsed);
     let task = valid();
     let reviewedHead: string | undefined;
@@ -7289,7 +8797,7 @@ export class Tasks {
     }
     if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") {
       this.evalRecords.delete(task.id);
-      await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task)); task = valid();
+      await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task), undefined, securityRecord && { ...securityRecord, head: reviewedHead ?? findingHead }); task = valid();
       const record = this.evalRecords.get(task.id); this.evalRecords.delete(task.id);
       if (record) note = `${note ?? ""}\n${record}`.trim();
     } else if (verdict === "approved" && this.d.sdlc?.config().mode === "off" && this.d.sdlc?.gh && task.sdlc?.repo && task.sdlc.pr
@@ -7300,7 +8808,7 @@ export class Tasks {
       if (expected && currentHead && currentHead !== expected) throw this.reviewHeadMoveRefusal(task.id, expected, currentHead);
     }
     let candidate: Extract<CandidateInput, { kind: "fail" }> | undefined;
-    if (verdict === "changes_requested" && !evidenceOnly && items.length && this.d.candidates && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by)) {
+    if (!observerExcluded && verdict === "changes_requested" && !evidenceOnly && items.length && this.d.candidates && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by)) {
       const input: CandidateInput = { project: this.d.store?.project ?? this.d.project, kind: "fail", approach: this.publicTitle(task), symptom: items.join("\n"),
         cause: "unknown: review unmet items do not establish a cause", retryWhen: "unknown: a person must review the unmet items before accepting",
         evidenceRefs: [`task:${task.id}`, `reviewed-head:${reviewedHead ?? task.refs.commit ?? "unknown"}`] };
@@ -7320,7 +8828,7 @@ export class Tasks {
     // #507b: unmet items that start with a recorded criterion id name that criterion. The ids come from the checklist on the board as it is at this
     // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
-    const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(securityRecord && !pii ? { securityPass: { ...securityRecord, ...((reviewedHead ?? findingHead) ? { head: (reviewedHead ?? findingHead)! } : {}) } } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const capacity = this.capacityBefore(task);
       this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
@@ -7334,30 +8842,31 @@ export class Tasks {
           this.d.board.recordReview({ implementer: next.owner, reviewer: r, class: next.class, kind: "caught", task: next.id });
         }
       }
-      this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}\n${note ?? ""}`, withheld);
+      this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}${observerExcluded ? "" : `\n${note ?? ""}`}`, withheld);
       this.settleMemory(next);
       this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${next.owner ?? "its owner"} it was approved`, () =>
-        this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii));
+        this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii, "owner", observerExcluded));
       await this.releaseDependents(next);
-      this.autoMerge(next, this.mirrorVerdict(next, by, "approved", reviewedHead ?? next.sdlc?.reviewedHead, note, withheld));
+      this.autoMerge(next, this.mirrorVerdict(next, by, "approved", reviewedHead ?? next.sdlc?.reviewedHead, note, withheld || observerExcluded));
       // A proposal storage failure cannot roll back the saved verdict; another matching verdict retries it.
       this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
+      this.releaseNotice(`task #${next.id}: review saved but finding follow-up proposal unavailable`, () => this.proposeFindingFollowUps(next, by, withheld));
       this.releaseNotice(`task #${next.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(next, by, withheld));
       return next;
     }
     this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: evidenceOnly ? task.rejections : task.rejections + 1 }, note, flag, task.history.length);
-    void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld);
+    void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld || observerExcluded);
     if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
     if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(rejected, by, withheld));
-    if (candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
+    if (!observerExcluded && candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
       try { this.d.memoryCheck?.(); this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
     }
     this.cohorts.withdraw(rejected.id); // open again: its done intent no longer counts (issue #107)
     // Evidence-only is not a verdict on the owner's work: no failed outcome, no contradiction of an earlier approval, and no escalation count.
     if (rejected.owner && !evidenceOnly) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
     if (!evidenceOnly) this.contradict(rejected);
-    this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`, withheld);
+    this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}${observerExcluded ? "" : `\n${note ?? ""}`}`, withheld);
     if (evidenceOnly) this.tellConductorEvidenceOnly(rejected, by);
     if (withdrawing) {
       this.releaseNotice(`task ${this.publicTitle(rejected)}: could not tell its owner the approval was withdrawn`, () =>
@@ -7380,12 +8889,12 @@ export class Tasks {
       if (moved.owner !== rejected.owner) return moved;
       // Nobody to escalate to: the owner still has to hear the verdict and the note.
       this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${moved.owner ?? "its owner"} changes were requested again`, () =>
-        this.tell(moved, `Task #${moved.id}: ${by} requests changes again.${note ? ` ${this.screen(moved, note, "review note", moved.owner, withheld)}` : ""} Nobody else can take it; fix it and call hub_task_done again.`, pii));
+        this.tell(moved, `Task #${moved.id}: ${by} requests changes again.${note ? ` ${this.screen(moved, note, "review note", moved.owner, withheld)}` : ""} Nobody else can take it; fix it and call hub_task_done again.`, pii, "owner", observerExcluded));
       return moved;
     }
     const reopened = this.d.board.update(rejected.id, HUB, "reopened", { state: "in_progress" });
     this.releaseNotice(`task ${this.publicTitle(reopened)}: could not tell ${reopened.owner ?? "its owner"} changes were requested`, () =>
-      this.tell(reopened, `Task #${reopened.id}: ${by} requests changes.${note ? ` ${this.screen(reopened, note, "review note", reopened.owner, withheld)}` : ""} Fix it and call hub_task_done again.`, pii));
+      this.tell(reopened, `Task #${reopened.id}: ${by} requests changes.${note ? ` ${this.screen(reopened, note, "review note", reopened.owner, withheld)}` : ""} Fix it and call hub_task_done again.`, pii, "owner", observerExcluded));
     return reopened;
   }
 
@@ -7513,6 +9022,8 @@ export class Tasks {
     queueAssignment?.current();
     const task = this.need(id, role === "owner", preEffect);
     this.checkFlowRevision(task, expectedFlowRevision, preEffect);
+    // #1176: routing hands a person-run leg to nobody, so naming an owner would only be a silent no-op plus a stall report. Refused for the conductor and planner (they are agents) and for the person alike: the person clears the mark first.
+    if (role === "owner" && task.needsPerson) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is a person-run leg: no agent is named its owner. Clear the mark first (ahub backlog plan ${task.id} <revision> '{"needsPerson":false}' <reason>), then assign it`);
     if (!this.d.bus.isRostered(peer)) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} is off roster; add it to the roster before assigning work`);
     this.requireCapabilities(task, peer, role, preEffect);
     if (role === "reviewer") {
@@ -7713,17 +9224,28 @@ export class Tasks {
     return `candidate:${id}; a person reviews it with amem review; memory was not edited`;
   }
 
-  async remember(by: PeerId, input: { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown; approach?: unknown; symptom?: unknown; cause?: unknown; evidence?: unknown; retry_when?: unknown }): Promise<string> {
+  async remember(by: PeerId, input: RememberInput): Promise<string> { return (await this.rememberOutcome(by, input)).message; }
+
+  /**
+   * #802: what `remember` answered and whether it stored anything, so a caller never decides that from the wording. `saved` is a note in shared memory, `candidate` one held for a person's
+   * review (stored, not yet evidence), `not_saved` a note nothing took. A refusal still throws and never reaches here.
+   */
+  async rememberOutcome(by: PeerId, input: RememberInput): Promise<{ message: string; outcome: "saved" | "candidate" | "not_saved" }> {
     const requestCheck = this.requestCheck(by);
     const text = composeRememberText(input);
     const task = input.task !== undefined ? this.d.board.get(Number(input.task)) : undefined;
     if (task && this.isPii(task)) throw new Error("notes about a PII task are not saved: shared memory excludes private data");
     // Shared with every other peer as well, so text that matches a PII pattern is refused like a note about a PII task.
     const title = String(input.title ?? "").trim();
+    if (by !== USER) {
+      let scoped = false;
+      try { scoped = this.reviewObserverTurn(by, task?.id); } catch { throw new PreEffectToolRefusal("shared memory is held because the open review scope (sent comments, anchored findings, unsettled delivery or current review input) could not be checked; inspect ahub task list after recovery"); }
+      if (scoped) throw new PreEffectToolRefusal(`shared memory is held while an open review scope (sent comments, anchored findings, unsettled delivery or current review input) exists; complete or review the task, ask the person to dismiss comments if appropriate, inspect ahub queue list --peer ${by} and explicitly settle any delivery, then wait for ordinary new input after completion`);
+    }
     if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: shared memory excludes private data");
     if (input.horizon !== undefined && input.horizon !== "short" && input.horizon !== "long") throw new Error('horizon is "short" or "long"');
     if (input.scope !== undefined && input.scope !== "project" && input.scope !== "shared") throw new Error('scope is "project" or "shared"');
-    if (!this.d.memory && !this.d.store) return "memory is disabled; nothing saved";
+    if (!this.d.memory && !this.d.store) return { message: "memory is disabled; nothing saved", outcome: "not_saved" };
     // Long-term notes can leave the machine (#258); local storage does not relax secret exclusion.
     if (looksSecret(`${title}\n${text}`)) throw new Error("this note looks like it holds a secret (a key, token or password) and is not saved");
     if (this.aboutPrivatePath(title, text, task)) throw new Error("this note is about a path the project keeps private (pii.paths) and is not saved");
@@ -7731,17 +9253,18 @@ export class Tasks {
     requestCheck();
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
+    if (native && "refused" in native) throw new PreEffectToolRefusal(`${native.refused}; save it with horizon "short" or correct the machine/repository privacy policy, then retry`);
     if (task && this.d.memory) this.markMemoryReference(task, by);
     const res = !native && this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
-    if (!res && !native) return "memory store unavailable; nothing saved";
+    if (!res && !native) return { message: "memory store unavailable; nothing saved", outcome: "not_saved" };
     if (!native && res && typeof res === "object" && "status" in res && res.status === "candidate") {
-      return "saved as a pending memory candidate; a person must review it before it becomes shared evidence";
+      return { message: "saved as a pending memory candidate; a person must review it before it becomes shared evidence", outcome: "candidate" };
     }
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
     this.d.notify(line);
     // Display identity only: a queued recall may already contain this saved entry. Stored/captured text stays unchanged.
     this.d.share?.(by, native ? noteLine(by, kind, `mem:${native.id} ${title ? `${title}: ` : ""}${text}`) : line);
-    return `saved to shared memory${native ? ` (hub memory ${native.id.slice(0, 8)}, ${native.tier}-term)` : ""}; the other agents get it with their next message`;
+    return { message: `saved to shared memory${native ? ` (hub memory ${native.id.slice(0, 8)}, ${native.tier}-term)` : ""}; the other agents get it with their next message`, outcome: "saved" };
   }
 
   /** The task's key in the hub's store: unique across `ahub reset --all`, which restarts the ids. */
@@ -7785,14 +9308,16 @@ export class Tasks {
    * long, decisions, contracts and fails are long-term. Fail-open: a store that cannot be written costs one notice.
    * The caller has screened the text for PII; never a PII task's.
    */
-  private saveNative(by: PeerId, kind: Kind, text: string, title: string, task: Task | undefined, horizon?: Tier, scope: Scope = "project", symbols?: MemorySymbolNodes): { id: string; tier: Tier } | undefined {
+  private saveNative(by: PeerId, kind: Kind, text: string, title: string, task: Task | undefined, horizon?: Tier, scope: Scope = "project", symbols?: MemorySymbolNodes): { id: string; tier: Tier; about: string[] } | { refused: string } | undefined {
     const st = this.d.store;
     if (!st || (task && this.isPii(task))) return undefined;
+    let longTerm = horizon === "long" || (horizon !== "short" && !!task && task.state === "approved" && PROMOTED_KINDS.includes(kind));
     try { // never throws: callers run after a board write
       this.d.memoryCheck?.();
       // Approved, or settled in the store already: the snapshot the caller holds can predate an approval made while it awaited.
       const approved = !!task && (task.state === "approved" || st.store.settled(this.memoryKey(task)));
       const tier: Tier = horizon ?? (approved && PROMOTED_KINDS.includes(kind) ? "long" : "short");
+      longTerm ||= tier === "long";
       const about = extractNodes(`${title}\n${text}`, { cwd: this.d.cwd, project: st.project, repo: st.repo, deny: st.deny, paths: [...(task?.refs.paths ?? []), ...(task?.plan?.paths ?? [])], symbols: symbols ? [] : task?.plan?.symbols?.map(normalizeMemorySymbolInput), ...(task ? { task: { id: task.id, created: task.created } } : {}) });
       // Existing notes remain immutable; the completion note connects actual symbols through the shared task node.
       if (symbols && task) {
@@ -7801,12 +9326,20 @@ export class Tasks {
       }
       // A short-term note on a task already approved (before hub memory existed, or late): the task is settled first, so
       // the note gets its own deadline and is never taken for a source waiting for promotion.
-      if (task && approved && tier === "short" && !st.store.settled(this.memoryKey(task))) st.store.settle(this.memoryKey(task), by);
+      if (task && approved && tier === "short" && !st.store.settled(this.memoryKey(task))) this.settleMemory(task);
+      const row: NoteInput = { op: "note", project: st.project, scope, tier, kind, peer: by, ...(title ? { title } : {}), text, ...(task ? { task: this.memoryKey(task) } : {}), about, source: by === USER ? "person" : "hub" };
+      if (tier === "long") {
+        try {
+          const result = this.memorySyncPolicy().screen(row);
+          if (!result.ok) return { refused: `long-term note declined by ${result.rule}` };
+        } catch { return { refused: "machine privacy policy unavailable" }; }
+      }
       if (task) this.markMemoryReference(task, by);
-      const id = st.store.note({ op: "note", project: st.project, scope, tier, kind, peer: by, ...(title ? { title } : {}), text, ...(task ? { task: this.memoryKey(task) } : {}), about, source: by === USER ? "person" : "hub" }, horizon === "short");
-      st.onNote?.(id);
-      return { id, tier };
+      const id = st.store.note(row, horizon === "short");
+      try { st.onNote?.(id); } catch { /* The native note is committed; an observer cannot make it fail. */ }
+      return { id, tier, about: [...about] };
     } catch (e) {
+      if (longTerm) return { refused: "machine privacy policy unavailable" };
       this.releaseNotice(`a ${kind} note was not saved to hub memory (${(e as Error).message})`);
       return undefined;
     }
@@ -7822,17 +9355,40 @@ export class Tasks {
     let n = 0;
     for (const t of this.d.board.list("approved")) {
       if (this.isPii(t)) continue;
-      try { this.d.memoryCheck?.(); const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key, { includeLegacy: true })) { this.settleMemory(t); n++; } }
+      try { this.d.memoryCheck?.(); const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key, { includeLegacy: true }) && this.settleMemory(t)) n++; }
       catch { /* fail-open: tried again at the next start */ }
     }
     return n;
   }
 
-  private settleMemory(task: Task): void {
-    if (!this.d.store || this.isPii(task)) return;
-    // The store screens each note as it moves to the synced log (the promotion screen the daemon gives it).
-    try { this.d.memoryCheck?.(); this.d.store.store.settle(this.memoryKey(task), task.reviewer ?? task.owner ?? HUB); }
-    catch (e) { this.releaseNotice(`task #${task.id}: hub memory could not settle its notes (${(e as Error).message})`); }
+  private settleMemory(task: Task): boolean {
+    const st = this.d.store;
+    if (!st || this.isPii(task)) return false;
+    try {
+      this.d.memoryCheck?.();
+      st.store.settle(this.memoryKey(task), task.reviewer ?? task.owner ?? HUB);
+      return true;
+    } catch (e) { this.releaseNotice(`task #${task.id}: hub memory could not settle its notes (${(e as Error).message})`); return false; }
+  }
+
+  /** Standalone outbound rules plus the hub's current routing and project-private-path policy. */
+  private memorySyncPolicy() {
+    const st = this.d.store!;
+    const hostScreen = (row: Record<string, unknown>) => {
+      const taskKeyValue = typeof row.task === "string" ? row.task : undefined;
+      const match = taskKeyValue ? /#(\d+)@(\d+)$/.exec(taskKeyValue) : null;
+      const task = match ? this.d.board.get(Number(match[1])) : undefined;
+      const taskPaths = task && String(task.created) === match?.[2] ? [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])] : [];
+      const title = typeof row.title === "string" ? row.title : "";
+      const text = typeof row.text === "string" ? row.text : "";
+      const about = Array.isArray(row.about) ? row.about.filter((value): value is string => typeof value === "string") : [];
+      const extraText = JSON.stringify(Object.fromEntries(Object.entries(row).filter(([key]) => !["title", "text", "about", "task", "project"].includes(key))));
+      const note = { title, text: `${text}\n${extraText}`, about: [...about, ...taskPaths.map(path => `path:${path}`)], ...(typeof row.task === "string" ? { task: row.task } : {}), ...(typeof row.project === "string" ? { project: row.project } : {}) };
+      const safe = withoutPii([note], this.d.routing(), this.d.cwd, this.d.piiPaths ?? []);
+      const privatePath = mentionsPrivatePath(`${title}\n${text}\n${extraText}`, note.about, this.d.piiPaths ?? [], this.d.cwd);
+      return safe.length && !privatePath ? { ok: true as const } : { ok: false as const, rule: "hub privacy policy: PII pattern or private path" };
+    };
+    return createMemorySyncPolicy({ home: st.store.profile.home, cwd: this.d.cwd, denyPaths: st.deny, piiPatterns: this.d.routing().signals.pii_patterns, hostScreen });
   }
 
   /**
@@ -7856,15 +9412,44 @@ export class Tasks {
     const title = `agent-hub task #${task.id}: ${task.title}`.slice(0, 120);
     if (this.aboutPrivatePath(title, text, task)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it is about a private path)`);
     const native = this.saveNative(by, kind, text, title, task, undefined, "project", symbols);
+    if (native && "refused" in native) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (${native.refused})`);
+    if (native && "id" in native && this.d.store?.onGeneratedNote) {
+      try {
+        // Existing repository metadata is warmed by normal task admission/completion, never a new provenance probe.
+        // At the extraction ceiling completeness is unknown. Keep the old bytes rather than a partial proof.
+        if (this.d.privateTurn?.(by) === false && this.memoryCodeEligible(task) && native.about.length < 64 && !symbols?.truncated && !symbols?.unknown) {
+          const anchors = generatedRecordAnchors(native.about);
+          if (anchors && anchors.every(anchor => this.nameable(anchor))) this.d.store.onGeneratedNote({ id: native.id, anchors });
+        }
+      } catch { /* Callback/privacy uncertainty cannot affect a saved note or the preceding board write. */ }
+    }
     if (!native && this.d.memory) {
       try { this.markMemoryReference(task, by); } catch { return this.releaseNotice(`task #${task.id}: memory reference could not be recorded; note was not saved`); }
       void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });
     }
   }
 
-  private tell(task: Task, body: string, pii: boolean, audience: "owner" | "withdrawal" = "owner"): void {
+  /**
+   * #1221 T2: one accepted supervision proposal's notice, to the owners of the tasks it names. A delivery through the
+   * same owner path `tell` uses, never a board write: the task's own result stays in its history and a later review of
+   * that result stays a separate record. The person is not told here (the console owns that), and a private task is
+   * refused, so nothing about one leaves the machine.
+   */
+  supervisionNotice(task: number, other: number | undefined, body: string): { sent: PeerId[]; refused?: string } {
+    const primary = this.d.board.get(task);
+    if (!primary) return { sent: [], refused: `task #${task} is not on the board` };
+    if (this.isPii(primary)) return { sent: [], refused: "a private task is never proposed on" };
+    const partner = other === undefined ? undefined : this.d.board.get(other);
+    if (other !== undefined && partner && this.isPii(partner)) return { sent: [], refused: "a private task is never proposed on" };
+    const targets = [...new Set([primary.owner, partner?.owner].filter((peer): peer is PeerId => !!peer && peer !== USER && peer !== HUB))];
+    if (!targets.length) return { sent: [], refused: "the task has no owner to tell" };
+    for (const peer of targets) this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", priority: "important", refs: { task: String(task), taskRecipient: "owner" } }));
+    return { sent: targets };
+  }
+
+  private tell(task: Task, body: string, pii: boolean, audience: "owner" | "withdrawal" = "owner", reviewObserverExcluded = false): void {
     if (!task.owner || task.owner === USER) return;
-    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner], kind: "task", priority: "important", refs: { task: String(task.id), ...(audience === "owner" ? { taskRecipient: "owner" as const } : {}) }, ...(pii ? { private: true } : {}) }));
+    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner], kind: reviewObserverExcluded ? "review" : "task", priority: "important", refs: { task: String(task.id), ...(reviewObserverExcluded ? { reviewPackage: `finding-${crypto.randomUUID()}` } : {}), ...(audience === "owner" ? { taskRecipient: "owner" as const } : {}) }, ...(pii ? { private: true } : {}) }));
   }
 }
 

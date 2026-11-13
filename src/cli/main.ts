@@ -3,6 +3,7 @@ import { assertConductorOperationLocal, authorizeConductorOperation, authorizeCo
 import { runtimePruneHealth } from "../hub/runtime-prune-health.ts";
 import { conductorLocalOperation, conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
 import { sayRecipients } from "./say-input.ts";
+import { parseAnswerArgs } from "./answer-args.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
@@ -30,6 +31,8 @@ import { renderIntake, renderIntakeChange } from "./intake-output.ts";
 import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { renderCapabilities } from "./capabilities-output.ts";
 import { parseStudyArgs } from "./study.ts";
+import { parseBacklogReturn } from "./backlog-return-args.ts";
+import { parseResultsArgs } from "./results-args.ts";
 import { renderExperiments, renderStudyList, renderStudyReceipt, renderStudyShow } from "./study-output.ts";
 import { renderHandoffReceipt, renderHandoffs } from "./handoff-output.ts";
 import { parseHandoffArgs } from "./handoff-args.ts";
@@ -40,8 +43,10 @@ import { readAutonomyDefaults, writeAutonomyDefaults } from "../hub/autonomy-def
 import { inheritMachineAutonomy, prepareAutonomyProject, runAllProjectAutonomy, type PreparedAutonomyProject } from "./autonomy-projects.ts";
 import { offlineAutonomyStatus } from "./autonomy-offline.ts";
 import { autonomyHomeStatus, usedClaudeHomes } from "./autonomy-homes.ts";
+import { shellQuote } from "./shell-quote.ts";
 import { discoverClaudeHomes } from "./claude-homes.ts";
 import { setupClaudeHomes } from "./setup-homes.ts";
+import { setupResearchDefault } from "./setup-research.ts";
 import { registerAconPlugin } from "./acon-register.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
 import { PET_WINDOW_RETIRED_NOTICE, petPalette } from "../pet/config.ts";
@@ -66,11 +71,14 @@ import { loadConfig } from "../hub/daemon.ts";
 import { factsHook } from "./facts-hook.ts";
 import { hubHome, projectContext, projectRoot, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
+import { datasetInputFor, exportResearchDataset, projectFamilyOf } from "../hub/research-dataset.ts";
+import { readEvidence } from "../hub/research-record.ts";
 import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
-import { autonomyInheritanceChange, init, initSettingRows, planInit } from "./init.ts";
+import { autonomyInheritanceChange, init, initNextSteps, initResearchDefault, withInitResearch, initSettingRows, planInit, sharedConfigRow } from "./init.ts";
+import { discoverInitChecks, withInitChecks } from "./init-required-checks.ts";
 import { INIT_USAGE, parseInitSettings } from "./init-settings.ts";
 import { promptGate, runInitPrompt, settingLines, shadowOffered, type InitAnswers } from "./init-prompt.ts";
 import { loadPacks } from "../hub/packs.ts";
@@ -86,9 +94,9 @@ import { createInterface as lineReader } from "node:readline";
 import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, writeOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
 import { childEnv, personEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, recordRecoveryDelegation, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
-import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
+import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource, reattachPlannedTerminals } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
-import { runtimeVersionWarnings } from "./runtime-version-warning.ts";
+import { globalUpdateAdvice, runtimeVersionWarnings } from "./runtime-version-warning.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { readRecoveryPresentationFlags } from "./upgrade-presentation-flags.ts";
 import { renderOperation, renderBlocked, renderSummary, type RecoveryPresentationOptions } from "./upgrade-presentation.ts";
@@ -108,9 +116,9 @@ import { runSpecs, runSpecsStamp } from "./specs.ts";
 import { confirmTidy, planTidy, realTidyGit, rowsFromReply, type TidyGit } from "./worktree-tidy.ts";
 import { renderTidyPreview, renderTidyResult, renderWorktrees } from "./worktrees-output.ts";
 import { formatMemoryStaleAnchors } from "../hub/memory-stale-anchors.ts";
-import { AGENT_MEM_VERSION, assertAgentMemVersion, selectedMemoryProfile } from "../hub/memory-profile.ts";
+import { AGENT_MEM_VERSION, assertAgentMemVersion, memoryIndexExists, selectedMemoryProfile } from "../hub/memory-profile.ts";
 import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
-import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
+import { addonReport, appendRecords, closedAtOf, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { readDogfood } from "../hub/dogfood-read.ts";
 import { dogfoodSince, formatDogfood } from "../hub/dogfood.ts";
@@ -121,11 +129,13 @@ import { COMPLETION_SHELLS, completionScript } from "./completion.ts";
 import { agentShellCause, classifyPeerCommand, cliCommandLabel, detectCliIdentity, LIVE_TEST_PERSON_REFUSAL, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
+import { installedVersions } from "./console-versions.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
-import { outputWidth, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
-import { renderHelp, configuredAcpHelp } from "./help.ts";
+import { queueResolveArgsValid } from "../hub/person-command.ts";
+import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
+import { renderHelp, configuredAcpHelp, guidanceProbeUsage } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
-import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
+import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
@@ -240,12 +250,14 @@ const requireNamedPeerFeature = (hub: ControlClient, peer: string | undefined) =
 const projectConfig = () => {
   const config = loadConfig(cwd);
   for (const line of config.ignored ?? []) console.error(`note: ${line}; only a config file nobody committed may set it`);
+  for (const line of config.releasePolicyNotices ?? []) console.error(`note: ${line}`);
   return config;
 };
 const stateDir = selected.stateDir;
 var operationalAuditReady=false, operationalRefusalRecorded=false;
 const caller = declaredInstances ? detectCliIdentity(process.env, declaredInstances) : unboundCaller;
-const commandLabel = cliCommandLabel(cmd, args, projectCatalog);
+const commandLabel = cmd === "guidance" && args[0] === "probe" && ["register", "start", "show", "receipts", "cancel"].includes(args[1] ?? "")
+  ? `guidance probe ${args[1]}` : cliCommandLabel(cmd, args, projectCatalog);
 let commandAccess = classifyPeerCommand(cmd, args, projectCatalog);
 const continuationPeer = process.env.AGENTHUB_RECOVERY_CONDUCTOR;
 const continuationId = process.env.AGENTHUB_RECOVERY_OPERATION;
@@ -267,7 +279,10 @@ if (continuationPeer !== undefined) {
 }
 const conductorPeer = !liveTest && caller.role === "tools" && (recoveryRunnerContinuation || ["restart", "upgrade", "recovery"].includes(cmd) && commandAccess === "conductor") ? caller.peer : undefined;
 // Agent-authored content keeps its peer. Operational starts/holds may borrow console authority for live verification.
-const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed" && liveTestRefusal(cmd, args);
+const guidanceProbeDelegationRefused = liveTest && caller.role === "tools" && cmd === "guidance"
+  && args[0] === "probe" && ["register", "start", "show", "receipts", "cancel"].includes(args[1] ?? "");
+const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed"
+  && (liveTestRefusal(cmd, args) || guidanceProbeDelegationRefused);
 const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "allowed" && !delegationRefused ? caller.peer : undefined;
 const identity = delegatedPeer || recoveryLauncher ? { role: "console" as const } : caller;
 operationalAuditReady=identity.role==="tools" && commandAccess==="conductor" && conductorOperation(cmd,args)!==undefined;
@@ -368,7 +383,7 @@ function showToolText(render: (data: any, columns?: number, now?: number) => Spa
   if (present.json) return console.log(text);
   printOutput(render(data, present.columns, Date.now()), present.color);
 }
-const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release"];
+const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release", "audit"];
 function sdlcOperands(): string[] { return SDLC_READ.includes(args[0] ?? "") ? outputArguments() : args; }
 function printOutput(lines: Span[][], color: boolean): void {
   for (const line of lines) console.log(paint(line, color));
@@ -717,12 +732,24 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
     runner: recoveryRunner,
     live: (op) => liveProjects(op, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer).inspect),
     endInspection: recoveryEndInspection,
+    afterCompleted: (op) => globalUpdateLines(op.plan.version),
     endPeer: (planned, peer) => endPlannedPeer(planned, peer),
+    reattachTerminals: (planned, terminals) => reattachPlannedTerminals(planned, terminals),
     runnerStoppable: (id) => signedRunner(id) !== undefined,
     stopRunner: (id) => stopSignedRunner(id),
     entry: join(import.meta.dir, "main.js"),
     version: VERSION,
   };
+}
+
+/**
+ * #718 (#1179): the step for the global CLI and the shared Claude plugin, when either is older than the daemon `target` installs. The plugin version comes from the same `claude plugin list`
+ * probe `ahub doctor` reads (10 s, no shell); a missing `claude`, a failure or an unreadable list is an unknown plugin, which is never a claim. The CLI is this process, or, when an older CLI handed the
+ * upgrade to this release's own coordinator (`AGENTHUB_UPGRADE_HANDOVER=1`), the older one that started it. Advice only: nothing here can fail an upgrade.
+ */
+function globalUpdateLines(target: string): string[] {
+  return globalUpdateAdvice({ target, cli: VERSION, handedOver: process.env.AGENTHUB_UPGRADE_HANDOVER === "1", packageRoot: join(import.meta.dir, "..", ".."),
+    probe: () => spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8", timeout: 10_000 }) });
 }
 
 async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
@@ -799,7 +826,11 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     writeOperation(id, operation);
   } else operation = createOperation(plan, sourceRoot, undefined, delegatedPeer ? { peer: delegatedPeer, command: kind } : undefined);
   if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
-  else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
+  else {
+    spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
+    // #718: the upgrade is only scheduled here, but the step is already known: the CLI and the plugin are compared with the daemon this upgrade installs. Never in --json, which stays the raw document.
+    if (kind === "upgrade") printRecovery(globalUpdateLines(plan.version));
+  }
 }
 
 /** Strict person command: recorded identity only, no session or terminal overrides. */
@@ -831,11 +862,14 @@ function benchRunArgs(rest: string[]) {
 }
 /** Another project is `ahub --project <dir> research`; anything unknown is refused rather than ignored. */
 function researchArgs(): void {
-  const sub = args[0], flags = new Set(["--all", "--json", "--since", "--format"]), valued = new Set(["--since", "--format"]);
+  const sub = args[0], flags = new Set(["--all", "--json", "--since", "--format", "--dataset"]), valued = new Set(["--since", "--format", "--dataset"]);
   for (let i = sub === "export" || sub === "backfill" || sub === "addons" ? 1 : 0; i < args.length; i++) {
     if (!flags.has(args[i]!)) fail(`ahub research: unknown argument ${args[i]} (another project: ahub --project <dir> research)`);
     if (valued.has(args[i]!)) i++;
   }
+  if (args.includes("--dataset") && (sub !== "export" || args.includes("--format"))) fail("ahub research: --dataset belongs to export and replaces --format (usage: ahub research export --dataset <dir> [--since] [--all])");
+  const at = args.indexOf("--dataset");
+  if (at >= 0 && (args[at + 1] === undefined || args[at + 1]!.startsWith("--"))) fail("ahub research: --dataset takes a directory");
 }
 const SOURCE_USAGE = "usage: ahub source add <path|url> [--json] [--color=auto|always|never] | list [--json] [--color=auto|always|never]";
 /** #933: a local conductor form's argument check, run before the `admit` handshake so a usage error leaves no admitted row. */
@@ -845,6 +879,8 @@ const LOCAL_OPERATION_ARGS: Record<string, () => void> = {
   "source add": () => { const operands = args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")); if (operands[0] !== "add" || operands.length !== 2 || !operands[1]) fail(SOURCE_USAGE); },
 };
 
+// Outside the command bodies: test/lifecycle-starting-1232.test.ts runs the `up` body as a plain function, where import.meta does not parse.
+const consoleInstalled = () => installedVersions(join(import.meta.dir, "..", ".."));
 const commands: Record<string, () => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
@@ -1040,9 +1076,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     recoveryLauncherCurrent?.();
     assertLifecycleAvailable(cwd);
     const root = join(import.meta.dir, "..", "..");
-    const setupFlags = takeFlags(args.filter(arg => arg !== "--yes"), ["--agents"], []);
-    if (setupFlags.rest.length) fail("usage: ahub setup [--yes] [--agents <a,b>]");
+    if (args.includes("--research") && args.includes("--no-research")) fail("--research conflicts with --no-research; give one; nothing was written");
+    const research = args.includes("--research") ? true : args.includes("--no-research") ? false : undefined;
+    const setupFlags = takeFlags(args.filter(arg => !["--yes", "--research", "--no-research"].includes(arg)), ["--agents"], []);
+    if (setupFlags.rest.length) fail("usage: ahub setup [--yes] [--agents <a,b>] [--research|--no-research]");
+    if (research !== undefined && (liveTest || delegatedPeer || recoveryLauncherCurrent)) fail("the machine research default requires the person's own ahub setup; nothing was written");
     const registry = new Registry(), rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    let machineRoots = [cwd];
     let homesFailed = false, homesFailure: unknown;
     try {
       const found = recoveryLauncherCurrent || delegatedPeer ? await discoverClaudeHomes({ home: homedir(), env: process.env }) : await usedClaudeHomes(registry, homedir(), process.env);
@@ -1063,8 +1103,11 @@ const commands: Record<string, () => Promise<void> | void> = {
           ...(rl ? { ask: async (prompt: string) => { try { return await rl.question(prompt); } catch { return null; } } } : {}), print: line => console.log(terminalText(line)) });
         if (refused) fail(refused);
       }
+      if (research !== undefined) machineRoots = [...registry.list().map(row => row.root), cwd];
     } finally { registry.close(); rl?.close(); }
     if (homesFailed) fail(startupDiagnostic(homesFailure));
+    try { if (research !== undefined) assertLifecycleAvailable(cwd); const line = setupResearchDefault(hubHome(), machineRoots, research); if (line) console.log(terminalText(line)); }
+    catch (error) { return fail((error as Error).message); }
     // #935: register the acon console plugin (acon reads it at its next start; no acon install is needed for this).
     const acon = registerAconPlugin(hubHome(), join(root, "src", "ui", "plugin.ts"));
     console.log("error" in acon ? `acon plugin not registered: ${acon.error}` : acon.changed ? `acon plugin registered: ${acon.path}` : `acon plugin up to date: ${acon.path}`);
@@ -1081,6 +1124,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // A pack is a project file in .agenthub/roles/<name>.pack.json (#513a); init resolves the name and refuses an unknown one with the profiles and packs it knows.
     let requestedProfile = flags.one["--profile"];
     const newProject = !existsSync(join(cwd, ".agenthub/config.json"));
+    const initMachine = newProject ? readAutonomyDefaults(hubHome(), [cwd]) : undefined;
     let request = settings.request, asked = Object.keys(request.values).length > 0;
     let shadow = args.includes("--shadow"), releaseGuard = args.includes("--release-guard");
     // #1065 T2: a person at a terminal on a new project, with no flag that sets anything and no --yes, is asked each setting (init-prompt.ts). Every other run, including a delegated peer, a live test and any run
@@ -1093,8 +1137,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       const ask = (question: string): Promise<string | null> => Promise.race([rl.question(question).catch(() => null), interrupted]);
       const machine = readAutonomyDefaults(hubHome(), [cwd]);
       const preview = (answers: InitAnswers): string[] => {
-        const rows = initSettingRows(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
-        const plan = planInit(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
+        const planned = withInitResearch(cwd, answers.request, initMachine?.researchEnabled);
+        const rows = initSettingRows(cwd, answers.profile, answers.shadow, answers.releaseGuard, planned);
+        const plan = planInit(cwd, answers.profile, answers.shadow, answers.releaseGuard, planned);
         // The same autonomy-inheritance row `--dry-run` shows, from the one helper: a new project inherits the trusted machine preset after the writes unless the answer was off.
         const inherit = autonomyInheritanceChange(cwd, machine.enabled, answers.request.autonomy);
         if (inherit) plan.push(inherit);
@@ -1103,11 +1148,13 @@ const commands: Record<string, () => Promise<void> | void> = {
       let result: Awaited<ReturnType<typeof runInitPrompt>>;
       try {
         result = await runInitPrompt({ ask, print: line => console.log(terminalText(line)) },
-          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), packs: [...loadPacks(cwd).packs.keys()], shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
+          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), machineResearch: initResearchDefault(cwd, initMachine?.researchEnabled), packs: [...loadPacks(cwd).packs.keys()], discoverChecks: async () => (await discoverInitChecks(cwd)).names, shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
       } finally { rl.close(); }
       if (!result.ok) { console.error(`ahub init: ${result.reason === "refused" ? result.message : result.reason === "interrupted" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === "refused" ? 1 : 0; return; }
       requestedProfile = result.answers.profile; request = result.answers.request; asked = Object.keys(request.values).length > 0; shadow = result.answers.shadow; releaseGuard = result.answers.releaseGuard;
     }
+    request = withInitResearch(cwd, request, initMachine?.researchEnabled);
+    try { request = await withInitChecks(cwd, request); } catch (error) { return fail((error as Error).message); }
     // `--autonomy off` skips the machine inheritance on a new project; `inherit` is today's behaviour. Neither changes an existing project.
     const inheritAutonomy = newProject && request.autonomy !== "off";
     if (!newProject && request.autonomy !== undefined) console.error("note: --autonomy applies to a new project only; this project already exists, so its autonomy settings are unchanged");
@@ -1125,8 +1172,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     assertLifecycleAvailable(cwd);
     if (inheritAutonomy && delegatedPeer && readAutonomyDefaults(hubHome(), [cwd]).enabled) fail("machine autonomy inheritance is person-only; delegated live tests cannot apply it (ahub init --autonomy off skips it)");
-    let changed: string[];
-    try { changed = init(cwd, requestedProfile, shadow, releaseGuard, request); } catch (error) { return fail((error as Error).message); }
+    let changed: string[], nextSteps: string[];
+    try { nextSteps = initNextSteps(cwd, request); changed = init(cwd, requestedProfile, shadow, releaseGuard, request); } catch (error) { return fail((error as Error).message); }
     const project = registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
     if (newProject) {
@@ -1140,6 +1187,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     const config = projectConfig(), examples = resolveProfile(config.profile, config.profile_overrides).example_checks;
     if (examples.length) console.log(terminalText("Example checks (advisory):\n" + examples.map(example => "- " + example).join("\n")));
+    console.log(nextSteps.join("\n"));
   },
 
   // Internal: the detached daemon process started by ahub up or the manager.
@@ -1153,13 +1201,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (args.some(arg => arg !== "--panels" && arg !== "--no-pet" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
     const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), { isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
     if (color instanceof Error) return fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
-    await runConsole({ client: await connect(), cwd, stateDir, liveTest, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color });
+    await runConsole({ client: await connect(), cwd, stateDir, liveTest, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color, installed: consoleInstalled() });
   },
 
   up: async () => {
     const unattended = unattendedEnv || args.includes("--unattended");
     if (unattended) console.error(UNATTENDED_WARNING);
-    const status = await startProject(registeredProject(), { unattended, liveTest, ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId, AGENTHUB_PEER_ID: continuationPeer, AGENTHUB_RECOVERY_CONDUCTOR: continuationPeer, AGENTHUB_RECOVERY_CONTINUATION: continuationId } } : {}) });
+    const status = await startProject(registeredProject(), { unattended, liveTest, starting: pid => console.error(`ahub: hub is still starting, pid ${pid}; waiting for readiness, run ahub status in another terminal to inspect progress`), ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId, AGENTHUB_PEER_ID: continuationPeer, AGENTHUB_RECOVERY_CONDUCTOR: continuationPeer, AGENTHUB_RECOVERY_CONTINUATION: continuationId } } : {}) });
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
     if (recoveryLauncherCurrent) { recoveryLauncherCurrent(); return; }
     // #608: the default agent set, only for a person's own `ahub up` (never an agent's, a live test's, or an upgrade or recovery relaunch, which set AGENTHUB_RECOVERY_OPERATION).
@@ -1170,7 +1218,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         for (const line of await startProjectAgents({ root: cwd, stateDir }, chosen.agents)) console.log(terminalText(line));
       } catch (error) { console.error(`default agents were not started: ${terminalText((error as Error).message)}`); }
     }
-    if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir, liveTest });
+    if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir, liveTest, installed: consoleInstalled() });
   },
 
   ...Object.fromEntries(BUILTIN_CLI_ENTRIES.map(entry => [entry.command, async () => {
@@ -1200,6 +1248,146 @@ const commands: Record<string, () => Promise<void> | void> = {
     return entry.execute(context);
   }])),
 
+  guidance: async () => {
+    const { parseGuidanceCommand, validateGuidancePageReply, validateGuidanceDiffReply, validateGuidanceReceipt, renderGuidance, renderGuidanceReceipt } = await import("./guidance.ts");
+    const { parseGuidanceVariantV1, GUIDANCE_RECORD_MAX_BYTES } = await import("../hub/guidance-variants.ts");
+    const { parseGuidanceProbeSubcommand, parseGuidanceProbeRegistration, GUIDANCE_PROBE_REGISTRATION_BYTES,
+      parseGuidanceProbePublicReceipt, parseGuidanceProbePublicStatus, parseGuidanceProbeReceiptExport } = await import("../hub/guidance-probes.ts");
+    const { guidanceProbeStatusLines } = await import("../ui/guidance-view.ts");
+    let probeCommand;
+    try { probeCommand = parseGuidanceProbeSubcommand(args); } catch { return fail(guidanceProbeUsage(args)); }
+    if (probeCommand) {
+      if (liveTest) return fail("live-test cannot perform guidance probe operations as the person; use a current person or configured conductor session");
+      let registration: ReturnType<typeof parseGuidanceProbeRegistration> | undefined;
+      if (probeCommand.op === "register") {
+        try {
+          const fd = openSync(resolve(invokedFrom, probeCommand.file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          try {
+            if (!fstatSync(fd).isFile()) return fail("the guidance probe file must be a bounded regular JSON file");
+            const bytes = Buffer.alloc(GUIDANCE_PROBE_REGISTRATION_BYTES + 1); let got = 0;
+            while (got < bytes.length) { const read = readSync(fd, bytes, got, bytes.length - got, null); if (!read) break; got += read; }
+            if (got > GUIDANCE_PROBE_REGISTRATION_BYTES) return fail("the guidance probe registration exceeds its derived envelope bound");
+            registration = parseGuidanceProbeRegistration(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, got))));
+            if (!registration) return fail("invalid guidance probe registration; retain its complete bounded manifest and snapshots without trimming");
+          } finally { closeSync(fd); }
+        } catch { return fail("cannot read a valid bounded guidance probe registration; check its closed V1 manifest and snapshots"); }
+      }
+      const hub = await connect();
+      try {
+        if (!hub.features.includes("guidance_probes")) return fail("running hub lacks guidance_probes; upgrade and restart the hub, then retry ahub guidance");
+        if (probeCommand.op === "receipts" && !hub.features.includes("guidance_probe_receipts")) return fail("running hub lacks guidance_probe_receipts; upgrade and restart the hub, then retry ahub guidance probe receipts");
+        const request = probeCommand.op === "register" ? { t: "guidance_probe_register", registration: registration! }
+          : probeCommand.op === "start" ? { t: "guidance_probe_start", id: probeCommand.id, revision: probeCommand.revision, ...(probeCommand.variantId ? { variantId: probeCommand.variantId } : {}) }
+          : probeCommand.op === "cancel" ? { t: "guidance_probe_cancel", id: probeCommand.id, revision: probeCommand.revision }
+          : probeCommand.op === "receipts" ? { t: "guidance_probe_receipts", id: probeCommand.id }
+          : { t: "guidance_probe_show", id: probeCommand.id };
+        const result = await hub.request(request);
+        if (result.ok !== true) {
+          const detail = terminalText(result.error ?? "guidance probe outcome is unconfirmed").replace(/[\r\n]+/g, " ").slice(0, 512);
+          const nextStep = probeCommand.op === "register" ? "" : `; inspect ahub guidance probe show --id ${probeCommand.id} before any explicit retry`;
+          return fail(`${detail}${nextStep}`);
+        }
+        if (probeCommand.op === "receipts") {
+          const exported = parseGuidanceProbeReceiptExport(result.receipts);
+          if (!exported) return fail("guidance probe receipts are malformed or fail their digest check; inspect retained probe state before relying on them");
+          if (args.includes("--json")) console.log(JSON.stringify(exported, null, 2));
+          else for (const line of guidanceProbeStatusLines(exported)) console.log(terminalText(line));
+        } else if (probeCommand.op === "show") {
+          const status = parseGuidanceProbePublicStatus(result.status);
+          if (!status) return fail("guidance probe status is malformed; refresh its id and current task context");
+          if (args.includes("--json")) console.log(JSON.stringify(status, null, 2));
+          else console.log(`guidance probe ${status.id}: ${status.state}; revision ${status.revision}; evidence ${status.evidence}; workers ${status.counters.workerAttempts}; editors ${status.counters.editorAttempts}; model calls ${status.counters.modelCalls}; tool calls ${status.counters.toolCalls}; token usage ${status.counters.usageUnknown || status.counters.modelCalls === 0 ? "unknown" : status.counters.tokensObservedKnown}; cancelled ${status.cancelRequested ? "yes" : "no"}`);
+        } else {
+          const receipt = parseGuidanceProbePublicReceipt(result.receipt);
+          if (!receipt) return fail("guidance probe receipt is malformed; inspect retained probe state before retrying");
+          if (args.includes("--json")) console.log(JSON.stringify(receipt, null, 2));
+          else console.log(`guidance probe ${receipt.id}: ${receipt.state}; revision ${receipt.revision}; evidence ${receipt.evidence}${receipt.already ? "; already recorded" : ""}`);
+        }
+      } finally { hub.close(); }
+      return;
+    }
+    let command; try { command = parseGuidanceCommand(args); } catch (error) { return fail((error as Error).message); }
+    if (liveTest && (command.op === "create" || command.op === "withdraw")) return fail("live-test cannot write guidance declarations as the person; use the current task actor without --live-test");
+    let variant: ReturnType<typeof parseGuidanceVariantV1> | undefined;
+    if (command.op === "create") {
+      try {
+        const fd = openSync(resolve(invokedFrom, command.file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          if (!fstatSync(fd).isFile()) return fail("the guidance file must be a bounded regular JSON file");
+          const bytes = Buffer.alloc(GUIDANCE_RECORD_MAX_BYTES + 1); let got = 0;
+          while (got < bytes.length) { const read = readSync(fd, bytes, got, bytes.length - got, null); if (!read) break; got += read; }
+          if (got > GUIDANCE_RECORD_MAX_BYTES) return fail("the guidance file exceeds the 32 KiB input bound");
+          variant = parseGuidanceVariantV1(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, got))));
+        } finally { closeSync(fd); }
+      } catch { return fail("cannot read a valid bounded GuidanceVariantV1 file; check its shape, content id and protected role bytes"); }
+    }
+    const hub = await connect();
+    try {
+      if (!hub.features.includes("guidance_views")) return fail("running hub lacks guidance_views; upgrade and restart the hub and refresh the client plugin, then retry ahub guidance");
+      const { op, json, ...fields } = command;
+      const message = op === "create" ? { variant } : fields;
+      const result = await hub.request({ t: `guidance_${op}`, ...message });
+      if (result.ok !== true) return fail(`${terminalText(result.error ?? "guidance request is unconfirmed").replace(/[\r\n]+/g, " ").slice(0, 512)}; inspect ahub guidance list for the task before explicitly retrying a write`, result.refusalAudited === true, result.authorityRefused);
+      const options = { json };
+      if (command.op === "create" || command.op === "withdraw") {
+        let receipt;
+        try { receipt = validateGuidanceReceipt(result.receipt, command.op === "create" ? { id: variant!.id, taskId: variant!.taskId } : { id: command.id, taskId: command.taskId, status: "withdrawn" }); }
+        catch (error) { return fail((error as Error).message); }
+        if (options.json) console.log(JSON.stringify(receipt, null, 2)); else console.log(renderGuidanceReceipt(receipt).join("\n"));
+      } else {
+        let page;
+        try { page = command.op === "list" ? validateGuidancePageReply(result.guidance, command) : validateGuidanceDiffReply(result.guidance, command); }
+        catch { return fail("guidance reply is unavailable or malformed; refresh the task scope and upgrade the hub/client before retrying"); }
+        if (options.json) console.log(JSON.stringify(page, null, 2)); else console.log(renderGuidance(page).join("\n"));
+      }
+    } finally { hub.close(); }
+  },
+
+  lineage: async () => {
+    const { parseLineageCommand, renderExecutionLineage, validateLineageReply, validateLineageLink } = await import("./lineage.ts");
+    let command;
+    try { command = parseLineageCommand(args); } catch (error) { return fail((error as Error).message); }
+    if (liveTest && command.op === "link") return fail("live-test cannot register execution links; retry without --live-test as the task's authorized actor");
+    const hub = await connect();
+    try {
+      if (!hub.features.includes("execution_lineage")) return fail("running hub lacks execution_lineage support; upgrade and restart the hub, then retry ahub lineage");
+      const { op, json, ...message } = command;
+      const result = await hub.request({ t: op === "show" ? "lineage_show" : "lineage_link", ...message });
+      if (result.ok !== true) return fail(`${terminalText(result.error ?? "lineage request refused").replace(/[\r\n]+/g, " ").slice(0, 512)}; check task scope, current flow revision and source access before retrying ahub lineage`, result.refusalAudited === true, result.authorityRefused);
+      const options = { json };
+      if (op === "show") {
+        let lineage;
+        try { lineage = validateLineageReply(result.lineage); } catch (error) { return fail((error as Error).message); }
+        if (options.json) console.log(JSON.stringify(lineage, null, 2));
+        else console.log(renderExecutionLineage(lineage).join("\n"));
+      } else {
+        let link;
+        try { link = validateLineageLink(result.link, command); } catch (error) { return fail((error as Error).message); }
+        if (options.json) console.log(JSON.stringify(link, null, 2));
+        else console.log(`Declared execution metadata link ${link.already ? "already registered" : "registered"} for task #${link.taskId}; this does not attest to producer execution.`);
+      }
+    } finally { hub.close(); }
+  },
+  model: async () => {
+    const { parseModelCommand, projectModelStatus } = await import("./model.ts");
+    let command;
+    try { command = parseModelCommand(args); } catch (error) { return fail((error as Error).message); }
+    const hub = await connect();
+    try {
+      if (!hub.features.includes("model_overrides")) return fail("running hub lacks model_overrides support; upgrade and restart the hub, then retry ahub model list");
+      const { json, ...message } = command;
+      const result = await hub.request({ t: "model", ...message });
+      if (result.ok !== true) return fail(String(result.error ?? "model request refused; upgrade and restart the hub before retrying"), result.refusalAudited === true, result.authorityRefused);
+      if (command.op !== "list" && result.appliesFrom !== "next_turn") return fail("model change is unconfirmed; inspect ahub model list before retrying");
+      const values = command.op === "list" ? result.models : [result.model];
+      if (!Array.isArray(values) || values.length > 512) return fail("model reply is not a supported bounded row list; upgrade and restart the hub, then retry ahub model list");
+      const models = values.map(projectModelStatus);
+      if (models.some(row => row === null)) return fail("model reply invalid; upgrade and restart the hub, then retry ahub model list");
+      const options = { json };
+      if (options.json) console.log(JSON.stringify({ models }, null, 2));
+      else printOutput(renderRuntimeModels(models.filter((row): row is NonNullable<typeof row> => row !== null)), false);
+    } finally { hub.close(); }
+  },
   models: async () => {
     const action = outputArguments()[0] ?? "status";
     const options = ["status", "start", "setup"].includes(action) ? outputOptions() : undefined;
@@ -1292,11 +1480,11 @@ const commands: Record<string, () => Promise<void> | void> = {
         const shown = await hub.request({ t: "queue", op: "show", id });
         if (!shown.ok) fail(shown.error,shown.refusalAudited===true,shown.authorityRefused);
         if (options.json) return console.log(JSON.stringify(shown.delivery, null, 2));
-        return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now()), options.color);
+        return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now(), cwd), options.color);
       }
       const { one, rest: extra } = takeFlags(flags, ["--action", "--reason", "--revision"], []);
       const rawRevision = one["--revision"], parsedRevision = rawRevision === undefined ? undefined : Number(rawRevision);
-      if (extra.length || !["completed", "retry", "discard"].includes(one["--action"] ?? "") || !one["--reason"]?.trim() || (rawRevision !== undefined && (!/^\d+$/.test(rawRevision) || !Number.isSafeInteger(parsedRevision)))) fail("usage: ahub queue resolve <id> --action completed|retry|discard --reason <text> [--revision N]");
+      if (!queueResolveArgsValid(one["--action"], one["--reason"], rawRevision, extra)) fail("usage: ahub queue resolve <id> --action completed|retry|discard --reason <text> [--revision N]");
       let revision = parsedRevision;
       if (revision === undefined) {
         const shown = await hub.request({ t: "queue", op: "show", id });
@@ -1306,7 +1494,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const result = await hub.request({ t: "queue", op: "resolve", id, revision, action: one["--action"], reason: one["--reason"] });
       if (!result.ok) fail(result.error,result.refusalAudited===true,result.authorityRefused);
       if (options.json) console.log(JSON.stringify(result.delivery, null, 2));
-      else printOutput(renderQueueShow(result.delivery, options.columns, Date.now()), options.color);
+      else printOutput(renderQueueShow(result.delivery, options.columns, Date.now(), cwd), options.color);
     } finally { hub.close(); }
   },
 
@@ -1408,7 +1596,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (sub === "groom" && operands.length === 1) return shown(renderGroom)(taskOp("hub_planner_groom", {}));
     if (["return", "return-untouched"].includes(sub ?? "") && /^[1-9]\d*$/.test(id ?? "") && /^\d+$/.test(revision ?? "") && operands.length >= 4) {
-      return shown((data, columns, now) => renderBacklogResult("return-untouched", data, columns, now))(taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: operands.slice(3).join(" ") }));
+      // #1177: `--reserved <peer>` / `--unreserve` edit the reservation atomically with the return (fields.reserved); with neither, the arguments are what they always were.
+      const returned = parseBacklogReturn(operands.slice(3));
+      if (!returned.ok) return fail(returned.error);
+      return shown((data, columns, now) => renderBacklogResult("return-untouched", data, columns, now))(taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: returned.value.reason, ...(returned.value.fields ? { fields: returned.value.fields } : {}) }));
     }
     if (sub === "add" && args.length >= 3) return console.log(await taskOp("hub_task_propose", { class: id, title: args.slice(2).join(" "), backlog: true }));
     if (!/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog list|add <class> <title...>|pull|return <id>|plan|pin <id> <revision> <value> <reason...>|undo <id> <revision>");
@@ -1420,12 +1611,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       return shown((data, columns, now) => renderBacklogResult("split", data, columns, now))(taskOp("hub_backlog_split", { id: Number(id), revision: Number(revision), parts, reason: reason.join(" ") }));
     }
     if (sub === "undo" && operands.length === 3) return shown((data, columns, now) => renderBacklogResult("undo", data, columns, now))(taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
-    if (!["plan", "pin"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
+    if (!["plan", "pin", "person"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
     let fields: unknown;
-    try { fields = sub === "pin" ? { pinned: value === "true" ? true : value === "false" ? false : undefined } : JSON.parse(value); }
+    try { fields = sub === "pin" ? { pinned: value === "true" ? true : value === "false" ? false : undefined } : sub === "person" ? { needsPerson: value === "true" ? true : value === "false" ? false : undefined } : JSON.parse(value); }
     catch { return fail("planning fields must be JSON"); }
-    if (sub === "pin" && value !== "true" && value !== "false") fail("pin must be true or false");
-    return shown((data, columns, now) => renderBacklogResult(sub as "plan" | "pin", data, columns, now))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
+    if ((sub === "pin" || sub === "person") && value !== "true" && value !== "false") fail(`${sub} must be true or false`);
+    return shown((data, columns, now) => renderBacklogResult(sub === "person" ? "plan" : sub as "plan" | "pin", data, columns, now))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
   },
 
   release: async () => {
@@ -1759,6 +1950,34 @@ const commands: Record<string, () => Promise<void> | void> = {
       finally { hub?.close(); }
       return;
     }
+    if (sub === "audit") {
+      // #1403 A4: `audit start [--profile quick|standard] [--since <ref>]` files the read-only audit task and seeds its ledger; `audit show [<audit>]` reads the newest or the named one.
+      const action = args[1];
+      if (action === "start") {
+        const flags = takeFlags(args.slice(2), ["--profile", "--since"], []);
+        if (flags.rest.length || (flags.one["--profile"] !== undefined && !["quick", "standard"].includes(flags.one["--profile"]))) fail("usage: ahub sdlc audit start [--profile quick|standard] [--since <ref>]");
+        const hub = await connect();
+        try {
+          const reply = await hub.request({ t: "sdlc", op: "audit-start", ...(flags.one["--profile"] !== undefined ? { profile: flags.one["--profile"] } : {}), ...(flags.one["--since"] !== undefined ? { since: flags.one["--since"] } : {}) }, 60_000);
+          if (!reply.ok) fail(/unknown SDLC operation|does not know/.test(String(reply.error)) ? `${reply.error}; the running hub does not support security audits; upgrade agent-hub and run ahub restart before retrying` : reply.error);
+          if (present!.json) console.log(JSON.stringify({ task: reply.task, audit: reply.audit, units: reply.units, planned: reply.planned, carried: reply.carried, partial: reply.partial, ref: reply.ref }, null, 2));
+          else console.log(`task #${reply.task}: security audit ${reply.audit} started at ${String(reply.ref).slice(0, 12)}, ${reply.units} units (${reply.planned} planned, ${reply.carried} carried over)${reply.partial ? ", partial" : ""}`);
+        } finally { hub.close(); }
+        return;
+      }
+      if (action === "show") {
+        const given = args[2] === undefined ? undefined : Number(args[2]);
+        if (args.length > 3 || given !== undefined && (!Number.isSafeInteger(given) || given <= 0)) fail("usage: ahub sdlc audit show [<audit>]");
+        const hub = await connect();
+        try {
+          const reply = await hub.request({ t: "sdlc", op: "audit-show", ...(given !== undefined ? { id: given } : {}) }, 30_000);
+          if (!reply.ok) fail(reply.error);
+          if (present!.json) console.log(JSON.stringify(reply.audit ?? null, null, 2)); else human(renderSdlcAudit, reply);
+        } finally { hub.close(); }
+        return;
+      }
+      fail("usage: ahub sdlc audit start [--profile quick|standard] [--since <ref>] | ahub sdlc audit show [<audit>]");
+    }
     if (sub === "queue" || sub === "release") {
       const repo = args[1], liveIssues = args.slice(2).map(Number);
       if (!repo || args.length > 34 || (sub === "queue" && args.length !== 2) || liveIssues.some(id => !Number.isSafeInteger(id) || id <= 0)) fail("usage: ahub sdlc queue <owner/repository> | release <owner/repository> [live-issue...]");
@@ -1813,6 +2032,21 @@ const commands: Record<string, () => Promise<void> | void> = {
         const reply = await hub.request({ t: "sdlc", op: "accept-departure", id, head, reason }, 30_000);
         if (!reply.ok) fail(reply.error);
         console.log(`task #${id}: plan departure accepted for the reviewed head`);
+      } finally { hub.close(); }
+      return;
+    }
+    if (sub === "adopt-merge") {
+      const flags = takeFlags(args.slice(2), ["--pr"], []), pr = Number(flags.one["--pr"]);
+      if (flags.rest.length || !Number.isSafeInteger(id) || id! <= 0 || !Number.isSafeInteger(pr) || pr <= 0) fail("usage: ahub sdlc adopt-merge <task> --pr <n>");
+      const hub = await connect();
+      try {
+        const reply = await hub.request({ t: "sdlc", op: "adopt-merge", id, pr }, 60_000);
+        if (!reply.ok) {
+          const reason = typeof reply.error === "string" ? reply.error : "merge adoption failed without a reason; inspect the hub log and retry ahub sdlc adopt-merge";
+          if (/unknown SDLC operation|does not know|SDLC readback is console only/.test(reason)) fail(`${reason}; the running hub does not support adopt-merge; upgrade agent-hub and run ahub restart before retrying ahub sdlc adopt-merge`);
+          fail(reason);
+        }
+        console.log(`task #${id}: merged outside the hub; approved`);
       } finally { hub.close(); }
       return;
     }
@@ -1927,9 +2161,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "handoff") {
       // #604: work that belongs to ANOTHER project that runs agent-hub goes onto that project's board. The person's form (a console command: the classifier gives an agent `console` for it, and an
       // agent uses hub_task_handoff); the hub resolves the target, asks its daemon and records the answer. Nothing is queued: a target that is not running is named with the action.
-      const present = outputOptions(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail"], edges: true }).flags);
-      const parsed = parseHandoffArgs(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail"], edges: true }).operands);
+      const present = outputOptions(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail", "--duplicate-ok", "--key"], edges: true }).flags);
+      const parsed = parseHandoffArgs(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail", "--duplicate-ok", "--key"], edges: true }).operands);
       if ("usage" in parsed) return fail(parsed.usage);
+      // #734: the person's list (age and reachability of each target) and sync (ask the targets now); both read the same rows `ahub board --handoffs` shows.
+      if ("view" in parsed) return showToolText(data => renderHandoffs(data, present.columns), await taskOp(parsed.view === "sync" ? "hub_task_handoff_sync" : "hub_task_handoffs", {}), present);
       const text = await taskOp("hub_task_handoff", { ...parsed });
       return showToolText(data => renderHandoffReceipt(data, present.columns), text, present);
     }
@@ -1951,15 +2187,19 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (args.length !== 2 || !/^\d+$/.test(args[1]!)) fail("usage: ahub review brief <task id>");
       return console.log(await taskOp("review_brief", { id: Number(args[1]) }));
     }
-    const { one, many, rest } = takeFlags(args, ["--head", "--findings"], ["--unmet"]);
+    const { one, many, rest } = takeFlags(args, ["--head", "--findings", "--security-pass"], ["--unmet"]);
     const [id, verdict, ...note] = rest;
-    if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...] [--unmet <item>]... [--head <sha>] [--findings <json>] | ahub review brief <id>");
+    if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...] [--unmet <item>]... [--head <sha>] [--findings <json>] [--security-pass <json>] | ahub review brief <id>");
+    let securityPass: unknown;
+    if (one["--security-pass"] !== undefined) {
+      try { securityPass = JSON.parse(one["--security-pass"]); } catch { fail("--security-pass must be a JSON object like {\"covered\":[\"unit\"],\"not_covered\":[]}"); }
+    }
     let findings: unknown;
     if (one["--findings"] !== undefined) {
       try { findings = JSON.parse(one["--findings"]); } catch { fail("--findings must be a JSON array"); }
       if (!Array.isArray(findings)) fail("--findings must be a JSON array");
     }
-    console.log(await taskOp("hub_review", { id: Number(id), verdict, ...(one["--head"] ? { head: one["--head"] } : {}), note: note.join(" "), ...(findings === undefined ? {} : { findings }), ...(many["--unmet"]?.length ? { unmet: many["--unmet"] } : {}) }));
+    console.log(await taskOp("hub_review", { id: Number(id), verdict, ...(one["--head"] ? { head: one["--head"] } : {}), note: note.join(" "), ...(findings === undefined ? {} : { findings }), ...(securityPass === undefined ? {} : { security_pass: securityPass }), ...(many["--unmet"]?.length ? { unmet: many["--unmet"] } : {}) }));
   },
 
   remember: async () => console.log(await taskOp("hub_remember", { text: freeText(args, "ahub remember <text>") })),
@@ -2002,6 +2242,35 @@ const commands: Record<string, () => Promise<void> | void> = {
         fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "peer_stop"/i.test(error) ? `${error}; upgrade the running hub to use ahub stop` : error,reply.refusalAudited===true,reply.authorityRefused);
       }
       console.log(`${peer}: ${reply.state}`);
+    } finally { hub.close(); }
+  },
+
+  peer: async () => {
+    const options = outputOptions();
+    const { operands, flags } = splitPresentation(args);
+    const usage = "usage: ahub peer takeover <peer> [standby-id] [--json] [--color=auto|always|never]";
+    const [sub, peer, standbyId, ...extra] = operands;
+    const uuid = (value: string | undefined): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+    if (sub !== "takeover" || !peer || !/^[a-z][a-z0-9-]{0,31}$/.test(peer) || extra.length || standbyId !== undefined && !uuid(standbyId)
+      || flags.some(flag => flag !== "--json" && !flag.startsWith("--color="))) fail(usage);
+    const hub = await connect();
+    try {
+      if (!hub.features.includes("peer_takeover")) fail("running hub lacks peer_takeover; upgrade and restart the running hub first");
+      let reply: any;
+      try { reply = await hub.request({ t: "peer_takeover", peer, ...(standbyId ? { standbyId } : {}) }, 5000); }
+      catch (error) {
+        const message = String((error as Error).message ?? "");
+        if (/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know \"peer_takeover\"/i.test(message)) fail(`${message}; upgrade and restart the running hub to use ahub peer takeover`);
+        fail(`${message || "peer takeover result is unconfirmed"}; inspect ahub status before retrying; takeover may already have started`);
+      }
+      const transportError = String(reply.error ?? "");
+      if (reply.ok === false && (transportError === "hub connection closed" || transportError === "hub request could not be sent" || /^no answer from the hub within \d+ s$/.test(transportError))) {
+        fail(`${transportError}; inspect ahub status before retrying; takeover may already have started`);
+      }
+      if (reply.ok !== true) fail(String(reply.error ?? "peer takeover was refused"), reply.refusalAudited === true, reply.authorityRefused);
+      if (reply.outcome !== "requested" || !uuid(reply.standbyId) || standbyId !== undefined && reply.standbyId !== standbyId) fail("peer takeover result was not confirmed; refresh ahub status");
+      if (options.json) console.log(JSON.stringify(reply, null, 2));
+      else console.log(`${peer}: old session detached; standby attachment requested`);
     } finally { hub.close(); }
   },
 
@@ -2161,7 +2430,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!Object.hasOwn(allowed, sub) || flags.some((flag) => !allowed[sub]!.includes(flag)) || extra.length) fail(usage);
     if ((sub === "get" && (!key || text !== undefined)) || (sub === "set" && (!key || text === undefined)) || ((sub === "list" || sub === "undo" || sub === "reload") && key !== undefined)) fail(usage);
     const { scope: settingScope, error: settingScopeError } = localDeclarations();
-    const def = key === undefined ? undefined : settingDef(key, settingScope.instances, settingScope.catalog);
+    const sdlcRead = sub === "get" && ["sdlc.mode", "sdlc.required_checks"].includes(key ?? "");
+    const def = key === undefined || sdlcRead ? undefined : settingDef(key, settingScope.instances, settingScope.catalog);
     if (typeof def === "string") fail(settingScopeError && def.startsWith("unknown setting") ? `${key}: ${def}; the project config could not be read: ${settingScopeError}` : `${key}: ${def}`);
     if (flags.includes("--now") && (typeof def !== "object" || def.group !== "Roster")) fail(usage);
     const value = sub === "set" ? parseSettingText(def!, text!) : undefined;
@@ -2180,6 +2450,12 @@ const commands: Record<string, () => Promise<void> | void> = {
         }
         return reply;
       };
+      if (sdlcRead) {
+        const view = await request({ t: "settings_get" }), entry = view.sdlc?.[key!];
+        if (!entry || !Object.hasOwn(entry, "value") || !Object.hasOwn(entry, "fileValue")) fail("running hub lacks SDLC settings reads; upgrade and restart it first");
+        if (flags.includes("--json")) return console.log(JSON.stringify({ key, ...entry }, null, 2));
+        return console.log(terminalText(`${key}: running ${JSON.stringify(entry.value)}; file ${JSON.stringify(entry.fileValue)}${entry.problem ? "; file unavailable" : ""}`));
+      }
       if (sub === "reload") {
         let result = await request({ t: "settings_reload" });
         const confirmation = result.confirmation;
@@ -2274,6 +2550,68 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.close();
   },
 
+  // #1053 T4: the person's answer to a question a peer asked with hub_ask. No operands lists the open questions; `<set> <question>=<option>[,<option>] [--other <text>]` answers one.
+  // The hub validates every answer against the stored row and names a refusal by position, never by the offered text. Console role only (classifyPeerCommand's default).
+  answer: async () => {
+    const options = outputOptions();
+    const operands = args.filter(arg => arg !== "--json" && !arg.startsWith("--color=") && arg !== "--full");
+    const hub = await connect();
+    try {
+      if (!operands.length) {
+        const reply = await hub.request({ t: "questions" });
+        if (reply.ok === false) return fail(String(reply.error ?? "questions are unavailable"));
+        const rows = Array.isArray(reply.questions) ? reply.questions : [];
+        if (options.json) return console.log(JSON.stringify(rows, null, 2));
+        if (!rows.length) return console.log("no open questions");
+        for (const row of rows) {
+          console.log(`${row.set}  ${row.peer} asks${row.private ? " (private)" : ""}`);
+          for (const question of row.questions) {
+            console.log(`  ${question.id}: ${terminalText(String(question.prompt))}${question.multi ? "  (choose any)" : ""}${question.allowOther ? "  (or --other <text>)" : ""}`);
+            for (const option of question.options) console.log(`    ${option.id}  ${terminalText(String(option.label))}${option.description ? `  - ${terminalText(String(option.description))}` : ""}`);
+          }
+          console.log(`  answer with: ahub answer ${row.set} ${row.questions.map((question: { id: string; options: { id: string }[] }) => `${question.id}=${question.options[0]?.id ?? "<option>"}`).join(" ")}`);
+        }
+        return;
+      }
+      const parsed = parseAnswerArgs(operands);
+      if (!parsed.ok) return fail(parsed.error);
+      const reply = await hub.request({ t: "answer", surface: "terminal", questionSet: parsed.value.set, answers: parsed.value.answers });
+      if (reply.ok === false) return fail(String(reply.error ?? "the answer was refused"));
+      if (options.json) return console.log(JSON.stringify({ ok: true, questionSet: reply.questionSet, state: reply.state }));
+      console.log(`answered ${reply.questionSet ?? parsed.value.set}`);
+    } finally { hub.close(); }
+  },
+
+  // #1054 T4: the results a run a person started left behind. A person's command (an agent shell is refused before the hub); reads change nothing, and only an explicit flag writes a receipt.
+  results: async () => {
+    const options = outputOptions();
+    const parsed = parseResultsArgs(args.filter(arg => arg !== "--json" && !arg.startsWith("--color=") && arg !== "--full"));
+    if (!parsed.ok) return fail(parsed.error);
+    const request = parsed.value;
+    const hub = await connect();
+    try {
+      if (request.action === "read") {
+        const reply = await hub.request({ t: "result_seen", id: request.id, surface: "terminal" });
+        if (reply.ok === false) return fail(String(reply.error ?? "the result could not be marked read"));
+        return options.json ? console.log(JSON.stringify({ ok: true, id: request.id, read: true })) : console.log(`marked ${request.id} read`);
+      }
+      if (request.action === "read-all" || request.action === "unread-last") {
+        const reply = await hub.request({ t: "results", action: request.action, surface: "terminal" });
+        if (reply.ok === false) return fail(String(reply.error ?? "the receipt could not be written"));
+        if (options.json) return console.log(JSON.stringify(request.action === "read-all" ? { ok: true, marked: reply.marked } : { ok: true, unread: reply.unread }));
+        return console.log(request.action === "read-all" ? `marked ${reply.marked} ${reply.marked === 1 ? "result" : "results"} read` : `marked ${reply.unread} unread again`);
+      }
+      const reply = await hub.request({ t: "results", unread: request.unread });
+      if (reply.ok === false) return fail(String(reply.error ?? "results are unavailable"));
+      const rows = Array.isArray(reply.results) ? reply.results : [];
+      if (options.json) return console.log(JSON.stringify(rows, null, 2));
+      if (!rows.length) return console.log(request.unread ? "no unread results" : "no results");
+      for (const row of rows) console.log(`${row.read ? " " : "*"} ${row.id}  ${terminalText(String(row.title))}  ${new Date(Number(row.settledAt)).toISOString().replace("T", " ").slice(0, 16)}  ${Math.round(Number(row.ms) / 1000)}s${row.read ? "" : `  ahub results --read ${row.id}`}`);
+      // The listing holds the newest 100. Unread results are never pruned, so when more exist than shown, say how many and how to reach them (status still counts every one).
+      if (Number(reply.more) > 0) console.log(`... and ${Number(reply.more)} older unread; ahub results --read-all marks them all, or read the newest ones first`);
+    } finally { hub.close(); }
+  },
+
   pet: async () => {
     if (args.includes("--window")) {
       if (args.some(arg => !["--window", "--close"].includes(arg))) return fail("usage: ahub pet --window [--close]");
@@ -2292,6 +2630,27 @@ const commands: Record<string, () => Promise<void> | void> = {
     process.stdout.write(short ? text : text + "\n");
   },
 
+  // #1411 T2: the flow roles the running hub settled (defaults, overrides, ceilings), resolved from a worktree like every command.
+  roles: async () => {
+    const options = outputOptions();
+    if (outputArguments().length) fail("usage: ahub roles [--json]");
+    // A task worktree has no .agenthub of its own, and projectContext deliberately never joins it to the main checkout's hub (#604). This read changes nothing,
+    // so a linked worktree with no hub of its own reads the main worktree's hub, under the same identity.
+    let target = { root: cwd, stateDir };
+    if (!existsSync(join(cwd, ".agenthub"))) {
+      const common = hubGitSync(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, encoding: "utf8", timeout: 3000 });
+      const main = common.status === 0 ? dirname(common.stdout.trim()) : undefined;
+      if (main && realPath(main) !== cwd && existsSync(join(main, ".agenthub"))) target = projectContext(main);
+    }
+    const hub = target.root === cwd ? await connect() : await ControlClient.connect(target.stateDir, identity.role === "tools"
+      ? { role: "tools", peer: identity.peer, projectRoot: target.root } : { role: "console", projectRoot: target.root }, 3000);
+    try {
+      const { status } = await hub.request({ t: "status" });
+      const view = rolesView(status);
+      if (options.json) return console.log(JSON.stringify(view, null, 2));
+      printOutput(renderRoles(view, options.columns), options.color);
+    } finally { hub.close(); }
+  },
   status: async () => {
     const options = outputOptions();
     if (args.includes("--all")) return printProjects(options);
@@ -2303,7 +2662,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
       if (status.needs) { const pet = loadPetConfig(cwd); if (pet.enabled) console.log(renderPet(petView(status), false, pet.character)); }
       // #258: open long-term tasks and who holds them, as of this machine's last memory sync.
-      if (status.memoryProfile ? status.memoryProfile.state === "ready" : existsSync(join(hubHome(), "memory", "index.db"))) {
+      if (status.memoryProfile ? status.memoryProfile.state === "ready" : memoryIndexExists(join(hubHome(), "memory"))) {
         try { const lines = await goalCommand(["list"], cwd); if (!lines.startsWith("no open")) console.log(`\nlong-term tasks\n${lines}`); } catch { /* memory unreadable: status goes on */ }
       }
     } finally { hub.close(); }
@@ -2412,17 +2771,31 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [sub] = args;
     researchArgs();
     if (sub === "backfill") {
-      const project = researchProject();
-      const written = appendRecords(project.id, taskRecords(readEvents(join(stateDir, "events.jsonl")), project.id, { version: VERSION, source: "backfill" }));
+      const project = researchProject(), familyOf = projectFamilyOf(cwd);
+      const written = appendRecords(project.id, taskRecords(readEvents(join(stateDir, "events.jsonl")), project.id, { version: VERSION, source: "backfill" }, { ...readEvidence(stateDir, project.id), ...(familyOf ? { familyOf } : {}) }));
       return console.log(`${written} research record${written === 1 ? "" : "s"} written from this project's events`);
     }
     const all = args.includes("--all");
-    const records = readStores(all ? undefined : researchProject(false).id);
     const from = since();
+    if (sub === "export" && args.includes("--dataset")) {
+      // #1277: the dataset is read-only over the stores; a project that was never researched has no file and no directory. The target is refused inside any registered project.
+      const registry = new Registry();
+      let registered: Project[];
+      try { registered = registry.list(); } finally { registry.close(); }
+      const here = researchProject(false), chosen = all ? registered : [here];
+      const inputs = chosen.flatMap(p => { const input = datasetInputFor(p); return input ? [input] : []; });
+      if (!inputs.length) return fail(all ? "no registered project has research records" : "this project has no research records; turn research on and run ahub research backfill");
+      try {
+        const written = exportResearchDataset(args[args.indexOf("--dataset") + 1]!, inputs, { ...(from > 0 ? { since: from } : {}) }, [...registered, here]);
+        for (const w of written) console.log(`${w.projectKeyHash}: ${w.counts.tasks} task${w.counts.tasks === 1 ? "" : "s"} (${w.counts.approved} approved, ${w.counts.cancelled} cancelled), ${w.counts.labels} label${w.counts.labels === 1 ? "" : "s"} -> ${w.dir}`);
+      } catch (error) { return fail((error as Error).message); }
+      return;
+    }
+    const records = readStores(all ? undefined : researchProject(false).id);
     if (sub === "export") {
       const format = args[args.indexOf("--format") + 1] ?? "jsonl";
       if (args.includes("--format") && !["jsonl", "csv"].includes(format)) fail("--format takes jsonl or csv");
-      const kept = records.filter((r) => r.kind === "label" || Date.parse(r.approvedAt) >= from);
+      const kept = records.filter((r) => r.kind === "label" || Date.parse(closedAtOf(r) ?? "") >= from);
       return void process.stdout.write(args.includes("--format") && format === "csv" ? toCsv(kept) : kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length ? "\n" : ""));
     }
     if (sub === "addons") {
@@ -2430,7 +2803,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const rows = addonReport(records, from);
       return console.log(args.includes("--json") ? JSON.stringify(rows, null, 2) : formatAddons(rows).join("\n"));
     }
-    if (sub !== undefined && !sub.startsWith("--")) fail("usage: ahub research [--since 30d] [--all] [--json] | addons [--since] [--all] [--json] | export [--format jsonl|csv] [--since] [--all] | backfill");
+    if (sub !== undefined && !sub.startsWith("--")) fail("usage: ahub research [--since 30d] [--all] [--json] | addons [--since] [--all] [--json] | export [--format jsonl|csv | --dataset <dir>] [--since] [--all] | backfill");
     const r = researchReport(records, from);
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatResearch(r).join("\n"));
   },
@@ -2786,6 +3159,15 @@ const commands: Record<string, () => Promise<void> | void> = {
 
     try {
       for (const check of runtimePruneHealth()) row(check.ok, check.name, check.detail);
+      // #1399: a project initialised by an older ahub keeps that version's instruction block until init runs again; doctor says so with the command.
+      try {
+        const stale = planInit(cwd).some(change => change.path === join(cwd, "AGENTS.md"));
+        row(stale ? undefined : true, "hub instructions", // a warning, never a failure: doctor's exit code stays what it was for a project that has not refreshed yet
+           stale ? `the managed block in AGENTS.md differs from this ahub version; preview with: cd ${cwd} && ahub init --dry-run; apply with: cd ${cwd} && ahub init --yes (text outside the markers is kept), then commit AGENTS.md` : "AGENTS.md managed block matches this ahub version");
+      } catch (error) { row(false, "hub instructions", `AGENTS.md could not be checked: ${error instanceof Error ? error.message : "unknown error"}; run ahub init --dry-run to see why`); }
+      // #1411 T2: a warning, never a failure, like the row above.
+      try { const shared = sharedConfigRow(cwd); if (shared) row(shared.ok, "shared config", shared.detail); }
+      catch (error) { row(undefined, "shared config", `could not be checked: ${error instanceof Error ? error.message : "unknown error"}`); }
       const catalog = loadRoleCatalog(cwd);
       for (const error of catalog.errors) row(false, "catalog role", `${error.id}: ${error.reason}`);
       try {
@@ -2819,10 +3201,28 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       const plugin = pluginState(parseList<InstalledPlugin>(spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
       row(plugin.state === "current", DOCTOR_PLUGIN_PROBE.name, plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
+      let profileRegistry: Registry | undefined;
+      try {
+        profileRegistry = new Registry();
+        const profiles = await autonomyHomeStatus(profileRegistry, homedir(), process.env, join(import.meta.dir, "..", ".."), (argv, options) => {
+          const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 });
+          return { status: result.status ?? -1, stdout: result.stdout ?? "" };
+        });
+        for (const profile of profiles.homes) {
+          const installed = profile.hook.state === "installed";
+          checks.push({ name: `Claude profile hook: ${profile.home.path}`, section: "Hub", level: installed ? "ok" : "warn",
+            detail: installed ? profile.hook.reason : `${profile.hook.reason} Run CLAUDE_CONFIG_DIR=${shellQuote(profile.home.path)} ahub setup.` });
+        }
+        if (!profiles.complete) checks.push({ name: "Claude profile discovery", section: "Hub", level: "unknown",
+          detail: profiles.notices.join("; ") || "Claude profile discovery is incomplete; inspect the registered projects and selected homes before setup." });
+      } catch {
+        checks.push({ name: "Claude profile discovery", section: "Hub", level: "unknown", detail: "Claude profile inventory is unavailable; inspect the machine registry and selected homes before setup." });
+      } finally { profileRegistry?.close(); }
       if (up) checks.push(...runtimeVersionWarnings(daemonVersion, VERSION, plugin.state === "missing" ? undefined : plugin.version));
 
       const config = loadConfig(cwd);
       row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
+      for (const line of config.releasePolicyNotices ?? []) row(false, "release policy", line);
       for (const line of config.retired ?? []) row(false, "retired setting", line);
       const { routing, errors: routingErrors } = inspectDoctorRouting(cwd);
       for (const error of routingErrors) row(false, "routing", error);
@@ -2976,7 +3376,7 @@ async function runConductorCommand(): Promise<void> {
   }
   let op: string;
   let input: Record<string, unknown>;
-  if (cmd === "sdlc") return commands.sdlc!(); // #786: `sdlc merge` is the one conductor-class sdlc subcommand; the daemon checks the role.
+  if (cmd === "sdlc") return commands.sdlc!(); // SDLC operational subcommands are role-checked by the daemon.
   if (cmd === "task") {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
     const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);

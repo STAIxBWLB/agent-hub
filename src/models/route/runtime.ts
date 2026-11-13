@@ -1,37 +1,45 @@
+import { DecisionRouteController, type DecisionHost, type DecisionTrace, type DecisionSelection, DecisionPolicyChangedError } from "./decision.ts";
 import type { ChatMessage, ChatResult } from "../../omniroute/client.ts";
-import { AdvisorGate, buildAdvisorJudgeRequest, redoFeedback } from "./advisor.ts";
+import { AdvisorTrigger } from "./advisor-trigger.ts";
+import { buildAdvisorRequest, buildEscalationRequest, planningInstruction, redoFeedback } from "./hub-prompts.ts";
+import { captureJudgeConversation, captureRouteView } from "./conversation-view.ts";
+import { parseAdvisorReply, parseEscalationReply } from "./judge-replies.ts";
+import { runHostJudge, type HostChoicePurpose } from "./judge-choice.ts";
 import type { HubRoute } from "./config.ts";
-import { buildEscalationJudgeRequest, parseEscalationVerdict } from "./escalation.ts";
-import { normalizeConversation } from "./normalize.ts";
-import { extractToolSignals, turnKind } from "./signals.ts";
 import { RouteLabelTracker, type RouteLabelEvent, type RouteTurnContext, type RouteTurnOutcome } from "./labels.ts";
-import { dimensionsFromSignal, estimateInputTokens, selectStage, stayOrSwitch, type StageState, type StaySwitchPolicy, type SwitchTrace, type Tier } from "./stage.ts";
-import { EscalationState, SessionState } from "./state.ts";
-import { parseAdvisorVerdict } from "./text.ts";
-import { planExecutePhase, type PlanExecuteState } from "./plan-execute.ts";
+import { captureStageInput, estimateStageInputTokens } from "./stage-input.ts";
+import { buildStageEvidence, type CodingAgentDimensions, type StageEvidence } from "./stage-evidence.ts";
+import { selectFallbackStage, planStageSwitch, ambiguousStage, type FallbackStageState, type StaySwitchPolicy, type StageSwitchTrace as SwitchTrace, type StageTier as Tier } from "./stage-fallback.ts";
+import { EscalationControl } from "./escalation-control.ts";
+import { ScopeStore } from "./turn-state.ts";
+import { PlanPhase } from "./plan-execute-choice.ts";
 
-export interface RouteEvent extends Partial<SwitchTrace> {
-  route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default"; score: number; ms: number;
+export interface RouteEvent extends Partial<SwitchTrace>, Partial<DecisionTrace> {
+  decisionTarget?: "judge";
+  route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default" | "decision"; score: number; ms: number;
   decision?: string; turn?: string; task?: number; pii?: boolean; severity?: number; spinning?: number; exploring?: number; production?: number;
 }
 export interface AdvisorEvent { route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
-interface RouteState { fingerprint: string; stage: StageState; pin?: Tier; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate }
-export interface RouteHost {
+interface RouteState { fingerprint: string; stage: FallbackStageState; pin?: Tier; plan: PlanPhase; escalation: EscalationControl; advisor: AdvisorTrigger }
+export interface RouteHost extends DecisionHost {
   execute: (model: string, messages: ChatMessage[], judge: boolean, signal: AbortSignal, maxTokens?: number) => Promise<ChatResult>;
-  onCampus: () => Promise<boolean>;
   /** Read on every stage call (#197); absent is the shadow default. */
   staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
   onRouteOutcome?: (event: RouteLabelEvent) => void;
   onAdvisor?: (event: AdvisorEvent) => void;
 }
+/** Internal model-free proof only; no choice data or authority is exposed. */
+export interface RouteProofPorts { choicePrepared?(ready: Promise<void>): void }
 
 /** Transport stays in the host. Optional judge work has one deadline and five-minute failure backoff. */
 export class HubRouteRuntime {
-  private readonly states = new SessionState<RouteState>();
+  private readonly states = new ScopeStore<RouteState>();
   private readonly labels: RouteLabelTracker;
+  private readonly decisions: DecisionRouteController;
   private judgeOffUntil = 0;
-  constructor(private readonly host: RouteHost, private readonly judgeTimeoutMs = 8000) {
+  constructor(private readonly host: RouteHost, private readonly judgeTimeoutMs = 8000, private readonly proof?: RouteProofPorts) {
+    this.decisions = new DecisionRouteController(host, judgeTimeoutMs);
     this.labels = new RouteLabelTracker(event => this.host.onRouteOutcome?.(event));
   }
 
@@ -49,45 +57,72 @@ export class HubRouteRuntime {
     const key = `${scope}:${route}`, fingerprint = JSON.stringify(config);
     const prior = this.states.get(key);
     if (prior?.fingerprint === fingerprint) return prior;
-    const value: RouteState = { fingerprint, stage: { capableHoldTurnsRemaining: 0 }, plan: { executingSessions: [] }, escalation: new EscalationState(), advisor: new AdvisorGate({ trigger: config.trigger, pattern: config.pattern, maxReviews: config.max_reviews, gateStallTurns: config.gate_stall_turns, gateMinToolResults: config.gate_min_tool_results, transcriptMaxChars: config.transcript_max_chars }) };
+    const value: RouteState = { fingerprint, stage: { recoveryHoldRemaining: 0 }, plan: new PlanPhase(), escalation: new EscalationControl(), advisor: new AdvisorTrigger({ trigger: config.trigger, pattern: config.pattern, maxReviews: config.max_reviews, gateStallTurns: config.gate_stall_turns, gateMinToolResults: config.gate_min_tool_results }) };
     this.states.set(key, value); return value;
   }
 
   /** Executor failures retry the fixed model only in the caller; no tool has run yet. */
   async call(route: string, config: HubRoute, messages: ChatMessage[], scope: string, pii: boolean, signal: AbortSignal): Promise<ChatResult> {
     const labelTurn = this.labels.captureTurn();
+    this.decisions.checkEntry(config, pii);
     const started = performance.now(), state = this.state(route, config, scope);
-    const conversation = normalizeConversation(messages), signals = extractToolSignals(conversation);
-    const dimensions = dimensionsFromSignal(signals);
+    const input = captureStageInput(messages) ?? { turn: "other" as const, incomplete: true, assistantTurns: 0, results: [] };
+    const evidence = buildStageEvidence(input), dimensions = evidence.dimensions;
     const efficient = config.efficient ?? "fast", capable = config.capable ?? "coding";
     let model = efficient, source: RouteEvent["source"] = "default", score = 0;
     let sent = messages, trace: Partial<SwitchTrace> = {};
-    if (config.type === "stage") {
-      const decision = selectStage(signals, { confidenceThreshold: config.confidence_threshold, capableHoldTurns: config.hold_turns }, state.stage);
+    let phase: "planning" | "executing" | undefined;
+    if (config.type === "stage" || config.type === "decision") {
+      const decision = selectFallbackStage(evidence, { confidenceThreshold: config.confidence_threshold, holdTurns: config.hold_turns }, state.stage);
       state.stage = decision.state;
-      // OmniRoute models publish no context limit to the hub, so every tier fits here; the estimate leaves out the tool
-      // schemas the host adds to each call, as the relay counts what Pi sends. A PII conversation's size says
-      // something about its text, as a private envelope's does: the planner never sees it (no prefill bound, so no
-      // plan or reason can depend on it) and the event leaves it out.
-      const staged = stayOrSwitch(this.host.staySwitch?.(), state.pin, decision, turnKind(conversation), { inputTokens: pii ? 0 : estimateInputTokens(messages), fits: () => true });
+      // Public planner sizing is separate from local full-context admission. Sensitive size is omitted.
+      const staged = planStageSwitch(this.host.staySwitch?.(), state.pin, decision, input.turn, { inputTokens: pii ? undefined : estimateStageInputTokens(messages), fits: () => true });
       state.pin = staged.pin;
       const { prefillTokens, ...shape } = staged.trace;
       trace = pii ? shape : staged.trace;
       model = staged.tier === "capable" ? capable : efficient;
       score = decision.score;
-      source = decision.source === "capable_hold" ? "hold" : decision.source === "override" || decision.source === "dimensions" ? decision.source : "default";
+      source = decision.source;
+      if (config.type === "stage" && config.classifier === "decision" && ambiguousStage(decision, { confidenceThreshold: config.confidence_threshold, ambiguousBand: config.ambiguous_band })) {
+        // The band decides only whether adec is asked; the tier and model above stay exactly as the heuristic chose them.
+        trace = { ...trace, ...await this.decisions.shadowClassify(config, { route, scope, turn: labelTurn, messages, evidence, pii, signal, tier: staged.tier,
+          current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn }) };
+      }
     } else if (config.type === "plan_execute") {
-      const decision = planExecutePhase(signals, scope, state.plan);
-      model = decision.tier === "capable" ? capable : efficient;
-      state.plan = decision.state;
-      if (decision.planningPrompt) sent = [{ role: "system", content: decision.planningPrompt }, ...messages];
+      const decision = state.plan.observe(captureRouteView(messages), scope);
+      phase = decision.phase;
+      model = decision.fallbackTier === "capable" ? capable : efficient;
+      if (decision.addPlanningInstruction) sent = [{ role: "system", content: planningInstruction }, ...messages];
     } else if (config.type === "escalation" && state.escalation.snapshot().latched) model = capable;
-    let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace }, labelTurn, dimensions, pii, messages);
+    const current = () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn;
+    let phaseGuard: ReturnType<DecisionRouteController["captureGuard"]> | undefined;
+    let proposed: DecisionSelection = {};
+    if (config.type === "decision") proposed = await this.decisions.pick(config, { route, scope, turn: labelTurn, messages, dimensions, pii, signal, current });
+    else if (config.type === "plan_execute" && config.decision_backend === "adec" && (config.decision_mode ?? "off") === "shadow") {
+      phaseGuard = this.decisions.captureGuard(pii, current);
+      const timeout = config.decision_timeout_ms ?? this.judgeTimeoutMs;
+      const window = this.decisions.openHostChoice(config, { route, scope, turn: labelTurn, messages, evidence, pii, signal, current,
+        purpose: "plan_execute_model", phase, deadline: performance.now() + timeout });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        if (window) {
+          timer = setTimeout(() => { void window.close().catch(() => {}); }, timeout);
+          proposed = await window.result ?? {};
+        }
+      } finally { clearTimeout(timer); await window?.close(); }
+      phaseGuard();
+    }
+    const picked = this.decisions.confirm(proposed);
+    source = picked.trace ? "decision" : source;
+    let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
     const result = await this.host.execute(model, sent, false, signal);
+    phaseGuard?.("executor reply");
     if (config.type !== "escalation" || state.escalation.snapshot().latched) return this.withDecision(result, decisionId);
-    const request = buildEscalationJudgeRequest(normalizeConversation([...messages, result.message]), signals.assistantTurnCount + 1);
-    const answer = await this.judge(config.judge ?? capable, [{ role: "system", content: request.systemPrompt }, ...request.messages], pii, signal, request.maxOutputTokens);
-    const verdict = answer ? parseEscalationVerdict(answer) : undefined;
+    const conversation = captureJudgeConversation([...messages, result.message]);
+    const request = buildEscalationRequest(conversation, conversation?.assistantTurns ?? 0);
+    const answer = request ? await this.judge(config.judge ?? capable, [{ role: "system", content: request.systemPrompt }, ...request.messages], pii, signal, request.maxOutputTokens,
+      { route, config, scope, turn: labelTurn, messages, evidence, purpose: "escalation_judge_model", current }) : undefined;
+    const verdict = answer ? parseEscalationReply(answer) : undefined;
     if (answer && !verdict) this.judgeOffUntil = Date.now() + 5 * 60_000;
     const snapshot = state.escalation.apply(verdict, config.confirmations ?? 2);
     if (snapshot.latched) { try { this.labels.setLatched(labelTurn, true); } catch { /* optional labels */ } }
@@ -100,24 +135,34 @@ export class HubRouteRuntime {
   /** Reviews held no-tool responses. A redo is fed into the same local turn and bounded by its normal step cap. */
   async review(route: string, config: HubRoute, messages: ChatMessage[], scope: string, pii: boolean, signal: AbortSignal, decisionId?: string): Promise<string | undefined> {
     if (config.type !== "advisor") return undefined;
-    const state = this.state(route, config, scope), conversation = normalizeConversation(messages);
-    const latest = messages.at(-1);
-    if (!state.advisor.shouldReview(conversation, { hasToolUse: !!latest?.tool_calls?.length, visibleText: latest?.content ?? "" }, scope) || !state.advisor.reserve(scope)) return undefined;
-    const request = buildAdvisorJudgeRequest(conversation, latest?.content ?? undefined, config.transcript_max_chars);
-    const answer = await this.judge(config.judge ?? config.capable ?? "coding", [{ role: "system", content: request.systemPrompt }, ...request.messages], pii, signal, request.maxOutputTokens);
-    const verdict = answer ? parseAdvisorVerdict(answer) : undefined;
-    state.advisor.settle(scope, verdict ? "success" : "failure");
-    try { this.labels.observeAdvisor(decisionId, verdict?.kind ?? "failed"); } catch { /* optional labels */ }
-    if (answer && !verdict) this.judgeOffUntil = Date.now() + 5 * 60_000;
-    try { this.host.onAdvisor?.({ route, trigger: config.trigger ?? "no_tool_call", verdict: verdict?.kind ?? "failed", discardedChars: Math.max(0, [...JSON.stringify(conversation.messages)].length - (config.transcript_max_chars ?? 200_000)) }); } catch { /* optional telemetry */ }
-    return verdict?.kind === "redo" ? redoFeedback(verdict, latest?.content ?? "").user : undefined;
+    const turn = this.labels.captureTurn(), current = () => !signal.aborted && !turn?.closed && this.labels.captureTurn() === turn;
+    const guard = this.decisions.captureGuard(pii, current);
+    const state = this.state(route, config, scope), conversation = captureJudgeConversation(messages), latest = messages.at(-1);
+    if (!state.advisor.eligible(conversation, { hasToolUse: !!latest?.tool_calls?.length, visibleText: latest?.content ?? "" }, scope) || !state.advisor.reserve(scope)) return undefined;
+    let settled = false;
+    try {
+      const request = buildAdvisorRequest(conversation, latest?.content ?? undefined, config.transcript_max_chars);
+      const input = captureStageInput(messages) ?? { turn: "other" as const, incomplete: true, assistantTurns: 0, results: [] };
+      const answer = request ? await this.judge(config.judge ?? config.capable ?? "coding", [{ role: "system", content: request.systemPrompt }, ...request.messages], pii, signal, request.maxOutputTokens,
+        { route, config, scope, turn, messages, evidence: buildStageEvidence(input), purpose: "advisor_judge_model", current }) : undefined;
+      guard("advisor reply");
+      const verdict = answer ? parseAdvisorReply(answer) : undefined;
+      state.advisor.settle(scope, verdict ? "success" : "failure"); settled = true;
+      try { this.labels.observeAdvisor(decisionId, verdict?.kind ?? "failed"); } catch { /* optional telemetry */ }
+      if (answer && !verdict) this.judgeOffUntil = Date.now() + 5 * 60_000;
+      guard("advisor publication");
+      try { this.host.onAdvisor?.({ route, trigger: config.trigger ?? "no_tool_call", verdict: verdict?.kind ?? "failed", discardedChars: request?.discardedChars ?? 0 }); }
+      catch (error) { if (error instanceof DecisionPolicyChangedError) throw error; }
+      guard("advisor publication");
+      return verdict?.kind === "redo" ? redoFeedback(verdict, latest?.content ?? "").user : undefined;
+    } finally { if (!settled) state.advisor.settle(scope, "failure"); }
   }
 
   private withDecision(result: ChatResult, decisionId: string | undefined): ChatResult {
     return decisionId ? { ...result, routeDecision: decisionId } : result;
   }
 
-  private emitRoute(event: RouteEvent, turn: ReturnType<RouteLabelTracker["captureTurn"]>, dimensions: ReturnType<typeof dimensionsFromSignal>, pii: boolean, priorMessages: ChatMessage[]): string | undefined {
+  private emitRoute(event: RouteEvent, turn: ReturnType<RouteLabelTracker["captureTurn"]>, dimensions: CodingAgentDimensions, pii: boolean, priorMessages: ChatMessage[]): string | undefined {
     if (turn && turn.closed) return undefined;
     let decision: string | undefined;
     try {
@@ -143,24 +188,55 @@ export class HubRouteRuntime {
     return decision;
   }
 
-  private async judge(model: string, messages: ChatMessage[], pii: boolean, parent: AbortSignal, maxTokens = 2048): Promise<string | undefined> {
+  private async judge(model: string, messages: ChatMessage[], pii: boolean, parent: AbortSignal, maxTokens = 2048,
+    choice?: { route: string; config: HubRoute; scope: string; turn: ReturnType<RouteLabelTracker["captureTurn"]>; messages: ChatMessage[]; evidence: StageEvidence; purpose: HostChoicePurpose; current(): boolean }): Promise<string | undefined> {
     if (parent.aborted || Date.now() < this.judgeOffUntil) return undefined;
-    const controller = new AbortController();
-    const abort = () => controller.abort();
-    parent.addEventListener("abort", abort, { once: true });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const work = async (): Promise<string | undefined> => {
-      if (pii && !(await this.host.onCampus())) return undefined;
-      if (controller.signal.aborted) return undefined;
-      const result = await this.host.execute(model, messages, true, controller.signal, maxTokens);
-      return result.message.content?.trim() || undefined;
-    };
+    const current = choice?.current ?? (() => !parent.aborted), guard = this.decisions.captureGuard(pii, current);
+    const began = performance.now(), deadline = began + this.judgeTimeoutMs;
     try {
-      const timeout = new Promise<undefined>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(undefined); }, this.judgeTimeoutMs); });
-      const result = await Promise.race([work(), timeout]);
-      if (!result && !parent.aborted) this.judgeOffUntil = Date.now() + 5 * 60_000;
-      return result;
-    } catch { if (!parent.aborted) this.judgeOffUntil = Date.now() + 5 * 60_000; return undefined; }
-    finally { clearTimeout(timer); parent.removeEventListener("abort", abort); }
+      const result = await runHostJudge<string, DecisionSelection>({
+        parent, timeoutMs: this.judgeTimeoutMs, current: guard,
+        common: async signal => {
+          const campus = pii ? await this.host.onCampus() === true : true;
+          if (signal.aborted) return false;
+          guard(); return campus;
+        },
+        fallback: async signal => {
+          guard();
+          const result = await this.host.execute(model, messages, true, signal, maxTokens);
+          return result.message.content?.trim() || undefined;
+        },
+        observe: signal => {
+          const window = choice ? this.decisions.openHostChoice(choice.config, { route: choice.route, scope: choice.scope,
+            turn: choice.turn, current: choice.current, messages: choice.messages, evidence: choice.evidence, pii, signal,
+            purpose: choice.purpose, deadline }) : undefined;
+          try {
+            const notify = this.proof?.choicePrepared;
+            if (window && notify) {
+              const ready = window.result.then(() => undefined);
+              void ready.catch(() => {});
+              notify.call(this.proof, ready);
+            }
+          } catch { /* proof sinks have no authority; the original result is still awaited below */ }
+          return window;
+        },
+      });
+      guard("judge result");
+      const observed = this.decisions.confirm(result.observation ?? {});
+      if (observed.trace && choice) {
+        guard("observation publication");
+        // Metadata only: never enter emitRoute/addDecision, label, progress or usage paths.
+        try { this.host.onRoute?.({ route: choice.route, tier: model, source: "default", score: 0,
+          ms: Math.max(0, performance.now() - began), ...observed.trace, decisionTarget: "judge" }); }
+        catch (error) { if (error instanceof DecisionPolicyChangedError) throw error; }
+        guard("observation publication");
+      }
+      if (!result.value && !parent.aborted) this.judgeOffUntil = Date.now() + 5 * 60_000;
+      return result.value;
+    } catch (error) {
+      if (error instanceof DecisionPolicyChangedError || error && typeof error === "object" && "budgetStop" in error) throw error;
+      if (!parent.aborted) this.judgeOffUntil = Date.now() + 5 * 60_000;
+      return undefined;
+    }
   }
 }

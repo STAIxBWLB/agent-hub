@@ -379,3 +379,21 @@ test("#844 a configured model reaches every native turn, resumed turns included"
   const none = rig(); await none.peer.start(); await none.peer.deliver([message(1)], "1"); await until(() => none.peer.state === "idle");
   expect(none.calls()[0].args).not.toContain("--model");
 });
+
+test("runtime model is captured before turn preparation and clear restores the declared model", async () => {
+  let desired: string | undefined = "runtime-a", gets = 0;
+  const applied: (string | undefined)[] = [];
+  const r = rig("success", { model: "declared-model", getModelOverride: () => {
+    gets++; const model = desired; return { model, applied: () => { applied.push(model); } };
+  }, beforeInput: () => { desired = "runtime-b"; } });
+  await r.peer.start(); expect(gets).toBe(0);
+  await r.peer.deliver([message(1)]); await until(() => r.peer.state === "idle");
+  expect(arg(r.calls()[0].args, "--model")).toBe("runtime-a");
+  await r.peer.deliver([message(1)]); await until(() => r.peer.state === "idle");
+  expect(arg(r.calls()[1].args, "--model")).toBe("runtime-b");
+  desired = undefined;
+  await r.peer.deliver([message(1)]); await until(() => r.peer.state === "idle");
+  expect(arg(r.calls()[2].args, "--model")).toBe("declared-model");
+  expect(gets).toBe(3); expect(applied).toEqual(["runtime-a", "runtime-b", undefined]);
+  for (const call of r.calls()) { expect(call.args).toContain("--strict-mcp-config"); expect(call.args).toContain("mcp__agent-hub__hub_permission_request"); }
+});

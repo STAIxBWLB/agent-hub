@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import ts from "typescript";
+import { checkInventory, checkReport } from "./lib/inventory-check.ts";
 
 type Area = "tasks/routing" | "bus/delivery" | "recovery/upgrade waits" | "adapters/handshakes" | "model relay/inference" | "UI/console";
 type Classification = "operational" | "safety floor" | "contract" | "test seam" | "unknown";
@@ -512,10 +513,11 @@ function renderInventory(entries: Entry[]): string {
 }
 
 const args = process.argv.slice(2);
-const usage = "usage: bun scripts/inventory-hardcoded-values.ts [--write-classifications <path>] [--apply-classifications <path>]";
+const usage = "usage: bun scripts/inventory-hardcoded-values.ts [--write-classifications <path>] [--apply-classifications <path>] | --check";
 let writePath: string | undefined;
 let applyPath: string | undefined;
-for (let index = 0; index < args.length; index += 2) {
+const checkMode = args.length === 1 && args[0] === "--check";
+for (let index = 0; !checkMode && index < args.length; index += 2) {
   const option = args[index], path = args[index + 1];
   if (!path || (option !== "--write-classifications" && option !== "--apply-classifications") || (option === "--write-classifications" ? writePath : applyPath)) throw new Error(usage);
   if (option === "--write-classifications") writePath = path;
@@ -536,6 +538,16 @@ if (applyPath) {
   }
 }
 const unknown = entries.filter((entry) => entry.classification === "unknown");
+// #719 (#1180): `--check` is the gate's step. The inventory had no check at all, so 1438 keys drifted in unnoticed. It passes only when every unknown key is in the committed baseline of known-
+// unclassified keys, and the baseline only shrinks: a key that is now classified, or no longer exists, must leave it, so the work cannot be undone silently. It never writes a file.
+if (checkMode) {
+  const baseline = new Set(JSON.parse(readFileSync(new URL("./inventory-hardcoded-values.baseline.json", import.meta.url), "utf8")) as string[]);
+  const result = checkInventory(entries, baseline);
+  const lines = checkReport(result);
+  if (lines.length) { for (const line of lines) console.error(line); throw new Error("inventory check failed"); }
+  console.log(`inventory: OK (${entries.length} entries, ${entries.length - result.baselineUnknown} classified, ${result.baselineUnknown} in the baseline of known-unclassified keys)`);
+  process.exit(0);
+}
 if (writePath) {
   const map = Object.fromEntries([...entries].sort((a, b) => compareText(a.key, b.key)).map((entry) => [entry.key, entry.classification]));
   writeFileSync(writePath, `${JSON.stringify(map, null, 2)}\n`);

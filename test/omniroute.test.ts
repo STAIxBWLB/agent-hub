@@ -69,14 +69,14 @@ test("Cloudflare Access headers go only to listed hosts", async () => {
   expect(up.requests[1]!.headers["cf-access-client-id"]).toBeUndefined();
 });
 
-test("direct calls send gateway auth and no retired session header", async () => {
+test("direct calls send gateway auth", async () => {
   const gateway = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: req => new URL(req.url).pathname.endsWith("/models")
     ? Response.json({ data: [{ id: "coding" }] })
-    : Response.json({ model: "vllm/x", choices: [{ message: { role: "assistant", content: `auth=${req.headers.get("authorization")} session=${req.headers.get("x-switchyard-session-id")}` } }] }) });
+    : Response.json({ model: "vllm/x", choices: [{ message: { role: "assistant", content: `auth=${req.headers.get("authorization")}` } }] }) });
   cleanup.push(() => gateway.stop(true));
   process.env.OMNIROUTE_API_KEY = "fixture-key";
   const res = await new OmniRoute({ urls: [`http://127.0.0.1:${gateway.port}/v1`], access_hosts: [] }).chat({ model: "coding", messages: [] });
-  expect(res.message.content).toBe("auth=Bearer fixture-key session=null");
+  expect(res.message.content).toBe("auth=Bearer fixture-key");
   expect(res.servedModel).toBe("vllm/x");
 });
 
@@ -87,6 +87,20 @@ test("provider usage and served-model provenance are normalized without filling 
   const result = await new OmniRoute({ urls: [`http://127.0.0.1:${server.port}/v1`], access_hosts: [] }).chat({ model: "coding", messages: [] });
   expect(result).toMatchObject({ servedModel: "vendor/served-7b", provider: "vllm", usage: { inputTokens: 12, outputTokens: 5, cacheReadTokens: 3 } });
   expect(result.usage).not.toHaveProperty("cacheWriteTokens");
+});
+
+for (const [name, raw, served, exact] of [
+  ["exact", "qwen27b/qwen3.8-27b", "qwen27b/qwen3.8-27b", true],
+  ["trimmed", " qwen27b/qwen3.8-27b ", "qwen27b/qwen3.8-27b", undefined],
+  ["missing", undefined, undefined, undefined],
+] as const) test(`served-model exact provenance is positive only for an unchanged raw identity: ${name}`, async () => {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: req => new URL(req.url).pathname.endsWith("/models")
+    ? Response.json({ data: [] })
+    : Response.json({ ...(raw === undefined ? {} : { model: raw }), choices: [{ message: { role: "assistant", content: "fixture answer" } }] }) });
+  cleanup.push(() => server.stop(true)); process.env.OMNIROUTE_API_KEY = "fixture-key";
+  const result = await new OmniRoute({ urls: [`http://127.0.0.1:${server.port}/v1`], access_hosts: [] }).chat({ model: "qwen27b/qwen3.8-27b", messages: [] });
+  expect(result.servedModel).toBe(served);
+  expect(result.servedModelExact).toBe(exact);
 });
 
 test("routing.toml: shipped default loads; a project file wins; a file without fixed_model is refused", () => {

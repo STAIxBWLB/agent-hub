@@ -11,10 +11,13 @@ import { realPath } from "../hub/project.ts";
 import { hubGitArgv, hubGitEnv, hubGitSync } from "../hub/git.ts";
 import { KIMI_MCP_FILE } from "./kimi-mcp.ts";
 import { AGY_PLUGIN_FILES } from "./agy-mcp.ts";
-import { loadConfig } from "../hub/daemon.ts";
-import { sdlcConfig } from "../hub/sdlc.ts";
+import { DEFAULT_CONFIG, loadConfig } from "../hub/daemon.ts";
+import { ALL_MACHINE_LOCAL } from "../hub/config-trust.ts";
+import { requiredChecksFor } from "../hub/sdlc-merge.ts";
+import { githubOriginRepository } from "../hub/task-repository.ts";
+import { loadSdlc, sdlcConfig } from "../hub/sdlc.ts";
 import { VERSION } from "../version.ts";
-import { planInitSettings, type InitSettingFile, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
+import { planInitSettings, TRACK_CONFIG, type InitSettingFile, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
 
 const TEMPLATES = join(import.meta.dir, "..", "..", "templates");
 const BEGIN = "<!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->";
@@ -36,6 +39,77 @@ export function removeBlock(existing: string): string {
   if (start === -1 || end <= start) return existing;
   const rest = [existing.slice(0, start).trimEnd(), existing.slice(end + END.length).trim()].filter(Boolean).join("\n\n");
   return rest && `${rest}\n`;
+}
+
+/** #1411: the files a repository either commits (the team shares roles and defaults) or keeps per checkout. */
+const SHARED_CONFIG = ["config.json", "routing.toml", "sdlc.toml"] as const;
+/** #1411: the managed block's role sentence, one per choice. The tracked one is the template's own text. */
+export const ROLES_TRACKED = "`.agenthub/config.json` `roles` says who plans, implements, verifies and reviews.";
+export const ROLES_UNTRACKED = "Roles are held by this checkout's hub, not by a file in the repository: `ahub roles` prints who plans, implements, verifies, reviews and conducts; your own roles are in your session instructions.";
+
+/**
+ * #1411: git's own verdict on whether its ignore rules (the repository's, `.git/info/exclude` and the person's global file) ignore `path`, tracked or not: the rule as
+ * `source:line:pattern`, `null` when no rule ignores it, `undefined` when git cannot say (no repository). `-v` also reports a `!` rule that re-includes the path, with
+ * exit 0, so the pattern decides.
+ */
+export function ignoreRule(cwd: string, path: string): string | null | undefined {
+  const r = hubGitSync(["check-ignore", "-v", "-z", "--no-index", "--stdin"], { cwd, encoding: "utf8", timeout: 3000, input: `${path}\0` });
+  if (r.status === 1) return null;
+  if (r.status !== 0) return undefined;
+  const [source, line, pattern] = r.stdout.split("\0");
+  return pattern === undefined || pattern.startsWith("!") ? null : `${source}:${line}:${pattern}`;
+}
+/** #1411 (owner comment): `hub_routes` keys that name this machine's endpoints; routing.local.toml cannot hold them yet, so a routing.toml that sets one stays untracked. */
+function routingMachineKeys(cwd: string): string[] {
+  const path = join(cwd, ".agenthub", "routing.toml");
+  if (!existsSync(path)) return [];
+  let routes: unknown;
+  try { routes = (Bun.TOML.parse(readFileSync(path, "utf8")) as Record<string, unknown>).hub_routes; } catch { return []; } // the routing loader reports a bad file itself
+  if (!routes || typeof routes !== "object") return [];
+  return Object.entries(routes as Record<string, unknown>).filter(([, route]) => route && typeof route === "object" && Object.hasOwn(route, "adec_endpoint")).map(([id]) => `hub_routes."${id}".adec_endpoint`);
+}
+/** #1411: machine-local fields a committed config.json would set; the loader ignores them there, so they belong in config.local.json. */
+function personalValues(cwd: string): string[] {
+  const path = join(cwd, ".agenthub", "config.json");
+  if (!existsSync(path)) return [];
+  let file: unknown;
+  try { file = JSON.parse(readFileSync(path, "utf8")); } catch { return []; }
+  const at = (doc: unknown, key: string) => key.split(".").reduce<unknown>((node, part) => node && typeof node === "object" ? (node as Record<string, unknown>)[part] : undefined, doc);
+  const empty = (value: unknown) => value === undefined || value === null || value === "" || Array.isArray(value) && !value.length;
+  return ALL_MACHINE_LOCAL.filter(key => !empty(at(file, key)) && JSON.stringify(at(file, key)) !== JSON.stringify(at(DEFAULT_CONFIG, key)));
+}
+/** #1411: whether the block should say the config is tracked. A choice wins; without one an existing block keeps its sentence (AC2), and a new block follows what git says today. */
+function rolesTracked(cwd: string, existing: string, settings: InitSettingsRequest | undefined): boolean {
+  const choice = settings?.values[TRACK_CONFIG];
+  if (typeof choice === "boolean") return choice;
+  if (existing.includes(ROLES_UNTRACKED)) return false;
+  if (existing.includes("<!-- AGENT_HUB:BEGIN")) return true;
+  return !ignoreRule(cwd, ".agenthub/config.json");
+}
+
+/**
+ * #1411 T2: doctor's `shared config` row. Whether `.agenthub/config.json` is committed agrees with the managed block's role sentence: `ok` true for both deliberate
+ * states, `undefined` (a warning) for a mismatch or a git state it cannot read, with the command that fixes it; `null` when there is no block sentence or no config to compare.
+ */
+export function sharedConfigRow(cwd: string): { ok: true | undefined; detail: string } | null {
+  const agents = join(cwd, "AGENTS.md"), file = ".agenthub/config.json";
+  if (!existsSync(agents) || !existsSync(join(cwd, file))) return null;
+  const block = readFileSync(agents, "utf8");
+  const saysTracked = block.includes(ROLES_TRACKED), saysUntracked = block.includes(ROLES_UNTRACKED);
+  if (saysTracked === saysUntracked) return null; // no managed sentence (an older block): the hub instructions row says to refresh it
+  const listed = hubGitSync(["ls-files", "--error-unmatch", "--", file], { cwd, encoding: "utf8", timeout: 3000 }).status;
+  const rule = ignoreRule(cwd, file);
+  if (listed !== 0 && listed !== 1 || rule === undefined) return { ok: undefined, detail: `git could not say whether ${file} is committed; check with: cd ${cwd} && git ls-files ${file}` };
+  const committed = listed === 0, toUntracked = `cd ${cwd} && ahub init --no-track-config --yes`;
+  if (saysUntracked) return committed
+    ? { ok: undefined, detail: `the AGENTS block says roles are per checkout, but ${file} is committed; share it: cd ${cwd} && ahub init --track-config --yes; or stop tracking it: cd ${cwd} && git rm --cached ${file}, then commit` }
+    : { ok: true, detail: "untracked (by choice): each checkout holds its own roles; ahub roles prints them" };
+  if (!committed) return { ok: undefined, detail: rule
+    ? `the AGENTS block points at ${file}, which ${rule} ignores; keep it per checkout: ${toUntracked}; or remove that rule and commit the file`
+    : `the AGENTS block points at ${file}, which is not committed; commit it: cd ${cwd} && git add ${file} && git commit; or keep it per checkout: ${toUntracked}` };
+  return rule
+    ? { ok: undefined, detail: `${file} is committed but ${rule} ignores it, so a re-added copy is skipped; remove that rule, or stop tracking it: ${toUntracked} && git rm --cached ${file}` }
+    : { ok: true, detail: `tracked: ${file} is committed and the AGENTS block points at it` };
 }
 
 export interface InitChange {
@@ -210,7 +284,10 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
   }
   const agents = join(cwd, "AGENTS.md");
   const existing = existsSync(agents) ? readFileSync(agents, "utf8") : "";
-  const hubBlock = upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents || readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8"));
+  // #1399: one source for the block. A shipped profile's `agents` is only its addition, appended to the template; a project's own `profile_overrides.agents` still replaces the whole block.
+  const shipped = readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8");
+  const template = rolesTracked(cwd, existing, settings) ? shipped : shipped.replace(ROLES_TRACKED, ROLES_UNTRACKED);
+  const hubBlock = upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents ? `${template.trim()}\n\n${profile.agents}` : template);
   const instructions = specsBlock(hubBlock, specsEnabled(cwd, settings)); // #1064 T3: a project that turned specs off keeps no block
   write(agents, guarded ? releaseBlock(instructions) : instructions, "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");
   const claude = join(cwd, "CLAUDE.md");
@@ -225,18 +302,31 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
   }
   const ignore = join(cwd, ".gitignore");
   let lines = existsSync(ignore) ? readFileSync(ignore, "utf8") : "";
-  for (const entry of [".agenthub/state/", ".agenthub/config.local.json", ".agenthub/routing.local.toml", ...(shadow ? [".agenthub/shadow.git/"] : [])]) {
-    if (!lines.split("\n").includes(entry)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
-  }
-  if (existsSync(join(cwd, KIMI_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", KIMI_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(KIMI_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${KIMI_MCP_FILE}\n`;
+  // #1411 AC6: git decides whether a path is already ignored (a broader rule, .git/info/exclude, the person's global file); the line check covers no repository and lines added in this run.
+  const add = (entry: string) => {
+    if (lines.split("\n").includes(entry) || ignoreRule(cwd, entry)) return;
+    lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
+  };
+  for (const entry of [".agenthub/state/", ".agenthub/config.local.json", ".agenthub/routing.local.toml", ...(shadow ? [".agenthub/shadow.git/"] : [])]) add(entry);
+  if (existsSync(join(cwd, KIMI_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", KIMI_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0) add(KIMI_MCP_FILE);
   const agyPlugin = ".agents/plugins/agent-hub/";
   if (existsSync(join(cwd, agyPlugin))) {
     const tracked = new Set(hubGitSync(["ls-files", "--", agyPlugin], { cwd, encoding: "utf8", timeout: 3000 }).stdout.trim().split("\n").filter(Boolean));
-    const entries = tracked.size ? AGY_PLUGIN_FILES.filter(file => !tracked.has(file)) : [agyPlugin];
-    for (const entry of entries) if (!lines.split("\n").includes(entry)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
+    for (const entry of tracked.size ? AGY_PLUGIN_FILES.filter(file => !tracked.has(file)) : [agyPlugin]) add(entry);
   }
-  if (existsSync(join(cwd, JCODE_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", JCODE_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(JCODE_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${JCODE_MCP_FILE}\n`;
-  write(ignore, lines, "ignore runtime state and machine-local configuration");
+  if (existsSync(join(cwd, JCODE_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", JCODE_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0) add(JCODE_MCP_FILE);
+  // #1411: the shared config. Tracked: a rule that ignores one of the files is named and nothing is written (AC3), except a routing.toml that names a machine endpoint,
+  // which stays ignored until the local overlay can hold it. Untracked: each file is ignored unless git already ignores it.
+  const track = settings?.values[TRACK_CONFIG];
+  if (track === true) {
+    for (const name of SHARED_CONFIG) {
+      const path = `.agenthub/${name}`;
+      if (name === "routing.toml" && routingMachineKeys(cwd).length) { add(path); continue; }
+      const rule = ignoreRule(cwd, path);
+      if (rule) throw new Error(`--track-config: ${path} is ignored by ${rule}; change that line so git sees the file (after a directory rule such as .agenthub/, add !/.agenthub/, /.agenthub/* and !/${path}), then run ahub init again; nothing was written`);
+    }
+  } else if (track === false) for (const name of SHARED_CONFIG) add(`.agenthub/${name}`);
+  if (lines || existsSync(ignore)) write(ignore, lines, track === false ? "ignore runtime state, machine-local configuration and the per-checkout hub config" : "ignore runtime state and machine-local configuration");
   // #1065 T1: the settings table. config.json is the text it will have after the template and pack writes above; the rest is what is on disk.
   let settingRows: InitSettingRow[] = [];
   if (settings && (Object.keys(settings.values).length)) {
@@ -249,7 +339,7 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
     for (const name of Object.keys(result.next) as InitSettingFile[]) {
       const path = files[name], text = result.next[name]!;
       const row = changed.find(entry => entry.path === path);
-      const reason = `set ${result.rows.filter(entry => entry.file === name).map(entry => entry.key).join(", ")} from the init flags`;
+      const reason = `set ${result.rows.filter(entry => entry.file === name).map(entry => entry.key).join(", ")} from the init settings`;
       if (row) { row.next = text; row.reason = `${row.reason}; ${reason}`; }
       else changed.push({ action: existsSync(path) ? "modify" : "create", path, next: text, reason, ...(name === "config.local.json" ? { privateFile: true as const } : {}) });
     }
@@ -273,7 +363,10 @@ function checkCandidate(cwd: string, plan: readonly PlannedWrite[]): void {
     catch (error) { throw new Error(`the resulting .agenthub config does not pass the hub's config check: ${(error as Error).message}; fix that key in your editor, then run ahub init again; nothing was written`); }
   }
   if (sdlc !== undefined) {
-    try { sdlcConfig(Bun.TOML.parse(sdlc), VERSION); }
+    try {
+      const lifecycle = sdlcConfig(Bun.TOML.parse(sdlc), VERSION);
+      if (lifecycle.mode === "enforce" && !requiredChecksFor(lifecycle, githubOriginRepository(cwd)).length) throw new Error("enforce needs required CI checks; pass --required-checks <a,b,...>");
+    }
     catch (error) { throw new Error(`the resulting .agenthub/sdlc.toml does not pass the hub's check: ${(error as Error).message}; fix it in your editor, then run ahub init again; nothing was written`); }
   }
 }
@@ -295,6 +388,55 @@ export function planInit(cwd: string, profile?: string, shadow = false, releaseG
 /** #1065 T1: what the settings flags change, key by key (`ahub init --dry-run --json` shows it as `settings`). Read-only. */
 export function initSettingRows(cwd: string, profile?: string, shadow = false, releaseGuard = false, settings?: InitSettingsRequest): InitSettingRow[] {
   return changes(cwd, profile, shadow, releaseGuard, settings).settingRows;
+}
+/** A pre-existing local project choice wins; missing or unreadable machine defaults are off. Validation still runs before any write. */
+export function initResearchDefault(cwd: string, machineValue: boolean | undefined): boolean {
+  const local = join(cwd, ".agenthub", "config.local.json");
+  try {
+    if (existsSync(local)) {
+      const value = JSON.parse(readFileSync(local, "utf8"))?.research?.enabled;
+      if (typeof value === "boolean") return value;
+    }
+  } catch { /* the init candidate validation reports malformed local files before writes */ }
+  return machineValue === true;
+}
+/** Add only a new project's effective on default to the normal plan. Off is the shipped default; explicit flags always win. Never writes machine defaults. */
+export function withInitResearch(cwd: string, request: InitSettingsRequest, machineValue: boolean | undefined): InitSettingsRequest {
+  if (existsSync(join(cwd, ".agenthub", "config.json")) || Object.hasOwn(request.values, "research.enabled") || !initResearchDefault(cwd, machineValue)) return request;
+  return { ...request, values: { ...request.values, "research.enabled": true } };
+}
+/** Prepare person guidance before writes; the CLI prints it only after successful apply. Creates no lifecycle evidence or acceptance. */
+export function initNextSteps(cwd: string, settings?: InitSettingsRequest): string[] {
+  const track = settings?.values[TRACK_CONFIG];
+  const mode = settings?.values["sdlc.mode"] ?? loadSdlc(cwd, VERSION).mode;
+  const lines = ["Next steps:"];
+  // An ignore line does not untrack a file git already has: name the command that does.
+  const committed = (names: readonly string[]) => names.map(name => `.agenthub/${name}`).filter(path => hubGitSync(["ls-files", "--error-unmatch", "--", path], { cwd, encoding: "utf8", timeout: 3000 }).status === 0);
+  const untrack = (paths: string[]) => { if (paths.length) lines.push(`- ${paths.join(", ")} ${paths.length === 1 ? "is" : "are"} still committed: run git rm --cached ${paths.join(" ")} and commit, or git keeps tracking ${paths.length === 1 ? "it" : "them"}.`); };
+  const agentsPath = join(cwd, "AGENTS.md");
+  // The words follow the block's role sentence, so the next steps never contradict it (a project with neither flag whose config git ignores gets the untracked sentence).
+  if (track === false || track === undefined && !rolesTracked(cwd, existsSync(agentsPath) ? readFileSync(agentsPath, "utf8") : "", settings)) {
+    lines.push("- Review and commit AGENTS.md. .agenthub/config.json, routing.toml and sdlc.toml stay untracked: each checkout and each machine holds its own roles.");
+    untrack(committed(SHARED_CONFIG));
+  } else if (track === true) {
+    // #1411: the files to commit, and what must not go in with them.
+    const endpoints = routingMachineKeys(cwd);
+    const files = SHARED_CONFIG.filter(name => !(name === "routing.toml" && endpoints.length) && (name !== "sdlc.toml" || existsSync(join(cwd, ".agenthub", name)) || mode !== "off"));
+    lines.push(`- Review and commit AGENTS.md and ${files.map(name => `.agenthub/${name}`).join(", ")}; keep config.local.json untracked.`);
+    if (endpoints.length) { lines.push(`- .agenthub/routing.toml stays untracked: ${endpoints.join(", ")} names this machine's endpoint, and routing.local.toml cannot hold it yet.`); untrack(committed(["routing.toml"])); }
+    const personal = personalValues(cwd);
+    if (personal.length) lines.push(`- Before the first commit, move ${personal.join(", ")} from .agenthub/config.json to .agenthub/config.local.json: they are this machine's values, and the hub ignores them in a committed config.json.`);
+  } else lines.push("- Review and commit AGENTS.md, .agenthub/config.json and other shared init changes; keep config.local.json untracked.");
+  lines.push(
+    "- Your own settings go in .agenthub/config.local.json; it wins over config.json key by key.",
+    "- Start with ahub up or ahub claude; sessions started otherwise miss hub pushes.",
+  );
+  if (mode !== "off") lines.push(
+    `- SDLC ${mode}: accept the planner-recorded spec with ahub sdlc accept <task> --issue <n>.`,
+    "- When a plan departure needs your consent: ahub sdlc accept-departure <task> <head> <reason...>.",
+    "- After hub_task_done on the open PR, reviewer approval and green exact-head CI, use guarded merge: ahub sdlc merge <task>.",
+  );
+  return lines;
 }
 /** Returns the paths it changed, applying the same plan as the preview. */
 export function init(cwd: string, profile?: string, shadow = false, releaseGuard = false, settings?: InitSettingsRequest): string[] {

@@ -33,6 +33,9 @@ export function supersededDeliveryReason(
     if (!Number.isSafeInteger(id)) return undefined;
     const task = board.get(id);
     if (!task) return undefined;
+    // Owner review packages and verdicts carry outcomes, not a reviewer assignment.
+    // A task/role move cannot prove that their recipient consumed them.
+    if (env.kind === "review" && env.refs.taskRecipient === "owner") return undefined;
     if (task.state === "cancelled") {
       if (typeof env.refs.taskCancelled === "number" && env.refs.taskCancelled === task.cancelled?.flowRevision) return undefined;
       reasons.add(`task #${task.id} cancelled`);
@@ -63,7 +66,7 @@ export function deliveryTaskContext(
     if (task.state === "cancelled") context.add(`task #${task.id} cancelled`);
     else if (task.state === "approved") context.add(`task #${task.id} approved`);
     else if (task.owner !== recipient && task.reviewer !== recipient) context.add(`task #${task.id} moved`);
-    else if ((env.kind === "review" || env.refs.taskRecipient === "reviewer") && (task.state !== "in_review" || task.reviewer !== recipient)) context.add(`task #${task.id} review moved`);
+    else if ((env.kind === "review" && env.refs.taskRecipient !== "owner" || env.refs.taskRecipient === "reviewer") && (task.state !== "in_review" || task.reviewer !== recipient)) context.add(`task #${task.id} review moved`);
   }
   return context.size ? [...context].join("; ") : undefined;
 }

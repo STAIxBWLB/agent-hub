@@ -14,12 +14,15 @@ def mcp_name(value):
 parser = argparse.ArgumentParser()
 parser.add_argument('output')
 parser.add_argument('--claude', action='append', required=True)
+parser.add_argument('--runtime-path', help='Explicit isolated runtime PATH; omitted preserves the original fixed PATH')
+parser.add_argument('--expected-version', help='Require this exact candidate version; omitted preserves the original receipt procedure')
 parser.add_argument('--tool', choices=('Write', 'Bash'), default='Write')
 parser.add_argument('--rewrite-bash', action='store_true', help='Bash only: two allow/deny cases proving native updatedInput command replacement')
 parser.add_argument('--server-name', type=mcp_name, default='fixture')
 parser.add_argument('--permission-tool', type=mcp_name, default='approve')
 parser.add_argument('--require-tool-use-id', action='store_true', help='Advertise the three required production permission fields and reject extra properties')
 args = parser.parse_args()
+runtime_path = args.runtime_path if args.runtime_path is not None else '/usr/bin:/bin'
 if args.rewrite_bash and args.tool != 'Bash': parser.error('--rewrite-bash requires --tool Bash')
 ROOT = pathlib.Path(args.output).resolve()
 ROOT.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -144,9 +147,10 @@ for index, raw in enumerate(args.claude):
     digest = sha(binary)
     # The index keeps two binaries with the same basename or the same version in separate directories.
     ident = ROOT / ('identity-%d-%s' % (index, binary.name)); ident.mkdir()
-    v = subprocess.run([str(binary), '--version'], env={'HOME': str(ident), 'CLAUDE_CONFIG_DIR': str(ident / 'config'), 'PATH': '/usr/bin:/bin'}, capture_output=True, text=True, timeout=10)
+    v = subprocess.run([str(binary), '--version'], env={'HOME': str(ident), 'CLAUDE_CONFIG_DIR': str(ident / 'config'), 'PATH': runtime_path}, capture_output=True, text=True, timeout=10)
     assert v.returncode == 0, v
     version = v.stdout.strip().split()[0]
+    if args.expected_version is not None: assert version == args.expected_version, 'native version differs from requested candidate'
     for case, (settings, want_exit, want_calls, want_file, want_error, want_stop) in selected_cases.items():
         d = ROOT / ('%d-%s-%s' % (index, version, case)); d.mkdir()
         home = d / 'home'; home.mkdir(); work = d / 'work'; work.mkdir(); work = work.resolve()
@@ -160,7 +164,7 @@ for index, raw in enumerate(args.claude):
             tool_input = {'file_path': str(target), 'content': 'probe'} if args.tool == 'Write' else {'command': 'bun test test/ci-watch.test.ts' if args.rewrite_bash else harmless}
             settings = dict(settings)
             if args.tool == 'Bash': settings['permissions'] = {'ask': ['Bash']}
-            fixture_path = '/usr/bin:/bin'
+            fixture_path = runtime_path
             original_marker = work / 'original-command-ran'
             if args.rewrite_bash:
                 (work / 'test').mkdir()
@@ -190,7 +194,10 @@ for index, raw in enumerate(args.claude):
                 native.wait(timeout=25)
             except subprocess.TimeoutExpired:
                 stopped_externally = True
-                os.killpg(native.pid, signal.SIGKILL); native.wait(timeout=5)
+                if native.poll() is None:
+                    try: os.killpg(native.pid, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                native.wait(timeout=5)
             elapsed = round(time.monotonic() - started, 3)
             calls = rows(d / 'mcp.jsonl')
             frames = rows(d / 'stdout')

@@ -1,3 +1,4 @@
+import { renderHeldInbox } from "../hub/delivery-public.ts";
 import { realPath } from "../hub/project.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
@@ -12,14 +13,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS } from "../hub/control-client.ts";
+import { ControlClient, INVOCATION_CONTROL_TIMEOUT_MS, QUESTION_CONTROL_TIMEOUT_MS } from "../hub/control-client.ts";
 import { toolWriteOperation } from "../hub/tool-request.ts";
 import { channelProject } from "../hub/channel-project.ts";
 import { VERSION } from "../version.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
-import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
+import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, PERSON_COMMAND_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
 import { renderHeldHint } from "../hub/delivery-hints.ts";
 import { acceptsNativePermissionRequest, buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH } from "../hub/native-permission-request.ts";
+import { currentClaudeChannelEvidence } from "./claude-channel-evidence.ts";
 
 // A native session is pinned at launch. Unlike a new CLI invocation after `cd`,
 // its MCP server must not silently move to another hub (including while offline).
@@ -56,12 +58,14 @@ const UNIDENTIFIED = "agent-hub tools refused: this process was not started by t
 // Exposure hint only; the daemon verifies the actual adapter before any retry mutation.
 const deliveryOnly = process.env.AGENTHUB_DELIVERY_ONLY === "true";
 /**
- * Channel evidence (issue #205): `ahub claude` sets AGENTHUB_CHANNEL=1 beside the development-channel flag. Without the
- * flag Claude Code drops channel notifications without an error, so a Claude session without the marker attaches
+ * Channel evidence (issue #1171): the marker alone is inherited by background and nested Claude processes. The direct
+ * parent argv must also prove the native development-channel launch. Without that proof Claude may drop notifications,
+ * so the session attaches
  * "tools-only" (as status calls it; unrelated to toolsMode): no channel capability, its messages wait at the hub for
  * hub_inbox, and it never reports a delivery `accepted`.
  */
-const channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
+const channelEvidence = !toolsMode ? currentClaudeChannelEvidence() : "unknown";
+const channel = !toolsMode && channelEvidence === "development-channel-launch";
 
 function roles(): Record<string, string[]> {
   // The machine's own file overrides the shared one, as in loadConfig (issue #17).
@@ -113,6 +117,7 @@ const TERMINAL_CLOSES: Record<number, string> = {
   4401: "the hub refused the control token",
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused "${peerId}": the id is reserved or malformed, or this process is not an owned launch of that peer (start it with ahub jcode)`,
+  4405: "detached by the person",
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
   4430: "this Claude launch ended; start a new session with ahub claude, or use a plain session with hub_inbox",
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session",
@@ -165,6 +170,7 @@ const INSTRUCTIONS = [
     : []),
   HUB_MESSAGE_INSTRUCTION,
   ACTIONABLE_MESSAGE_INSTRUCTION,
+  PERSON_COMMAND_INSTRUCTION,
   "Start a hub_send text with [IMPORTANT] only when the recipient must see it now (it interrupts a running Codex turn), with [FYI] for a note that needs nobody's turn. Unmarked messages are batched.",
   "Do not acknowledge messages that need no answer; every hub_send costs the other agents a turn.",
   ...(channel ? ["If a push was missed or a tool result reports queued important messages, call hub_inbox to read the daemon queue and any local failed-push buffer."] : []),
@@ -183,7 +189,13 @@ const server = new Server(
 const inbox: string[] = []; // pushes that failed; drained by hub_inbox
 let hub: ControlClient | undefined;
 let detached: string | undefined; // why this server stopped reconnecting; tool calls report it
-const offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
+const offline = () => detached === "detached by the person"
+  ? `detached by the person; this session no longer acts as ${peerId}. Stop here and tell the person. If they want this session back, start a fresh ahub claude.`
+  : detached ?? "hub is not running for this project (start it with: ahub up).";
+const offlineToolResult = (suffix = "") => {
+  const result = text(`${offline()}${suffix}`);
+  return detached === "detached by the person" ? { ...result, isError: true } : result;
+};
 /**
  * The hub's advisory `queued` nudge (issue #398): important work waiting in this pull-only session's queue.
  * Surfaced on the next tool result; the pull itself still happens only through hub_inbox.
@@ -191,8 +203,20 @@ const offline = () => detached ?? "hub is not running for this project (start it
 let pendingQueued: { queued: number; important: number } | undefined;
 /** Marks a tool result whose text already states the queued count (#221), so the fresh-count block does not repeat it. Symbol keys never reach the client. */
 const QUEUED_COUNTED = Symbol("queuedCounted");
+/** Marks an inbox result that already renders its own bounded held/accepted delivery metadata. */
+const HELD_HINT_INCLUDED = Symbol("heldHintIncluded");
+const heldMetadataUnavailable = (value: unknown): boolean => !!value && typeof value === "object" && !Array.isArray(value)
+  && Object.keys(value).length === 1 && (value as { unavailable?: unknown }).unavailable === true;
+const heldMetadataNeedsReviewOnly = (value: unknown): boolean => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const held = value as { count?: unknown; rows?: unknown; truncated?: unknown };
+  return Number.isSafeInteger(held.count) && (held.count as number) > 0 && held.truncated === false && Array.isArray(held.rows) && held.rows.length > 0
+    && held.rows.every(row => !!row && typeof row === "object" && !Array.isArray(row)
+      && ((row as { state?: unknown }).state === undefined || (row as { state?: unknown }).state === "needs_review"));
+};
 /** Fresh own-peer counts accompany all tool modes; only old plain sessions use advisory queued nudges. */
 async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> {
+  if (hub?.standby) return result;
   const r = result as { content?: { type: string; text?: string }[] };
   const appendQueued = (hint: string) => {
     // Preserve the inbox's existing first-block refusal/readback contract; counts remain separate advisory text.
@@ -221,7 +245,7 @@ async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> 
           appendQueued(counted ? `(${response.important} important hub message(s) waiting${next})` : `(${response.queued} queued hub message(s), ${response.important} important hub message(s) waiting${next})`);
         }
       }
-      if (hint) r.content.push({ type: "text", text: hint });
+      if (hint && (result as { [HELD_HINT_INCLUDED]?: boolean })[HELD_HINT_INCLUDED] !== true) r.content.push({ type: "text", text: hint });
     } catch { /* advisory metadata can never change a saved tool result or its effect classification */ }
     // A pre-#493 daemon sends held rows without counts; the legacy nudge must not advise a read the hold refuses (#221).
     if (!freshCounts && !hint && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
@@ -287,13 +311,20 @@ async function connectLoop(): Promise<void> {
         try { executionCwd = realPath(process.cwd()); }
         catch { /* A removed native cwd revokes root evidence, never the messaging connection. */ }
       }
-      const client = await ControlClient.connect(stateDir, { role: toolsMode || sessionJoin ? "tools" : "peer", peer: peerId, ...(toolsMode || sessionJoin ? {} : { channel }),
+      const client = await ControlClient.connect(stateDir, { role: toolsMode || sessionJoin ? "tools" : "peer", peer: peerId, ...(toolsMode || sessionJoin ? {} : { channel, channelEvidence }),
+        ...(!toolsMode && !sessionJoin ? { retainStandby: true, clientPid: process.pid } : {}),
         ...(sessionJoin ? { session: sessionJoin.label } : {}),
         ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
         ...(executionCwd !== undefined ? { cwd: executionCwd } : {}),
         ...(!toolsMode && standingBy ? { standby: true } : {}),
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
       client.onPush = (msg) => {
+        if (msg.t === "peer_attached") {
+          standingBy = false;
+          detached = undefined;
+          log(`connected to hub as "${peerId}"`);
+          return;
+        }
         if (msg.t === "queued") {
           // Advisory counts for a pull-only session (issue #398); surfaced by withPendingHint on the next tool result.
           if (!channel && !toolsMode && Number.isSafeInteger(msg.important) && Number.isSafeInteger(msg.queued) && msg.important >= 0 && msg.queued >= msg.important) pendingQueued = { queued: msg.queued, important: msg.important };
@@ -313,9 +344,10 @@ async function connectLoop(): Promise<void> {
       };
       hub = client;
       attempt = -1;
-      standingBy = false;
-      detached = undefined;
-      log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles` : `connected to hub as "${peerId}"`);
+      standingBy = client.standby;
+      detached = client.standby ? `${HELD}; a person can hand it over with ahub peer takeover ${peerId}` : undefined;
+      log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles`
+        : client.standby ? `standing by: ${detached}` : `connected to hub as "${peerId}"`);
       // The tool list depends on the connected hub (its lifecycle): when it differs from what the host last listed,
       // ask the host to list it again (#490).
       if (listedTools !== undefined) void reannounce(client).catch(() => {});
@@ -401,7 +433,7 @@ function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
               ]
             : []),
         ]),
-    ...profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria).filter(tool => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
+    ...profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria, lifecycle?.audit).filter(tool => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
     ...projectConductorTools(lifecycle?.startPeers),
   ], lifecycle?.readOnly).filter(tool => !permissionTool || IMPLEMENTER_HUB_TOOL_NAMES.includes(tool.name)),
   };
@@ -415,6 +447,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
 async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) {
   const { name, arguments: args } = req.params;
+  if (hub?.standby) return text(detached ?? HELD);
   if (unidentified) return { ...text(UNIDENTIFIED), isError: true };
   if (!own) return { ...text(NO_PROJECT), isError: true };
   if (sessionJoin && !sessionSupported()) return { ...text(NO_SESSION_SUPPORT), isError: true };
@@ -441,23 +474,28 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     } catch { return deny("hub permission unavailable"); }
   }
   if (name === "hub_delivery_done" && channel) {
-    if (!hub) return text(offline());
+    if (!hub) return offlineToolResult();
     const a = args ?? {};
     const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
     if (result.outcome === "unknown") return text(typeof result.error === "string" ? result.error : "Write outcome unknown. Inspect the delivery before another write; call again only if it is absent, with the same delivery id and generation.");
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
-    let remote: string[] = [], notice = "", polling = "", counted = false;
+    let remote: string[] = [], notice = "", polling = "", counted = false, heldHint = "", metadataWarning = "", heldBodies = "", heldMetadata: unknown;
     if (hub) {
       try {
         const res = await hub.request({ t: "inbox" });
+        heldMetadata = res.held;
+        try { heldBodies = renderHeldInbox(res.heldRead); } catch { heldBodies = "Held message bodies are unavailable; inspect the queue before repeating an action."; }
+        const metadataUnavailable = heldMetadataUnavailable(res.held);
+        heldHint = renderHeldHint(res.held, Date.now(), !deliveryOnly);
+        if (metadataUnavailable) metadataWarning = `Delivery confirmation metadata is unavailable; inspect ahub queue list --peer ${sanitize(peerId)} before deciding whether anything is waiting.`;
         if (!res.ok) notice = `not read: ${res.error}`;
         else if (!Array.isArray(res.envs)) notice = "not read: malformed daemon inbox response";
         else {
           pendingQueued = { queued: typeof res.waiting === "number" ? res.waiting : 0, important: typeof res.waitingImportant === "number" ? res.waitingImportant : 0 };
           remote = (res.envs as Envelope[]).map(frame);
-          if (Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10) polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
+          if (!heldHint && !heldBodies && Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10) polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
           // #713: a pull drains what fits one read; what is left is said plainly, with what to do about it. The count already says how many remain, so the pending hint adds only the important ones (#221).
           if (res.waiting) { notice = `(${res.waiting} more waiting: call hub_inbox again before you start work)`; counted = true; }
         }
@@ -466,14 +504,21 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     // Only pushes without a journal delivery id enter this buffer. Pull completion belongs to the daemon.
     const out = [...inbox.splice(0), ...remote];
     if (notice) out.push(notice);
-    const body = out.length ? out.join("\n\n") : "(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.";
+    if (heldHint) out.push(heldHint);
+    if (metadataWarning) out.push(metadataWarning);
+    let body = out.length ? out.join("\n\n") : heldBodies ? "(no queued hub messages)" : "(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.";
+    if (out.length === 1 && out[0] === heldHint && heldHint && heldMetadataNeedsReviewOnly(heldMetadata)) {
+      body = `(no queued hub messages)\n\n${body}`;
+    }
     const result = text(polling ? `${body}\n${polling}` : body);
+    if (heldBodies) result.content.push({ type: "text", text: heldBodies });
     if (counted) Object.defineProperty(result, QUEUED_COUNTED, { value: true });
-    return result;
+    if (heldHint || heldBodies || metadataWarning) Object.defineProperty(result, HELD_HINT_INCLUDED, { value: true });
+    return detached === "detached by the person" ? { ...result, isError: true } : result;
   }
   if (name === "hub_send") {
     const { text: body, to, reply_to } = (args ?? {}) as { text?: string; to?: string[]; reply_to?: string };
-    if (!hub) return text(`${offline()} Message not sent.`);
+    if (!hub) return offlineToolResult(" Message not sent.");
     const res = await hub.request({ t: "send", body, to, reply_to });
     if (!res.ok) return text(`not sent: ${res.error}`);
     if (res.recorded) return text("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
@@ -482,9 +527,11 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     return text(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
   }
   if (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) {
-    if (!hub) return text(offline());
+    if (!hub) return offlineToolResult();
     // #445 C2: a daemon that predates invocations would answer with a generic unknown-operation error; say what is missing instead.
     if (name === "hub_invoke" && !hub.features.includes("invocation")) return { ...text("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
+    // #1053: a hub that predates questions would answer "unknown operation"; say what is missing, and what to do meanwhile.
+    if (name === "hub_ask" && !hub.features.includes("questions")) return { ...text("error: this hub does not support questions; restart it with the current agent-hub release (ahub restart), or ask the person with hub_send"), isError: true };
     const rawArgs = args ?? {}, operation = toolWriteOperation({ t: "task", op: name });
     let taskArgs = rawArgs, requestId: unknown;
     if (operation && Object.hasOwn(rawArgs, "request_id")) {
@@ -492,7 +539,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
       const { request_id: _requestId, ...withoutRequestId } = rawArgs;
       taskArgs = withoutRequestId;
     }
-    const res = await hub.request({ t: "task", op: name, args: taskArgs, ...(requestId !== undefined ? { requestId } : {}) }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" ? signal : undefined);
+    const res = await hub.request({ t: "task", op: name, args: taskArgs, ...(requestId !== undefined ? { requestId } : {}) }, name === "hub_invoke" ? INVOCATION_CONTROL_TIMEOUT_MS : name === "hub_ask" ? QUESTION_CONTROL_TIMEOUT_MS : undefined, name === "hub_invoke" || name === "hub_ask" ? signal : undefined);
     if (res.outcome === "unknown") return text(typeof res.error === "string" ? res.error : "Write outcome unknown. Inspect the task before another write; call again only if it is absent, with the same request_id and arguments.");
     return { ...text(res.ok ? res.text : `error: ${res.error}`), ...(res.ok ? {} : { isError: true }) };
   }

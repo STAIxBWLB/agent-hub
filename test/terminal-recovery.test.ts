@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   inspectTerminals,
   inspectSavedTerminal,
+  reattachOrphanedTerminal,
   recordTerminalLaunch,
   createTerminal,
   launcherOf,
@@ -109,6 +110,70 @@ test("#482 an orphaned but connected terminal asks the person to reattach, never
   expect(result.blockers[0]?.nextAction).toContain("refresh");
   expect(result.blockers[0]?.nextAction).not.toMatch(/finish|cancel/);
   expect(probe.calls.every(argv => ["list", "show"].includes(argv[1]!))).toBe(true);
+});
+
+test("#1246 the orphaned blocker names the peer, the project, the handle and the [r] refresh key, and the inspection records the verified identity", async () => {
+  const shown = terminal({ orphaned: true, connected: true });
+  const probe = fake(argv => argv[1] === "list" ? { result: { terminals: [shown] } } : { result: { terminal: shown } });
+  const result = await inspectTerminals(root, { codex: session }, probe.runner);
+  expect(result.blockers[0]?.message).toContain("the codex terminal term-old");
+  expect(result.blockers[0]?.message).toContain(root);
+  expect(result.blockers[0]?.nextAction).toContain("refresh in ahub upgrade ([r] on the plan, [s] on an open operation), or rerun it");
+  expect(result.orphaned).toEqual([{ peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, root }]);
+  expect(probe.calls.every(argv => ["list", "show"].includes(argv[1]!))).toBe(true);
+});
+
+test("#1246 a terminal that is not orphaned and connected is never recorded for reattachment", async () => {
+  for (const patch of [{ orphaned: true, connected: false }, { orphaned: false, connected: true }]) {
+    const shown = terminal(patch);
+    const probe = fake(argv => argv[1] === "list" ? { result: { terminals: [shown] } } : { result: { terminal: shown } });
+    expect((await inspectTerminals(root, { codex: session }, probe.runner)).orphaned).toBeUndefined();
+  }
+});
+
+const orphan = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, root };
+function switching(reads: Record<string, unknown>[], onSwitch: () => CommandResult = () => ({ result: { ok: true } })) {
+  let read = 0;
+  return fake(argv => argv[1] === "switch" ? onSwitch() : { result: { terminal: reads[Math.min(read++, reads.length - 1)] } });
+}
+
+test("#1246 reattach switches exactly the verified handle once and polls until orphaned is false", async () => {
+  const probe = switching([terminal({ orphaned: true, connected: true }), terminal({ orphaned: true, connected: true }), terminal({ orphaned: false, connected: true })]);
+  expect(await reattachOrphanedTerminal(orphan, probe.runner, 5_000)).toBe("reattached");
+  expect(probe.calls.filter(argv => argv[1] === "switch")).toEqual([["terminal", "switch", "--terminal", "term-old", "--json"]]);
+  expect(probe.calls.every(argv => ["show", "switch"].includes(argv[1]!) && argv[0] === "terminal")).toBe(true);
+});
+
+test("#1246 a terminal that stays orphaned past the bound is still-orphaned", async () => {
+  const probe = switching([terminal({ orphaned: true, connected: true })]);
+  const started = Date.now();
+  expect(await reattachOrphanedTerminal(orphan, probe.runner, 300)).toBe("still-orphaned");
+  expect(Date.now() - started).toBeLessThan(3_000);
+  expect(probe.calls.filter(argv => argv[1] === "switch")).toHaveLength(1);
+});
+
+test("#1246 a changed identity triggers no switch", async () => {
+  for (const patch of [{ incarnationId: "inc-new" }, { worktreeId: "other" }, { worktreePath: "/elsewhere" }, { handle: "term-other" }]) {
+    const probe = switching([terminal({ orphaned: true, connected: true, ...patch })]);
+    expect(await reattachOrphanedTerminal(orphan, probe.runner, 100)).toBe("unavailable");
+    expect(probe.calls.some(argv => argv[1] === "switch")).toBe(false);
+  }
+});
+
+test("#1246 a pane that is disconnected, gone, or already attached triggers no switch", async () => {
+  const disconnected = switching([terminal({ orphaned: true, connected: false })]);
+  expect(await reattachOrphanedTerminal(orphan, disconnected.runner, 100)).toBe("unavailable");
+  const attached = switching([terminal({ orphaned: false, connected: true })]);
+  expect(await reattachOrphanedTerminal(orphan, attached.runner, 100)).toBe("reattached");
+  const gone = fake(() => ({ status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) }));
+  expect(await reattachOrphanedTerminal(orphan, gone.runner, 100)).toBe("unavailable");
+  for (const probe of [disconnected, attached, gone]) expect(probe.calls.some(argv => argv[1] === "switch")).toBe(false);
+});
+
+test("#1246 a failing switch is unavailable and is not polled", async () => {
+  const probe = switching([terminal({ orphaned: true, connected: true })], () => ({ status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_gone" } }) }));
+  expect(await reattachOrphanedTerminal(orphan, probe.runner, 100)).toBe("unavailable");
+  expect(probe.calls.map(argv => argv[1])).toEqual(["show", "switch"]);
 });
 
 test("#482 disconnected terminals retain their existing turn guidance", async () => {
@@ -621,6 +686,50 @@ test("an invalid launch row for the queried peer and instance is unknown, never 
     writeFileSync(file, JSON.stringify([rowFor(stateDir), rowFor(stateDir, { peer: "pi", launchId: 42 })]));
     expect((await launcherOf("claude", root, options))?.state).toBe("live");
   } finally { rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+// #1233: Orca 1.4.250 throws terminal_exited from a wait on a pane whose process ended, on stdout with an empty
+// stderr. The 0.32.0 upgrade stopped on it as "Orca terminal wait failed: exit status 1".
+test("#1233 Orca's gone codes reach the launcher check, and any other Orca failure names its code", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex resume session-1", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-orca-exited-"));
+  const emptyState = mkdtempSync(join(tmpdir(), "ahub-orca-exited-none-"));
+  const ended = Bun.spawnSync(["true"]).pid;
+  writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "codex", projectRoot: root, stateDir, instanceId: "i-target", launcherPid: ended,
+    launcherSignature: "launcher-start", launchId: "launch-new", handle: "term-new", incarnationId: "inc-new", worktreeId, env: {} }]));
+  const orcaError = (code: string, message = code) => ({ status: 1, stdout: JSON.stringify({ ok: false, error: { code, message } }), stderr: "" });
+  const scenario = (waitAnswer: CommandResult, state: string) => fake((argv) => {
+    if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
+    if (argv[1] === "show") return { result: { terminal: terminal({ handle: "term-new", incarnationId: "inc-new" }) } };
+    if (argv[1] === "list") return { result: { terminals: [terminal({ handle: "term-new", incarnationId: "inc-new" })] } };
+    if (argv[1] === "wait") return waitAnswer;
+    throw new Error("unexpected command");
+  });
+  const create = (waitAnswer: CommandResult, state = stateDir) =>
+    createTerminal(binding, { runner: scenario(waitAnswer, state).runner, stateDir: state, instanceId: "i-target", processIdentity: () => undefined }, 5_000);
+  try {
+    for (const code of ["terminal_exited", "terminal_gone", "no_connected_pty"]) {
+      // The launcher recorded itself and is gone: the restoration launcher exited.
+      expect((await create(orcaError(code))).blockers[0]?.code).toBe("launcher-exited");
+      // No launcher record and the pane is still listed: gone, naming Orca's code, never a bare exit status.
+      const unrecorded = (await create(orcaError(code), emptyState)).blockers[0];
+      expect(unrecorded?.code).toBe("terminal-gone");
+      expect(unrecorded?.message).toContain(code === "terminal_exited" ? "exited" : code);
+    }
+    // 1.4.250: a TUI held by a prompt answers ok with satisfied false and a blocked reason, which the blocker names.
+    const prompt = await waitForIdle({ ...binding, handle: "term-new", incarnationId: "inc-new" }, 1, scenario({ stdout: JSON.stringify({ ok: true, result: { wait: { satisfied: false, blockedReason: "agent-update-prompt" } } }) }, stateDir).runner);
+    expect(prompt.blockers[0]).toMatchObject({ code: "terminal-unready", message: expect.stringContaining("blocked by agent-update-prompt") });
+    const other = (await create(orcaError("runtime_unavailable", "Orca runtime is not ready"))).blockers[0];
+    expect(other?.code).toBe("command-error");
+    expect(other?.message).toContain("runtime_unavailable: Orca runtime is not ready");
+    expect(other?.message).not.toContain("exit status");
+    // Without any structured error the exit status is still the last resort.
+    expect((await create({ status: 1, stdout: "", stderr: "" })).blockers[0]?.message).toContain("exit status 1");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+    rmSync(emptyState, { recursive: true, force: true });
+  }
 });
 
 test("a restoration create beside an invalid row of its own launch reads may-run, never exited", async () => {

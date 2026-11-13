@@ -1,4 +1,4 @@
-import { buildIntentBrief, type IntentBriefOptions, type IntentBriefSource } from "@staix/agent-mem";
+import { buildIntentBrief, parseRecordLines, type CaptureRow, type IntentBriefOptions, type IntentBriefSource } from "@staix/agent-mem";
 import { controlWriteSpan } from "../hub/control-write-trace.ts";
 import type { PeerId } from "../hub/envelope.ts";
 import type { MemoryClient } from "./client.ts";
@@ -34,7 +34,7 @@ export async function related(client: MemoryClient, project: string, query: stri
 }
 
 /** A native memory line for a brief (#258): `mem:<id8> <kind> <tier>: <title or text>`, fails first. */
-export interface NativeItem { id: string; line: string; kind?: string; about?: readonly string[]; tier?: string; peer?: string; machine?: string; at?: string }
+export interface NativeItem { id: string; line: string; kind?: string; about?: readonly string[]; tier?: string; peer?: string; machine?: string; at?: string; anchors?: readonly string[] }
 export type NativeBrief = (task: BriefTask) => NativeItem[] | Promise<NativeItem[]>;
 export interface IntentBriefContext { source: IntentBriefSource; options: IntentBriefOptions }
 /** Host-owned policy and store binding; the library owns relevance, ordering and text. */
@@ -46,6 +46,87 @@ export interface CorpusBriefPort {
   allowed(task: BriefTask): boolean;
   policyVersion(): string;
   read(task: BriefTask): NativeItem[] | Promise<NativeItem[]>;
+}
+
+export interface RecordPreferenceCounts { beforeBytes: number; afterBytes: number; replacedNotes: number; records: number }
+export interface RecordBriefSnapshot {
+  /** Relevant complete rows already authorized and screened by the host, from readBriefRecords. */
+  rows: readonly CaptureRow[];
+  /** Only known generated done/review notes. Anchors are explicit raw Record anchors, never inferred prose. */
+  replaceable: readonly { id: string; anchors: readonly string[] }[];
+  partial: boolean;
+  /** Re-screen complete rows and any supplied final context against current host policy; false/throw revokes the snapshot. */
+  current?(text?: string): boolean;
+}
+export interface RecordBriefPort {
+  allowed(task: BriefTask): boolean;
+  policyVersion(task?: BriefTask): string;
+  read(task: BriefTask): RecordBriefSnapshot | undefined | Promise<RecordBriefSnapshot | undefined>;
+  observe?(peer: PeerId, task: number | undefined, counts: RecordPreferenceCounts): void;
+  /** Legacy Record addition ceiling. Existing larger context is retained; additions cannot enlarge it. */
+  maxBytes?: number | (() => number);
+}
+const RECORD_ROWS = 32, RECORD_BYTES = 2048;
+const LEGACY_KNOWLEDGE_HEADER = "Knowledge brief (advice, not a block):";
+const LEGACY_NATIVE_HEADER = "Memory brief (hub memory first, fails first: ahub memory show <mem id>; amem by mem:id):";
+const LEGACY_CURATED_HEADER = "Memory brief (amem curated notes; fetch details by mem:id):";
+
+/** Read-time display preference only; the package parser owns Record syntax and canonical anchors. */
+export function preferRecordItems(items: readonly NativeItem[], snapshot: RecordBriefSnapshot, maximum: number,
+  protectedIds: ReadonlySet<string> = new Set(), maximumLineBytes = 2048): { items: NativeItem[]; replacedNotes: number; records: number } {
+  const original = () => ({ items: [...items], replacedNotes: 0, records: 0 });
+  if (!Number.isSafeInteger(maximumLineBytes) || maximumLineBytes < 0 || snapshot.rows.length > RECORD_ROWS || snapshot.replaceable.length > RECORD_ROWS) return original();
+  const records: { item: NativeItem; anchors: readonly string[] }[] = [];
+  for (const row of snapshot.rows) {
+    if (row.event !== "Record" || row.subagent || !Number.isSafeInteger(row.id) || row.id < 1 || typeof row.excerpt !== "string"
+      || row.excerpt.length > RECORD_BYTES || Buffer.byteLength(row.excerpt) > RECORD_BYTES || !Array.isArray(row.paths)) continue;
+    const parsed = parseRecordLines(row.excerpt), record = parsed.records[0];
+    if (parsed.incomplete || Object.keys(parsed.drops).length || parsed.records.length !== 1 || !record || record.line !== row.excerpt
+      || record.anchors.length !== row.paths.length || !record.anchors.every((anchor, index) => anchor === row.paths[index])) continue;
+    const id = `capture:Record:${row.id}`;
+    if (records.some(value => value.item.id === id)) continue;
+    records.push({ item: { id, line: `${id} ${record.line}`, kind: record.kind, anchors: record.anchors }, anchors: record.anchors });
+  }
+  const bytes = (rows: readonly NativeItem[]) => Buffer.byteLength(rows.map(item => item.line).join("\n"));
+  // Preexisting priority/baseline context is never deleted merely to satisfy a new optional source cap.
+  const ceiling = Math.max(maximumLineBytes, bytes(items));
+  const selected = [...items]; let replacedNotes = 0;
+  const partialMarker = "[partial Record window: older Records not read] ";
+  const marked = (rows: NativeItem[]): NativeItem[] => {
+    if (!snapshot.partial) return rows;
+    let first = true;
+    return rows.map(item => {
+      if (!first || !records.some(record => record.item.id === item.id)) return item;
+      first = false;
+      return item.line.startsWith(partialMarker) ? item : { ...item, line: partialMarker + item.line };
+    });
+  };
+  // A partial candidate window does not weaken explicit saved-id/anchor proof for its complete known rows.
+  for (const note of items) {
+    if (note.kind === "fail" || note.kind === "contract" || protectedIds.has(note.id)) continue;
+    const permitted = snapshot.replaceable.filter(value => value.id === note.id);
+    if (permitted.length !== 1 || !permitted[0]!.anchors.length) continue;
+    const anchors = permitted[0]!.anchors;
+    const covering = records.filter(record => record.anchors.some(anchor => anchors.includes(anchor)));
+    if (!anchors.every(anchor => covering.some(record => record.anchors.includes(anchor)))) continue;
+    const additions = covering.filter(record => !selected.some(item => item.id === record.item.id));
+    if (selected.length - 1 + additions.length > maximum) continue;
+    const position = selected.findIndex(item => item.id === note.id);
+    if (position < 0) continue;
+    const complete = additions.map(record => record.item);
+    if (bytes(complete) > Buffer.byteLength(note.line)) continue;
+    const candidate = marked([...selected.slice(0, position), ...complete, ...selected.slice(position + 1)]);
+    if (bytes(candidate) > ceiling || bytes(candidate) > bytes(selected)) continue;
+    selected.splice(0, selected.length, ...candidate); replacedNotes++;
+  }
+  // Host relevance is authoritative; spare room can carry Records without suppressing any original item.
+  for (const record of records) {
+    if (selected.length >= maximum || selected.some(item => item.id === record.item.id)) continue;
+    const candidate = marked([...selected, record.item]);
+    if (bytes(candidate) > ceiling) continue;
+    selected.splice(0, selected.length, ...candidate);
+  }
+  return { items: selected, replacedNotes, records: selected.filter(item => records.some(record => record.item.id === item.id)).length };
 }
 
 /**
@@ -68,6 +149,7 @@ export class Briefs {
     private readonly displayNative?: (items: readonly NativeItem[]) => string[],
     private readonly intent?: IntentBriefHost,
     private readonly corpus?: CorpusBriefPort,
+    private readonly records?: RecordBriefPort,
   ) {}
 
   async forTask(peer: PeerId, task: BriefTask, priority: readonly NativeItem[] = []): Promise<string | undefined> {
@@ -100,6 +182,32 @@ export class Briefs {
         return items;
       } catch { return current() ? [] : undefined; }
     };
+    const recordItems = async (items: readonly NativeItem[], lineBudget: number): Promise<{ items: NativeItem[]; replacedNotes: number; records: number; invalidated?: true; current?: (text?: string) => boolean }> => {
+      let version: string | undefined, snapshot: RecordBriefSnapshot | undefined;
+      const recordCurrent = (text?: string) => {
+        try { return current() && this.records!.allowed(task) && this.records!.policyVersion(task) === version && (snapshot?.current === undefined || snapshot.current(text) === true); } catch { return false; }
+      };
+      const fallback = () => ({ items: [...items], replacedNotes: 0, records: 0, ...(version === undefined ? {} : { current: recordCurrent }) });
+      if (!this.records || !current()) return fallback();
+      try {
+        if (!this.records.allowed(task)) return fallback();
+        version = this.records.policyVersion(task);
+        snapshot = await this.records.read(task);
+        if (!recordCurrent()) return { ...fallback(), invalidated: true };
+        if (!snapshot) return fallback();
+        const available = { ...snapshot, rows: snapshot.rows.filter(row => !this.seen.get(peer)?.has(`capture:Record:${row.id}`)) };
+        const result = preferRecordItems(items, available, maximum, new Set(priority.map(item => item.id)), lineBudget);
+        return { ...result, current: recordCurrent };
+      } catch {
+        try { if (version !== undefined && !recordCurrent()) return { ...fallback(), invalidated: true }; }
+        catch { return { ...fallback(), invalidated: true }; }
+        return fallback();
+      }
+    };
+    const observeRecords = (before: string, after: string, result: { replacedNotes: number; records: number }) => {
+      try { this.records?.observe?.(peer, task.id, { beforeBytes: Buffer.byteLength(before), afterBytes: Buffer.byteLength(after), replacedNotes: result.replacedNotes, records: result.records }); }
+      catch { /* count-only telemetry cannot fail a brief */ }
+    };
     if (this.intent) {
       // Serialize only this peer's library reads, so awaited policy cannot duplicate a delivered note.
       const previous = this.libraryRuns.get(peer);
@@ -129,16 +237,31 @@ export class Briefs {
           const corpus = await corpusItems(maximum - selected.length);
           if (corpus === undefined || !current()) return undefined;
           for (const item of corpus) if (selected.length < maximum && !seen.has(item.id) && !selected.some(row => row.id === item.id)) selected.push(item);
-          if (!selected.length) return undefined;
+          if (!selected.length && !this.records) return undefined;
           // Preserve complete library rows (including graph neighbours after a seen direct bridge).
           if (!current()) return undefined;
           const header = selected.some(item => item.kind === "note") ? "Knowledge brief (advice, not a block):" : lines[0] || "Live fail notes for this plan (advice, not a block):";
+          const before = [header, ...selected.map(item => item.line)].join("\n");
+          const preferred = this.records ? await recordItems(selected, Math.max(0, (context.options.maxBytes ?? 2048) - Buffer.byteLength(header) - 1)) : { items: [...selected], replacedNotes: 0, records: 0, invalidated: undefined, current: undefined };
+          if (preferred.invalidated || preferred.current?.() === false || !current() || context.options.allowed?.() === false || context.options.policyVersion() !== revision) return undefined;
+          context.options.assertCurrent?.();
+          const representedIds = selected.filter(item => !preferred.items.some(row => row.id === item.id)).map(item => item.id);
+          selected.splice(0, selected.length, ...preferred.items);
+          if (!selected.length) return undefined;
           const text = [header, ...selected.map(item => item.line)].join("\n");
-          if (!current()) return undefined;
-          this.seen.set(peer, seen);
-          for (const item of selected) seen.add(item.id);
+          if (preferred.current?.(text) === false || !current()) return undefined;
+          const claimSeen = () => {
+            this.seen.set(peer, seen);
+            for (const item of selected) seen.add(item.id);
+            for (const id of representedIds) seen.add(id);
+          };
+          if (!this.records) claimSeen();
           if (!current()) return undefined;
           if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: selected.filter(item => item.kind !== "note").length, fails: selected.filter(item => item.kind === "fail").length, claudeMem: 0 }); } catch { /* telemetry never fails a brief */ }
+          if (preferred.current?.(text) === false) return undefined;
+          observeRecords(before, text, preferred);
+          if (preferred.current?.(text) === false) return undefined;
+          if (this.records) claimSeen();
           return text;
         } catch { return undefined; }
       })();
@@ -189,16 +312,48 @@ export class Briefs {
     }
     if (!current()) return undefined;
     const notice = this.client?.readNotice();
-    if (!own.length && !items.length && !corpusRows.length && !notice) return undefined;
-    if (!current()) return undefined;
-    for (const item of own) seen.add(item.id);
-    for (const item of items) seen.add(`#${item.id}`);
-    for (const item of corpusRows) seen.add(item.id);
+    const beforeOwn = [...own, ...corpusRows];
+    let legacyBytes = 2048;
+    try { legacyBytes = typeof this.records?.maxBytes === "function" ? this.records.maxBytes() : this.records?.maxBytes ?? legacyBytes; }
+    catch { legacyBytes = NaN; } // An unreadable optional cap cannot grant additional bytes.
+    const indexLines = items.map(item => `${item.id.toString().startsWith("mem:") ? item.id : `#${item.id}`} ${item.time} ${item.type} ${item.title}`);
+    const overhead = Math.max(...[LEGACY_KNOWLEDGE_HEADER, LEGACY_NATIVE_HEADER, LEGACY_CURATED_HEADER].map(header => Buffer.byteLength(header))) + 1
+      + (notice ? Buffer.byteLength(notice) + 1 : 0) + indexLines.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+    const preferred = this.records ? await recordItems(beforeOwn, Math.max(0, legacyBytes - overhead)) : { items: beforeOwn, replacedNotes: 0, records: 0, invalidated: undefined, current: undefined };
+    if (preferred.invalidated || preferred.current?.() === false || !current()) return undefined;
+    // A Record read is another yield point. Concurrent legacy reads share this same set, so
+    // recheck every ordinary row after it before claiming any delivered id.
+    items.splice(0, items.length, ...items.filter(item => !seen.has(`#${item.id}`) && !seen.has(String(item.id))));
+    // The index/timeline bridge has no anchor metadata and is never removed by a Record preference.
+    const room = Math.max(0, maximum - items.length);
+    const preferredOwn = preferred.items.length <= room ? preferred : { items: beforeOwn, replacedNotes: 0, records: 0 };
+    own.splice(0, own.length, ...preferredOwn.items.filter(item => priorityIds.has(item.id) || !seen.has(item.id))); corpusRows.length = 0;
+    if (!own.length && !items.length && !notice) return undefined;
+    if (preferred.current?.() === false || !current()) return undefined;
+    const claimSeen = () => {
+      for (const item of own) seen.add(item.id);
+      for (const item of beforeOwn) if (!preferredOwn.items.some(row => row.id === item.id)) seen.add(item.id);
+      for (const item of items) seen.add(`#${item.id}`);
+      for (const item of corpusRows) seen.add(item.id);
+    };
+    if (!this.records) claimSeen();
     if (!current()) return undefined;
     if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: own.filter(item => item.kind !== "note").length, fails: own.filter((i) => i.kind === "fail").length, claudeMem: items.length }); } catch { /* telemetry never fails a brief */ }
     if (!current()) return undefined;
-    const nativeRows = own.filter(item => item.kind !== "note"), noteRows = [...own.filter(item => item.kind === "note"), ...corpusRows];
-    const header = noteRows.length ? "Knowledge brief (advice, not a block):" : own.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; amem by mem:id):" : "Memory brief (amem curated notes; fetch details by mem:id):";
-    return [header, ...(notice ? [notice] : []), ...(this.displayNative?.(nativeRows) ?? nativeRows.map((i) => i.line)), ...items.map((i) => `${i.id.toString().startsWith("mem:") ? i.id : `#${i.id}`} ${i.time} ${i.type} ${i.title}`), ...noteRows.map(item => item.line)].join("\n");
+    const render = (rows: readonly NativeItem[]) => {
+      const native = rows.filter(item => item.kind !== "note"), notes = rows.filter(item => item.kind === "note");
+      const header = notes.length ? LEGACY_KNOWLEDGE_HEADER : rows.length ? LEGACY_NATIVE_HEADER : LEGACY_CURATED_HEADER;
+      return [header, ...(notice ? [notice] : []), ...(this.displayNative?.(native) ?? native.map(item => item.line)), ...items.map(item => `${item.id.toString().startsWith("mem:") ? item.id : `#${item.id}`} ${item.time} ${item.type} ${item.title}`), ...notes.map(item => item.line)].join("\n");
+    };
+    const text = render(own);
+    if (preferred.current?.(text) === false || !current()) return undefined;
+    if (this.records) {
+      const before = render(beforeOwn);
+      if (preferred.current?.(text) === false || !current()) return undefined;
+      observeRecords(before, text, { ...preferredOwn, records: own.filter(item => item.id.startsWith("capture:Record:")).length });
+    }
+    if (preferred.current?.(text) === false || !current()) return undefined;
+    if (this.records) claimSeen();
+    return text;
   }
 }

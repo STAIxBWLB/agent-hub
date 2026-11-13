@@ -1,3 +1,4 @@
+import { globalCliUpdateStep } from "./install-paths.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { renderPlan, renderOperation, renderBlocked, renderSummary, renderStep, renderWait, renderMenu, choiceInstruction, type RecoveryPresentationOptions, type MenuPresentationItem } from "./upgrade-presentation.ts";
 import { quoted, wrap } from "./console-state.ts";
@@ -5,6 +6,7 @@ import { operationLines, stepLabel } from "./upgrade-labels.ts";
 export { operationLines, stepLabel } from "./upgrade-labels.ts";
 import { recoveryArgv } from "../hub/recovery-store.ts";
 import { cancellableWait, nextChoices, publicOperation, type Inspection, type PlannedProject, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
+import { shellQuote, type OrphanedTerminal } from "./terminal-recovery.ts";
 
 /**
  * #272: the interactive screens of `ahub upgrade`, `ahub restart` and bare `ahub recovery`. They add no way to change
@@ -36,6 +38,11 @@ export interface UpgradeHost {
   apply(plan: UpgradePlan, interrupted: () => boolean): Promise<RecoveryOperation>;
   /** End one attached agent now: close a TUI agent's terminal, or ask the hub to stop a headless one. One line of outcome. */
   endPeer(planned: PlannedProject, peer: RecoveryPeer): Promise<string>;
+  /**
+   * #1246: switch back exactly these verified orphaned-but-connected panes of one project and wait, bounded, until each reads
+   * not orphaned. One line of outcome each. Optional: a host without it never offers the key.
+   */
+  reattachTerminals?(planned: PlannedProject, terminals: readonly OrphanedTerminal[]): Promise<string[]>;
   /** This selected project's hold, or an authoritative retained legacy machine hold. A reset may name another project. */
   lock(projectRoot?: string): string | undefined;
   read(id: string): RecoveryOperation;
@@ -51,6 +58,11 @@ export interface UpgradeHost {
   entry: string;
   /** This CLI's version. */
   version: string;
+  /**
+   * #718 (#1179): lines to print after the upgrade completed, under the summary: the global CLI or the shared Claude plugin is older than the upgraded daemon and `ahub upgrade` does not update either.
+   * Never part of a blocked, cancelled or abandoned operation, and empty when nothing is older or the versions are unknown.
+   */
+  afterCompleted?(op: RecoveryOperation): Promise<string[]> | string[];
 }
 
 function emit(io: ScreenIO, lines: readonly string[]): void { for (const line of lines) io.out(line); }
@@ -68,6 +80,13 @@ async function summary(host: UpgradeHost, io: ScreenIO, op: RecoveryOperation): 
   if (!io.presentation) return;
   const live = await host.endInspection?.(op).catch(() => ({} as Record<string, Inspection | undefined>));
   emit(io, renderSummary(op, live ?? {}, io.presentation));
+}
+/** #718: the update step for the global CLI and plugin, once, after a completed upgrade (both callers have just seen `completed`). A host that cannot read the versions, or a failure reading them, prints nothing: it is advice, never a failure. */
+async function globalUpdate(host: UpgradeHost, io: ScreenIO, op: RecoveryOperation): Promise<void> {
+  if (op.plan.kind !== "upgrade") return;
+  let lines: string[] = [];
+  try { lines = await host.afterCompleted?.(op) ?? []; } catch { /* advice only */ }
+  for (const line of lines) human(io, line);
 }
 const clock = (io: ScreenIO) => io.presentation?.now() ?? Date.now();
 
@@ -94,12 +113,14 @@ function peerAction(planned: PlannedProject, peer: RecoveryPeer): string {
   if (peer.state === "offline") return "offline, left as it is";
   if (planned.unrecordedTerminals?.includes(peer.id)) return planned.reconnectOnly?.includes(peer.id)
     ? "attached, launcher unrecorded; reconnects by itself (its terminal is left alone)"
-    : "attached, launcher unrecorded; end it in its terminal or resume the original conversation, then refresh the plan";
+    : "attached, launcher unrecorded; end it in its terminal or resume the original conversation, then press [r] refresh";
   if (planned.reconnectOnly?.includes(peer.id)) return "reconnects by itself (unmanaged session; its terminal is left alone)";
   if (planned.freshStart?.includes(peer.id)) return "restarts as a new session (no turn to lose)";
   const terminal = (planned.terminals as { peer: string; handle: string }[]).find((t) => t.peer === peer.id);
   if (terminal) return `resumes its session in a new terminal (replaces ${terminal.handle})`;
-  if (peerKind(planned, peer) === "unmanaged") return "attached, terminal ownership unverified; resolve its evidence or end it in its terminal or resume the original conversation, then refresh the plan";
+  const orphan = planned.orphanedTerminals?.find((t) => t.peer === peer.id);
+  if (orphan) return `attached, terminal ${orphan.handle} is orphaned but still connected; reattach it with orca terminal switch --terminal ${shellQuote(orphan.handle)} (the upgrade menu's [t] does it), then press [r] refresh`;
+  if (peerKind(planned, peer) === "unmanaged") return "attached, terminal ownership unverified; resolve its evidence or end it in its terminal or resume the original conversation, then press [r] refresh";
   return definitionOf(peer.id)?.session.restoreOnStart ? "restarts headless on its recorded session" : "restarts headless as a new session";
 }
 
@@ -236,7 +257,7 @@ export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: strin
   for (let acted = false, reset = false; ;) {
     if (io.interrupted()) return "quit";
     const op = host.read(id), runner = host.runner(id);
-    if (op.phase === "completed") { if (io.presentation) await summary(host, io, op); else human(io, `${op.plan.kind} to ${op.plan.version} completed`); return "completed"; }
+    if (op.phase === "completed") { if (io.presentation) await summary(host, io, op); else human(io, `${op.plan.kind} to ${op.plan.version} completed`); await globalUpdate(host, io, op); return "completed"; }
     if (op.phase === "cancelled") {
       if (io.presentation) await summary(host, io, op);
       else human(io, `operation ${id} is ${op.disposition ? "ended (abandoned, not completed)" : "cancelled"}; the recovery lock is free`);
@@ -323,15 +344,18 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
     if (io.presentation) emit(io, renderPlan(plan, host.version, io.presentation, planLines(plan, host.version)));
     else for (const line of planLines(plan, host.version)) human(io, line);
     const blocked = plan.blockers.length > 0 || plan.projects.some((p) => p.blockers.length > 0);
-    if (!plan.projects.length) human(io, plan.kind === "upgrade" && plan.scope === undefined ? `no hub is running, so nothing is carried over: install with \`bun add -g @staix/agent-hub@${plan.version}\`, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");
+    if (!plan.projects.length) human(io, plan.kind === "upgrade" && plan.scope === undefined ? `no hub is running, so nothing is carried over: ${globalCliUpdateStep(plan.version)}, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");
     const endable = plan.projects.flatMap((p) => p.source.peers.filter((peer) => ["tui", "headless"].includes(peerKind(p, peer))).map((peer) => ({ planned: p, peer })));
-    const keys = [...(blocked ? [] : ["[a] apply"]), "[r] refresh", ...(endable.length ? ["[k] end agents"] : []), "[j] plan as JSON", ...(plan.projects.length ? ["[x] reset a project's hub"] : []), "[q] quit"];
+    // #1246: only the terminals the plan verified as orphaned but still connected, and only on a host that can switch them.
+    const orphaned = host.reattachTerminals ? plan.projects.flatMap((p) => (p.orphanedTerminals ?? []).map((terminal) => ({ planned: p, terminal }))) : [];
+    const keys = [...(blocked ? [] : ["[a] apply"]), "[r] refresh", ...(orphaned.length ? [`[t] reattach ${orphaned.length} orphaned terminal${orphaned.length === 1 ? "" : "s"}`] : []), ...(endable.length ? ["[k] end agents"] : []), "[j] plan as JSON", ...(plan.projects.length ? ["[x] reset a project's hub"] : []), "[q] quit"];
     const preferred = "r"; // Enter never closes terminals, stops a hub, resumes or reattaches implicitly.
     if (io.presentation) {
-      if (blocked) human(io, "Blocked: take the next action each blocker names, then refresh.");
+      if (blocked) human(io, "Blocked: take the next action each blocker names, then press [r] refresh.");
       const items: MenuPresentationItem[] = [
         ...(!blocked ? [{ key: "a", label: "apply this reviewed plan" }] : []),
         { key: "r", label: "refresh the plan", recommended: preferred === "r" },
+        ...(orphaned.length ? [{ key: "t", label: `reattach ${orphaned.length} orphaned terminal${orphaned.length === 1 ? "" : "s"} (orca terminal switch; nothing else changes)` }] : []),
         ...(endable.length ? [{ key: "k", label: "end selected agents before upgrading", destructive: true }] : []),
         { key: "j", label: "plan as JSON" },
         ...(plan.projects.length ? [{ key: "x", label: "reset a project's hub", destructive: true }] : []),
@@ -339,19 +363,30 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
       ];
       emit(io, renderMenu(items, io.presentation));
     }
-    const entered = (await ask(io, io.presentation ? "> " : `${blocked ? "Blocked: take the next action each blocker names, then refresh.\n" : ""}${keys.join("  ")}: `))?.toLowerCase();
+    const entered = (await ask(io, io.presentation ? "> " : `${blocked ? "Blocked: take the next action each blocker names, then press [r] refresh.\n" : ""}${keys.join("  ")}: `))?.toLowerCase();
     const answer = entered === undefined ? "q" : io.presentation && entered === "" ? preferred : entered;
     if (answer === "q") return touched ? undefined : human(io, "nothing was changed");
     if (answer === "j") io.out(JSON.stringify(plan, null, 2));
     else if (answer === "x" && plan.projects.length) { touched = true; await resetFlow(host, io, plan.projects.map((p) => p.project)); }
     else if (answer === "k" && endable.length) touched = (await endAgents(host, io, endable)) || touched;
+    else if (answer === "t" && orphaned.length) {
+      touched = true;
+      for (const p of plan.projects) {
+        const mine = (p.orphanedTerminals ?? []);
+        if (!mine.length) continue;
+        if (io.interrupted()) { human(io, "interrupted: no further terminal was switched"); break; }
+        try { for (const line of await host.reattachTerminals!(p, mine)) human(io, `  ${line}`); }
+        catch (error) { human(io, `  ${p.project.id}: not reattached (${(error as Error).message}). Next: inspect the terminal in Orca, then press [r] refresh`); }
+      }
+      // The loop plans again: a terminal that reads not orphaned is no blocker, one that does not stays one.
+    }
     else if (answer === "a" && !blocked) {
       touched = true;
       let op: RecoveryOperation;
       try { op = await host.apply(plan, () => io.interrupted()); } catch (error) { human(io, `ahub: ${(error as Error).message}`); continue; }
       human(io, `operation ${op.id} started; Enter opens its menu, Ctrl+C leaves, and neither stops the ${plan.kind}`);
       const end = await follow(host, io, op.id);
-      if (end === "completed") { if (io.presentation) await summary(host, io, host.read(op.id)); else human(io, `${plan.kind} to ${plan.version} completed`); return; }
+      if (end === "completed") { if (io.presentation) await summary(host, io, host.read(op.id)); else human(io, `${plan.kind} to ${plan.version} completed`); await globalUpdate(host, io, host.read(op.id)); return; }
       if (end === "left") return;
       // Blocked, cancelled or left to its runner: the lock check above opens its screen, or plans again once it is free.
     }

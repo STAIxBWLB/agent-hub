@@ -47,7 +47,6 @@ test("#553 doctor inventories class-only, default tiers and explicit judges once
   const missing = rows.filter(row => row.name === "routing model" && row.level === "fail");
   expect(missing.map(row => row.detail.split(" ")[0]).sort()).toEqual(["class-only", "coding", "judge"]);
   expect(missing.every(row => row.section === "Models")).toBe(true);
-  expect(rows.some(row => row.name === "switchyard")).toBe(false);
 });
 
 test("#553 doctor reports aggregate success only when all routing aliases are served", async () => {
@@ -74,7 +73,7 @@ test("#553 doctor reports retired routing tables as Config findings and still in
 test("#553 invalid routing does not abort doctor model and memory probes", async () => {
   const rows = await doctor(aliases, false, false, true);
   expect(rows).toContainEqual(expect.objectContaining({ name: "routing models", section: "Models", level: "unknown" }));
-  expect(rows).toContainEqual(expect.objectContaining({ name: "memory library", level: "ok", detail: expect.stringContaining("amem 0.20.1") }));
+  expect(rows).toContainEqual(expect.objectContaining({ name: "memory library", level: "ok", detail: expect.stringContaining("amem 0.25.0") }));
   expect(rows.some(row => row.name === "memory worker")).toBe(false);
   expect(rows.some(row => row.name === "catalog roles" && row.level === "fail")).toBe(false);
 });

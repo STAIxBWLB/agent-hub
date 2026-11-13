@@ -195,8 +195,9 @@ test("the agent-compat step accepts only a clean run or a reported drift; a cras
 
 test("a refused Qwen version names itself and the trust command, keeping the identity contract text (#691)", async () => {
   const { qwenNativeIdentity } = await import("../src/adapters/definitions/qwen-native.ts");
-  expect(() => qwenNativeIdentity("qwen", true, { agentInfo: { name: "qwen-code", version: "0.27.0" } })).toThrow(/native identity is not verified: Version not verified: Qwen Code 0\.27\.0 .*ahub agents trust qwen 0\.27\.0/);
+  expect(() => qwenNativeIdentity("qwen", true, { agentInfo: { name: "qwen-code", version: "0.27.1" } })).toThrow(/native identity is not verified: Version not verified: Qwen Code 0\.27\.1 .*ahub agents trust qwen 0\.27\.1/);
   expect(qwenNativeIdentity("qwen", true, { agentInfo: { name: "qwen-code", version: "0.25.0" } })).toBe(true);
+  expect(qwenNativeIdentity("qwen", true, { agentInfo: { name: "qwen-code", version: "0.27.0" } })).toBe(true);
 });
 
 test("the probe's output collector never keeps more than its cap, and refuses everything after (#691)", async () => {
@@ -251,6 +252,11 @@ test("Claude 2.1.316 is receipt-verified without machine trust; 2.1.315 and 2.1.
   for (const near of ["2.1.315", "2.1.317", "2.1.316-rc.1", "2.2.0"]) expect(assessVersion("claude-implementer", near, []).ok).toBe(false);
 });
 
+test("Claude 2.1.318, 2.1.319 and 2.1.322 are receipt-verified without machine trust; their neighbours are not (#888)", () => {
+  for (const version of ["2.1.318", "2.1.319", "2.1.322"]) expect(assessVersion("claude-implementer", version, [])).toEqual({ ok: true, state: "verified", version });
+  for (const near of ["2.1.317", "2.1.320", "2.1.321", "2.1.323", "2.1.322-rc.1", "2.2.0"]) expect(assessVersion("claude-implementer", near, []).ok).toBe(false);
+});
+
 test("Kimi 2.3.1 and 2.3.2 are receipt-verified without machine trust; their neighbours are not (#792, #843)", () => {
   for (const version of ["2.3.1", "2.3.2"]) expect(assessVersion("kimi-review", version, [])).toEqual({ ok: true, state: "verified", version });
   for (const near of ["2.3.3", "2.4.0", "2.3.2-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
@@ -258,7 +264,7 @@ test("Kimi 2.3.1 and 2.3.2 are receipt-verified without machine trust; their nei
 
 test("Qwen 0.26.1 is receipt-verified without machine trust; its neighbours are not (#843 AC5)", () => {
   expect(assessVersion("qwen", "0.26.1", [])).toEqual({ ok: true, state: "verified", version: "0.26.1" });
-  for (const near of ["0.26.2", "0.27.0", "0.26.1-rc.1"]) expect(assessVersion("qwen", near, []).ok).toBe(false);
+  for (const near of ["0.26.2", "0.27.1", "0.28.0", "0.26.1-rc.1"]) expect(assessVersion("qwen", near, []).ok).toBe(false);
 });
 
 test("the compat watch covers every COMPAT source and renders ahead, unknown and no-public-source rows from an injected fetch (#843)", async () => {
@@ -338,7 +344,7 @@ test("every COMPAT entry names a receipt that exists and has a watcher source, s
   }
   // The receipt to repeat is the newest one for each of the three #843 AC5 CLIs.
   expect(COMPAT.jcode.receipt).toBe("docs/verification/2026-10-26-jcode-0.99.1.md");
-  expect(COMPAT.agy.receipt).toBe("docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md");
+  expect(COMPAT.agy.receipt).toBe("docs/verification/2026-11-08-agy-1.5.3.md");
   expect(COMPAT.pi.receipt).toBe("docs/verification/2026-11-03-pi-150-compat.md");
 });
 
@@ -365,13 +371,13 @@ test("Kimi reviewer 2.4.1 is exact-receipt verified; nearby untested versions st
 
 test("Qwen ACP 0.26.4 is exact-receipt verified; intermediate and nearby versions stay refused (#888)", () => {
   expect(assessVersion("qwen", "0.26.4", [])).toEqual({ ok: true, state: "verified", version: "0.26.4" });
-  for (const near of ["0.26.2", "0.26.3", "0.26.6", "0.27.0", "0.26.4-rc.1", "qwen 0.26.4"]) expect(assessVersion("qwen", near, []).ok).toBe(false);
+  for (const near of ["0.26.2", "0.26.3", "0.26.6", "0.27.1", "0.26.4-rc.1", "qwen 0.26.4"]) expect(assessVersion("qwen", near, []).ok).toBe(false);
 });
 
 
 test("Qwen ACP 0.26.5 is exact-receipt verified next to 0.26.4; 0.26.6 stays refused (#888)", () => {
-  expect(COMPAT.qwen.verified).toEqual(["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5"]);
-  expect(COMPAT.qwen.receipt).toBe("docs/verification/2026-11-03-qwen-0265-acp.md");
+  expect(COMPAT.qwen.verified).toEqual(["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8", "0.26.9", "0.27.0"]);
+  expect(COMPAT.qwen.receipt).toBe("docs/verification/2026-11-09-qwen-0270-acp.md");
   for (const version of ["0.26.4", "0.26.5"]) expect(assessVersion("qwen", version, []), version).toEqual({ ok: true, state: "verified", version });
   for (const near of ["0.26.6", "0.26.5-rc.1", "qwen 0.26.5"]) expect(assessVersion("qwen", near, []).ok, near).toBe(false);
   const acp = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-03-qwen-0265-acp.md"), "utf8");
@@ -379,9 +385,9 @@ test("Qwen ACP 0.26.5 is exact-receipt verified next to 0.26.4; 0.26.6 stays ref
   expect(acp).toMatch(/[0-9a-f]{64}/);
 });
 
-test("the Qwen ACP 0.26.5 dual-output attempt did not pass Q2, so qwen-dual stays at 0.26.1 (#888)", () => {
+test("the unqualified Qwen 0.26.5 dual-output attempt remains refused after later qualification (#888)", () => {
   expect(assessVersion("qwen-dual", "0.26.5", [])).toMatchObject({ ok: false, state: "refused", version: "0.26.5" });
-  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0", "0.27.1"]);
   const receipt = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-03-qwen-0265-dual-output.md"), "utf8");
   for (const text of ["Q2 fewer than two user events", "Matched 0.26.1 control", "do not add 0.26.5"]) expect(receipt, text).toContain(text);
 });
@@ -389,11 +395,49 @@ test("the Qwen ACP 0.26.5 dual-output attempt did not pass Q2, so qwen-dual stay
 test("the Qwen ACP 0.26.4 receipt never admits the unqualified dual-output contract (#888)", () => {
   expect(assessVersion("qwen", "0.26.4", []).ok).toBe(true);
   expect(assessVersion("qwen-dual", "0.26.4", [])).toMatchObject({ ok: false, state: "refused", version: "0.26.4" });
-  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0", "0.27.1"]);
 });
 
 test("the Pi 1.5.0 receipt names the exact package, isolation and every repeated leg (#888)", () => {
   const receipt = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-03-pi-150-compat.md"), "utf8");
   expect(receipt).toMatch(/[0-9a-f]{64}/);
   for (const leg of ["sha512-", "Native identity", "Real CLI extension load", "Installed SDK extension registration", "Managed tool callback", "Failed tool result", "Host permission modes", "Provider requests", "PASS", "Not verified"]) expect(receipt, leg).toContain(leg);
+});
+
+
+test("Qwen ACP 0.26.8 and 0.27.0 retain their independent receipts and historical dual refusals (#888)", () => {
+  expect(assessVersion("qwen", "0.26.8", [])).toEqual({ ok: true, state: "verified", version: "0.26.8" });
+  expect(assessVersion("qwen", "0.27.0", [])).toEqual({ ok: true, state: "verified", version: "0.27.0" });
+  for (const near of ["0.27.1", "0.28.0", "0.27.0-rc.1"]) expect(assessVersion("qwen", near, []).ok, near).toBe(false);
+  expect(assessVersion("qwen-dual", "0.26.9", []).ok).toBe(false);
+  for (const near of ["0.26.6", "0.26.7", "0.26.10", "0.26.8-rc.1", "qwen 0.26.8"]) expect(assessVersion("qwen", near, []).ok, near).toBe(false);
+  expect(assessVersion("qwen-dual", "0.26.8", [])).toMatchObject({ ok: false, state: "refused", version: "0.26.8" });
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0", "0.27.1"]);
+  const acp = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-06-qwen-0268-acp.md"), "utf8");
+  const dual = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-06-qwen-0268-dual-output.md"), "utf8");
+  for (const leg of ["sha512-", "macOS arm64", "Linux x86_64", "Native ACP, no prompts", "Actual published permission handler", "Actual macOS arm64 repetition", "proceed_once", "Not verified"]) expect(acp, leg).toContain(leg);
+  for (const outcome of ["Q2 fewer than two user events", "Matched 0.26.1 control", "do not add 0.26.8"]) expect(dual, outcome).toContain(outcome);
+});
+
+
+test("Kimi reviewer 2.5.1 is exact-receipt verified without trusting nearby versions (#888)", () => {
+  expect(assessVersion("kimi-review", "2.5.1", [])).toEqual({ ok: true, state: "verified", version: "2.5.1" });
+  expect(COMPAT["kimi-review"].receipt).toBe("docs/verification/2026-11-06-kimi-251-reviewer-compat.md");
+  for (const near of ["2.5.0", "2.5.2", "2.5.1-rc.1", "kimi 2.5.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
+});
+
+test("Qwen dual-output 0.27.0 has an exact independent receipt without a version line (#888)", () => {
+  expect(assessVersion("qwen-dual", "0.27.0", [])).toEqual({ ok: true, state: "verified", version: "0.27.0" });
+  expect("line" in COMPAT["qwen-dual"]).toBe(false);
+  for (const near of ["0.28.0", "0.26.9", "0.27.0-rc.1", "qwen 0.27.0"]) {
+    expect(assessVersion("qwen-dual", near, []).ok, near).toBe(false);
+  }
+  expect(assessVersion("qwen", "0.26.9", []).ok).toBe(true);
+});
+
+test("Qwen dual-output 0.27.1 has its own exact receipt; neighbours and the headless entry stay refused (#888)", () => {
+  expect(assessVersion("qwen-dual", "0.27.1", [])).toEqual({ ok: true, state: "verified", version: "0.27.1" });
+  expect(COMPAT["qwen-dual"].receipt).toBe("docs/verification/2026-11-10-qwen-0271-dual-output.md");
+  for (const near of ["0.27.2", "0.28.0", "0.27.1-rc.1", "qwen 0.27.1"]) expect(assessVersion("qwen-dual", near, []).ok, near).toBe(false);
+  expect(assessVersion("qwen", "0.27.1", []).ok).toBe(false);
 });

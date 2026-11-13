@@ -1,0 +1,189 @@
+{
+  "contract": "ExecutionReferenceV1",
+  "vectors": [
+    {
+      "name": "minimal",
+      "valid": true,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42"
+      }
+    },
+    {
+      "name": "full",
+      "valid": true,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42",
+        "revision": "7",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "utf8-exact-id",
+      "valid": true,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+      }
+    },
+    {
+      "name": "utf8-over-id",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+      }
+    },
+    {
+      "name": "project-exact",
+      "valid": true,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+        "kind": "task",
+        "id": "42"
+      }
+    },
+    {
+      "name": "project-over",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+        "kind": "task",
+        "id": "42"
+      }
+    },
+    {
+      "name": "revision-exact",
+      "valid": true,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42",
+        "revision": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      }
+    },
+    {
+      "name": "revision-over",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42",
+        "revision": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      }
+    },
+    {
+      "name": "future-version",
+      "valid": false,
+      "input": {
+        "v": 2,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42"
+      }
+    },
+    {
+      "name": "unknown-producer",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "other",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42"
+      }
+    },
+    {
+      "name": "empty-id",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": ""
+      }
+    },
+    {
+      "name": "null-revision",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42",
+        "revision": null
+      }
+    },
+    {
+      "name": "uppercase-hash",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42",
+        "sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    {
+      "name": "short-hash",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "unknown-field",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "task",
+        "id": "42",
+        "url": "https://example.invalid"
+      }
+    },
+    {
+      "name": "bad-kind",
+      "valid": false,
+      "input": {
+        "v": 1,
+        "tool": "ahub",
+        "projectKey": "project-a",
+        "kind": "ahub/task",
+        "id": "42"
+      }
+    }
+  ]
+}

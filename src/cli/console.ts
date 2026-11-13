@@ -9,12 +9,16 @@ import { reviewResult } from "./console-review.ts";
 import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow, appendEvent, FIRST_KEYS, LAST_KEYS } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
-import { consoleNeeds, attentionFacts } from "./attention.ts";
+import { consoleNeeds, attentionFacts, attentionResults } from "./attention.ts";
 import { loadPetConfig } from "./pet-config.ts";
 import { CHARACTER_IDS, petGlyphs, petSize } from "../pet/frame.ts";
 import { activeNotice, consoleFooterRows } from "./console-state.ts";
+import { pasteFlow, questionRows } from "./console-question.ts";
 import { characterAttentionLine } from "./attention.ts";
 import { projectRoomStatus } from "../rooms/status.ts";
+import { LIVE_TEST_PERSON_REFUSAL } from "./identity.ts";
+import { consoleVersions } from "./console-versions.ts";
+import { VERSION } from "../version.ts";
 
 export interface ConsoleTerminal {
   columns: number; rows: number; isTTY: boolean; isRaw?: boolean;
@@ -38,6 +42,8 @@ export interface ConsoleOptions {
   /** Injected command runner must use argv, closed stdin, and return a cancellation handle. */
   runCommand?: (args: string[], output: (text: string) => void, done: (code?: number) => void, columns?: number) => (() => void);
   pollMs?: number;
+  /** #1385: the global CLI and installed plugin versions, read once off the render loop; absent reads as unknown. */
+  installed?: Promise<{ global?: string; plugin?: string }>;
 }
 /** Exact navigation sequences only (#309, #441); anything else in a multi-character read is a paste. */
 const NAVIGATION = ["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", ...FIRST_KEYS, ...LAST_KEYS].filter(key => key.startsWith("\x1b"));
@@ -105,6 +111,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let resolveDone: () => void = () => {}; const done = new Promise<void>(resolve => { resolveDone = resolve; });
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
   let presentation = consoleOperationalSnapshot(undefined);
+  let installed: { global?: string; plugin?: string } = {};
+  options.installed?.then(value => { installed = value; if (state.versions) state.versions = consoleVersions(state.versions.daemon, VERSION, installed.global, installed.plugin); }, () => {});
   let priorStreamFooterStart: number | undefined;
   let lastExpandedNotice = "";
   const notice = (text: string, tone: Tone = "failure") => notify(state, text, Date.now(), tone);
@@ -208,6 +216,10 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           ...(usageTask !== undefined ? [client.request({ t: "usage", by: "peer", task: usageTask }, 5000)] : [])]);
       })() : undefined;
       if (!active) return;
+      // #1053 T4: the person's own read of the open questions, asked only of a hub whose status lists the `questions` feature: an older hub is never sent a request it does not know.
+      const hasQuestions = Array.isArray(replies[0]?.status?.features) && replies[0].status.features.includes("questions");
+      const questionReply = hasQuestions ? await client.request({ t: "questions" }, 3000) : undefined;
+      if (!active) return;
       const [status, budget, tasks, queue, ready, settings] = replies;
       captureConsoleSelection(state);
       try {
@@ -219,10 +231,23 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           state.petCharacter = pet.character ?? "stai"; state.petSize = pet.size; state.petGlyphs = petGlyphs(pet.glyphs);
         }
       } catch { /* retain running console presentation while a config file is unreadable */ }
+      if (questionReply?.ok === true) {
+        const rows = questionRows(questionReply.questions);
+        // A set the person has not been told about gets one stream line with no question text: A answers it, or ahub answer.
+        const seen = new Set(state.questionsSeen ?? []);
+        for (const row of rows) if (!seen.has(row.set) && state.questionsSeen !== undefined) stream({ text: `  ? ${row.peer} asks ${plural(row.questions.length, "question")}: A answers it here, or ahub answer ${row.set}`, peer: row.peer, kind: "question", tone: "attention" });
+        state.questionsSeen = rows.map(row => row.set);
+        state.questions = rows;
+        if (state.questionFlow && !rows.some(row => row.set === state.questionFlow!.set)) { state.questionFlow = undefined; notice("that question is no longer open"); }
+      } else if (questionReply?.ok === false) state.questions = [];
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status && status.ok !== false) state.pendingRestart = Array.isArray(status.status.pendingRestart) ? status.status.pendingRestart : [];
       if (status.status && status.ok !== false) state.retainedConfig = Array.isArray(status.status.retainedConfig) ? status.status.retainedConfig : [];
       if (status.status) state.features = Array.isArray(status.status.features) ? status.status.features : [];
+      if (status.status && status.ok !== false) {
+        state.versions = consoleVersions(status.status.version, VERSION, installed.global, installed.plugin);
+        state.agentDrift = Array.isArray(status.status.agentDrift) ? status.status.agentDrift : [];
+      }
       if (status.status && status.ok !== false) {
         const rooms = status.status.rooms;
         state.rooms = rooms === undefined ? undefined : rooms === null ? null : Array.isArray(rooms) ? projectRoomStatus(rooms).sort((a, b) => a.name.localeCompare(b.name)) : null;
@@ -237,10 +262,18 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       }
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer],
         ...(typeof status.status.ownerIsolation?.[peer] === "boolean" ? { ownerIsolation: status.status.ownerIsolation[peer] } : {}),
-        ...(typeof status.status.ownerIsolationNotes?.[peer] === "string" ? { ownerIsolationNote: status.status.ownerIsolationNotes[peer] } : {}) }]));
+        ...(typeof status.status.ownerIsolationNotes?.[peer] === "string" ? { ownerIsolationNote: status.status.ownerIsolationNotes[peer] } : {}),
+        ...(status.status.peerVersions?.[peer]?.ahub ? { ahub: status.status.peerVersions[peer].ahub } : {}),
+        ...(status.status.peerVersions?.[peer]?.ahubTools ? { ahubTools: status.status.peerVersions[peer].ahubTools } : {}) }]));
       if (status.status && status.ok !== false) {
         state.taskWip = status.status.taskWip ?? {};
         state.attentionFacts = attentionFacts(status.status.attentionItems);
+        // #1054: unread results (a run a person started that settled), ids and peers only. A result the person has not been told about gets one stream line with no text.
+        const unread = attentionResults(status.status.attentionItems);
+        const seenResults = new Set(state.resultsSeen ?? []);
+        for (const result of unread) if (!seenResults.has(result.id) && state.resultsSeen !== undefined) stream({ text: `  ✓ ${result.peer ?? "a peer"} finished a run you started: ahub results --read ${result.id}`, ...(result.peer ? { peer: result.peer } : {}), kind: "result", tone: "info" });
+        state.resultsSeen = unread.map(result => result.id);
+        state.results = unread;
         state.storageBlocked = !!status.status.deliveryError;
         state.recoveryNeed = status.status.recovery ? { id: status.status.recovery.operationId, running: true } : undefined;
       }
@@ -344,6 +377,36 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       } else stream({ text: `  ${action.peer} never-ask default ${action.confirmed ? "enabled" : "cancelled for this hub"}`, kind: "permission_default", peer: action.peer, tone: "attention" });
       await refresh(); draw(); return;
     }
+    if (action.type === "answer") {
+      const result = await client.request({ t: "answer", surface: "console", questionSet: action.set, answers: action.answers }, 5000);
+      if (!active) return;
+      if (result.ok === false) notice(String(result.error ?? "the answer was refused"));
+      else notify(state, `answered ${action.set}`, Date.now(), "success");
+      await refresh(); draw(); return;
+    }
+    if (action.type === "peer_takeover") {
+      if (options.liveTest) { notice(LIVE_TEST_PERSON_REFUSAL); draw(); return; }
+      let result: any;
+      try { result = await client.request({ t: "peer_takeover", peer: action.peer, standbyId: action.standbyId }, 5000); }
+      catch {
+        notice("peer takeover result is unconfirmed; inspect ahub status before retrying; takeover may already have started");
+        await refresh(); draw(); return;
+      }
+      if (!active) return;
+      const transportError = String(result.error ?? "");
+      if (result.ok === false && (transportError === "hub connection closed" || transportError === "hub request could not be sent" || /^no answer from the hub within \d+ s$/.test(transportError))) {
+        notice("peer takeover result is unconfirmed; inspect ahub status before retrying; takeover may already have started");
+        await refresh(); draw(); return;
+      }
+      if (result.ok !== true) notice(String(result.error ?? "peer takeover was refused"));
+      else if (result.outcome !== "requested" || result.standbyId !== action.standbyId) notice("peer takeover result was not confirmed; refresh ahub status");
+      else {
+        const message = `${action.peer}: old session detached; standby attachment requested`;
+        stream({ text: message, peer: action.peer, kind: "peer_takeover", tone: "attention" });
+        notify(state, message, Date.now(), "attention");
+      }
+      await refresh(); draw(); return;
+    }
     if (action.type === "permit") {
       client.send({ t: "permit", surface: "console", id: action.id, ...(action.option ? { option: action.option } : {}) });
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
@@ -434,6 +497,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
             state.attentionMessages = []; state.attentionSelection = undefined;
             if (state.help && state.mode === "panels") { draw(); return; }
             if (state.confirm?.type === "permission_default") { draw(); return; }
+            // #1053: while the person types an `o` answer a paste is that answer's text, never the command line's; pasteFlow keeps only printable characters, so a pasted Enter, Esc or digit cannot send, leave or pick.
+            if (state.questionFlow) { state.questionFlow = pasteFlow(state.questionFlow, text.replace(/\x1b\[20[01]~/g, "")); draw(); return; }
             if (state.settingsEdit) {
               const edit = state.settingsEdit;
               if (edit.phase === "value" || edit.phase === "reason") state.settingsEdit = { ...edit, text: (edit.text + terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/[\r\n]/g, " ")).slice(0, 1000) };

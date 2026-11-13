@@ -9,12 +9,14 @@ import { sanitize } from "../hub/envelope.ts";
 import { DOING_STUB } from "../hub/peer-doing.ts";
 import type { SettingRow, SettingValue } from "../hub/settings.ts";
 import { symbolFields, overlapFields } from "./console-symbols.ts";
+import { flowBody, flowPrompt, startFlow, stepFlow, type QuestionFlow, type QuestionView } from "./console-question.ts";
 import { choicePrompt, reviewChoiceFor, reviewHint, reviewRefusal, verdictGuide, verdictInput, type ReviewChoice, type Verdict } from "./console-review.ts";
 import { configFormPrompt, reduceConfigForm, type ConfigEditBody, type ConfigForm } from "./console-config.ts";
 import { windowKind } from "../hub/window-kind.ts";
 import { ownerIsolationText, taskHolderText } from "./role-holders.ts";
 import { USAGE_DROP, USAGE_HEAD, usageCells, usageDetail, usagePeers, usageTaskLines, type UsageState } from "./console-usage.ts";
 import type { RoomStatusView } from "../rooms/status.ts";
+import { peerHubVersion, type ConsoleVersions } from "./console-versions.ts";
 
 export interface Approval {
   id: string; peer: string; title: string; expiresAt: number;
@@ -38,9 +40,15 @@ export interface ConsoleState {
   pendingRestart?: { key: string; reason: string }[];
   retainedConfig?: { key: string; reason: string }[];
   features?: readonly string[];
+  /** #1385: the agent-hub versions in play, and the native agent CLIs the hub has not verified (status `agentDrift`). */
+  versions?: ConsoleVersions; agentDrift?: readonly { id: string; version: string; state: string; receipt: string }[];
+  /** #1053 T4: the open questions the hub reported (the person's text, shown here only) and the answer being built; `A` starts it. */
+  questions?: QuestionView[]; questionFlow?: QuestionFlow; questionsSeen?: string[];
   /** Older embedding callers omit choices and retain the original STAI/off toggle. */
   petChoices?: readonly CharacterId[]; petCharacter?: CharacterId; petSize?: PetSize; petGlyphs?: "ascii" | "blocks";
   attentionFacts?: { kind: "review" | "offline" | "stall" | "offer"; id: number; peer?: string }[];
+  /** #1054: unread results from the hub, and the ids the stream has already told the person about. */
+  results?: readonly { id: string; peer?: string; since?: number }[]; resultsSeen?: string[];
   attentionFingerprint?: string;
   petEnabled?: boolean; petBlink?: boolean; attentionMessages?: { id?: string; peer?: string; important: boolean; since?: number }[]; storageBlocked?: boolean; recoveryNeed?: { id?: string; running: boolean; since?: number }; attentionSelection?: number;
   mode: "stream" | "panels"; panel: number; selection: number;
@@ -76,7 +84,7 @@ export interface ConsoleState {
 const roomsVisible = (s: Pick<ConsoleState, "rooms">) => s.rooms === null || Array.isArray(s.rooms) && s.rooms.length > 0;
 /** A detail view: text as the stream shows it, or labeled fields. */
 export type Detail = string | Record<string, unknown>;
-export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } |
+export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } | { type: "answer"; set: string; answers: { questionId: string; optionIds: string[]; other?: string }[] } | { type: "peer_takeover"; peer: string; standbyId: string } |
   { type: "settings_preview"; token: number; key?: string; value?: SettingValue; undo: boolean } |
   { type: "config_preview"; token: number; edit: ConfigEditBody } | { type: "config_write"; edit: ConfigEditBody; reason: string; confirm?: string } |
   { type: "settings_write"; key?: string; value?: SettingValue; undo: boolean; reason: string; confirm?: string; undoDigest?: string } |
@@ -107,7 +115,7 @@ export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean 
   s.permissionDefaultsHandled = s.permissionDefaultsHandled.filter(fingerprint => current.has(fingerprint));
   const pending = s.confirm;
   if (pending?.type === "permission_default" && !s.permissionDefaults.some(row => row.peer === pending.peer && row.source === pending.source)) s.confirm = undefined;
-  if (s.settingsEdit || s.confirm || s.editing || s.input || s.modeChoice || s.reviewChoice || s.optionChoice || s.help) return false;
+  if (s.settingsEdit || s.confirm || s.editing || s.input || s.modeChoice || s.reviewChoice || s.optionChoice || s.questionFlow || s.help) return false;
   const next = s.permissionDefaults.find(row => !s.permissionDefaultsHandled.includes(permissionDefaultFingerprint(s, row)));
   if (!next) return false;
   s.confirm = { type: "permission_default", peer: next.peer, source: next.source };
@@ -359,11 +367,28 @@ export function budgetFields(budget: any, now: number): [string, unknown][] {
   return [["quota", lines.length ? lines : typeof budget.note === "string" ? budget.note : "no reading"], ...(lines.length && typeof budget.note === "string" ? [["quota note", budget.note] as [string, unknown]] : [])];
 }
 /** #784 AC3: the Peers detail carries the planner WIP split as one line (`1 of 2: active 1, review-wait 0, reserved 0`); a hub that sends none adds nothing. */
-function peerDetailRow(s: ConsoleState, row: any): Record<string, unknown> {
+/** #1385: one line above the peer table: the running daemon, this console, the global CLI and the plugin, older ones in attention, then the peers that load another version. */
+function versionsLine(s: ConsoleState): Span[] {
+  const v = s.versions!;
+  const parts: Span[] = [span("agent-hub", "info")];
+  for (const [label, value, key] of [["daemon", v.daemon, undefined], ["console", v.cli, "cli"], ["global", v.global, "global"], ["plugin", v.plugin, "plugin"]] as const) {
+    const older = !!key && v.older.includes(key);
+    parts.push(span(`  ${label} ${value ?? "unknown"}${older ? " (older)" : ""}`, older ? "attention" : value ? undefined : "muted"));
+  }
+  const differing = Object.entries(s.peers).filter(([id, peer]) => peerHubVersion({ id, ...peer }, v.daemon).differs).map(([id]) => id);
+  if (differing.length) parts.push(span(`  ${plural(differing.length, "peer")} on another version: ${differing.join(", ")}`, "attention"));
+  return parts;
+}
+function peerDetailRow(s: ConsoleState, row: any, now: number): Record<string, unknown> {
   const wip = s.taskWip?.[row.id];
   const split = wip && [wip.active, wip.reviewWait, wip.reserved].every(n => Number.isSafeInteger(n)) ? `${wip.wip} of ${wip.wipLimit}: active ${wip.active}, review-wait ${wip.reviewWait}, reserved ${wip.reserved}` : undefined;
   const isolation = ownerIsolationText(row.ownerIsolation, row.ownerIsolationNote);
-  return { ...row, ...(isolation ? { ownerIsolation: isolation } : {}), ...(split ? { "planner WIP": split } : {}) };
+  const { standbySessions, ahub: _ahub, ahubTools: _tools, ...fields } = row;
+  const hub = peerHubVersion(row, s.versions?.daemon).detail;
+  const drift = s.agentDrift?.find(agent => agent.id === row.id);
+  const standby = Array.isArray(standbySessions) ? standbySessions.filter((session: any) => session && typeof session.id === "string").map((session: any) =>
+    `${typeof session.pid === "number" ? `pid ${session.pid}` : "pid unknown"}; session ${session.id}${typeof session.since === "number" ? `; waiting since ${relative(session.since, now)}` : ""}`) : [];
+  return { ...fields, ...(hub ? { "agent-hub": hub } : {}), ...(drift ? { "agent CLI": `${drift.version} ${drift.state}; last receipt ${drift.receipt}` } : {}), ...(standby.length ? { "standing by": standby } : {}), ...(isolation ? { ownerIsolation: isolation } : {}), ...(split ? { "planner WIP": split } : {}) };
 }
 const detailLines = (detail: Detail, columns: number, now: number, task = false): Span[][] => {
   if (typeof detail === "string") return wrap(detail, columns).map(text => [span(text)]);
@@ -398,8 +423,8 @@ const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", ": command", "? keys", "Esc back", "q quit"]],
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
   ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI (outside Peers)"]],
-  ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
-  ["Peers", ["p pause", "r resume", "m permission mode", "w WIP limit", "l make planner (then y)", "t rename Pi/local session"]],
+  ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select", "A answer an agent's question"]],
+  ["Peers", ["p pause", "r resume", "o takeover standby session", "m permission mode", "w WIP limit", "l make planner (then y)", "t rename Pi/local session"]],
   ["Tasks", ["b backlog/open", "n add backlog", "a assign/reserve (then y)", "u unassign (then y)", "r approve or request changes (in review; a or c, then a note)", "p pull, e plan (backlog)", "R return to backlog", "c cancel (then y)"]],
   ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry", "D discard the peer's whole queued backlog (reason, then y)"]],
   ["Events", ["f peer filter", "g kind filter"]],
@@ -429,13 +454,22 @@ export function pruneApprovals(s: ConsoleState, now: number): ConsoleState {
  * dropped, and an open detail follows the selection from its top (it closes when nothing is selected). Every reducer
  * exit and every prune passes through here, so no key can act on a request other than the one shown.
  */
+/**
+ * #1053: in stream mode there is no body to draw the question in, and the footer holds only the keys, so the question and every numbered option are printed into the
+ * stream when a flow opens and at each new part. In panels mode the body shows them (renderConsoleLines), so nothing is printed.
+ */
+function showQuestion(s: ConsoleState, row: QuestionView, effects: ConsoleEffect[]): void {
+  if (s.mode !== "stream" || !s.questionFlow) return;
+  const body = flowBody(s.questionFlow, row, flat);
+  if (body) effects.push({ type: "print", text: [`${body.head}: ${body.prompt}`, ...body.options.map(line => `  ${line}`)].join("\n"), kind: "attention", tone: "attention" });
+}
 function bound(s: ConsoleState): ConsoleState {
   if (s.optionChoice && s.optionChoice !== s.approvalId) s.optionChoice = undefined;
   if (s.confirm?.type === "permission" && s.confirm.id !== s.approvalId) s.confirm = undefined;
   if (s.requestDetail && s.requestDetail !== s.approvalId) { s.requestDetail = s.approvalId; s.detailOffset = 0; }
   return s;
 }
-const COMMANDS = new Set(["status", "board", "task", "backlog", "review", "say", "pause", "resume", "budget", "queue", "permit", "permission", "ask", "remember", "route", "sdlc", "turns", "undo", "check-path", "report", "ui", "pet"]);
+const COMMANDS = new Set(["status", "board", "task", "backlog", "review", "say", "pause", "resume", "budget", "queue", "permit", "permission", "ask", "remember", "route", "sdlc", "turns", "undo", "check-path", "report", "ui", "pet", "peer"]);
 /** A tiny argv parser, never a shell. Quotes group arguments; backslash escapes one character. */
 export function parseConsoleCommand(input: string): string[] {
   const words: string[] = []; let word = ""; let quote = ""; let escaped = false; let started = false;
@@ -532,6 +566,22 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   const done = () => ({ state: bound(s), effects });
   const answered = (id: string) => { s.approvals = s.approvals.filter(a => a.id !== id); if (s.approvalId === id) s.approvalId = undefined; };
   if (key === "\x03") { effects.push({ type: "exit" }); return done(); }
+  // #1053 T4: a question being answered takes every key until it is sent or left; the hub validates the answers against the stored row.
+  if (s.questionFlow) {
+    const row = s.questions?.find(item => item.set === s.questionFlow!.set);
+    if (!row) { s.questionFlow = undefined; notify(s, "that question is no longer open", now, "attention"); return done(); }
+    const step = stepFlow(s.questionFlow, row, key);
+    if (step.answers) { effects.push({ type: "answer", set: row.set, answers: step.answers }); s.questionFlow = undefined; }
+    else if (step.flow) { const moved = step.flow.index !== s.questionFlow.index; s.questionFlow = step.flow; if (moved) showQuestion(s, row, effects); }
+    else { s.questionFlow = undefined; if (step.notice) notify(s, step.notice, now, "attention"); }
+    return done();
+  }
+  if (key === "A" && !s.settingsEdit && !s.confirm && !s.editing && !s.input && !s.modeChoice && !s.reviewChoice && !s.optionChoice && !s.help && !s.configForm) {
+    const row = s.questions?.[0];
+    if (!row) { notify(s, "no open question; agents ask with hub_ask", now, "attention"); return done(); }
+    s.questionFlow = startFlow(row); s.detail = undefined; s.requestDetail = undefined; showQuestion(s, row, effects);
+    return done();
+  }
   if (s.configForm) {
     const step = reduceConfigForm(s.configForm, key, s.configRevisions ?? {});
     s.configForm = step.form;
@@ -698,6 +748,9 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       s.approvalId = String(item.id);
       if (s.mode === "panels") { s.panel = 2; s.selection = s.approvals.findIndex(row => row.id === item.id); }
       navigated = true;
+    } else if (item.kind === "question") {
+      const row = s.questions?.find(question => question.set === item.id);
+      if (row) { s.questionFlow = startFlow(row); s.detail = undefined; s.requestDetail = undefined; navigated = true; showQuestion(s, row, effects); }
     } else if (item.kind === "delivery" && s.mode === "panels") {
       const rows = s.queue.filter(row => row.state === "needs_review" || row.state === "queued");
       const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);
@@ -821,7 +874,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     else if (s.panel === 2) { s.requestDetail = row.id; s.detailOffset = 0; } // the row is the selected request
     else if (s.panel === 7) { s.detail = { usagePeer: row.id }; s.detailOffset = 0; } // rendered live from s.usage, so a refresh updates it
     else if (s.panel === 8) { s.roomSelection = row.name; s.detail = { roomName: row.name }; s.detailOffset = 0; }
-    else { s.detail = s.panel === 5 ? String(row.text) : s.panel === 1 ? peerDetailRow(s, row) : { ...row }; s.detailOffset = 0; }
+    else { s.detail = s.panel === 5 ? String(row.text) : s.panel === 1 ? peerDetailRow(s, row, now) : { ...row }; s.detailOffset = 0; }
     return done();
   }
   if (s.mode === "panels" && item !== undefined && item !== null) {
@@ -860,6 +913,15 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (s.panel === 1 && key === "t") {
       if (definitionOf(String(item))?.title !== "hub") { notify(s, "Rename this session in its native UI", now); return done(); }
       s.input = `title ${item} `; s.editing = true; return done();
+    }
+    if (s.panel === 1 && key === "o") {
+      const standby = Array.isArray(selected.standbySessions) ? selected.standbySessions[0] : undefined;
+      if (!s.features?.includes("peer_takeover")) { notify(s, "peer takeover requires a newer hub", now); return done(); }
+      if (!standby || typeof standby.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(standby.id)) {
+        notify(s, "no current standby session is available; refresh ahub status", now); return done();
+      }
+      effects.push({ type: "peer_takeover", peer: String(item), standbyId: standby.id });
+      return done();
     }
     const prefill = s.panel === 1 && key === "p" ? `pause ${item}` : s.panel === 1 && key === "r" ? `resume ${item}` : undefined;
     if (prefill) { s.input = prefill; s.editing = true; return done(); }
@@ -917,7 +979,7 @@ export function activeNotice(s: Pick<ConsoleState, "notice" | "noticeAt" | "noti
   return !!s.notice && now - (s.noticeAt ?? now) < (s.noticeMs ?? NOTICE_MS);
 }
 export const TABLES: Record<number, string[]> = {
-  1: ["PEER", "STATE", "LINK", "Q", "!", "WIP", "REVIEW", "PAUSE", "QUOTA", "MODEL", "DOING"],
+  1: ["PEER", "STATE", "LINK", "AHUB", "Q", "!", "WIP", "REVIEW", "PAUSE", "QUOTA", "MODEL", "DOING"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
   3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
@@ -941,9 +1003,12 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
     const paused = b?.paused ? `budget ${relative(b.paused.resetsAt, now)}` : row.paused && typeof row.paused === "object"
       ? `${row.paused.by ?? "paused"}${typeof row.paused.at === "number" ? ` ${duration(now - row.paused.at)}` : ""}`
       : row.paused === "manual" ? "user" : row.paused ? String(row.paused).split(":")[0] : "-";
-    return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === "offline" ? undefined : "info"), span(row.rostered === false ? `${row.state} off roster` : row.state, stateTone(row.state)),
+    // #1414: the conductor from the hub's settled flow roles, first so a narrow PEER column still shows it; an older hub without flowRoles keeps the planner-only label.
+    const tags = [Array.isArray(row.flowRoles) && row.flowRoles.includes("conductor") && "conductor", row.planner && "planner"].filter(Boolean);
+    return [id(tags.length ? `${row.id} (${tags.join(", ")})` : row.id, row.state === "offline" ? undefined : "info"), span(`${row.rostered === false ? `${row.state} off roster` : row.state}${Array.isArray(row.standbySessions) && row.standbySessions.length ? ` +standby:${row.standbySessions.length}` : ""}`, stateTone(row.state)),
       ...(showPermissionModes(s) ? [span(row.permissionMode && row.permissionMode !== "ask" ? row.permissionMode : "-", row.permissionMode === "never-ask" ? "attention" : undefined)] : []),
       span(row.pullOnly && definitionOf(row.id)?.attach?.pullOnlyForms?.includes("tui") ? "pull-only" : row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
+      ((hub) => span(hub.cell, hub.differs ? "attention" : hub.cell === "-" || hub.unknown ? "muted" : undefined))(peerHubVersion(row, s.versions?.daemon)),
       span(count(row.queued)), span(count(row.queuedImportant), row.queuedImportant ? "attention" : undefined),
       span(wip ? `${wip.wip}/${wip.wipLimit}` : "-", wip && wip.wip >= wip.wipLimit ? "attention" : undefined),
       span(count(row.needsReview), row.needsReview ? "failure" : undefined), span(paused, paused === "-" ? undefined : "attention"),
@@ -986,7 +1051,7 @@ function roomDetail(row: RoomStatusView): Record<string, unknown> {
   return {
     room: row.name, "room id": row.room, "link state": row.link ?? "unknown", owner: row.owner, "local member": row.member,
     "member count": count(row.memberCount),
-    "remote peers": row.remotePeers === null ? "unknown" : row.remotePeers.length ? row.remotePeers.map(peer => `${peer.id} (${peer.state})`) : "0",
+    "remote peers": row.remotePeers === null ? "unknown" : row.remotePeers.length ? row.remotePeers.map(peer => `${peer.id} (${peer.presence ?? peer.state})${peer.liveness === "untracked" ? "; liveness not tracked (broker without ephemeral); upgrade the broker to track liveness" : ""}`) : "0",
     "counter scope": `since daemon start: ${since}`,
     "out handoff": count(relays?.outbound), "in admitted": count(relays?.inbound), withheld: count(relays?.withheld),
   };
@@ -1020,10 +1085,10 @@ export function table(head: string[], rows: Span[][], columns: number, explicitW
   }));
 }
 /** Keep the status/quota columns visible instead of clipping them behind optional peer metadata. */
-function optionalTable(head: string[], rows: Span[][], columns: number, drop = ["DOING", "MODEL", "WIP", "PAUSE", "REVIEW", "LINK", "Q", "!", "MODE"]): Span[][] {
+function optionalTable(head: string[], rows: Span[][], columns: number, drop = ["DOING", "MODEL", "WIP", "PAUSE", "REVIEW", "AHUB", "LINK", "Q", "!", "MODE"]): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const widths = head.map((name, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, Bun.stringWidth(flat(row[i]?.text ?? ""))), name.length)));
-  const keep = head.map((_, i) => i).filter(i => head[i] !== "DOING" || rows.some(row => row[i]?.text !== "-")); // #878: shown once a peer has one
+  const keep = head.map((_, i) => i).filter(i => !["DOING", "AHUB"].includes(head[i]!) || rows.some(row => row[i]?.text !== "-")); // #878, #1385: shown once a peer has one
   const total = () => keep.reduce((sum, i) => sum + widths[i]!, 0) + 2 * (keep.length - 1);
   for (const name of drop) {
     if (total() <= columns - 2) break;
@@ -1054,13 +1119,17 @@ function panelContext(s: ConsoleState, row: any): string[] {
   // The structural config form and the restart prefill need no selected row (#689).
   if (s.panel === 6) return [...(row ? ["e edit"] : []), "c config", ...(s.settingsUndo ? ["u undo"] : []), ...(s.pendingRestart?.length ? ["R restart"] : [])];
   if (!row) return [];
-  if (s.panel === 1) return ["p pause", "r resume", "m permission mode", "w WIP limit"];
+  if (s.panel === 1) return ["p pause", "r resume", ...(s.features?.includes("peer_takeover") && Array.isArray(row.standbySessions) && row.standbySessions.length ? ["o takeover"] : []), "m permission mode", "w WIP limit"];
   if (s.panel === 4) return [row.state === "queued" ? "r discard" : "r resolve"];       // D (the peer's whole backlog) is in the ? key table: it must not push j/k off an 80-column footer
   return [];
 }
 /** The footer's key hint: only keys that act in this mode, panel and state. */
 function hint(s: ConsoleState, columns: number): string {
-  const pending = selectedApproval(s) ? ["a allow", "d deny"] : [];
+  if (s.questionFlow) {
+    const asking = s.questions?.find(row => row.set === s.questionFlow!.set)?.questions[s.questionFlow.index];
+    return `${s.questionFlow.typing !== undefined ? "Enter keeps  Esc back" : `number picks${asking?.allowOther === true ? "  o other" : ""}${asking?.multi === true ? "  Enter done" : ""}  Esc cancel`}`;
+  }
+  const pending = [...(selectedApproval(s) ? ["a allow", "d deny"] : []), ...(s.questions?.length ? ["A answer"] : [])];
   if (s.mode === "stream") return [...pending, ...(pending.length ? ["v view"] : []), ...(s.approvals.length > (pending.length ? 1 : 0) ? ["[ ] select"] : []), "Tab panels", ": command", "? keys", "q quit"].join("  ");
   if (s.help) return "? or Esc close  q quit";
   const approvals = s.panel === 2 ? pending : [];
@@ -1143,6 +1212,8 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.modeChoice) prompt = `permission ${s.modeChoice}: 1 ask  2 ask-when-needed  3 never-ask  Esc cancel`;
   if (s.reviewChoice) prompt = choicePrompt(s.reviewChoice);
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
+  const asking = s.questionFlow ? s.questions?.find(row => row.set === s.questionFlow!.set) : undefined;
+  if (s.questionFlow && asking) prompt = flowPrompt(s.questionFlow, asking, flat, columns);
   if (choice) prompt = `allow request ${choice.id} (${choice.peer}) with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
   const summary: Span[] = [];
   for (const [id, p] of Object.entries(s.peers)) {
@@ -1169,7 +1240,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/n Esc defer`;
   const footer = [fitLine(neverPeer ? [span(permissionBoundary(neverPeer, undefined, createProjectAdapterCatalog()), "attention")] : summary, columns),
     fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : s.editing && s.reviewGuide ? [span(s.reviewGuide, "info")] : approvals, columns),
-    fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
+    fitLine([span(prompt, s.confirm || s.optionChoice || asking ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
   if (s.mode === "stream") {
     const counts = s.taskCounts;
@@ -1198,6 +1269,16 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const definition: [string, unknown][] = row ? [["type", row.type], ...(row.min !== undefined || row.max !== undefined ? [["range", `${row.min ?? "-"}..${row.max ?? "-"}`] as [string, unknown]] : []), ["risk", row.risk], ["applies", row.applies]] : [];
     lines.push(...fieldLines([["setting", edit.key ?? s.settingsUndo ?? "last write"], ...definition, ["preview", (edit.lines ?? []).join("\n")], ["decision", "Esc cancels; saving needs a reason and explicit y"]], columns, now).flat());
   }
+  else if (s.questionFlow && asking && flowBody(s.questionFlow, asking, flat)) {
+    // #1053: the question and every option in the body, wrapped, never the one-line footer that clips. The options come first and are never cut; the prompt gives way (marked) when the terminal is short.
+    const body = flowBody(s.questionFlow, asking, flat)!;
+    const optionLines = body.options.flatMap(option => wrap(option, columns, 3).map(text => [span(text, "info")]));
+    const room = Math.max(1, height - 1 - optionLines.length);
+    const promptLines = wrap(body.prompt, columns);
+    const shown = promptLines.length > room ? [...promptLines.slice(0, Math.max(1, room) - 1), "..."] : promptLines;
+    // Options that do not fit even wrapped are shown one per line (clipped to the width, but a label is at most 80 characters) rather than dropped: no option is ever off screen.
+    lines.push([span(body.head, "attention")], ...shown.map(text => [span(text)]), ...(optionLines.length <= height - 1 ? optionLines : body.options.map(option => fitLine([span(option, "info")], columns))));
+  }
   else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length, roomsVisible(s)));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const usagePeer = s.panel === 7 && s.detail && typeof s.detail === "object" ? (s.detail as { usagePeer?: unknown }).usagePeer : undefined;
@@ -1224,7 +1305,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const selectedTask = s.panel === 3 ? data[at] : undefined;
     const holders = selectedTask && (selectedTask.planner !== undefined || selectedTask.plannerReason !== undefined)
       ? fieldLines((["planner", "owner", "reviewer"] as const).map((role): [string, unknown] => [role, taskHolderText(selectedTask, role)]), columns, now).flat() : [];
-    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : s.panel === 7 ? height - 2 - taskLines.length : height - (s.panel === 3 ? 2 + holders.length : 1)); const start = Math.max(0, at - capacity + 1);
+    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : s.panel === 7 ? height - 2 - taskLines.length : height - (s.panel === 3 ? 2 + holders.length : s.panel === 1 && s.versions ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
     const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
     const cellRows = head ? data.map((row, i) => cells(s, row, i === at, now, stages)) : [];
     const rowsOf = head ? s.panel === 7 ? optionalTable(head, cellRows, columns, USAGE_DROP) : s.panel === 1 ? optionalTable(head, cellRows, columns) : s.panel === 3 && s.backlogView ? optionalTable(head, cellRows, columns, ["AGE", "CLASS", "DEPS", "PRI"]) : table(head, cellRows, columns) : undefined;
@@ -1243,6 +1324,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
         : `usage through ${s.usage.at ? relative(s.usage.at, now) : "now"}: today is the UTC day, 7d the last seven UTC days`;
       lines.push(fitLine([span(note, s.usage?.problem ? "failure" : !s.usage?.life || s.usage.behind ? "attention" : "info")], columns));
     }
+    if (s.panel === 1 && s.versions) lines.push(fitLine(versionsLine(s), columns));
     if (s.panel === 8 && s.rooms === null) lines.push(fitLine([span("Room status unavailable", "attention")], columns));
     if (s.panel === 3 && s.backlogView) {
       lines.push(fitLine([span(s.tasksKnown === false ? "backlog loading..." : `backlog ${data.length}`, s.tasksKnown === false ? "attention" : "info")], columns));

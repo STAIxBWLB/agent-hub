@@ -11,7 +11,7 @@ export interface PeerCapabilities { tests: boolean; spec: boolean; testsReason?:
 import type { PeerId, PeerState } from "./envelope.ts";
 
 import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";
-import { DEFAULT_STAY_SWITCH, type StaySwitchMode } from "../models/route/stage.ts";
+import { DEFAULT_STAY_SWITCH, type StaySwitchMode } from "../models/route/stage-fallback.ts";
 
 export interface ClassPolicy {
   /** preference order among attached, unpaused peers */
@@ -422,10 +422,12 @@ export function plannerWalk(input: PlannerWalkInput): PlannerWalk {
  * prints its trace. `states`: effective bus states of attached peers (a peer that is not in the map is not attached).
  */
 export function assign(
-  task: Pick<Task, "class" | "signals" | "reserved"> & Partial<Pick<Task, "state" | "title" | "detail" | "refs" | "external" | "id" | "sdlc" | "history">>,
+  task: Pick<Task, "class" | "signals" | "reserved"> & Partial<Pick<Task, "state" | "title" | "detail" | "refs" | "external" | "id" | "sdlc" | "history" | "needsPerson">>,
   states: Record<PeerId, PeerState>,
   routing: Routing,
   opts: InstanceRoutingOptions & {
+    /** Precomputed snapshot guidance only; it never changes peer eligibility or performs a read. */
+    entryDiagnostic?: string;
     capabilities?: Record<PeerId, PeerCapabilities>;
     repository?: string;
     exclude?: PeerId[];
@@ -464,9 +466,12 @@ export function assign(
 ): Assignment {
   if (task.state === "cancelled" || task.state === "approved") return { trace: [`${task.state}: closed; not routed`] };
   if (task.state === "backlog") return { trace: ["backlog: not routed; pull into To Do first"] };
+  // #1176: a person-run leg is nobody's to take, whatever its reservation says (the reservation stays as the "who will run it" hint). A pure input, so `ahub route explain` reads the same line.
+  if (task.needsPerson) return { trace: [`person-run: only the person can run this leg${task.reserved ? ` (reserved for ${task.reserved} as a hint only)` : ""}; no agent is offered it`] };
   const instanceMode = hasInstances(opts);
   const policy = routing.classes[task.class];
   const trace: string[] = [`class ${task.class}${policy ? "" : " (no [classes] entry: only an explicit owner can take it)"}`, `signals: ${task.signals.join(", ") || "none"}`];
+  if (opts.entryDiagnostic) trace.push(`build entry: ${opts.entryDiagnostic}`);
   // Which file each of this class's values comes from (#269), only when the machine-local overlay sets one.
   const local = Object.keys(routing.sources ?? {}).filter((key) => key.startsWith(`classes.${task.class}.`)).map((key) => key.slice(`classes.${task.class}.`.length));
   if (local.length) trace.push(`policy source: ${local.join(", ")} from ${OVERLAY_FILE}; the rest from routing.toml`);

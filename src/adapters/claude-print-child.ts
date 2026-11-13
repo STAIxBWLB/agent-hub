@@ -1,5 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
+import type { Envelope } from "../hub/envelope.ts";
+
+export interface OwnedInputContext { readonly sessionId: string; readonly inputId: string }
+export type OwnedInputObserver = (context: OwnedInputContext, envs: readonly Envelope[]) => void;
 
 export class PrintChildCleanupError extends Error {}
 export interface OwnedPrintChildOptions {
@@ -10,6 +14,8 @@ export interface OwnedPrintChildOptions {
   env?: NodeJS.ProcessEnv;
   envMode?: "replace";
   input: string;
+  /** Metadata only: fires after stdin has flushed successfully while the owning generation is current. */
+  onInputReleased?: () => void;
   /** The peer owns generation and authority; this helper never mints either. */
   current?: () => boolean;
   stop?: (child: ChildProcess) => Promise<void>;
@@ -44,16 +50,20 @@ export class OwnedPrintChild {
     // ponytail: 256 KiB per NDJSON frame and 4 MiB stdout by default; raise only with native receipts.
     const frameLimit = options.maxFrameBytes ?? 256 * 1024, outputLimit = options.maxOutputBytes ?? 4 * 1024 * 1024;
     let buffer = "", outputBytes = 0;
+    let inputFailed = false;
     const current = () => !this.limited && options.current?.() !== false;
     const limit = () => { if (!this.limited) { this.limited = true; options.onLimit?.(); } };
     this.done = new Promise((resolve, reject) => {
       child.once("error", error => { options.onError?.(error); reject(error); });
-      child.stdin!.on("error", () => { /* exit, rather than a prompt write, settles the owned child */ });
+      child.stdin!.on("error", () => { inputFailed = true; /* exit, rather than a prompt write, settles the owned child */ });
       child.once("spawn", () => {
         trackGroup(child);
         if (!current()) { child.stdin!.destroy(); return; }
         options.onSpawn?.();
-        if (current()) child.stdin!.end(options.input);
+        if (current()) child.stdin!.end(options.input, () => {
+          if (inputFailed || !current()) return;
+          try { options.onInputReleased?.(); } catch { /* observer failures never change owned process settlement */ }
+        });
         else child.stdin!.destroy();
       });
       child.stdout!.on("data", (chunk: Buffer) => {

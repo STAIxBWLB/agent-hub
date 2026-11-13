@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -60,11 +60,11 @@ const scripted = (answers: (string | null)[]): { ports: InitPromptPorts; asked: 
 };
 const blank = (n: number) => Array.from({ length: n }, () => "");
 /** One Enter per question of a project with no Git work tree to offer shadow for: what the scripted answers below assume. */
-const ALL = initQuestions({ shadowAvailable: false }).length;
+const ALL = initQuestions({ shadowAvailable: false }).filter(q => q.id !== "sdlc.required_checks").length;
 
 test("the questions follow the spec's table, one per setting with its default in brackets, and every settings row is asked (#1065 AC4)", () => {
   const questions = initQuestions({ packs: [], shadowAvailable: true });
-  expect(questions.map(q => q.id)).toEqual(["profile", "start.agents", "specs.enabled", "specs.review", "sdlc.mode", "coordination", "memory.enabled", "snapshots.enabled", "pi.enabled", "autonomy", "release-guard", "shadow"]);
+  expect(questions.map(q => q.id)).toEqual(["profile", "start.agents", "track-config", "specs.enabled", "specs.review", "sdlc.mode", "sdlc.required_checks", "coordination", "memory.enabled", "research.enabled", "snapshots.enabled", "pi.enabled", "autonomy", "release-guard", "shadow"]);
   // every row of the settings table is a question, so a row added later cannot go unasked
   for (const row of INIT_SETTINGS) expect(questions.map(q => q.id), row.id).toContain(row.id);
   const line = (id: string) => questionLine(questions.find(q => q.id === id)!);
@@ -73,10 +73,11 @@ test("the questions follow the spec's table, one per setting with its default in
   expect(line("memory.enabled")).toBe("Shared memory (on|off) [on]: ");
   expect(line("pi.enabled")).toContain("[off]");
   expect(line("sdlc.mode")).toBe("SDLC mode (off|advise|enforce) [off]: ");
+  expect(line("track-config")).toBe("Commit the shared hub config (config.json, routing.toml, sdlc.toml) to git (on|off) [as .gitignore has it]: "); // #1411: Enter keeps what git says
   expect(line("profile")).toBe("Profile (dev|research|writing|general) [dev]: ");
   // a pack is offered as a profile, shadow only where a Git work tree is absent, and the machine's agent set is the default shown
   expect(questionLine(initQuestions({ packs: ["analysis"] })[0]!)).toContain("analysis");
-  expect(initQuestions({ shadowAvailable: false }).map(q => q.id)).not.toContain("shadow");
+  expect(initQuestions({ shadowAvailable: false }).filter(q => q.id !== "sdlc.required_checks").map(q => q.id)).not.toContain("shadow");
   expect(line("start.agents")).toContain("claude, codex");
   expect(questionLine(initQuestions({ machineAgents: ["codex"] }).find(q => q.id === "start.agents")!)).toContain("[codex]");
   expect(questionLine(initQuestions({ machineAgents: [] }).find(q => q.id === "start.agents")!)).toContain("[none]");
@@ -92,30 +93,30 @@ test("Enter keeps every default: the request is empty and the plan is shown befo
 });
 
 test("each answer becomes the value the equivalent flag sets, including a repeated default (an explicit choice, as a flag is) (#1065 AC4)", async () => {
-  const s = scripted(["research", "codex,claude", "off", "require", "enforce", "turn-free", "off", "off", "on", "off", "yes", "y"]);
+  const s = scripted(["research", "codex,claude", "on", "off", "require", "enforce", "unit", "turn-free", "off", "on", "off", "on", "off", "yes", "y"]);
   const result = await runInitPrompt(s.ports, { shadowAvailable: false, packs: [] }, () => []);
   expect(result.ok).toBe(true);
   if (!result.ok) return;
   expect(result.answers.profile).toBe("research");
-  expect(result.answers.request.values).toEqual({ "start.agents": ["codex", "claude"], "specs.enabled": false, "specs.review": "require", "sdlc.mode": "enforce", coordination: "turn-free", "memory.enabled": false, "snapshots.enabled": false, "pi.enabled": true });
+  expect(result.answers.request.values).toEqual({ "start.agents": ["codex", "claude"], "track-config": true, "specs.enabled": false, "specs.review": "require", "sdlc.mode": "enforce", "sdlc.required_checks": ["unit"], coordination: "turn-free", "memory.enabled": false, "research.enabled": true, "snapshots.enabled": false, "pi.enabled": true });
   expect(result.answers.request.autonomy).toBe("off");
   expect(result.answers.releaseGuard).toBe(true);
   // typing the default is an explicit choice: the key is written, exactly as `--coordination advisory` writes it
-  const again = await runInitPrompt(scripted(["", "", "", "", "", "advisory", ...blank(5), "y"]).ports, { shadowAvailable: false }, () => []);
+  const again = await runInitPrompt(scripted(["", "", "", "", "", "", "advisory", ...blank(6), "y"]).ports, { shadowAvailable: false }, () => []);
   expect(again.ok && again.answers.request.values).toEqual({ coordination: "advisory" });
 });
 
 test("unknown input asks again and never guesses; three bad answers refuse the prompt and write nothing (#1065 AC4)", async () => {
-  const s = scripted(["dev", "claude", "maybe", "on", ...blank(8), "y"]);
+  const s = scripted(["dev", "claude", "", "maybe", "on", ...blank(9), "y"]);
   const result = await runInitPrompt(s.ports, { shadowAvailable: false }, () => []);
   expect(result.ok).toBe(true);
   expect(s.printed.join("\n")).toContain("answer on or off; asking again");
   expect(s.asked.filter(q => q.startsWith("Design specs"))).toHaveLength(2); // the bad answer was asked again, not guessed
-  const refused = await runInitPrompt(scripted(["", "", "x", "maybe", "perhaps"]).ports, { shadowAvailable: false }, () => []);
+  const refused = await runInitPrompt(scripted(["", "", "", "x", "maybe", "perhaps"]).ports, { shadowAvailable: false }, () => []);
   expect(refused).toMatchObject({ ok: false, reason: "refused" });
   expect(refused.ok === false && refused.message).toContain('no valid answer for "Design specs and their freshness checks" after 3 tries, so nothing was written; run ahub init again, or pass the setting as a flag');
   // an unknown agent is refused with the allowed ones by the table's own parser, then the next answer is read
-  const total = initQuestions({ shadowAvailable: false }).length;
+  const total = initQuestions({ shadowAvailable: false }).filter(q => q.id !== "sdlc.required_checks").length;
   const badAgent = scripted(["", "nonexistent-agent", "claude", ...blank(total - 2), "y"]);
   const accepted = await runInitPrompt(badAgent.ports, { shadowAvailable: false }, () => []);
   expect(accepted.ok && accepted.answers.request.values).toEqual({ "start.agents": ["claude"] });
@@ -151,10 +152,10 @@ test("the real ahub init under a pty: Enter on every question produces the same 
 
 test("the real ahub init under a pty: answering each question writes the files the equivalent flags write (#1065 AC4)", async () => {
   const p = fixture(), guided = p.repo("guided"), flagged = p.repo("flagged");
-  const answers = ["", "claude", "off", "", "advise", "turn-free", "off", "", "on", "off", "", "y"];
+  const answers = ["", "claude", "", "off", "", "advise", "", "turn-free", "off", "on", "", "on", "off", "", "y"];
   const done = await p.session(guided, ["init"], answers);
   expect(done.code, done.text).toBe(0);
-  const flags = ["init", "--agents", "claude", "--no-specs", "--sdlc", "advise", "--coordination", "turn-free", "--no-memory", "--pi", "--autonomy", "off"];
+  const flags = ["init", "--agents", "claude", "--no-specs", "--sdlc", "advise", "--coordination", "turn-free", "--no-memory", "--research", "--pi", "--autonomy", "off"];
   expect(p.run(flagged, flags).exitCode).toBe(0);
   expect(tree(guided)).toEqual(tree(flagged));
   expect(readFileSync(join(guided, "AGENTS.md"), "utf8")).toEqual(readFileSync(join(flagged, "AGENTS.md"), "utf8"));
@@ -164,7 +165,7 @@ test("the real ahub init under a pty: answering each question writes the files t
 test("the real ahub init under a pty: yes to the release guard and a chosen profile reach the written files, as --release-guard and --profile do (#1065 AC4)", async () => {
   const p = fixture(), guided = p.repo("guided"), flagged = p.repo("flagged");
   // profile research, release guard on, everything else Enter; the release-guard question is the one before the optional shadow question
-  const questions = initQuestions({ shadowAvailable: false }).map(q => q.id);
+  const questions = initQuestions({ shadowAvailable: false }).filter(q => q.id !== "sdlc.required_checks").map(q => q.id);
   const answers = questions.map(id => id === "profile" ? "research" : id === "release-guard" ? "yes" : "");
   const done = await p.session(guided, ["init"], [...answers, "y"]);
   expect(done.code, done.text).toBe(0);
@@ -250,7 +251,7 @@ test("shadow history is offered in a folder with no Git work tree, kept for an e
   expect(withheld.text).not.toContain("Shadow history");
   // answering on creates the same files `--shadow` does
   const guided = p.folder("guided"), flagged = p.folder("flagged");
-  const questions = initQuestions({ shadowAvailable: true }).map(q => q.id);
+  const questions = initQuestions({ shadowAvailable: true }).filter(q => q.id !== "sdlc.required_checks").map(q => q.id);
   const done = await p.session(guided, ["init"], [...questions.map(id => id === "shadow" ? "on" : ""), "y"]);
   expect(done.code, done.text).toBe(0);
   expect(p.run(flagged, ["init", "--shadow"]).exitCode).toBe(0);
@@ -272,7 +273,7 @@ test("the plan the person confirms names the machine autonomy inheritance the wr
   expect(kept.text).toContain("Inherited the trusted machine autonomy default");                // and then applied, as the plan said
   expect(JSON.parse(readFileSync(join(inherits, ".agenthub/config.local.json"), "utf8")).permission_modes.codex).toBe("never-ask");
   // answering off for the autonomy question: the plan does not name it and nothing is inherited
-  const questions = initQuestions({ shadowAvailable: false }).map(q => q.id);
+  const questions = initQuestions({ shadowAvailable: false }).filter(q => q.id !== "sdlc.required_checks").map(q => q.id);
   const skipped = p.repo("skipped"), off = await p.session(skipped, ["init"], [...questions.map(id => id === "autonomy" ? "off" : ""), "y"]);
   expect(off.code, off.text).toBe(0);
   expect(off.text.slice(off.text.indexOf("This will be written:"), off.text.indexOf("Write this?"))).not.toContain("inherit the trusted machine autonomy preset");
@@ -286,7 +287,7 @@ test("each default the prompt shows is the value an init with no flag really lea
   const config = loadConfig(plain), sdlc = loadSdlc(plain);
   const inEffect: Record<string, unknown> = {
     "specs.enabled": config.specs.enabled, "specs.review": config.specs.review, "coordination": config.coordination, "sdlc.mode": sdlc.mode,
-    "memory.enabled": config.memory.enabled, "snapshots.enabled": config.snapshots.enabled, "pi.enabled": config.pi.enabled,
+    "memory.enabled": config.memory.enabled, "research.enabled": config.research.enabled, "snapshots.enabled": config.snapshots.enabled, "pi.enabled": config.pi.enabled,
   };
   const shown = (id: string) => { const v = inEffect[id]; return typeof v === "boolean" ? (v ? "on" : "off") : String(v); };
   for (const id of Object.keys(inEffect)) {
@@ -296,7 +297,7 @@ test("each default the prompt shows is the value an init with no flag really lea
     expect(questionLine(question!), id).toContain(`[${shown(id)}]`);
   }
   // every row of the table with a boolean or choice default is covered above, or this fails and names the row
-  for (const row of INIT_SETTINGS) if (row.id !== "start.agents") expect(Object.keys(inEffect), `${row.id} has no read-back in this test`).toContain(row.id);
+  for (const row of INIT_SETTINGS) if (!["start.agents", "sdlc.required_checks"].includes(row.id)) expect(Object.keys(inEffect), `${row.id} has no read-back in this test`).toContain(row.id);
 });
 
 test("a setting with no known default fails loudly instead of showing a guess (#1065 AC4 review, default drift)", () => {
@@ -319,3 +320,17 @@ test("the autonomy plan row comes from one helper: named when the machine defaul
   const guided = await p.session(p.repo("guided"), ["init"], [...blank(ALL), "y"]);
   expect(guided.text.slice(guided.text.indexOf("This will be written:"), guided.text.indexOf("Write this?"))).toContain("inherit the trusted machine autonomy preset");
 }, 60_000);
+
+
+test("#1328 guided research shows the trusted machine choice and Enter writes that same default", async () => {
+  const p = fixture(); mkdirSync(p.home, { mode: 0o700 });
+  writeFileSync(join(p.home, "defaults.json"), JSON.stringify({ schema: 1, research: { enabled: true } }), { mode: 0o600 });
+  const before = readFileSync(join(p.home, "defaults.json"), "utf8"), cwd = p.repo("machine-research");
+  expect(questionLine(initQuestions({ machineResearch: true }).find(q => q.id === "research.enabled")!)).toContain("[on]");
+  expect(questionLine(initQuestions({ machineResearch: false }).find(q => q.id === "research.enabled")!)).toContain("[off]");
+  const result = await p.session(cwd, ["init"], [...blank(ALL), "y"]);
+  expect(result.code, result.text).toBe(0); expect(result.text).toContain("Research records (on|off) [on]");
+  expect(result.text.slice(result.text.indexOf("This will be written:"), result.text.indexOf("Write this?"))).toContain("research.enabled");
+  expect(loadConfig(cwd).research.enabled).toBe(true); expect(JSON.parse(readFileSync(join(cwd, ".agenthub/config.local.json"), "utf8")).research.enabled).toBe(true);
+  expect(readFileSync(join(p.home, "defaults.json"), "utf8")).toBe(before);
+}, 20000);

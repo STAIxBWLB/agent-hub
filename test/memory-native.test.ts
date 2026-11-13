@@ -90,7 +90,7 @@ test("notes on an open task are short-term; approval promotes decisions, contrac
 
   // No PII marker anywhere in the logs or the index.
   const files = ["log", "local"].flatMap((d) => readdirSync(join(home, "memory", d)).map((f) => join(home, "memory", d, f)));
-  for (const file of [...files, join(home, "memory", "index.db")]) for (const m of MARKERS) expect(readFileSync(file, "latin1")).not.toContain(m);
+  for (const file of [...files, ...readdirSync(join(home, "memory")).filter((name) => /^index(-v\d+)?\.db$/.test(name)).map((name) => join(home, "memory", name))]) for (const m of MARKERS) expect(readFileSync(file, "latin1")).not.toContain(m);
 
   // The dashboard's Memory section: one tier, filtered, with the neighbourhood and detail of the selected node.
   const snap = await h.console.request({ t: "ui_snapshot", after: 0, memory: { tier: "long", kind: "fail", node: `mem:${long.find((v) => v.kind === "fail")!.id}`, hops: 2 } });
@@ -205,6 +205,33 @@ test("a note about a private path is refused before either memory sees it (revie
   const home = temp("privpath");
   const h = await hub(home, { pii: { paths: ["src/csv.ts"] }, local: { ...DEFAULT_CONFIG.local, deny: ["src/csv.ts"] } });
   expect(await h.refused(h.worker, "hub_remember", { text: "the parser in src/csv.ts splits badly", kind: "fail", horizon: "long" })).toContain("private"); // denied from the graph, still private
+}, 30_000);
+
+test("long native notes declined by the configured sync policy are refused without a fallback write", async () => {
+  const home = temp("sync-policy-write");
+  mkdirSync(join(home, "memory"), { recursive: true });
+  writeFileSync(join(home, "memory", "amem.config.json"), JSON.stringify({ piiPatterns: ["LOCAL-ONLY-MARKER"] }));
+  const h = await hub(home);
+  const error = await h.refused(h.worker, "hub_remember", { text: "this decision contains LOCAL-ONLY-MARKER", kind: "decision", horizon: "long" });
+  expect(error).toContain("configured standalone policy");
+  const store = new MemoryStore({ home }); cleanup.push(() => store.close());
+  expect(store.list({ q: "LOCAL-ONLY-MARKER" })).toEqual([]);
+}, 30_000);
+
+test("a task note rejected by the configured sync policy stays short when approval tries to promote it", async () => {
+  const home = temp("sync-policy-promotion");
+  const h = await hub(home);
+  await h.op(h.worker, "hub_task_propose", { title: "settle safely", class: "implement", owner: "worker" });
+  await h.op(h.worker, "hub_remember", { text: "decision has LOCAL-ONLY-MARKER", kind: "decision", task: 1 });
+  writeFileSync(join(home, "memory", "amem.config.json"), JSON.stringify({ piiPatterns: ["LOCAL-ONLY-MARKER"] }));
+  const done = await h.op(h.worker, "hub_task_done", { id: 1, summary: "done" });
+  if (done.includes("in_review")) await h.op(h.claude, "hub_review", { id: 1, verdict: "approved", note: "ok" });
+  const store = new MemoryStore({ home }); cleanup.push(() => store.close());
+  const declined = store.list({ q: "LOCAL-ONLY-MARKER" })[0]!;
+  expect(declined).toMatchObject({ tier: "short", local: true });
+  expect(declined.expiresAt).not.toBeNull();
+  const ownLongSegment = join(store.dir, "log", `${store.machine.id}.jsonl`);
+  expect(existsSync(ownLongSegment) ? readFileSync(ownLongSegment, "utf8") : "").not.toContain("LOCAL-ONLY-MARKER");
 }, 30_000);
 
 

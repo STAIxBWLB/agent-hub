@@ -4,6 +4,7 @@ import { controlWriteSpan } from "./control-write-trace.ts";
 import { DEFAULT_MAX_NITS, findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CostPlan } from "./cost-governance.ts";
 import { bandsConfig, type BandsConfig } from "./sdlc-metrics.ts";
+import { securityPassBlockers, securityPolicy, type SecurityPassView, type SecurityPolicy } from "./security-pass.ts";
 import { configPathList, evalGapBlockers, evalGateView, evalRequiredChecks, type EvalGate, type EvalResult } from "./eval-gate.ts";
 import { SECURITY_SOURCES, type SecuritySource } from "./security-baseline.ts";
 import { criteriaReceipt, type CriteriaReceipt, type CriteriaView, type LegacyPhaseReceipt } from "./workflow.ts";
@@ -43,7 +44,7 @@ export const AUTO_MERGE_MODES: readonly AutoMergeMode[] = ["off", "dry-run", "on
 export interface SecurityScanConfig { everyH: number; sources: SecuritySource[]; repo?: string }
 /** #786: one repository's own gate: its required checks (before the top-level list) and its own merge mode. */
 export interface RepoMergePolicy { requiredChecks?: string[]; autoMerge?: AutoMergeMode }
-export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; /** #481 S7: the scheduled security-scan baseline; absent means none is scheduled. */ securityScan?: SecurityScanConfig; /** #481 S5: the one check a configuration PR needs; no default, the person names it. */ evalCheck?: string; /** #481 S5: patterns that mark a PR as a configuration change; absent reads as the defaults in eval-gate.ts, an empty list turns the gate off. */ configPaths?: string[]; mode: SdlcMode; requiredChecks: string[]; /** #786: absent reads as "off"; written only when the file names it. */ autoMerge?: AutoMergeMode; /** #786: per-repository tables, keyed by lowercase owner/name. */ repos?: Record<string, RepoMergePolicy>; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
+export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; /** #481 S7: the scheduled security-scan baseline; absent means none is scheduled. */ securityScan?: SecurityScanConfig; /** #481 S5: the one check a configuration PR needs; no default, the person names it. */ evalCheck?: string; /** #481 S5: patterns that mark a PR as a configuration change; absent reads as the defaults in eval-gate.ts, an empty list turns the gate off. */ configPaths?: string[]; /** #1403 A2: sensitive paths that need a recorded security pass, and the review companions that apply; absent means the feature is off. */ security?: SecurityPolicy; mode: SdlcMode; requiredChecks: string[]; /** #786: absent reads as "off"; written only when the file names it. */ autoMerge?: AutoMergeMode; /** #786: per-repository tables, keyed by lowercase owner/name. */ repos?: Record<string, RepoMergePolicy>; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
 export interface PlanReviewReceipt {
   planner: string;
   planAuthor?: string | null;
@@ -201,7 +202,7 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
   if (value === undefined) return { mode: "off", requiredChecks: [], stages: [...SDLC_STAGES] };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc: expected a table");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands", "auto_merge", "repos", "eval_check", "config_paths", "security_scan"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
+  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands", "auto_merge", "repos", "eval_check", "config_paths", "security_scan", "security"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
   const maxNits = raw.max_nits === undefined ? DEFAULT_MAX_NITS : raw.max_nits;
   if (typeof maxNits !== "number" || !Number.isSafeInteger(maxNits) || maxNits < 0 || maxNits > 64) throw new Error("sdlc.max_nits: expected an integer from 0 to 64");
   const bands = bandsConfig(raw.bands), bandConfig = Object.keys(bands).length ? { bands } : {};
@@ -209,7 +210,7 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
     ...(raw.eval_check === undefined ? {} : { evalCheck: evalCheckName(raw.eval_check) }),
     ...(raw.config_paths === undefined ? {} : { configPaths: configPathList(raw.config_paths, "sdlc.config_paths") }),
   };
-  const findingConfig = { ...(raw.max_nits === undefined ? {} : { maxNits }), ...bandConfig, ...evalConfig, ...(raw.security_scan === undefined ? {} : { securityScan: securityScanConfig(raw.security_scan) }) };
+  const findingConfig = { ...(raw.max_nits === undefined ? {} : { maxNits }), ...bandConfig, ...evalConfig, ...(raw.security_scan === undefined ? {} : { securityScan: securityScanConfig(raw.security_scan) }), ...(raw.security === undefined ? {} : { security: securityPolicy(raw.security) }) };
   const mode = raw.mode ?? "off";
   if (mode !== "off" && mode !== "advise" && mode !== "enforce") throw new Error("sdlc.mode: expected off, advise or enforce");
   // ponytail: the #481 S8 window is a fixed version; delete `workflow`, the phase aliases and their tests once it passes.
@@ -350,6 +351,30 @@ export function parsePrEvidence(value: unknown): PrEvidence {
 /** Issue identity and edit times only; no body is fetched or stored. `lastEditedAt` moves on a body edit, not on comments. */
 export interface SpecEdit { lastEditedAt: string | null; updatedAt: string }
 export interface SpecAcceptance extends SpecEdit { repo: string; issue: number; acceptedAt: number }
+/** Consent references are complete local task tokens, never numbers extracted from prose. */
+export function localSupersedingTask(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^(?:task #|#)?([1-9][0-9]*)$/.exec(value);
+  const task = match?.[0] === value ? Number(match[1]) : NaN;
+  return Number.isSafeInteger(task) ? task : undefined;
+}
+
+/** Validate host-stored consent without importing any other source receipt fields. */
+export function storedSpecAcceptance(value: unknown): SpecAcceptance | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const stamp = (v: unknown): v is string => typeof v === "string" && v.length <= 40 && !Number.isNaN(Date.parse(v));
+  if (!repo(record.repo) || !id(record.issue) || !stamp(record.updatedAt) || record.lastEditedAt !== null && !stamp(record.lastEditedAt)
+    || typeof record.acceptedAt !== "number" || !Number.isFinite(record.acceptedAt)) return undefined;
+  return { repo: record.repo, issue: record.issue, updatedAt: record.updatedAt, lastEditedAt: record.lastEditedAt as string | null, acceptedAt: record.acceptedAt };
+}
+
+/** Only a host observation of the same issue/body permits copying existing person consent. */
+export function carriedSpecAcceptance(source: SpecAcceptance, destination: { repo: string; issue: number }, edit: SpecEdit | undefined): SpecAcceptance | undefined {
+  if (!edit || source.repo.toLowerCase() !== destination.repo.toLowerCase() || source.issue !== destination.issue || source.lastEditedAt !== edit.lastEditedAt) return undefined;
+  return { repo: destination.repo, issue: destination.issue, lastEditedAt: source.lastEditedAt, updatedAt: source.updatedAt, acceptedAt: source.acceptedAt };
+}
+
 export type SpecState = "missing" | "current" | "changed" | "unknown";
 /** Whether the receipt's spec issue is accepted at its current body. `edit` undefined means the readback failed. */
 export function specState(receipt: SdlcReceipt | undefined, edit: SpecEdit | undefined): SpecState {
@@ -363,10 +388,10 @@ export const SPEC_STATE_TEXT: Record<Exclude<SpecState, "current">, string> = {
   changed: "spec changed after acceptance: the person re-accepts with ahub sdlc accept <task> --issue <n>",
   unknown: "spec edit time unknown: the issue could not be read",
 };
-export interface SdlcStatus { evalGate?: EvalGate; testIntegrity?: TestIntegrity; planConformance?: PlanConformance & { accepted?: boolean; earlierPushes?: "unknown"; revisionsAfterFirstObservedPush?: number }; findings?: ReviewFindingTally; spec?: { issue: number; state: SpecState }; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
+export interface SdlcStatus { /** #1403 A2: shown only for an enabled lifecycle that configures `[security]`. */ securityPass?: SecurityPassView; evalGate?: EvalGate; testIntegrity?: TestIntegrity; planConformance?: PlanConformance & { accepted?: boolean; earlierPushes?: "unknown"; revisionsAfterFirstObservedPush?: number }; findings?: ReviewFindingTally; spec?: { issue: number; state: SpecState }; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
 /** The acceptance-criteria checklist (#481 S8, Compliance pass) counts once recorded, and on every task under the retired gsd-lite setting. Off keeps #257's output. */
 export const criteriaRequired = (config: SdlcConfig, receipt: SdlcReceipt | undefined): boolean => config.workflow === "gsd-lite" || (config.mode !== "off" && !!checklistOf(receipt));
-export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = [], commit?: string, plan?: SdlcStatus["planConformance"], integrity?: TestIntegrity, evalResult?: EvalResult): SdlcStatus {
+export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = [], commit?: string, plan?: SdlcStatus["planConformance"], integrity?: TestIntegrity, evalResult?: EvalResult, securityPass?: SecurityPassView): SdlcStatus {
   const stage = receipt?.stage ?? config.stages[0] ?? "spec", blockers: string[] = [];
   const definition = stageDefinition(config, stage);
   const evalGate = evidence ? evalGateView(config, evidence, evalResult) : undefined;
@@ -374,6 +399,9 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
   const findings = items.length ? findingTally(items) : undefined;
   if (config.mode === "enforce" && findings?.openImportant) blockers.push("open important review findings: " + findings.openImportant);
   if (config.mode === "enforce") blockers.push(...planConformanceBlockers(plan), ...testIntegrityBlockers(integrity));
+  // #1403 A2: a required pass that is not recorded, or an applicability the inventory cannot settle, blocks only in enforce; advise shows it in `securityPass` and the advice notice.
+  const security = config.mode !== "off" ? securityPass : undefined;
+  if (config.mode === "enforce") blockers.push(...securityPassBlockers(security));
   if (!definition) blockers.push("lifecycle stage definition unknown");
   if (!receipt?.repo || !receipt.issue) blockers.push("issue identity missing");
   if (!receipt?.pr) blockers.push("PR identity missing");
@@ -402,7 +430,7 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
   const shown = criteria && (criteriaRequired(config, receipt) || definition && [...definition.entry_gates, ...definition.exit_gates].includes("criteria"));
   // Shown, not counted as a readiness blocker: the spec gate is build entry (#481 S1).
   const spec = config.mode !== "off" && receipt?.issue ? { spec: { issue: receipt.issue, state: specState(receipt, specEdit) } } : {};
-  return { ...spec, ...(evalGate ? { evalGate } : {}), ...(config.mode !== "off" && integrity ? { testIntegrity: integrity } : {}), ...(config.mode !== "off" && plan ? { planConformance: plan } : {}), ...(findings ? { findings } : {}), ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
+  return { ...spec, ...(security ? { securityPass: security } : {}), ...(evalGate ? { evalGate } : {}), ...(config.mode !== "off" && integrity ? { testIntegrity: integrity } : {}), ...(config.mode !== "off" && plan ? { planConformance: plan } : {}), ...(findings ? { findings } : {}), ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
     actor: !definition ? "person" : shown && criteria.blockers.length ? "reviewer/person" : config.definitions ? definition.actor : baseActor(definition.base),
     // #694: the identity blocker keeps its exact text for gate matching; the next step says how to supply it.
     next: blockers[0] === "issue identity missing" ? "issue identity missing: name one issue (title #N, refs or hub_sdlc_record)" : blockers[0] ?? "person may inspect merge readiness; no automatic merge" };
@@ -546,16 +574,34 @@ export async function readPlanIssueMetadata(repository: string, number: number, 
   } catch { return undefined; }
 }
 
+/** The native CI floor belongs only to this repository; other projects must name their own checks. */
+export function requiredCheckNames(repository: string | undefined, required: readonly string[]): string[] {
+  return required.length ? [...new Set(required)] : repository?.toLowerCase() === "staixbwlb/agent-hub" ? ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"] : [];
+}
+
+/** Names each non-green required check. Incomplete inventories cannot prove either presence or success. */
+export function requiredCiBlocker(required: readonly string[], checks: PrEvidence["checks"], complete = true): string | undefined {
+  const problems = required.flatMap(name => {
+    const matches = checks.filter(check => check.name === name);
+    const state = !complete ? "unknown" : !matches.length ? "missing" : matches.some(check => check.state === "failed") ? "failed"
+      : matches.some(check => check.state === "pending") ? "pending" : matches.length !== 1 ? "duplicate" : matches[0]!.state !== "passed" ? "unknown" : undefined;
+    return state ? [`${state} ${name}`] : [];
+  });
+  return problems.length ? `exact-head full CI is not green: ${problems.join("; ")}` : undefined;
+}
+
 /** A complete resolved-thread snapshot already proves there is no pending unanswered bot thread. */
-export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, expected: string | undefined, required: readonly string[]): ReviewReadiness | undefined {
+export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, expected: string | undefined, required: readonly string[], repository?: string): ReviewReadiness | undefined {
   if (!evidence || evidence.unresolved !== 0) return undefined;
-  const checks = required.length ? [...required] : ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
+  const checks = requiredCheckNames(repository, required);
+  if (!checks.length) return { ready: false, blockers: ["required checks unknown: set required_checks in .agenthub/sdlc.toml"], checks };
   if (!checks.every(name => evidence.checks.some(check => check.name === name)) || evidence.checks.some(check => check.state === "unknown")) return undefined;
   const blockers: string[] = [];
   if (!expected || !sha(expected)) blockers.push("review head missing");
   else if (evidence.head !== expected) blockers.push("review head changed");
   if (evidence.state !== "OPEN") blockers.push("review PR is not open");
-  if (!checks.every(name => { const matched = evidence.checks.filter(check => check.name === name); return matched.length === 1 && matched[0]?.state === "passed"; })) blockers.push("exact-head full CI is not green");
+  const ciBlocker = requiredCiBlocker(checks, evidence.checks);
+  if (ciBlocker) blockers.push(ciBlocker);
   return { head: evidence.head, ready: blockers.length === 0, blockers, checks };
 }
 
@@ -565,6 +611,8 @@ export interface ReviewReadiness { head?: string; ready: boolean; blockers: stri
 export async function readReviewReadiness(receipt: SdlcReceipt, expected: string | undefined, run: SdlcGh = sdlcGh, requiredChecks: readonly string[] = []): Promise<ReviewReadiness> {
   const unknown = (): ReviewReadiness => ({ ready: false, blockers: ["review readiness unavailable"] });
   if (!repo(receipt.repo) || !id(receipt.pr)) return unknown();
+  const full = requiredCheckNames(receipt.repo, requiredChecks);
+  if (!full.length) return { ready: false, blockers: ["required checks unknown: set required_checks in .agenthub/sdlc.toml"], checks: full };
   const [owner, name] = receipt.repo.split("/");
   const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state commits(last:1){nodes{commit{oid tree{oid} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}} reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{author{__typename} createdAt} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}";
   try {
@@ -585,14 +633,21 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
     if (!commit || commit.oid !== pr.headRefOid) blockers.push("review head changed");
     const contexts = commit?.statusCheckRollup?.contexts;
     const nodes: unknown[] | undefined = contexts?.nodes;
-    const full = requiredChecks.length ? [...requiredChecks] : ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
     let reusedRun: number | undefined;
-    if (contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(nodes) || nodes.length > 100
-      || !full.every(name => {
-        const matches = (nodes as { name?: string; context?: string; status?: string; conclusion?: string; state?: string }[]).filter(node => (node?.name ?? node?.context) === name);
-        return matches.length === 1 && (matches[0]?.name ? matches[0].status === "COMPLETED" && matches[0].conclusion === "SUCCESS" : matches[0]?.state === "SUCCESS");
-      })) blockers.push("exact-head full CI is not green");
-    if (blockers.includes("exact-head full CI is not green") && contexts?.pageInfo?.hasNextPage === false && Array.isArray(nodes)
+    const completeChecks = !(contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(nodes) || nodes.length > 100);
+    const requiredNodes = completeChecks ? nodes!.filter(node => {
+      const raw = node as { name?: unknown; context?: unknown } | null | undefined;
+      return full.some(name => (raw?.name ?? raw?.context) === name);
+    }) : [];
+    const checkEvidence = completeChecks ? parsePrEvidence({ headRefOid: pr.headRefOid, state: pr.state, files: [], statusCheckRollup: requiredNodes }).checks.map((check, index) => {
+      const raw = requiredNodes[index] as { name?: unknown; status?: unknown; conclusion?: unknown; state?: unknown } | undefined;
+      // Fresh GraphQL admission keeps its original success proof, even when common normalization accepts a legacy shape.
+      const success = raw?.name ? raw.status === "COMPLETED" && raw.conclusion === "SUCCESS" : raw?.state === "SUCCESS";
+      return check.state === "passed" && !success ? { ...check, state: "unknown" as const } : check;
+    }) : [];
+    const ciBlocker = requiredCiBlocker(full, checkEvidence, completeChecks);
+    if (ciBlocker) blockers.push(ciBlocker);
+    if (ciBlocker && contexts?.pageInfo?.hasNextPage === false && Array.isArray(nodes)
       && full.every(name => { const matches = (nodes as { name?: string; conclusion?: string }[]).filter(node => node?.name === name); return matches.length === 1 && matches[0]?.conclusion === "SKIPPED"; }) && sha(commit?.tree?.oid)) {
       reusedRun = await identicalTreeGate(receipt.repo, commit.tree.oid, bounded, full);
       if (reusedRun !== undefined) {
@@ -600,7 +655,7 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
         const after = await bounded(args, 10_000, undefined, 512 * 1024);
         try { if (after.code !== 0 || JSON.stringify(JSON.parse(after.stdout)?.data?.repository?.pullRequest) !== JSON.stringify(pr)) reusedRun = undefined; }
         catch { reusedRun = undefined; }
-        if (reusedRun !== undefined) blockers.splice(blockers.indexOf("exact-head full CI is not green"), 1);
+        if (reusedRun !== undefined) blockers.splice(blockers.indexOf(ciBlocker!), 1);
       }
     }
     const threads = pr.reviewThreads;

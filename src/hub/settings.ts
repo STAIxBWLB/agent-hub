@@ -64,6 +64,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "tasks.escalate_after", group: "Routing", label: "Escalate after N consecutive changes_requested", type: "integer", min: 1, max: 10, store: "config", applies: "live", risk: "raises", path: ["tasks", "escalate_after"] },
   ...OPERATIONAL_NUMBERS.map(({ defaultValue, unit, inventory, ...def }): SettingDef => def),
   { key: "tasks.auto_pull", group: "Switches", label: "Auto-pull the top reserved ready card when a planner slot frees", type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["tasks", "auto_pull"] },
+  // #1221 T2: off evaluates nothing, shadow stores bounded proposals with no inbox row or notice, advisory may also show one in the inbox.
+  { key: "supervision.mode", group: "Switches", label: "Supervision proposals: off, shadow (stored, zero-effect) or advisory (also shown in the inbox)", type: "enum", values: ["off", "shadow", "advisory"], store: "config", applies: "live", risk: "raises", floor: "off", path: ["supervision", "mode"] },
   { key: "tasks.queue_backpressure.max_queued", group: "Routing", label: "Automatic offers: max queued envelopes (0 disables)", type: "integer", min: 0, max: QUEUE_BACKPRESSURE_LIMITS.max_queued, store: "config", applies: "live", risk: "raises", path: ["tasks", "queue_backpressure", "max_queued"] },
   { key: "tasks.queue_backpressure.max_oldest_s", group: "Routing", label: "Automatic offers: max oldest queued age in seconds (0 disables)", type: "integer", min: 0, max: QUEUE_BACKPRESSURE_LIMITS.max_oldest_s, store: "config", applies: "live", risk: "raises", path: ["tasks", "queue_backpressure", "max_oldest_s"] },
   { key: "planner", group: "Roles", label: "Planners (task-local selection)", type: "peers", values: PLANNER_PEERS, store: "config", applies: "live", risk: "raises", path: ["planner"] },
@@ -80,7 +82,10 @@ export const SETTINGS: readonly SettingDef[] = [
   ...ADAPTERS.flatMap(adapter => adapter.configuration?.settings ?? []),
   { key: "routing.stay_switch", group: "Routing", label: "Stay or switch (hub/auto and stage routes)", type: "enum", values: ["off", "shadow", "enforce"], store: "routing", applies: "live", risk: "raises", path: ["stay_switch"] },
   ...CLASSES.flatMap(perClass),
+  { key: "visuals.retention_days", group: "Switches", label: "Unbound visual retention (days)", type: "integer", min: 1, max: 3650, store: "config", applies: "live", risk: "raises", floor: 1, path: ["visuals", "retention_days"] },
   { key: "research.enabled", group: "Switches", label: "Research records", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["research", "enabled"] },
+  // #1292: the quota share at which a peer checkpoints and pauses (resume is below gate - 0.1); default 0.99 in DEFAULT_BUDGET. Raising it is guarded.
+  { key: "budget.gate", group: "Routing", label: "Budget gate: pause a peer when a fresh quota window reaches this share (0..1)", type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["budget", "gate"] },
   { key: "specs.enabled", group: "Switches", label: "Design specs and freshness", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["specs", "enabled"] },
   { key: "specs.review", group: "Switches", label: "Covering spec review", type: "enum", values: ["off", "report", "require"], store: "config", applies: "live", risk: "safe", path: ["specs", "review"] },
   { key: "approvals.notify", group: "Switches", label: "Desktop notice for a waiting approval", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["approvals", "notify"] },

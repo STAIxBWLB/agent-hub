@@ -5,12 +5,16 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.30.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.38.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
+
+Inspect bounded task and attempt metadata with `ahub lineage show`; admit external
+references through the current task role with `ahub lineage link`. References remain
+declared and never cause an external fetch. See [execution lineage](docs/operations.md#execution-lineage-1220-t2).
 
 ## Quick start
 
-You need [Bun](https://bun.sh) 1.4.2 or later on PATH.
+You need [Bun](https://bun.sh) <!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor --> or later on PATH.
 
 ```bash
 bun add -g @staix/agent-hub && ahub setup
@@ -28,11 +32,18 @@ ahub say "Each of you: reply with your name."
 ahub ui                                      # the web dashboard
 ```
 
+If a verified daemon child is still starting after 12 seconds, `ahub up` reports
+its PID and keeps waiting for readiness. Completed starts write phase timings to
+`hub.log`; [startup diagnostics](docs/operations.md#install-and-start) explains
+the 120-second outer bound and the next step for unconfirmed readiness.
+
 `ahub setup` also registers agent-hub as a plugin of the family console
 ([agent-console](https://github.com/STAIxBWLB/agent-console), `acon ui`): the same dashboard
-appears as a panel for every registered project, and pending approvals and reviews assigned
-to you reach the console inbox. The plugin is `@staix/agent-hub/ui-plugin`; it uses the
-dashboard manager's own listing and forwarding, so it adds no protocol and no action.
+appears as a panel for every registered project, and pending approvals, reviews assigned
+to you, questions agents ask you and, where acon supports them, unread results reach the
+console inbox. The plugin is `@staix/agent-hub/ui-plugin`; it uses the dashboard manager's
+own listing and forwarding, and an answer, a result receipt or a review comment sent from
+acon goes through a manager port of its own that needs acon's verified person.
 The plugin also feeds the console's Space view (Flat, Room and 3D): agents become actors
 at their desks, the task board's columns become zones, and task links and recent messages
 become links. The scene carries labels and states only, never message bodies or details.
@@ -41,13 +52,29 @@ become links. The scene carries labels and states only, never message bodies or 
 terminal, `ahub init` asks each main setting with its default before writing; flags
 such as `--agents`, `--sdlc` or `--no-specs` set them directly, and `--yes` takes the
 defaults. The
-[Quickstart](docs/quickstart.md) walks through a first session and a working day.
+[Quickstart](docs/quickstart.md) walks through a first session and a working day,
+including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-project-with-sdlc-advise-or-enforce).
 
 ## What you get
 
+- **Bounded visual explanations.** Ordinary local peers can post a diagram,
+  comparison, table or before/after view with `hub_visual`. acon renders the
+  screened record; the standalone dashboard shows text/source, and peers receive
+  only a stub. [Limits and privacy](docs/operations.md#bounded-visual-attachments-1058).
 - **Peers, not a pipeline.** Any agent can message the others. Messages are batched
   into digests, priorities decide what interrupts a turn, and delivery survives
   restarts.
+- **Optional decision routing.** Hub-owned routes can consult a loopback adec
+  policy in shadow mode while keeping the existing model choice unchanged.
+  Stage routes use bounded numeric evidence and a deterministic fallback;
+  whole-wire sizing conservatively counts UTF-8 JSON bytes, including Unicode.
+  See the [stage contract](docs/design/model-routes.md) and
+  [configuration and privacy limits](docs/operations.md#optional-adec-decision-route-554).
+- **Live model selection.** A person can set a supported peer's next-turn model
+  with `ahub model set`, without restart or reload. Headless Kimi 2.5.2 has an
+  exact-version ACP setter receipt; other ACP kinds remain unsupported.
+  Active turns stay unchanged;
+  [status distinguishes pending and unsupported selection](docs/operations.md#live-peer-model-overrides-1317).
 - **A shared task board.** Work is proposed, accepted, done and reviewed through hub
   tools. Roles split planning, implementation and review (up to eight planners,
   each task bound to one), `routing.toml` picks
@@ -63,22 +90,42 @@ defaults. The
   another project running agent-hub on this machine goes onto that project's board
   with `ahub task handoff` (agents: `hub_task_handoff`), and its state changes come
   back as task messages.
+  For a PR already merged outside the hub, [merged PR adoption](docs/sdlc.md#adopting-a-pr-merged-outside-the-hub-1328-t3) verifies its recorded head and releases dependents: `ahub sdlc adopt-merge <task> --pr <n>`.
+  An explicitly superseding task may [carry existing spec consent](docs/sdlc.md#spec-acceptance-481-s1) for the same repository and issue when the host verifies an unchanged body.
+  Fresh Kimi reviews run periodic isolation checks off the hub event loop;
+  verdict and task-tool authority still require the complete synchronous fence
+  ([measurements and limits](docs/verification/2026-11-07-kimi-review-watch-1284.md)).
 - **Research campaigns.** `ahub study` keeps a multi-unit study contract as a draft
   (a planner drafts it with `hub_study_draft`); only the person approves it, which
   creates one task per unit, and `ahub study show` reads coverage per unit and
   source. A unit is covered by its owner's `hub_study_handoff` with evidence, not by
   a done task. Experiment attempts are recorded with `hub_experiment_record` and read
-  with `ahub study experiments`, each value naming where it came from.
+  with `ahub study experiments`, each value naming where it came from. Covered by
+  source and fixture tests only so far: no real campaign has run on this repository
+  ([dogfood](docs/dogfood.md#operations)).
 - **Design specs.** Markdown specs with `id` and `type` frontmatter name the paths
   they govern. `ahub specs check` validates their links and reports specs that are
   stale against their covered sources, the hub names the specs covering a task, and
   agents read them with `hub_specs`. Only a person stamps a spec as reviewed
-  (`ahub specs stamp`).
+  (`ahub specs stamp`). Fixture-tested only so far: this repository's own specs in
+  `docs/design/` are unstamped drafts ([dogfood](docs/dogfood.md#operations)).
+  The [guidance variant contract](docs/design/guidance-experiments.md) defines
+  immutable advisory role proposals and private task-local lifecycle storage.
+  `ahub guidance create|list|show|withdraw` and the MCP tools share task authority
+  and public projections; the producer console's Guidance panel is read-only.
+  Section diffs remain advisory, without activation, permissions or probes.
+  `ahub guidance probe register|start|show|cancel` (the person or the configured
+  conductor) records a bounded private probe declaration; only a fake fixture
+  lifecycle runs, and production has no probe runner
+  ([guidance probes](docs/design/guidance-probes.md)).
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,
   git sync between machines). Agents get
   it as a recall preface, as briefs on a task, and through bounded search tools.
+  Managed headless peers can save compact `amem:` records from final answers; the
+  hub follows amem's `records` policy and removes record lines from shared replies
+  ([details](docs/memory.md#agent-authored-records-1320)).
 - **Local and on-prem models.** Pi and the local worker can run on DGX or local MLX
   through an authenticated relay. Tasks marked as PII stay on the on-prem worker.
 - **Guard rails.** The local worker and Pi run in a sandbox, and their writes and
@@ -94,7 +141,8 @@ defaults. The
   the project's own peer appears as `<peer>~<origin>` with none of that peer's
   roles: sessions are distinguishable, which is provenance, not authentication.
   Budgets pause an
-  agent before it runs out of quota, and recovery never replays an
+  agent before it runs out of quota (at 99% of a window by default, the
+  `budget.gate` setting), and recovery never replays an
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
   worktree with a machine-wide view, live settings reload, machine-local schedules
@@ -102,7 +150,10 @@ defaults. The
   (`ahub schedule list`), a one-confirmation autonomy
   preset (`ahub autonomy on|off|status`), a worktree shelf that lists live and
   settled worktrees and removes the safe ones only on your confirmation
-  (`ahub worktrees`), structural config
+  (`ahub worktrees`), questions an agent asks you with `hub_ask` (answered with
+  `ahub answer`, the console's `A` or the acon inbox), the results of runs you
+  started (`ahub results`), a person-requested handover of a peer to a waiting
+  standby session (`ahub peer takeover`), structural config
   (instances, review, lifecycle) edited with a validated diff and a backup from the
   console or a dashboard settings session, token usage and quota
   history (`ahub usage` and the dashboard's Usage view), and `ahub upgrade`, which
@@ -113,7 +164,8 @@ defaults. The
 Run `ahub upgrade` in a project while its hub is running (`--project` selects
 another); other projects keep their version. Update the global CLI
 (`bun add -g @staix/agent-hub@<version>`) and run `ahub setup` for the plugin
-yourself. Read the notes for your version in
+yourself; `ahub upgrade` names that step when either is older than the daemon it
+installed. Read the notes for your version in
 the [Quickstart](docs/quickstart.md) ("Upgrading to ...") and the
 [Changelog](CHANGELOG.md) first: some releases need a one-time step, such as
 refreshing an agent's MCP entry.
@@ -122,9 +174,13 @@ Agent CLIs update themselves. `ahub agents` shows which installed versions the h
 accepts, `ahub agents trust <id> <version>` accepts an untested one on this
 machine, and the hub tells the planner when an installed version is not verified.
 
+Qwen Code dual-output 0.27.0 and 0.27.1 are qualified by source and account-free macOS arm64 checks ([0.27.0](docs/verification/2026-11-10-qwen-0270-dual-output.md), [0.27.1](docs/verification/2026-11-10-qwen-0271-dual-output.md)) (supported from 0.36.0 once a hub is upgraded); real-model turns and live TUI use here remain unverified. A hub deny keeps later input fenced until a new personal turn completes or a verified fresh generation starts; see [Qwen TUI operations](docs/operations.md#qwens-own-tui-driven-through-dual-output-286-part-3).
+
 Before you migrate a memory home with `amem`, read
 [memory profiles and rollout](docs/memory.md#selected-memory-profile). Every hub that
 uses the home must run a version that understands the new layout.
+Machine sync uses amem's public writer attestation; status and the dashboard
+show an unverified writer's cause and the person-run next step.
 
 ## Where it is going
 
@@ -137,7 +193,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-11-03-0.30.0.md) and the
+[release verification report](docs/verification/2026-11-11-0.37.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

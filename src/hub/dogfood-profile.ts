@@ -4,7 +4,8 @@ import { PII_CATEGORIES, type ScreenItem, type ScreenMiss, type ScreenRecord } f
 import type { Attribution } from "./attribution.ts";
 import { PROFILE_NAMES, projectProfile, type ProfileName } from "./profiles.ts";
 import { summarizeByTask } from "./report.ts";
-import type { StampedEvent } from "./events.ts";
+import { isModelEvidence, type StampedEvent } from "./events.ts";
+import { safeModelLabel } from "../omniroute/usage.ts";
 
 export interface ProfileHistory {
   at: number; event: string; criteria?: string[]; criteriaPrivate?: true; deliverables?: string[];
@@ -26,7 +27,7 @@ const criterion = (s: unknown): s is string => typeof s === "string" && /^[A-Za-
 
 // Exhaustive maps make producer union changes a compile-time review point.
 const taskStates: Record<TaskState,true> = {backlog:true,proposed:true,in_progress:true,in_review:true,approved:true,changes_requested:true,cancelled:true};
-const usageSources: Record<Extract<StampedEvent,{type:"usage"}>["source"],true> = {omniroute:true,claude_transcript:true,claude_result:true,codex_appserver:true,kimi_wire:true,jcode_acp:true};
+const usageSources: Record<Extract<StampedEvent,{type:"usage"}>["source"],true> = {omniroute:true,claude_transcript:true,claude_result:true,codex_appserver:true,kimi_wire:true,jcode_acp:true,agy_transcript:true};
 const attributions: Record<Attribution,true> = {delivery:true,single_open:true,unattributed:true};
 const screenItems: Record<ScreenItem,true> = {task:true,summary:true,"review note":true,handoff:true,note:true};
 const screenMisses: Record<ScreenMiss,true> = {"too long":true,"off campus":true,timeout:true,unreadable:true,failed:true};
@@ -71,7 +72,7 @@ export function profileEventValid(value: unknown): boolean {
       || !optional("attribution",v=>member(v,attributions))) return false;
     if ((e.attribution==="delivery" || e.attribution==="single_open") && !positive(e.task)) return false;
     if (e.type==="tokens") return number(e.n);
-    if (e.type==="turn_end") return number(e.ms) && optional("turn",text) && optional("snapshotMs",number) && optional("tokens",number) && optional("files",number);
+    if (e.type==="turn_end") return number(e.ms) && optional("turn",text) && optional("snapshotMs",number) && optional("tokens",number) && optional("files",number) && optional("model",v=>safeModelLabel(v)!==undefined) && optional("modelEvidence",v=>isModelEvidence(v));
     return text(e.id) && member(e.source,usageSources)
       && ["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens","reasoningTokens"].every(key=>optional(key,number))
       && optional("measuredAt",v=>typeof v==="string" && Number.isFinite(Date.parse(v)));
@@ -181,23 +182,27 @@ export function profileScorecard(input: DogfoodInput) {
       const history = group.tasks.flatMap(t=>t.metadata.history.filter(h=>inWindow(h.at)).map(h=>({...h,task:t})));
       const recorded = [...ids].flatMap(id=>taskEvents.get(id)??[]);
       const autoApprovals = recorded.filter(e=>e.event==="done" && e.state==="approved");
+      const adoptionSettlements = recorded.filter(e=>e.event==="merged outside the hub" && e.state==="approved");
       const milestones = full ? history : recorded.map(e=>({at:Date.parse(e.at),event:e.event,task:bound.get(e.id)!}));
       const milestoneKnown = full || eventsFull;
       const scope = full ? "history" : eventsFull ? "recorded_events" : null;
       const count = (event: string) => milestoneKnown ? new Set(milestones.filter(h=>h.event===event || event==="proposed" && h.event==="backlog pulled").map(h=>h.task.id)).size : null;
-      const approvalIds = new Set(milestones.filter(h=>h.event==="approved").map(h=>h.task.id));
+      const approvalIds = new Set(milestones.filter(h=>h.event==="approved" || full && h.event==="merged outside the hub").map(h=>h.task.id));
       for (const e of autoApprovals) approvalIds.add(e.id);
+      for (const e of adoptionSettlements) approvalIds.add(e.id);
       // A current approved state alone cannot date a reviewer-less done. Never place it in this window by guessing.
-      const approvalUnknown = full && group.tasks.some(t=>t.metadata.state==="approved" && !t.metadata.history.some(h=>h.event==="approved") && !autoApprovals.some(e=>e.id===t.id));
+      const approvalUnknown = full && group.tasks.some(t=>t.metadata.state==="approved" && !t.metadata.history.some(h=>h.event==="approved" || h.event==="merged outside the hub") && !autoApprovals.some(e=>e.id===t.id) && !adoptionSettlements.some(e=>e.id===t.id));
       const leads: number[] = [], first: number[] = [];
       for (const task of group.tasks) {
         const all = task.metadata.history.filter(h=>h.at<=input.until).sort((a,b)=>a.at-b.at);
         const proposed = all.find(h=>h.event==="proposed" || h.event==="backlog pulled");
         const approval = all.findLast(h=>h.event==="approved" && inWindow(h.at));
         const automatic = autoApprovals.filter(e=>e.id===task.id).map(e=>Date.parse(e.at)).sort((a,b)=>b-a)[0];
-        const approvedAt = approval?.at ?? automatic;
+        const settlement = all.findLast(h=>(h.event==="approved" || h.event==="merged outside the hub") && inWindow(h.at));
+        const adopted = adoptionSettlements.filter(e=>e.id===task.id).map(e=>Date.parse(e.at)).sort((a,b)=>b-a).shift();
+        const approvedAt = settlement?.at ?? adopted ?? automatic;
         if (proposed && approvedAt!==undefined && approvedAt>=proposed.at) leads.push(approvedAt-proposed.at);
-        // An automatic completion is an approval transition, never a reviewer verdict or first-pass review sample.
+        // Automatic completion and merge adoption settle the task, never a reviewer verdict or first-pass review sample.
         if (approval) { const verdict = all.find(h=>h.event==="approved" || h.event==="changes_requested"); if (verdict) first.push(Number(verdict.event==="approved")); }
       }
       const verdicts = milestones.filter(h=>h.event==="approved" || h.event==="changes_requested");

@@ -9,9 +9,15 @@ import { KIMI_MODE_IDS } from "./definitions/kimi-native.ts";
 import { QWEN_MODE_IDS, qwenNativeIdentity } from "./definitions/qwen-native.ts";
 export { QwenIdentityError } from "./definitions/qwen-native.ts";
 import { BasePeer } from "../hub/peers.ts";
+import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { AcpOwnedGroup } from "./acp-owned-group.ts";
-import type { StartForm } from "./registry-types.ts";
+import type { StartForm, ModelOverrideSelection } from "./registry-types.ts";
+import { assessVersion, readTrust } from "./compat.ts";
+import { acpLogicalModelId, acpModelAdvertisement, type AcpModelAdvertisement, type AcpModelPolicy } from "./acp-model-policy.ts";
+import { isNativeModelToken } from "./model-token.ts";
+import { sessionModelId, updatedModelId } from "./acp-session-model.ts";
+import type { ModelObservation } from "../hub/events.ts";
 import type { CapabilityManifest } from "../hub/capabilities.ts";
 import { acpManifest } from "./native-capabilities.ts";
 
@@ -102,6 +108,13 @@ export interface AcpOptions {
   cmd: string[];
   /** Coordinator-visible selected model only; contains no prompts or command arguments. */
   launchModel?: string;
+  /** Fixed factory receipt policy only; absent means live model changes are unavailable. */
+  modelPolicy?: AcpModelPolicy;
+  /** Testing/host deadline seam; defaults to the existing ACP handshake bound. */
+  modelSetterTimeoutMs?: number;
+  /** Host/test trust-record path; omitted uses the existing person-owned compatibility record. */
+  modelTrustFile?: string;
+  getModelOverride?: () => ModelOverrideSelection | undefined;
   permissionMode?: PermissionMode;
   /** Presence replaces all identity-inferred native mode and quota policy. */
   nativePolicy?: { modes?: Partial<Record<PermissionMode, string>>; readOnly?: string; lockedReadOnly?: boolean };
@@ -237,6 +250,17 @@ export class AcpPeer extends BasePeer {
   private permissionMode: PermissionMode;
   private readonly nativePolicy: AcpOptions["nativePolicy"];
   private modeUnknown = false;
+  private modelUnknown = false;
+  private readonly modelPolicy: AcpModelPolicy | undefined;
+  private modelAdvertisement: AcpModelAdvertisement | undefined;
+  private modelBaseline: string | undefined;
+  private modelSelected: string | undefined;
+  private modelObservation: object = {};
+  /** #1402: the model id the session reports now, kept whatever the override policy; `turnModel` is its value when the turn's prompt was sent. Neither is ever invented. */
+  private sessionModel: string | undefined;
+  private turnModel: string | undefined;
+  private modelBinding: { proc: ChildProcessWithoutNullStreams; session: string; proof: AcpOwnedGroup } | undefined;
+  private modelTurn: { turn: number; selection: ModelOverrideSelection; target: string; sent: boolean; acknowledged: boolean } | undefined;
   private kimiAgent = false;
   private qwenAgent = false;
   /** #445 C1: the agent identity from `initialize`, and the latest `available_commands_update` of the CURRENT session (an update that arrives before the session id is bound waits in `earlyCommands`). */
@@ -331,6 +355,8 @@ export class AcpPeer extends BasePeer {
     private readonly opts: AcpOptions,
   ) {
     super(id, opts.watchdogMs);
+    this.modelPolicy = opts.modelPolicy ? Object.freeze({ ...opts.modelPolicy, admission: Object.freeze({ ...opts.modelPolicy.admission }) }) : undefined;
+    if (opts.modelSetterTimeoutMs !== undefined && (!Number.isSafeInteger(opts.modelSetterTimeoutMs) || opts.modelSetterTimeoutMs <= 0 || opts.modelSetterTimeoutMs > HANDSHAKE_MS)) throw new Error("ACP model acknowledgement deadline must fit the handshake bound");
     this.nativePolicy = opts.nativePolicy === undefined ? undefined : { ...opts.nativePolicy, ...(opts.nativePolicy.modes === undefined ? {} : { modes: { ...opts.nativePolicy.modes } }) };
     this.permissionMode = this.nativePolicy?.lockedReadOnly ? "ask" : opts.permissionMode ?? "ask";
   }
@@ -345,6 +371,7 @@ export class AcpPeer extends BasePeer {
 
   async start(): Promise<void> {
     managedLaunches.delete(this);
+    this.modelBinding = undefined; this.modelAdvertisement = undefined; this.modelBaseline = undefined; this.modelSelected = undefined; this.modelUnknown = false; this.modelTurn = undefined;
     if (this.opts.requireOwnedGroup && this.proc) throw new Error("Configured ACP still has a process; stop it before starting another");
     this.stopping = false;
     this.binding = true; this.earlyCommands.clear(); // #445 C1: a new process starts a new session (the bind below drops the old list)
@@ -359,7 +386,7 @@ export class AcpPeer extends BasePeer {
     proc.on("exit", (code) => { if (!this.opts.requireOwnedGroup || this.proc === proc) this.down(`exited with code ${code}`); });
     proc.stdin.on("error", () => {}); // EPIPE from a child that died; `exit` / `error` already report it
     proc.stderr.on("data", (d) => this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP stderr output withheld" : `[${this.id}] ${String(d).trimEnd()}`));
-    createInterface({ input: proc.stdout }).on("line", (line) => this.onLine(line));
+    createInterface({ input: proc.stdout }).on("line", (line) => { if (!this.modelPolicy || this.proc === proc) this.onLine(line); });
 
     const handshake = async () => {
       const init = await this.request("initialize", {
@@ -399,6 +426,25 @@ export class AcpPeer extends BasePeer {
         throw new Error("Configured ACP did not provide a valid native session identity");
       }
       this.sessionId = session.sessionId;
+      this.sessionModel = sessionModelId(session, this.modelPolicy); this.turnModel = undefined;
+      const modelPolicy = this.modelPolicy;
+      if (modelPolicy && this.modelAdmitted()) {
+        const advertisement = acpModelAdvertisement(modelPolicy, session);
+        if (advertisement && typeof this.sessionId === "string" && this.sessionId.length > 0) {
+          try {
+            const proof = await AcpOwnedGroup.capture(proc);
+            await proof.verify();
+            if (this.proc === proc && !this.stopping) {
+              this.modelBinding = { proc, session: this.sessionId, proof };
+              this.modelAdvertisement = advertisement;
+              this.modelSelected = advertisement.current;
+              this.modelBaseline = this.opts.launchModel === undefined ? advertisement.current : advertisement.available.includes(this.opts.launchModel) ? this.opts.launchModel : undefined;
+            }
+          } catch {
+            this.opts.log?.("ACP model process ownership is unverified; live model changes are unavailable, inspect status and restart before retrying");
+          }
+        }
+      }
       this.binding = false;
       this.adoptEarlyCommands(session.sessionId);
       this.onDoing?.("reset");
@@ -438,6 +484,90 @@ export class AcpPeer extends BasePeer {
       throw e;
     }
     this.setState("idle");
+  }
+
+  private modelAdmitted(): boolean {
+    const policy = this.modelPolicy;
+    if (!policy || !policy.receipt || this.agentIdentity?.name !== policy.agentName || this.agentIdentity.version !== policy.version) return false;
+    if (policy.admission.compatId !== undefined) {
+      // Verified and compatible-line admission does not depend on a trust record. A trusted exception is re-read,
+      // so revocation during a setter await cannot authorize the following prompt.
+      return assessVersion(policy.admission.compatId, policy.version, []).ok
+        || assessVersion(policy.admission.compatId, policy.version, readTrust(this.opts.modelTrustFile)).ok;
+    }
+    return policy.admission.nativeIdentity === true;
+  }
+  /** Current owned-session readiness, not an assertion about a provider's served model. */
+  get modelOverrideState(): Readonly<{ available: boolean; version?: string; baseline?: string }> {
+    const binding = this.modelBinding;
+    const version = this.agentIdentity?.version;
+    const available = !!binding && this.modelAdmitted() && !this.modelUnknown && !this.stopping && this.state !== "offline"
+      && this.proc === binding.proc && binding.proc.exitCode === null && binding.proc.signalCode === null
+      && this.sessionId === binding.session && !!this.modelAdvertisement && !!this.modelBaseline;
+    return { available, ...(available ? { baseline: this.modelBaseline! } : {}),
+      ...(isNativeModelToken(version) && /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version) ? { version } : {}) };
+  }
+  acceptsModelOverride(model: string): boolean {
+    return this.modelOverrideState.available && isNativeModelToken(model) && this.modelAdvertisement!.available.includes(model);
+  }
+  /** #1402: the model the session was on when the turn that just ended started, read once at its `turn_end` (`session`: the agent's own current model id, not a per-response one). Absent records nothing. */
+  observedModel(): ModelObservation | undefined {
+    const model = this.turnModel; this.turnModel = undefined;
+    return model ? { model, evidence: "session" } : undefined;
+  }
+  private observeModelId(model: unknown): void {
+    this.modelObservation = {};
+    const logical = this.modelPolicy && acpLogicalModelId(this.modelPolicy, model);
+    if (!logical || !this.modelAdvertisement?.available.includes(logical)) {
+      this.modelAdvertisement = undefined; this.modelSelected = undefined;
+    } else this.modelSelected = logical;
+  }
+  private acknowledgeModel(): void {
+    const selected = this.modelTurn;
+    if (!selected || !selected.sent || selected.acknowledged || selected.turn !== this.turn || this.stopping || this.modelUnknown
+      || !this.modelOverrideState.available || this.modelSelected !== selected.target) return;
+    selected.acknowledged = true;
+    selected.selection.applied();
+  }
+  private async selectTurnModel(turn: number): Promise<void> {
+    const selected = this.modelTurn, binding = this.modelBinding, policy = this.modelPolicy;
+    if (!selected || !binding || !policy) throw new Error("ACP model setter is unavailable; restart this peer before retrying");
+    const current = () => turn === this.turn && this.modelTurn === selected && this.modelBinding === binding
+      && this.proc === binding.proc && this.sessionId === binding.session && !this.stopping && !this.modelUnknown;
+    const verify = async () => {
+      try { await binding.proof.verify(); }
+      catch {
+        if (this.modelBinding === binding) this.modelBinding = undefined;
+        throw new Error("ACP model process ownership could not be verified; restart this peer before retrying");
+      }
+    };
+    await verify();
+    if (!current() || !this.acceptsModelOverride(selected.target)) throw new Error("ACP model session or advertisement changed; inspect status and retry");
+    if (this.modelSelected === selected.target) return;
+    const observation = this.modelObservation;
+    const wire = this.modelAdvertisement?.wire[selected.target];
+    if (!wire) throw new Error("ACP model has no exact advertised wire binding; inspect model choices and retry");
+    try {
+      const result = await this.request(policy.setter === "set_model" ? "session/set_model" : "session/set_config_option",
+        policy.setter === "set_model" ? { sessionId: binding.session, modelId: wire } : { sessionId: binding.session, configId: "model", value: wire }, this.opts.modelSetterTimeoutMs ?? HANDSHAKE_MS);
+      if (policy.setter === "set_config_option" && this.modelObservation === observation && result?.configOptions !== undefined) {
+        this.modelAdvertisement = acpModelAdvertisement(policy, result);
+        this.modelSelected = this.modelAdvertisement?.current;
+        this.modelObservation = {};
+      }
+    } catch (error) {
+      if (error instanceof RpcTimeoutError && current()) {
+        if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "failed_safe", reason: "ACP model acknowledgement timed out before a prompt was sent; restart this peer before retrying" });
+        this.activeDeliveryId = undefined; this.activeLegacy = undefined;
+        this.modelUnknown = true; this.turn++; this.setState("offline");
+        await this.stop();
+        throw new Error("ACP model change was not acknowledged; native selection is unknown, restart this peer before sending work");
+      }
+      throw new Error("ACP model setter refused the change; inspect model status and retry");
+    }
+    if (this.modelObservation === observation) this.modelSelected = selected.target;
+    await verify();
+    if (!current() || !this.acceptsModelOverride(selected.target) || this.modelSelected !== selected.target) throw new Error("ACP model session or advertisement changed; inspect status and retry");
   }
 
   getPermissionMode(): PermissionMode { return this.permissionMode; }
@@ -532,7 +662,20 @@ export class AcpPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
       throw new Error(`${this.id} is ${this.state}`);
     }
+    let selection: ModelOverrideSelection | undefined;
+    try { selection = this.opts.getModelOverride?.(); }
+    catch {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "ACP retained model selection is unavailable; inspect model status, clear the override or restart before retrying" });
+      throw new Error("ACP retained model selection is unavailable; inspect model status, clear the override or restart before retrying");
+    }
+    const target = selection?.model ?? this.modelBaseline;
+    if (selection && (!target || !this.acceptsModelOverride(target))) {
+      selection.rejected?.();
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "ACP model is not advertised by this verified session; inspect model status and retry" });
+      throw new Error("ACP model is not advertised by this verified session; inspect model status and retry");
+    }
     const turn = ++this.turn;
+    this.modelTurn = selection && target ? { turn, selection, target, sent: false, acknowledged: false } : undefined;
     this.activeDeliveryId = deliveryId;
     this.activeLegacy = deliveryId ? undefined : { turn, envs };
     this.turnEnvs = envs; this.steerIds = [];
@@ -547,8 +690,28 @@ export class AcpPeer extends BasePeer {
     this.setState("busy");
     this.emitActivity("delivery", envs.map(env => `${env.from} ${env.id}`).join(", "));
 
+    if (selection) {
+      try {
+        await this.selectTurnModel(turn);
+        if (turn !== this.turn || this.stopping || !this.modelOverrideState.available
+          || this.modelTurn?.turn !== turn || this.modelSelected !== target) throw new Error("ACP model owner or selection changed before prompt admission; inspect status and retry");
+      }
+      catch (error) {
+        if (turn === this.turn && !this.modelTurn?.sent) {
+          selection.rejected?.();
+          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "ACP model change did not admit a prompt; inspect status and retry" });
+          this.activeDeliveryId = undefined; this.activeLegacy = undefined; this.modelTurn = undefined;
+          this.endActivity("model change refused", true);
+          if (!this.stopping && (this.state as PeerState) === "busy") this.setState("idle");
+        }
+        throw error;
+      }
+      if (this.modelTurn?.turn === turn) this.modelTurn.sent = true;
+    }
+    const fixedPreamble = this.turnRecordPrompt(this.primed ? "" : this.opts.preamble ?? "");
+    this.turnModel = this.sessionModel; // the session's model at the turn start
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
-    const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}` }] });
+    const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: fixedPreamble ? `${fixedPreamble}\n\n${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
     const reported = () => { if (this.cancelWait?.turn === turn) this.cancelWait.reported = true; };
     void prompt.then(reported, reported);
     prompt
@@ -561,11 +724,12 @@ export class AcpPeer extends BasePeer {
         this.observeUsage(result, "prompt_result");
         const turnUsage = acpTurnUsage(result);
         if (turnUsage) try { this.opts.onTurnUsage?.(turnUsage, this.sessionId); } catch { /* a counter sink never costs a turn */ }
+        if (result?.stopReason === "end_turn") this.acknowledgeModel();
         this.primed = true;
         const body = this.chunks.join("").trim();
         // What was steered into the turn is answered by it too: its senders hear back, and the hop cap still holds.
         const answering = this.turnEnvs.length ? this.turnEnvs : envs;
-        if (body) this.onMessage?.(body, { inReplyTo: replyParent(answering), to: replyAudience(answering) });
+        if (body) this.finalAnswer(body, { inReplyTo: replyParent(answering), to: replyAudience(answering) }, result?.stopReason === "end_turn");
         // Partial output cannot certify normal completion (#160).
         if (result?.stopReason !== "end_turn") this.reportTurnFailure(envs, `ACP prompt ended without normal completion (${String(result?.stopReason ?? "unknown")})`);
         if (deliveryId && this.activeDeliveryId === deliveryId) {
@@ -579,6 +743,7 @@ export class AcpPeer extends BasePeer {
           if (this.cancelWait?.turn === turn) this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP cancelled prompt rejected; native details withheld" : `[${this.id}] cancelled prompt rejected: ${sanitize(e.message)}`);
           return; // cancelled prompt errors are discarded, like their late results
         }
+        if (!this.modelTurn?.acknowledged) this.modelTurn?.selection.rejected?.();
         this.endActivity("failed", true);
         const reason = this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP prompt failed" : sanitize(e.message);
         this.settleSteers("needs_review", reason);
@@ -604,6 +769,7 @@ export class AcpPeer extends BasePeer {
           if (!this.stopping && this.turn === waiting.successor && this.state === "busy") this.setState("idle");
           return;
         }
+        if (this.modelTurn?.turn === turn) this.modelTurn = undefined;
         if (turn === this.turn && !this.stopping && this.state === "busy") this.setState("idle");
         if (this.activeLegacy?.turn === turn) this.activeLegacy = undefined;
         if (turn === this.turn && this.activeDeliveryId === deliveryId) this.activeDeliveryId = undefined;
@@ -637,8 +803,8 @@ export class AcpPeer extends BasePeer {
     this.cancelPermissions();
     this.activeLegacy = undefined; // the cancelled prompt is discarded, never returned by a later stop
     const durable = !!this.activeDeliveryId;
-    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout" });
-    this.settleSteers("needs_review", "ACP turn watchdog timeout");
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout", failureCause: "timeout" });
+    this.settleSteers("needs_review", "ACP turn watchdog timeout", "timeout");
     this.activeDeliveryId = undefined;
     this.notify("session/cancel", { sessionId: this.sessionId });
     this.turn++; // whatever the cancelled prompt still reports is stale
@@ -693,9 +859,9 @@ export class AcpPeer extends BasePeer {
     if (deliveryId) { this.steerIds.push(deliveryId); this.delivery({ id: deliveryId, state: "accepted" }); }
   }
 
-  private settleSteers(state: "completed" | "needs_review", reason?: string): void {
+  private settleSteers(state: "completed" | "needs_review", reason?: string, failureCause?: DeliveryFailureCause): void {
     const ids = this.steerIds; this.steerIds = [];
-    for (const id of ids) this.delivery({ id, state, ...(state === "needs_review" ? { reason: reason ?? "steered turn did not complete normally" } : {}) });
+    for (const id of ids) this.delivery({ id, state, ...(state === "needs_review" ? { reason: reason ?? "steered turn did not complete normally", ...(failureCause ? { failureCause } : {}) } : {}) });
   }
 
   private acceptDelivery(): void {
@@ -727,6 +893,11 @@ export class AcpPeer extends BasePeer {
     }
     if (this.state === "busy" && !this.cancelWait) { this.lastSignAt = Date.now(); this.touch(); }
 
+    if (msg.method === "qwen/notify/session/model-update" && msg.params?.v === 1 && msg.params.sessionId === this.sessionId) this.sessionModel = updatedModelId(msg.params, this.modelPolicy) ?? this.sessionModel;
+    if (this.modelPolicy && msg.method === "qwen/notify/session/model-update") {
+      if (this.modelPolicy.modelUpdate === "qwen/notify/session/model-update" && msg.params?.v === 1 && msg.params.sessionId === this.sessionId) this.observeModelId(msg.params.currentModelId);
+      return; // A setter/control notification is never prompt admission.
+    }
     if (msg.method === "session/update") {
       // #445 C1: the command list is the session's, sent right after `session/new` and again when skills change, whatever the turn state. Only the current session's counts.
       if (msg.params?.update?.sessionUpdate === "available_commands_update" && typeof msg.params.sessionId === "string") {
@@ -741,6 +912,7 @@ export class AcpPeer extends BasePeer {
       }
       if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId) return;
       const u = msg.params?.update;
+      if (u?.sessionUpdate === "current_model_update" || u?.sessionUpdate === "config_option_update") this.sessionModel = updatedModelId(u, this.modelPolicy) ?? this.sessionModel;
       // Occupancy is the session's, not the turn's: 2.1.1's source text emits usage_update after the prompt
       // resolves, when the peer may already be idle (read from the source, not observed live; #285). So a
       // context-used update is accepted while idle too, but then it must name the current session; in a turn the
@@ -754,7 +926,19 @@ export class AcpPeer extends BasePeer {
           return;
         }
       }
-      if (this.state !== "busy" || this.cancelWait) return;
+      if (this.modelPolicy && (u?.sessionUpdate === "current_model_update" || u?.sessionUpdate === "config_option_update")) {
+        if (msg.params?.sessionId === this.sessionId && this.modelPolicy.modelUpdate === u.sessionUpdate) {
+          this.modelObservation = {};
+          if (u.sessionUpdate === "config_option_update") {
+            this.modelAdvertisement = acpModelAdvertisement(this.modelPolicy, { configOptions: u.configOptions });
+            this.modelSelected = this.modelAdvertisement?.current;
+          }
+          else this.observeModelId(u.currentModelId);
+        }
+        return;
+      }
+      if (this.state !== "busy" || this.cancelWait || this.modelTurn && !this.modelTurn.sent) return;
+      if (msg.params?.sessionId === this.sessionId && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(u?.sessionUpdate)) this.acknowledgeModel();
       this.promptActivity = true;
       this.acceptDelivery();
       this.updateWatch(u);
@@ -782,6 +966,7 @@ export class AcpPeer extends BasePeer {
     } else if (msg.method === "session/request_permission") {
       if (this.cancelWait || this.state === "offline") { this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }); return; }
       if (this.state === "busy" && (!msg.params?.sessionId || msg.params.sessionId === this.sessionId)) this.promptActivity = true;
+      if (this.state === "busy" && !this.cancelWait && msg.params?.sessionId === this.sessionId) this.acknowledgeModel();
       void this.answerPermission(msg);
     } else if (msg.method && msg.id !== undefined) {
       this.send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not supported by agent-hub" } });

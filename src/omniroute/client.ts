@@ -35,6 +35,8 @@ export interface ChatResult {
   usage?: NormalizedUsage;
   /** Model named by the completed response, when the gateway reports it. */
   servedModel?: string;
+  /** Positive metadata only when the raw response identity required no normalization. */
+  servedModelExact?: true;
   /** `x-omniroute-provider` (direct path) */
   provider?: string;
 }
@@ -187,6 +189,7 @@ export class OmniRoute {
       ...(usage ? { usage } : {}),
       ...(safeProvider ? { provider: safeProvider } : {}),
       ...(servedModel ? { servedModel } : {}),
+      ...(servedModel && json.model === servedModel ? { servedModelExact: true as const } : {}),
     };
   }
 }

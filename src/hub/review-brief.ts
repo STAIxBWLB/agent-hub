@@ -4,6 +4,19 @@ import { childEnv } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
 import { symbolsOverlap } from "./symbol-normalizer.ts";
 import type { SpecTaskReport } from "./board.ts";
+import type { ReviewFinding } from "./review-findings.ts";
+import type { ReviewAnchorStatus } from "./review-anchor.ts";
+
+/** Read-time placement only; the stored finding and its selectors remain unchanged. */
+export function renderFindingAnchor(finding: ReviewFinding, placement: ReviewAnchorStatus): string {
+  const anchor = finding.anchor;
+  if (!anchor) return "";
+  if (placement.status === "unavailable") return "Anchor: unavailable; reopen the task review to inspect current public material.";
+  const range = placement.status === "outdated" ? undefined : placement.range ?? anchor.selectors.find(selector => selector.kind === "lineRange");
+  const location = anchor.path + (range ? `:${range.startLine}-${range.endLine}` : "");
+  const quotes = anchor.selectors.flatMap(selector => selector.kind === "textQuote" ? [selector.exact] : []);
+  return sanitize([`Anchor: ${location} (${placement.status})`, ...quotes.map(quote => `> ${quote.replace(/\n/g, "\n> ")}`)].join("\n"));
+}
 
 /**
  * #520: the review brief ahub builds itself, in place of `ocr delegate preview` and `rule`. Every reviewer gets the same

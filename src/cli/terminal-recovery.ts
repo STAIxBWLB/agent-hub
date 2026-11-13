@@ -100,6 +100,18 @@ export interface TerminalInspection {
   byPeer: Partial<Record<TerminalPeer, TerminalBinding>>;
   blockers: RecoveryBlocker[];
   manualRequired: boolean;
+  /** #1246: terminals whose identity was verified (handle, incarnation, worktree, root, peer) and that read orphaned but still connected: the only ones a person may have switched back. */
+  orphaned?: OrphanedTerminal[];
+}
+
+/** #1246: one verified orphaned-but-connected terminal, as the plan records it. Never a session or a launch. */
+export interface OrphanedTerminal {
+  peer: TerminalPeer;
+  handle: string;
+  incarnationId: string;
+  worktreeId: string;
+  /** The terminal's worktree root as Orca reported it and the plan matched it. */
+  root: string;
 }
 
 export interface IdleResult {
@@ -206,17 +218,32 @@ function decoded(result: CommandResult): unknown {
   }
 }
 
+/** Orca's structured error, from the JSON it prints on stdout or stderr. */
+function orcaError(result: CommandResult): Record<string, unknown> {
+  const fromStdout = object(object(decoded(result)).error);
+  if (fromStdout.code !== undefined) return fromStdout;
+  try { return object(object(JSON.parse(bytes(result.stderr))).error); } catch { return {}; }
+}
+
+function errorCode(result: CommandResult): unknown {
+  return orcaError(result).code;
+}
+
+/** #1233: Orca prints its error as JSON on stdout with an empty stderr, so its code comes before the exit-status fallback. */
 function errorText(result: CommandResult): string {
+  const { code, message } = orcaError(result);
+  if (typeof code === "string") return typeof message === "string" && message !== code ? `${code}: ${message.slice(0, 200)}` : code;
   const stderr = bytes(result.stderr).trim();
   return stderr || `exit status ${commandStatus(result)}`;
 }
 
-/** Orca's structured error code, from the JSON it prints on stdout or stderr. */
-function errorCode(result: CommandResult): unknown {
-  const fromStdout = object(object(decoded(result)).error).code;
-  if (fromStdout !== undefined) return fromStdout;
-  try { return object(object(JSON.parse(bytes(result.stderr))).error).code; } catch { return undefined; }
-}
+/**
+ * Orca 1.4.250 answers a terminal it can no longer reach with one of these codes, and its own CLI groups all four as
+ * gone (docs/verification/2026-11-06-orca-1.4.250-cli-contract.md). A wait on a pane whose process ended throws
+ * terminal_exited, so restoration must read it as gone and check the launcher, not stop on a command error (#1233).
+ */
+const GONE_CODES = new Set(["terminal_handle_stale", "terminal_exited", "terminal_gone", "no_connected_pty"]);
+const GONE_STATES: Record<string, string> = { terminal_handle_stale: "no longer exists", terminal_exited: "exited (terminal_exited)" };
 
 function runnerFailure(argv: readonly string[], result: CommandResult): RecoveryBlocker {
   return { code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} failed: ${errorText(result)}` };
@@ -226,9 +253,11 @@ async function run(runner: CommandRunner, argv: readonly string[]): Promise<unkn
   const result = await runner(argv);
   if (commandStatus(result) !== 0) {
     // Orca 1.4.223 and, rechecked read-only, 1.4.245 (docs/verification/2026-11-02-orca-1.4.245-cli-contract.md) answer a handle whose terminal was removed with `{"ok":false,"error":{"code":"terminal_handle_stale"}}`.
-    if (errorCode(result) === "terminal_handle_stale") {
+    const code = errorCode(result);
+    if (typeof code === "string" && GONE_CODES.has(code)) {
       const handle = argv.includes("--terminal") ? argv[argv.indexOf("--terminal") + 1] : undefined;
-      throw new OrcaCommandError({ code: "terminal-gone", message: `the Orca terminal${handle ? ` ${handle}` : ""} no longer exists` });
+      const state = GONE_STATES[code] ?? `is gone (${code})`;
+      throw new OrcaCommandError({ code: "terminal-gone", message: `the Orca terminal${handle ? ` ${handle}` : ""} ${state}` });
     }
     throw new OrcaCommandError(runnerFailure(argv, result));
   }
@@ -236,7 +265,9 @@ async function run(runner: CommandRunner, argv: readonly string[]): Promise<unkn
   const root = object(value);
   const payload = responseResult(value);
   if (root.ok === false || payload.ok === false) {
-    throw new OrcaCommandError({ code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} returned ok:false${typeof root.error === "string" ? `: ${root.error}` : ""}` });
+    const error = root.error ?? payload.error;
+    const detail = typeof error === "string" ? error : object(error).code;
+    throw new OrcaCommandError({ code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} returned ok:false${typeof detail === "string" && detail ? `: ${detail}` : ""}` });
   }
   return value;
 }
@@ -633,12 +664,54 @@ function blocker(code: RecoveryBlocker["code"], message: string, peer?: Terminal
     code === "ownership-unknown" ? "confirm the terminal owner in Orca, then resume recovery" :
     code === "ambiguous-terminal" ? "close or identify the duplicate terminal, then resume recovery" :
     code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
-    code === "terminal-orphaned" ? `reattach the pane with orca terminal switch --terminal ${shellQuote(handle!)}; then refresh the recovery plan` :
+    code === "terminal-orphaned" ? `reattach the pane with orca terminal switch --terminal ${shellQuote(handle!)}; then refresh in ahub upgrade ([r] on the plan, [s] on an open operation), or rerun it` :
     code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
     code === "launcher-exited" ? "the session was not restored; the coordinator's error names the choices" :
     code === "terminal-gone" ? "the terminal was closed; inspect the project's terminals in Orca before resuming recovery" :
     "inspect the named terminal and resume recovery after the identity is verified";
   return { code, message, ...(peer ? { peer } : {}), ...(handle ? { handle, terminalReference: handle } : {}), nextAction };
+}
+
+/** #1246: how long a switched pane is re-read before it still counts as orphaned. Orca's `terminal show` can lag a switch by a moment. */
+export const REATTACH_BOUND_MS = 5_000;
+const REATTACH_POLL_MS = 250;
+
+/**
+ * #1246: the one mutation the upgrade menu offers for an orphaned-but-connected pane: `orca terminal switch` for exactly
+ * this handle, after reading it again and finding the identity the plan verified (handle, incarnation, worktree, root)
+ * still orphaned and connected. It then re-reads the pane until `orphaned` is false, at most `boundMs`. A pane that is
+ * already not orphaned is `reattached` with no switch. A changed identity, a disconnected pane or any failed Orca call is
+ * `unavailable` (nothing, or nothing more, was done); a pane still orphaned at the bound stays `still-orphaned`.
+ */
+export async function reattachOrphanedTerminal(terminal: OrphanedTerminal, options?: CommandRunner | TerminalRecoveryOptions, boundMs = REATTACH_BOUND_MS): Promise<"reattached" | "still-orphaned" | "unavailable"> {
+  const config = normalizeOptions(options);
+  const read = async (): Promise<Record<string, unknown> | undefined> => {
+    const shown = terminalObject(await run(config.runner, ["terminal", "show", "--terminal", terminal.handle, "--json"]));
+    const same = nestedString(shown, ["handle"]) === terminal.handle && nestedString(shown, ["incarnationId"]) === terminal.incarnationId && nestedString(shown, ["worktreeId"]) === terminal.worktreeId
+      && rootMatches(shown.worktreePath ?? shown.projectRoot, terminal.root);
+    return same ? shown : undefined;
+  };
+  // The runner is also bounded by its caller; this race keeps a runner that ignores its timeout from holding the screen past the bound.
+  const within = async <T>(work: Promise<T>, ms: number): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("reattach bound exceeded")), ms); })]); }
+    finally { if (timer) clearTimeout(timer); }
+  };
+  try {
+    const before = await within(read(), boundMs);
+    if (!before) return "unavailable";
+    if (before.orphaned === false) return "reattached";
+    if (before.orphaned !== true || before.connected !== true) return "unavailable";
+    await within(run(config.runner, ["terminal", "switch", "--terminal", terminal.handle, "--json"]), boundMs);
+    const deadline = Date.now() + boundMs;
+    for (;;) {
+      const shown = await within(read(), deadline - Date.now());
+      if (!shown) return "unavailable";
+      if (shown.orphaned === false) return "reattached";
+      if (Date.now() >= deadline) return "still-orphaned";
+      await Bun.sleep(Math.min(REATTACH_POLL_MS, deadline - Date.now()));
+    }
+  } catch { return "unavailable"; }
 }
 
 function verifyBindingData(actual: Record<string, unknown>, binding: TerminalBinding): RecoveryBlocker | undefined {
@@ -714,6 +787,7 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
   const config = normalizeOptions(options);
   const blockers: RecoveryBlocker[] = [];
   const bindings: TerminalBinding[] = [];
+  const orphaned: OrphanedTerminal[] = [];
   const byPeer: Partial<Record<TerminalPeer, TerminalBinding>> = {};
   const requested = (Object.entries(sessions) as [TerminalPeer, string | SessionRef | undefined][]).map(([peer, value]) => [peer, typeof value === "string" ? { sessionId: value } : value] as const).filter((entry): entry is [TerminalPeer, SessionRef] => !!entry[1]?.sessionId);
   if (!requested.length) return { bindings, byPeer, blockers, manualRequired: false };
@@ -795,7 +869,8 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
       continue;
     }
     if (terminal.orphaned === true && terminal.connected === true) {
-      blockers.push(blocker("terminal-orphaned", `terminal ${handle} is orphaned but still connected`, peer, handle));
+      blockers.push(blocker("terminal-orphaned", `the ${peer} terminal ${handle} in ${projectRoot} is orphaned but still connected`, peer, handle));
+      orphaned.push({ peer, handle, incarnationId, worktreeId, root: expectedTerminalRoot });
       continue;
     }
     if (terminal.orphaned === true || terminal.connected === false) {
@@ -811,19 +886,22 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
     bindings.push(binding);
     byPeer[peer] = binding;
   }
-  return { bindings, byPeer, blockers, manualRequired: blockers.length > 0 };
+  return { bindings, byPeer, blockers, manualRequired: blockers.length > 0, ...(orphaned.length ? { orphaned } : {}) };
 }
 
 /**
  * One bounded Orca wait. Orca 1.4.223 and, rechecked read-only, 1.4.245 (docs/verification/2026-11-02-orca-1.4.245-cli-contract.md) answer a wait that timed out with exit 1 and `{"ok":false,"error":{"code":"timeout"}}`:
- * that is "not satisfied", not a failure. Any other failure still throws.
+ * that is "not satisfied", not a failure. Any other failure still throws. 1.4.250 also answers ok with `satisfied: false`
+ * and a `blockedReason` (seen: `agent-update-prompt`) when the TUI waits on a prompt; the reason is passed on (#1233).
  */
-async function waitSatisfied(runner: CommandRunner, handle: string, timeoutMs: number): Promise<boolean> {
+async function waitSatisfied(runner: CommandRunner, handle: string, timeoutMs: number): Promise<{ satisfied: boolean; blockedReason?: string }> {
   const argv = ["terminal", "wait", "--terminal", handle, "--for", "tui-idle", "--timeout-ms", String(timeoutMs), "--json"];
   const result = await runner(argv);
-  if (commandStatus(result) !== 0 && errorCode(result) === "timeout") return false;
+  if (commandStatus(result) !== 0 && errorCode(result) === "timeout") return { satisfied: false };
   const root = responseResult(await run(async () => result, argv));
-  return root.satisfied === true || object(root.wait).satisfied === true;
+  if (root.satisfied === true || object(root.wait).satisfied === true) return { satisfied: true };
+  const reason = root.blockedReason ?? object(root.wait).blockedReason;
+  return typeof reason === "string" ? { satisfied: false, blockedReason: reason.slice(0, 100) } : { satisfied: false };
 }
 
 /** Wait only on the captured terminal and only for Orca's supported TUI-idle condition. */
@@ -832,8 +910,8 @@ export async function waitForIdle(binding: TerminalBinding, timeoutMs: number, o
   const timeout = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? Math.min(Math.floor(timeoutMs), MAX_WAIT_MS) : 0;
   try {
     await showBinding(binding, config);
-    const satisfied = await waitSatisfied(config.runner, binding.handle, timeout);
-    const blockers = satisfied ? [] : [blocker("terminal-unready", `terminal ${binding.handle} did not become idle before the bounded wait`, binding.peer, binding.handle)];
+    const { satisfied, blockedReason } = await waitSatisfied(config.runner, binding.handle, timeout);
+    const blockers = satisfied ? [] : [blocker("terminal-unready", `terminal ${binding.handle} did not become idle before the bounded wait${blockedReason ? ` (Orca: blocked by ${blockedReason})` : ""}`, binding.peer, binding.handle)];
     return { satisfied, manualRequired: !satisfied, blockers };
   } catch (error) {
     const item = error instanceof OrcaCommandError ? error.blocker : blocker("command-error", String(error), binding.peer, binding.handle);

@@ -107,3 +107,31 @@ test("room status refuses proxies at root, row, remote list and peer boundaries 
   const revoked = Proxy.revocable([base], {}); revoked.revoke();
   expect(projectRoomStatus(revoked.proxy)).toEqual([]);
 });
+
+test("room health projects refusal counts, outbox ages and closed link causes without copying text", () => {
+  const health = { refused: { invalid_presence: 2, wrong_epoch: 1, trust_changed: 0, stale: 0, invalid_frame: 3 },
+    outboxDepth: 4, oldestOutboxAgeMs: 100, lastReceiptAgeMs: 20 };
+  const projected = projectRoomStatus([{ ...base, health: { ...health, body: "BODY_CANARY" }, linkCause: "clock_rollback", linkNextStep: "TEXT_CANARY" }]);
+  expect(projected[0]?.health).toEqual(health);
+  expect(projected[0]?.linkCause).toBe("clock_rollback");
+  expect(projected[0]?.linkNextStep).toContain("Correct the system clock");
+  expect(JSON.stringify(projected)).not.toContain("CANARY");
+  expect(projectRoomStatus(projected)).toEqual(projected);
+  expect(projectRoomStatus([{ ...base, health: null, linkCause: null }])[0]).toMatchObject({ health: null, linkCause: null, linkNextStep: null });
+});
+
+test("unknown health metadata stays unknown and hostile health accessors never run", () => {
+  let reads = 0;
+  const health = { outboxDepth: -1, oldestOutboxAgeMs: Number.MAX_SAFE_INTEGER + 1, lastReceiptAgeMs: "PRIVATE_CANARY" };
+  Object.defineProperty(health, "refused", { enumerable: true, get() { reads++; throw new Error("refused getter ran"); } });
+  const source = { ...base, health, linkCause: "PRIVATE_CANARY" };
+  Object.defineProperty(source, "linkNextStep", { enumerable: true, get() { reads++; throw new Error("next getter ran"); } });
+  const projected = projectRoomStatus([source]);
+  expect(projected[0]?.health).toEqual({ refused: null, outboxDepth: null, oldestOutboxAgeMs: null, lastReceiptAgeMs: null });
+  expect(projected[0]?.linkCause).toBeNull(); expect(projected[0]?.linkNextStep).toBeNull();
+  expect(reads).toBe(0);
+  expect(JSON.stringify(projected)).not.toContain("CANARY");
+  const wrapped = new Proxy({}, { get() { reads++; throw new Error("get trap ran"); }, getPrototypeOf() { reads++; throw new Error("prototype trap ran"); } });
+  expect(projectRoomStatus([{ ...base, health: wrapped }])[0]?.health).toBeNull();
+  expect(reads).toBe(0);
+});

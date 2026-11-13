@@ -1,15 +1,18 @@
 // #286 Part 3 / AC9: the hub-driven Qwen TUI over dual output. A fake Qwen (test/fakes/qwen-dual.ts) speaks the dual-output files; no live model and no real home.
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QwenDualPeer, QWEN_STALLED_NOTE, isQwenTaskNotification, qwenDualNamesStateDir, qwenDualVersionAsync, type QwenDualOptions } from "../src/adapters/qwen-dual.ts";
 import { COMPAT, assessVersion } from "../src/adapters/compat.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
 import type { ProcRow } from "../src/hub/child-process.ts";
 import type { PermissionRequest } from "../src/adapters/acp.ts";
 import type { NativeCliEntryContext } from "../src/adapters/definitions/native-cli-entry-types.ts";
+import { processSignature } from "../src/pi/process-signature.ts";
 
 const FAKE = join(import.meta.dir, "fakes/qwen-dual.ts");
 const cleanups: (() => unknown)[] = [];
@@ -83,15 +86,14 @@ const events = (r: Rig) => readFileSync(join(r.dir, "events.jsonl"), "utf8").spl
 const inputLines = (r: Rig) => readFileSync(join(r.dir, "input.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
 const answered = (r: Rig, n: number, id = "allow") => { r.settle.get(String(n))!(id); };
 
-test("the compat entry for the dual-output contract verifies 0.26.1 only, and does not widen the headless qwen entry", () => {
-  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
+test("the dual-output exact versions stay separate from the headless ACP contract", () => {
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0", "0.27.1"]);
   expect("line" in COMPAT["qwen-dual"]).toBe(false);
-  // The entries are separate contracts, so a widening of one never changes the other: #843 AC5 verified 0.26.1 for the
-  // ACP receipt on the headless qwen entry; this dual-output entry stays verified on 0.26.1 only, at its own gate.
-  expect(assessVersion("qwen-dual", "0.26.1", []).ok).toBe(true);
-  expect(assessVersion("qwen-dual", "0.25.0", []).ok).toBe(false);
+  for (const version of ["0.26.1", "0.27.0", "0.27.1"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(true);
+  for (const version of ["0.25.0", "0.26.9", "0.27.2", "0.28.0"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(false);
   expect(assessVersion("qwen", "0.26.0", []).ok).toBe(true);
-  expect(assessVersion("qwen", "0.27.0", []).ok).toBe(false);
+  expect(assessVersion("qwen", "0.26.9", []).ok).toBe(true);
+  expect(assessVersion("qwen", "0.27.0", []).ok).toBe(true);
 });
 
 test("start prepares private input and event files and the launch carries the dual-output flags", async () => {
@@ -152,12 +154,14 @@ test("hub tools are approved by exact mcp__<server>__<tool> name only: a prefix-
   await until(() => r.requests.length === 1);               // a name that merely starts with a hub tool's name is not one
   expect(r.requests[0]!.tool).toBe("mcp__agent-hub__hub_send_evil");
   answered(r, 1, "deny");
-  await until(() => r.peer.state === "idle");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  await personalCompletion(r);
   await r.peer.deliver(env('TOOL:mcp__other__hub_send:{"text":"x"}'), "d3");   // another server's tool of the same short name
   await until(() => r.requests.length === 2);
   expect(r.requests[1]!.tool).toBe("mcp__other__hub_send");
   answered(r, 2, "deny");
-  await until(() => r.peer.state === "idle");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  expect(r.peer.state).toBe("busy");
 });
 
 test("an approval round-trips through the console: allow answers confirmation_response and the tool runs", async () => {
@@ -175,25 +179,566 @@ test("an approval round-trips through the console: allow answers confirmation_re
   expect(events(r).some(event => event.type === "control_response" && event.response.subtype === "success" && event.response.request_id === response.request_id)).toBe(true);
 });
 
-test("a deny ends the turn itself: Qwen emits nothing, so the adapter goes idle with no shared answer and a notice", async () => {
+async function appendObserved(r: Rig, frames: Record<string, unknown>[]): Promise<void> {
+  const file = join(r.dir, "events.jsonl");
+  appendFileSync(file, frames.map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n");
+  const end = statSync(file).size;
+  await until(() => r.peer.offset >= end);
+}
+const personalUser = { type: "user", message: { role: "user", content: [{ type: "text", text: "a new prompt typed in the terminal" }] } };
+const personalFinal = { type: "assistant", message: { content: [{ type: "text", text: "personal answer" }], stop_reason: "end_turn" } };
+const personalStop = { type: "stream_event", event: { type: "message_stop" } };
+async function personalCompletion(r: Rig): Promise<void> {
+  await appendObserved(r, [personalUser, personalFinal, personalStop]);
+  await until(() => JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending === undefined);
+}
+
+function observedBus(r: Rig): { bus: Bus; journal: DeliveryJournal } {
+  const observeMessage = r.peer.onMessage, observeDelivery = r.peer.onDelivery;
+  const journal = new DeliveryJournal({ file: join(r.root, "hub.db"), projectRoot: r.root, projectId: "qwen-deny-fixture", instanceId: "fixture" });
+  const bus = new Bus({ batchMs: 0, journal });
+  bus.add(r.peer);
+  const busMessage = r.peer.onMessage, busDelivery = r.peer.onDelivery;
+  r.peer.onMessage = (body, options) => {
+    const result = busMessage?.(body, options);
+    observeMessage?.(body, options);
+    return result;
+  };
+  r.peer.onDelivery = receipt => { busDelivery?.(receipt); observeDelivery?.(receipt); };
+  cleanups.push(() => bus.closeJournal());
+  return { bus, journal };
+}
+
+test("a deny completes its known delivery but Bus keeps the second submit fenced until a new personal turn completes", async () => {
+  const r = await attached();
+  const { bus, journal } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1);
+  const states: string[] = [];
+  const originalState = r.peer.onState;
+  r.peer.onState = state => { states.push(state); originalState?.(state); };
+  answered(r, 1, "deny");
+  await until(() => inputLines(r).some(line => line.type === "confirmation_response"));
+  const second = bus.publish(newEnvelope("user", "after the deny", { to: ["qwen"] }));
+  await appendObserved(r, [personalFinal, personalStop, personalStop]);
+  expect(r.peer.state).toBe("busy");
+  expect(states).not.toContain("idle");
+  expect(inputLines(r).filter(line => line.type === "submit")).toHaveLength(1);
+  expect(bus.queued("qwen")).toBeGreaterThan(0);
+  expect(r.answers).toHaveLength(0);
+  expect(r.receipts.filter(receipt => receipt.state === "accepted")).toHaveLength(1);
+  expect(r.receipts.filter(receipt => receipt.state === "completed")).toHaveLength(1);
+  expect(r.receipts.find(receipt => receipt.state === "completed")?.id).toBe(r.receipts.find(receipt => receipt.state === "accepted")?.id);
+  expect(journal.get(r.receipts.find(receipt => receipt.state === "completed")!.id)?.state).toBe("completed");
+  expect(second).toBeDefined();
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  await personalCompletion(r);
+  await until(() => inputLines(r).filter(line => line.type === "submit").length === 2);
+  await until(() => r.answers.length === 1);
+  expect(r.answers[0]!.body).toContain("after the deny");
+  expect(r.receipts.filter(receipt => receipt.state === "completed")).toHaveLength(2);
+  expect(new Set(r.receipts.filter(receipt => receipt.state === "completed").map(receipt => receipt.id)).size).toBe(2);
+  for (const receipt of r.receipts.filter(receipt => receipt.state === "completed")) expect(journal.get(receipt.id)?.state).toBe("completed");
+});
+
+test("silent deny expires offline with known completed disposition, then a scoped personal completion can recover", async () => {
+  const r = await attached({}, { denyQuiescenceMs: 80 });
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1);
+  answered(r, 1, "deny");
+  await until(() => r.peer.state === "offline");
+  expect(r.receipts.at(-1)).toMatchObject({ id: "d1", state: "completed" });
+  expect(r.receipts.some(receipt => receipt.state === "needs_review")).toBe(false);
+  expect(r.peer.statusNotice?.code).toBe("qwen-deny-quiescence");
+  expect(r.notices.some(text => text.includes("Qwen gave no signal") && text.includes("ahub qwen --mode tui"))).toBe(true);
+  await expect(r.peer.deliver(env("still queued"), "d2")).rejects.toThrow();
+  await appendObserved(r, [personalFinal, personalStop]);
+  expect(r.peer.state).toBe("offline");
+  await personalCompletion(r);
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBeUndefined();
+});
+
+test("deny proof rejects orphan, tool-use, wrong-session and unrelated completion frames", async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  await appendObserved(r, [personalStop, personalFinal, personalStop,
+    { ...personalUser, session_id: "wrong-session" }, personalFinal, personalStop,
+    personalUser, { type: "assistant", message: { stop_reason: "tool_use", content: [{ type: "tool_use" }] } }, personalStop,
+    { type: "result", result: "not a personal completion" },
+    { type: "control_response", response: { subtype: "success", request_id: "wrong", response: { allowed: false } } }]);
+  expect(r.peer.state).toBe("busy"); expect(r.answers).toHaveLength(0);
+  expect(inputLines(r).filter(line => line.type === "confirmation_response")).toHaveLength(1);
+  await personalCompletion(r);
+});
+
+test("deny fence survives detach and same-owner adoption; only a newly observed personal turn restores readiness", async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  const file = join(r.dir, "events.jsonl"), moved = `${file}.held`;
+  renameSync(file, moved); await until(() => r.peer.isDetached);
+  renameSync(moved, file); await until(() => !r.peer.isDetached);
+  expect(r.peer.state).toBe("offline");
+  await appendObserved(r, [personalFinal, personalStop]); expect(r.peer.state).toBe("offline");
+  await r.peer.stop();
+  // Preserve an unread old personal pair: adoption must not treat historical buffered frames as new proof.
+  appendFileSync(file, [personalUser, personalFinal, personalStop].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n");
+  const launch = r.peer.launch!;
+  const adopted = rig({ table: () => [{ pid: r.child!.pid, ppid: process.pid, pgid: r.child!.pid, started: "x", command: `bun qwen ${launch.args.join(" ")}` }] }, { root: r.root });
+  await adopted.peer.start(); expect(adopted.peer.adopted).toBe(true);
+  expect(adopted.peer.state).toBe("offline"); expect(adopted.peer.launch).toBeUndefined();
+  await personalCompletion(adopted);
+});
+
+for (const partial of [false, true]) test(`same-inode reattach rejects buffered personal completions${partial ? " and a USER crossing restored EOF" : ""} before the Bus can submit queued input`, async () => {
+  const r = await attached(), { bus, journal } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const second = newEnvelope("user", "second after reattach", { to: ["qwen"] }); bus.publish(second);
+  const file = join(r.dir, "events.jsonl"), held = `${file}.unreadable`, inode = statSync(file).ino;
+  renameSync(file, held); await until(() => r.peer.isDetached);
+  const states: string[] = [], busState = r.peer.onState;
+  r.peer.onState = state => { states.push(state); busState?.(state); };
+  const laterUser = { type: "user", message: { role: "user", content: [{ type: "text", text: "a later personal turn still running" }] } };
+  appendFileSync(held, [personalUser, personalFinal, personalStop, laterUser].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n");
+  const crossing = JSON.stringify({ session_id: r.peer.sessionId, ...personalUser }), split = Math.floor(crossing.length / 2);
+  if (partial) appendFileSync(held, crossing.slice(0, split));
+  renameSync(held, file); expect(statSync(file).ino).toBe(inode);
+  await until(() => !r.peer.isDetached);
+  if (partial) {
+    appendFileSync(file, crossing.slice(split) + "\n");
+    await appendObserved(r, [personalFinal, personalStop]);
+  } else await until(() => r.peer.offset >= statSync(file).size);
+  expect(states).not.toContain("idle");
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1);
+  expect(bus.queueIds("qwen")).toContain(second.id); expect(r.answers).toHaveLength(0);
+  const completed = r.receipts.filter(receipt => receipt.state === "completed");
+  expect(completed).toHaveLength(1); expect(journal.get(completed[0]!.id)?.state).toBe("completed");
+  await personalCompletion(r);
+  await until(() => r.answers.length === 1 && r.receipts.filter(receipt => receipt.state === "completed").length === 2);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
+  expect(r.answers[0]!.body).toContain("second after reattach");
+  expect(bus.queueIds("qwen")).not.toContain(second.id);
+  expect(new Set(r.receipts.filter(receipt => receipt.state === "completed").map(receipt => receipt.id)).size).toBe(2);
+});
+
+test("an attached read frontier with a completed personal turn and later USER never drains the Bus between those buffered frames", async () => {
+  const r = await attached(), { bus } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const second = newEnvelope("user", "second after current frontier", { to: ["qwen"] }); bus.publish(second);
+  const states: string[] = [], busState = r.peer.onState;
+  r.peer.onState = state => { states.push(state); busState?.(state); };
+  const activeUser = { type: "user", message: { role: "user", content: [{ type: "text", text: "a later active personal turn" }] } };
+  await appendObserved(r, [personalUser, personalFinal, personalStop, activeUser]);
+  expect(states).not.toContain("idle"); expect(bus.queueIds("qwen")).toContain(second.id);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1); expect(r.answers).toHaveLength(0);
+  await personalCompletion(r);
+  await until(() => r.answers.length === 1 && r.receipts.filter(receipt => receipt.state === "completed").length === 2);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
+  expect(r.answers[0]!.body).toContain("second after current frontier");
+});
+
+test("a partial later USER at the read frontier keeps a completed personal candidate from releasing queued input", async () => {
+  const r = await attached(), { bus } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const queued = newEnvelope("user", "after partial frontier", { to: ["qwen"] }); bus.publish(queued);
+  const file = join(r.dir, "events.jsonl"), crossing = JSON.stringify({ session_id: r.peer.sessionId, ...personalUser }), split = Math.floor(crossing.length / 2);
+  const prefix = [personalUser, personalFinal, personalStop].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n";
+  const consumed = statSync(file).size + Buffer.byteLength(prefix);
+  appendFileSync(file, prefix + crossing.slice(0, split));
+  await until(() => r.peer.offset >= consumed);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1); expect(bus.queueIds("qwen")).toContain(queued.id);
+  appendFileSync(file, crossing.slice(split) + "\n"); await appendObserved(r, [personalStop]);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1); expect(r.answers).toHaveLength(0);
+  await personalCompletion(r); await until(() => r.answers.length === 1);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
+});
+
+test("a named event source replaced after its bytes were read cannot release a candidate from the old FD", async () => {
+  let current: Rig | undefined, rotateAt = Infinity, rotated = false;
+  const r = await attached({}, { signature: pid => {
+    const signature = processSignature(pid);
+    if (signature && current && !rotated && current.peer.offset >= rotateAt) {
+      const file = join(current.dir, "events.jsonl"), bytes = readFileSync(file);
+      renameSync(file, `${file}.old-fd`);
+      writeFileSync(file, bytes, { flag: "wx", mode: 0o600 }); rotated = true;
+    }
+    return signature;
+  } }); current = r;
+  const { bus } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const queued = newEnvelope("user", "after named source check", { to: ["qwen"] }); bus.publish(queued);
+  const file = join(r.dir, "events.jsonl"), frames = [personalUser, personalFinal, personalStop].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n";
+  rotateAt = statSync(file).size + Buffer.byteLength(frames);
+  appendFileSync(file, frames); await until(() => rotated);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1); expect(bus.queueIds("qwen")).toContain(queued.id);
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  await appendObserved(r, [personalStop]); // consume the new named source before starting a genuinely new turn
+  await personalCompletion(r); await until(() => r.answers.length === 1);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
+});
+
+test("a fresh header followed by active USER or a replayed header cannot manufacture idle before a wholly new personal completion", async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  const header = events(r).find(frame => frame.type === "system");
+  await r.peer.stop(); r.kill(); await r.child!.exited;
+  const fresh = rig({}, { root: r.root, fakeArgs: ["--no-events"] });
+  await fresh.peer.start(); fresh.launch();
+  const { bus } = observedBus(fresh), queued = newEnvelope("user", "fresh frontier queued", { to: ["qwen"] });
+  bus.publish(queued);
+  const states: string[] = [], busState = fresh.peer.onState;
+  fresh.peer.onState = state => { states.push(state); busState?.(state); };
+  await appendObserved(fresh, [header, personalUser]);
+  expect(states).not.toContain("idle"); expect(bus.queueIds("qwen")).toContain(queued.id);
+  expect(inputLines(fresh).filter(frame => frame.type === "submit")).toHaveLength(0);
+  await appendObserved(fresh, [header]);
+  expect(states).not.toContain("idle"); expect(bus.queueIds("qwen")).toContain(queued.id);
+  expect(JSON.parse(readFileSync(join(fresh.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  await personalCompletion(fresh);
+  await until(() => fresh.answers.length === 1 && fresh.receipts.some(receipt => receipt.state === "completed"));
+  expect(inputLines(fresh).filter(frame => frame.type === "submit")).toHaveLength(1);
+  expect(fresh.answers[0]!.body).toContain("fresh frontier queued");
+});
+
+for (const detached of [false, true]) test(`the same stopped adapter resets its old read boundary before a verified fresh header${detached ? " after detachment" : ""}`, async () => {
+  let live = true;
+  const r: Rig = rig({ table: () => live && r.child && r.peer.launch ? [{ pid: r.child.pid, ppid: process.pid, pgid: r.child.pid, started: "x", command: `bun qwen ${r.peer.launch.args.join(" ")}` }] : [] });
+  await r.peer.start(); r.launch();
+  await until(() => r.peer.state === "idle" && JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).ownerPid === r.child!.pid);
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  if (detached) { renameSync(join(r.dir, "events.jsonl"), join(r.dir, "events.before-stop")); await until(() => r.peer.isDetached); }
+  await r.peer.stop(); live = false; r.kill(); await r.child!.exited;
+  await r.peer.start(); expect(r.peer.adopted).toBe(false); expect(r.peer.launch).toBeDefined();
+  r.launch(); live = true;
+  await until(() => r.peer.state === "idle" && !r.peer.isDetached);
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBeUndefined();
+  expect(r.answers).toHaveLength(0);
+  await r.peer.deliver(env("same adapter fresh generation"), "d2"); await until(() => r.answers.length === 1);
+  expect(r.answers[0]!.body).toContain("same adapter fresh generation");
+});
+
+test("an owner unavailable at final read discards the candidate instead of reusing it on a later empty poll", async () => {
+  let unknown = false;
+  const r = await attached({}, { signature: pid => unknown ? undefined : processSignature(pid) });
+  const { bus } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const queued = newEnvelope("user", "only after new owner proof", { to: ["qwen"] }); bus.publish(queued);
+  const file = join(r.dir, "events.jsonl"), frames = [personalUser, personalFinal, personalStop].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n";
+  const end = statSync(file).size + Buffer.byteLength(frames);
+  const reader = r.peer as unknown as { finishFencedRead(fd: number): void }, original = reader.finishFencedRead.bind(r.peer);
+  let finalReads = 0;
+  reader.finishFencedRead = fd => {
+    if (r.peer.offset < end) { original(fd); return; }
+    finalReads++;
+    if (finalReads === 1) { unknown = true; try { original(fd); } finally { unknown = false; } }
+    else original(fd);
+  };
+  appendFileSync(file, frames); await until(() => finalReads >= 2);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1);
+  expect(bus.queueIds("qwen")).toContain(queued.id); expect(r.answers).toHaveLength(0);
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  await personalCompletion(r); await until(() => r.answers.length === 1);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
+});
+
+test("a deny is not appended when its restart fence cannot be persisted", async () => {
   const r = await attached();
   await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
   await until(() => r.requests.length === 1);
-  const before = events(r).length;   // session_start, user, control_request
+  const state = join(r.dir, "state.json"), saved = `${state}.saved`;
+  renameSync(state, saved); mkdirSync(state);
+  try {
+    answered(r, 1, "deny");
+    await until(() => r.notices.some(text => text.includes("could not persist the deny input fence")));
+    expect(inputLines(r).filter(line => line.type === "confirmation_response")).toHaveLength(0);
+    expect(r.peer.state).toBe("offline");
+    expect(r.receipts.some(receipt => receipt.state === "completed")).toBe(false);
+  } finally { rmSync(state, { recursive: true }); renameSync(saved, state); }
+  await personalCompletion(r);
+  expect(r.receipts.at(-1)).toMatchObject({ id: "d1", state: "needs_review" });
+  expect(r.receipts.some(receipt => receipt.state === "completed")).toBe(false);
+});
+
+test("raw-byte deny watermark excludes buffered personal frames even after invalid UTF8 bytes", async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1);
+  appendFileSync(join(r.dir, "events.jsonl"), Buffer.concat([Buffer.alloc(1024, 255), Buffer.from("\n" + [personalUser, personalFinal, personalStop].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n")]));
   answered(r, 1, "deny");
-  await until(() => r.peer.state === "idle");
-  expect(inputLines(r).find(line => line.type === "confirmation_response").allowed).toBe(false);
-  await Bun.sleep(150);
-  expect(events(r).length).toBe(before);   // the fake (like Qwen) wrote nothing for the deny: no control_response, no tool_result, no assistant
-  expect(events(r).map(event => event.type)).toEqual(["system", "user", "control_request"]);
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  await appendObserved(r, [personalStop]);
+  expect(r.peer.state).toBe("busy"); expect(r.answers).toHaveLength(0);
+  await personalCompletion(r);
+});
+
+for (const loss of ["malformed", "shape", "oversized", "utf8"] as const) test(`a ${loss} event between personal assistant and Stop invalidates deny recovery proof`, async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  await appendObserved(r, [personalUser, personalFinal]);
+  const broken = loss === "malformed" ? Buffer.from("{not-json\n")
+    : loss === "shape" ? Buffer.from('{"missing":"type"}\n')
+    : loss === "oversized" ? Buffer.from("x".repeat(1024 * 1024 + 64) + "\n")
+    : Buffer.from([255, 10]);
+  appendFileSync(join(r.dir, "events.jsonl"), broken);
+  await appendObserved(r, [personalStop]);
+  expect(r.peer.state).toBe("busy");
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  await personalCompletion(r);
+});
+
+for (const split of ["without-newline", "partial-json"] as const) test(`a USER ${split} begun before deny cannot release Bus input after its trailing bytes arrive`, async () => {
+  const r = await attached();
+  const { bus } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1);
+  const line = JSON.stringify({ session_id: r.peer.sessionId, ...personalUser });
+  const boundary = split === "without-newline" ? line.length : Math.floor(line.length / 2);
+  appendFileSync(join(r.dir, "events.jsonl"), line.slice(0, boundary));
+  answered(r, 1, "deny");
+  await until(() => inputLines(r).some(frame => frame.type === "confirmation_response"));
+  bus.publish(newEnvelope("user", "second must stay queued", { to: ["qwen"] }));
+  appendFileSync(join(r.dir, "events.jsonl"), line.slice(boundary) + "\n");
+  await appendObserved(r, [personalFinal, personalStop]);
+  expect(r.peer.state).toBe("busy"); expect(bus.queued("qwen")).toBeGreaterThan(0);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1);
   expect(r.answers).toHaveLength(0);
-  // A deny is a known outcome: it completes, so the hub does not hold the peer's queue behind a needs_review (measured against the real Qwen: it wedged every later message).
-  expect(r.receipts.at(-1)!).toMatchObject({ id: "d1", state: "completed" });
-  expect(r.receipts.some(receipt => receipt.state === "needs_review")).toBe(false);
-  expect(r.notices.some(text => text.includes("deny cancelled the Qwen turn"))).toBe(true);
-  // and the peer takes the next delivery
-  await r.peer.deliver(env("after the deny"), "d2"); await until(() => r.answers.length === 1);
-  expect(r.answers[0]!.body).toContain("after the deny");
+  expect(r.receipts.filter(receipt => receipt.state === "completed")).toHaveLength(1);
+  await personalCompletion(r);
+  await until(() => inputLines(r).filter(frame => frame.type === "submit").length === 2);
+  await until(() => r.answers.length === 1);
+  expect(r.answers[0]!.body).toContain("second must stay queued");
+  expect(r.receipts.filter(receipt => receipt.state === "completed")).toHaveLength(2);
+});
+
+test("adoption rejects a personal USER crossing its saved EOF boundary until a whole new USER arrives", async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  const line = JSON.stringify({ session_id: r.peer.sessionId, ...personalUser });
+  const boundary = Math.floor(line.length / 2), file = join(r.dir, "events.jsonl");
+  appendFileSync(file, line.slice(0, boundary));
+  await r.peer.stop();
+  const launch = r.peer.launch!;
+  const adopted = rig({ table: () => [{ pid: r.child!.pid, ppid: process.pid, pgid: r.child!.pid, started: "x", command: `bun qwen ${launch.args.join(" ")}` }] }, { root: r.root });
+  await adopted.peer.start(); expect(adopted.peer.adopted).toBe(true);
+  appendFileSync(file, line.slice(boundary) + "\n");
+  await appendObserved(adopted, [personalFinal, personalStop]);
+  expect(adopted.peer.state).toBe("offline");
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  await personalCompletion(adopted);
+  expect(adopted.peer.state).toBe("idle");
+});
+
+test("a failed fence clear survives throwing logger and notice, retains storage cause, and cannot reopen on session replay", async () => {
+  let brokenAdvisory = false;
+  const notices: string[] = [];
+  const r = await attached({}, {
+    log: () => { if (brokenAdvisory) throw new Error("logger unavailable"); },
+    onNotice: text => { notices.push(text); if (brokenAdvisory) throw new Error("notice unavailable"); },
+  });
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  await appendObserved(r, [personalUser, personalFinal]);
+  const state = join(r.dir, "state.json"), saved = `${state}.saved`;
+  renameSync(state, saved); mkdirSync(state); brokenAdvisory = true;
+  try {
+    await appendObserved(r, [personalStop]);
+    expect(r.peer.state).toBe("offline");
+    expect(r.peer.statusNotice?.message).toContain("storage and permissions");
+    expect(notices.some(text => text.includes("could not persist Qwen's input fence state"))).toBe(true);
+  } finally { brokenAdvisory = false; rmSync(state, { recursive: true }); renameSync(saved, state); }
+  await appendObserved(r, [events(r).find(event => event.type === "system"), personalStop]);
+  expect(r.peer.state).toBe("offline");
+  expect(JSON.parse(readFileSync(state, "utf8")).denyPending).toBe(true);
+  expect(r.peer.statusNotice?.message).toContain("storage and permissions");
+  await personalCompletion(r);
+  expect(r.peer.statusNotice).toBeUndefined();
+});
+
+test("a personal proof loses authority if the verified native owner exits before its Stop", async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  await appendObserved(r, [personalUser, personalFinal]);
+  r.kill(); await r.child!.exited;
+  await appendObserved(r, [personalStop]);
+  await until(() => r.peer.state === "offline");
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  expect(r.receipts.at(-1)?.state).toBe("completed");
+});
+
+test("a persisted deny fence clears on a verified fresh generation, not a replayed same-owner session_start", async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  const start = events(r).find(event => event.type === "system");
+  await appendObserved(r, [start]);
+  expect(r.peer.state).toBe("busy");
+  await r.peer.stop(); r.kill(); await r.child!.exited;
+  const again = rig({}, { root: r.root });
+  await again.peer.start(); expect(again.peer.adopted).toBe(false);
+  expect(again.peer.state).toBe("offline");
+  again.launch(); await until(() => again.peer.state === "idle");
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBeUndefined();
+  expect(again.answers).toHaveLength(0);
+});
+
+for (const failure of ["short", "throw"] as const) test(`a ${failure} input write retains its actual partial prefix offline and requires a fresh generation`, async () => {
+  let fault = false, writes = 0;
+  const r = await attached({}, { writeInput: (fd, bytes) => {
+    writes++;
+    if (!fault) return writeSync(fd, bytes);
+    const count = writeSync(fd, bytes.subarray(0, bytes.length - 1));
+    if (failure === "throw") throw new Error("writer failed after prefix");
+    return count;
+  } });
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1);
+  const file = join(r.dir, "input.jsonl"), before = readFileSync(file);
+  const callsBefore = writes; fault = true; answered(r, 1, "deny");
+  await until(() => r.peer.state === "offline");
+  const partial = readFileSync(file);
+  expect(partial.subarray(0, before.length).equals(before)).toBe(true);
+  expect(partial.length).toBeGreaterThan(before.length);
+  expect(partial.at(-1)).not.toBe(10);
+  expect(writes).toBe(callsBefore + 1);
+  expect(r.receipts.at(-1)).toMatchObject({ id: "d1", state: "needs_review" });
+  expect(r.receipts.some(receipt => receipt.state === "completed")).toBe(false);
+  expect(r.peer.statusNotice?.message).toContain("ahub qwen --mode tui");
+  await appendObserved(r, [personalUser, personalFinal, personalStop, events(r).find(event => event.type === "system")]);
+  await expect(r.peer.deliver(env("second"), "d2")).rejects.toThrow();
+  expect(readFileSync(file).equals(partial)).toBe(true); expect(writes).toBe(callsBefore + 1);
+  await r.peer.stop();
+  const launch = r.peer.launch!;
+  const adopted = rig({ table: () => [{ pid: r.child!.pid, ppid: process.pid, pgid: r.child!.pid, started: "x", command: `bun qwen ${launch.args.join(" ")}` }] }, { root: r.root });
+  await adopted.peer.start(); expect(adopted.peer.adopted).toBe(true); expect(adopted.peer.state).toBe("offline");
+  expect(readFileSync(file).equals(partial)).toBe(true);
+  await adopted.peer.stop(); r.kill(); await r.child!.exited;
+  const again = rig({}, { root: r.root });
+  await again.peer.start(); expect(again.peer.state).toBe("offline");
+  expect(readFileSync(file).length).toBe(0);
+  again.launch(); await until(() => again.peer.state === "idle");
+  await again.peer.deliver(env("fresh input"), "d3");
+  await until(() => again.answers.length === 1);
+});
+
+test("a non-newline input tail blocks the next append and reattachment despite a personal completion", async () => {
+  const r = await attached();
+  const input = join(r.dir, "input.jsonl"), event = join(r.dir, "events.jsonl");
+  appendFileSync(input, '{"type":"submit","text":"incomplete');
+  const before = readFileSync(input);
+  await expect(r.peer.deliver(env("never appended"), "d1")).rejects.toThrow("incomplete or unconfirmed");
+  expect(r.peer.state).toBe("offline");
+  expect(r.receipts.at(-1)).toMatchObject({ id: "d1", state: "needs_review" });
+  renameSync(event, `${event}.held`); await until(() => r.peer.isDetached);
+  renameSync(`${event}.held`, event); await until(() => !r.peer.isDetached);
+  await appendObserved(r, [personalUser, personalFinal, personalStop]);
+  expect(r.peer.state).toBe("offline"); expect(readFileSync(input).equals(before)).toBe(true);
+});
+
+test("an uncertain submit write is not failed_safe or idle", async () => {
+  const r = await attached({}, { writeInput: (fd, bytes) => writeSync(fd, bytes.subarray(0, bytes.length - 1)) });
+  await expect(r.peer.deliver(env("한글 submit bytes"), "d1")).rejects.toThrow("incomplete or unconfirmed");
+  expect(r.peer.state).toBe("offline");
+  expect(r.receipts.at(-1)).toMatchObject({ id: "d1", state: "needs_review" });
+  expect(r.receipts.some(receipt => receipt.state === "failed_safe")).toBe(false);
+});
+
+for (const record of ["submit", "deny"] as const) test(`a close failure after a complete ${record} write is uncertain without a second append`, async () => {
+  let fault = record === "submit", writes = 0;
+  const r = await attached({}, { writeInput: (fd, bytes) => {
+    writes++; const count = writeSync(fd, bytes);
+    if (fault) closeSync(fd);
+    return count;
+  } });
+  if (record === "submit") await expect(r.peer.deliver(env("a complete write with failed close"), "d1")).rejects.toThrow("unconfirmed");
+  else {
+    await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+    await until(() => r.requests.length === 1); fault = true; answered(r, 1, "deny");
+  }
+  await until(() => r.peer.state === "offline");
+  expect(r.receipts.at(-1)).toMatchObject({ id: "d1", state: "needs_review" });
+  expect(r.receipts.some(receipt => receipt.state === "completed" || receipt.state === "failed_safe")).toBe(false);
+  const bytes = readFileSync(join(r.dir, "input.jsonl")), calls = writes;
+  expect(bytes.at(-1)).toBe(10);
+  await appendObserved(r, [personalUser, personalFinal, personalStop]);
+  await expect(r.peer.deliver(env("no second append"), "d2")).rejects.toThrow();
+  expect(readFileSync(join(r.dir, "input.jsonl")).equals(bytes)).toBe(true); expect(writes).toBe(calls);
+});
+
+for (const fence of ["deny", "partial-input"] as const) test(`a ${fence} fresh rotation failure keeps old session events from proving a new generation`, async () => {
+  const r = await attached();
+  if (fence === "deny") {
+    await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+    await until(() => r.requests.length === 1); answered(r, 1, "deny");
+    await until(() => r.receipts.at(-1)?.state === "completed");
+  } else appendFileSync(join(r.dir, "input.jsonl"), '{"type":"submit"');
+  await r.peer.stop(); r.kill(); await r.child!.exited;
+  const stateFile = join(r.dir, "state.json"), saved = JSON.parse(readFileSync(stateFile, "utf8"));
+  saved.offset = 0; delete saved.ownerPid; delete saved.ownerSignature;
+  writeFileSync(stateFile, JSON.stringify(saved), { mode: 0o600 });
+  mkdirSync(join(r.dir, "events.prev.jsonl"));
+  const input = readFileSync(join(r.dir, "input.jsonl")), event = readFileSync(join(r.dir, "events.jsonl"));
+  let newOwner = false;
+  const launch = r.peer.launch!;
+  const recovered = rig({
+    table: () => newOwner ? [{ pid: r.child!.pid, ppid: process.pid, pgid: r.child!.pid, started: "new-root", command: `bun qwen ${launch.args.join(" ")}` }] : [],
+    signature: pid => newOwner && pid === r.child!.pid ? "new-root" : undefined,
+  }, { root: r.root });
+  await recovered.peer.start(); newOwner = true;
+  await until(() => recovered.peer.offset >= event.length);
+  if (fence === "deny") await until(() => JSON.parse(readFileSync(stateFile, "utf8")).ownerSignature === "new-root");
+  expect(recovered.peer.state).toBe("offline"); expect(recovered.peer.launch).toBeUndefined();
+  expect(readFileSync(join(r.dir, "input.jsonl")).equals(input)).toBe(true);
+  expect(readFileSync(join(r.dir, "events.jsonl")).equals(event)).toBe(true);
+  expect(recovered.notices.some(text => text.includes("fresh empty Qwen event file") && text.includes("events.prev.jsonl"))).toBe(true);
+});
+
+for (const fence of ["deny", "partial-input"] as const) for (const observation of ["existing-root", "unknown"] as const) test(`a ${fence} recovery with missing saved owner and ${observation} baseline preserves files and produces no fresh launch`, async () => {
+  const r = await attached();
+  if (fence === "deny") {
+    await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+    await until(() => r.requests.length === 1); answered(r, 1, "deny");
+    await until(() => r.receipts.at(-1)?.state === "completed");
+  } else appendFileSync(join(r.dir, "input.jsonl"), '{"type":"submit"');
+  await r.peer.stop();
+  const stateFile = join(r.dir, "state.json"), saved = JSON.parse(readFileSync(stateFile, "utf8"));
+  delete saved.ownerPid; delete saved.ownerSignature; writeFileSync(stateFile, JSON.stringify(saved), { mode: 0o600 });
+  const input = readFileSync(join(r.dir, "input.jsonl")), event = readFileSync(join(r.dir, "events.jsonl"));
+  const launch = r.peer.launch!;
+  const recovered = rig({ table: () => observation === "unknown" ? undefined : [{ pid: r.child!.pid, ppid: process.pid, pgid: r.child!.pid, started: "x", command: `bun qwen ${launch.args.join(" ")}` }] }, { root: r.root });
+  await recovered.peer.start();
+  expect(recovered.peer.launch).toBeUndefined(); expect(recovered.peer.state).toBe("offline");
+  expect(readFileSync(join(r.dir, "input.jsonl")).equals(input)).toBe(true);
+  expect(readFileSync(join(r.dir, "events.jsonl")).equals(event)).toBe(true);
+  expect(existsSync(join(r.dir, "events.prev.jsonl"))).toBe(false);
+  expect(recovered.notices.some(text => text.includes("could not verify") && text.includes("ahub qwen --mode tui"))).toBe(true);
+  await appendObserved(recovered, [events(r).find(frame => frame.type === "system"), personalFinal, personalStop]);
+  expect(recovered.peer.state).toBe("offline"); expect(recovered.peer.launch).toBeUndefined();
 });
 
 test("a TUI-side answer withdraws the pending hub approval, and a late hub answer finds nothing to grant", async () => {
@@ -216,7 +761,8 @@ test("a write or command that names the hub state dir is refused without asking 
   const r = await attached();
   const stateDir = join(r.root, "state");
   await r.peer.deliver(env(`TOOL:run_shell_command:{"command":"echo '{\\"type\\":\\"submit\\"}' >> ${stateDir}/qwen-dual/input.jsonl"}`), "d1");
-  await until(() => r.peer.state === "idle");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  expect(r.peer.state).toBe("busy");
   expect(r.requests).toHaveLength(0);
   expect(inputLines(r).find(line => line.type === "confirmation_response").allowed).toBe(false);
   expect(r.receipts.at(-1)!.state).toBe("completed");   // a refusal is a known outcome too
@@ -326,8 +872,16 @@ test("the hub never signals or types into Qwen: stop leaves the process running 
   expect(inputLines(r).filter(line => !["submit", "confirmation_response"].includes(line.type))).toHaveLength(0);
 });
 
-test("a TUI that states an unverified version or contract is not attached", async () => {
-  const r = rig({}, { fakeArgs: ["--fake-version", "0.27.0"] });
+for (const version of ["0.27.0", "0.27.1"]) test(`a receipt-qualified ${version} native session attaches and delivers through the driver`, async () => {
+  const r = await attached({ fakeArgs: ["--fake-version", version] });
+  await r.peer.deliver(env(`qualified ${version}`), "d1");
+  await until(() => r.answers.length === 1);
+  expect(r.peer.state).toBe("idle");
+  expect(inputLines(r).filter(line => line.type === "submit")).toHaveLength(1);
+});
+
+for (const version of ["0.27.2", "0.28.0"]) test(`an unqualified ${version} TUI is refused at native session identity`, async () => {
+  const r = rig({}, { fakeArgs: ["--fake-version", version] });
   await r.peer.start(); r.launch();
   await until(() => r.notices.some(text => text.includes("not verified")));
   expect(r.peer.state).toBe("offline");

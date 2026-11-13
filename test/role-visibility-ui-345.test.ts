@@ -8,6 +8,7 @@ class Node {
   attrs: Record<string, string> = {};
   constructor(public textContent = "", public className = "") {}
   append(...children: Node[]) { this.children.push(...children); }
+  addEventListener(_name: string, _listener: () => unknown) {} // This fixture renders details only; it never clicks a visual load control.
   setAttribute(key: string, value: string) { this.attrs[key] = value; }
   getAttribute(key: string) { return this.attrs[key]; }
 }
@@ -16,9 +17,12 @@ const text = (node: Node): string => [node.textContent, ...node.children.map(tex
 
 test("#345 dashboard task detail renders recorded planner, owner and reviewer choices without assignment-note parsing", () => {
   const mark = html.slice(html.indexOf("function peerMark("), html.indexOf("// A sprite icon", html.indexOf("function peerMark(")));
+  const review = html.slice(html.indexOf("function reviewCommentsSection("), html.indexOf("function taskDetail("));
   const detail = html.slice(html.indexOf("function taskDetail("), html.indexOf("function taskCard("));
-  const render = runInNewContext(`${mark}\n${detail}\n taskDetail`, {
+  const visuals = html.slice(html.indexOf("function taskVisualsSection("), html.indexOf("function deliverablesSection("));
+  const render = runInNewContext(`${mark}\n${review}\n${visuals}\n${detail}\n taskDetail`, {
     el, peerPalette: {}, badge: (_value: string) => new Node(), codeGroupSection: () => undefined, deliverablesSection: () => undefined,
+    boardContext: () => ({}), context: () => ({}), boardViewState: { snapshot: {} }, reviewKit: null,
   });
   const task = { id: 1, title: "Safe title", state: "in_review", class: "implement", planner: "codex-plan", plannerReason: "kept",
     owner: "claude-impl", ownerReason: "named", reserved: "claude-impl", reviewer: "codex-review", reviewerReason: "same-family fallback",

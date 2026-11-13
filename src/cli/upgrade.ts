@@ -15,7 +15,7 @@ import { hubHome } from "../hub/project.ts";
 import { readRecoveryWaits } from "./recovery-waits.ts";
 import { acquireRecoveryLock, claimRunner, coordinatorCurrent, operationIdPattern, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 import { resolveAcceptedBinding, piArchiveExit, recordedPeerGuidance, type RecoveryNativePeer } from "./recovery-guidance.ts";
-import type { TerminalBinding } from "./terminal-recovery.ts";
+import type { OrphanedTerminal, TerminalBinding } from "./terminal-recovery.ts";
 import { RecoveryPresentationError, type RecoveryPresentationCause, type RecoveryWaitTiming } from "./upgrade-presentation-data.ts";
 
 const projectDefinition = (peer: string, root?: string) => {
@@ -65,6 +65,8 @@ export interface PlannedProject {
   unrecordedTerminals?: string[];
   /** #215: Codex threads with no rollout and no turn the hub recorded; they restart as a new session, nothing to lose. */
   freshStart?: string[];
+  /** #1246: verified terminals that read orphaned but still connected; the plan menu may switch exactly these. Part of the fingerprint. */
+  orphanedTerminals?: OrphanedTerminal[];
 }
 export interface UpgradePlan {
   schema: 1;

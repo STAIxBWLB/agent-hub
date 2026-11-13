@@ -8,7 +8,7 @@ import { taskProgress } from "../src/ui/task-progress.ts";
 import { boardColumns } from "../src/ui/task-board.ts";
 import { PEER_PALETTE } from "../src/ui/peer-palette.ts";
 import { initialConsoleState, renderConsole } from "../src/cli/console-state.ts";
-import { startDashboard } from "../src/hub/ui.ts";
+import { startDashboard, SETTINGS_MS, type DashboardSession } from "../src/hub/ui.ts";
 import { PEER_START_RETRY_MS } from "../src/hub/start-mode.ts";
 
 const cleanup: (() => void)[] = [];
@@ -31,6 +31,40 @@ test("delegated dashboard restrictions are ticket-bound and cannot be cleared by
   expect(f.actions).toHaveLength(2);
 });
 afterEach(() => { for (const stop of cleanup.splice(0)) stop(); });
+
+test("model authority comes only from distinct verified private sessions and is never serialized", async () => {
+  let time = 1_000;
+  const seen: DashboardSession[] = [];
+  const ui = startDashboard({ now: () => time, snapshot: (_after, _input, session) => { seen.push(session!); return { session }; }, action: (_input, session) => { seen.push(session!); return { ok: true, session }; } });
+  cleanup.push(ui.stop);
+  const post = (path: string, body: unknown, cookie?: string) => fetch(ui.origin + path, { method: "POST", headers: { origin: ui.origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+  const open = async () => {
+    const ticket = new URL(ui.issue(true)).hash.slice(1), response = await post("/session", { ticket, authorityId: "forged" });
+    expect(await response.json()).toEqual({ ok: true });
+    return response.headers.get("set-cookie")!.split(";")[0]!;
+  };
+  const first = await open(), second = await open();
+  const read = await post("/snapshot", { authorityId: "forged" }, first);
+  expect(await read.json()).toEqual({ session: { settings: true, settingsUntil: time + SETTINGS_MS } });
+  const firstAuthority = seen[0]!.authorityId;
+  if (typeof firstAuthority !== "string") throw new Error("verified session identity missing");
+  expect(firstAuthority).toMatch(/^[a-f0-9]{64}$/);
+  expect(first).not.toContain(firstAuthority);
+  expect(Object.keys(seen[0]!)).not.toContain("authorityId");
+  const write = await post("/action", { action: "model_preview", authorityId: "forged", session: { authorityId: "forged" } }, first);
+  expect(JSON.stringify(await write.json())).not.toContain(firstAuthority);
+  expect(seen[1]!.authorityId).toBe(firstAuthority);
+  await post("/snapshot", { authorityId: firstAuthority }, second);
+  expect(seen[2]!.authorityId).not.toBe(firstAuthority);
+  expect(seen[2]!.settingsUntil).toBe(seen[0]!.settingsUntil);
+  time += SETTINGS_MS;
+  await post("/snapshot", {}, first);
+  expect(seen[3]!.settings).toBe(false);
+  expect(seen[3]!.authorityId).toBe(firstAuthority);
+  time += 60 * 60_000;
+  expect((await post("/action", { action: "model_confirm", authorityId: firstAuthority }, first)).status).toBe(401);
+  expect(seen).toHaveLength(4);
+});
 
 function setup() {
   let time = 1_000;
@@ -304,7 +338,7 @@ test("shared public progress executes in the hashed dashboard and matches consol
   const nodes = new Map<string, Node>(); const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   get('task-progress').append(new Node());
   const reset = html.slice(html.indexOf('function resetView('), html.indexOf('function projectName('));
-  runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null; const officeDesks=new Map(),officeCards=new Map(); const managerMode=true; const signatures=new Map(); const $=get; const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{}; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{}; const empty=(node,text)=>{node.textContent=text}; ${reset}; resetView('next','instance');`, { get });
+  runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null; const officeDesks=new Map(),officeCards=new Map(),reviewCommentsCache=new Map(); const managerMode=true; const signatures=new Map(); const $=get; const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{}; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{}; const empty=(node,text)=>{node.textContent=text}; ${reset}; resetView('next','instance');`, { get });
   expect(get('task-progress').children).toHaveLength(0); expect(get('task-progress').textContent).toBe('No project selected.');
   renderers.renderTaskProgress(browserModel([]));
   expect(target.children[0]?.textContent).toBe("0/0 approved (0%)");
@@ -427,7 +461,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
     const $=get;
     const badge=text=>el('span',text),dot=()=>el('span'),peerDot={};
     const empty=(target,text)=>target.append(el('p',text));
-    const peerOptions=()=>{},restoreDraft=()=>{},renderTaskProgress=()=>{},renderApprovals=()=>{},renderBench=()=>{},renderWorktrees=()=>{},renderMemory=()=>{},renderSettings=()=>{},refreshRelativeTimes=()=>{},refreshStreamEmpty=()=>{};
+    const peerOptions=()=>{},restoreDraft=()=>{},renderTaskProgress=()=>{},renderApprovals=()=>{},renderBench=()=>{},renderResults=()=>{},renderWorktrees=()=>{},renderMemory=()=>{},renderSettings=()=>{},refreshRelativeTimes=()=>{},refreshStreamEmpty=()=>{};
     ${actions}
     ${controls}
     ${sync}

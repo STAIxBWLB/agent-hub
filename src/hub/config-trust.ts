@@ -30,6 +30,7 @@ export const MACHINE_LOCAL = [
   "local.web_fetch", // #515b: lets a model request pages from listed hosts; a committed config may not choose where a model's requests go on someone else's machine
   "terminal.open", // the command a hub-made TUI start runs to open a terminal (#269)
   "tasks.auto_pull", // #785 P1c: lets the hub start work on its own; a committed config may not turn it on for someone else's machine
+  "supervision.mode", // #1221 T2: lets the hub propose existing actions to a person's console and agents; an opt-in only the person's own machine sets
   "folder_triggers", // #512c: entries make the hub read a folder and propose a task per new file; a committed config may not point the hub at a folder on someone else's machine
   "schedules", // #512: entries make the hub propose tasks on a timer; a committed config may not create work on someone else's machine
   "corpus.paths", // #510: folders the hub reads as evidence; a committed config may not point the hub at a folder on someone else's machine
@@ -104,6 +105,8 @@ const drop = (file: Record<string, unknown>, path: string) => {
  * once resolved to the project root). A committed copy of the template sets them to defaults and asks git nothing.
  */
 export function stripUntrusted(file: Record<string, unknown>, defaults: object, cwd: string, name: string): string | undefined {
+  const releaseLocal = name === "config.local.json" && Object.hasOwn(file, "release");
+  if (releaseLocal) delete file.release;
   const research = file.research;
   if (research && typeof research === "object" && Object.hasOwn(research, "runners")) {
     if (name !== "config.local.json") throw new Error("research.runners requires untracked config.local.json");
@@ -113,7 +116,10 @@ export function stripUntrusted(file: Record<string, unknown>, defaults: object, 
   if (name !== "config.local.json") delete file.rooms;
   const localOnly = name !== "config.local.json" && file.action_policy !== undefined;
   if (localOnly) delete file.action_policy;
-  const originNotice = localOnly ? "action_policy ignored: only .agenthub/config.local.json may set it" : undefined;
+  const originNotice = [
+    localOnly ? "action_policy ignored: only .agenthub/config.local.json may set it" : undefined,
+    releaseLocal ? "release in .agenthub/config.local.json ignored: only committed .agenthub/config.json may set release policy" : undefined,
+  ].filter(Boolean).join("; ") || undefined;
   for (const p of ALL_MACHINE_LOCAL) if (!EMPTY_IS_VALUE.includes(p) && valueAt(file, p) !== undefined && !chooses(valueAt(file, p))) drop(file, p);
   const set = ALL_MACHINE_LOCAL.filter((p) => {
     const v = valueAt(file, p);

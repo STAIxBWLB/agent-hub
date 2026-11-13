@@ -10,7 +10,7 @@
  * Who is offered it is decided by `promptGate`: a person at a terminal, on a new project, with no setting flag and no `--yes`. A delegated peer, a live test and any run without a
  * terminal never reach `runInitPrompt` and get defaults plus their flags (AC5).
  */
-import { INIT_SETTINGS, SDLC_MODES, SPEC_REVIEW_MODES, COORDINATION_MODES, AUTONOMY_CHOICES, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
+import { INIT_SETTINGS, TRACK_CONFIG, SDLC_MODES, SPEC_REVIEW_MODES, COORDINATION_MODES, AUTONOMY_CHOICES, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PROFILE_NAMES } from "../hub/profiles.ts";
@@ -31,7 +31,7 @@ export interface InitAnswers { request: InitSettingsRequest; profile?: string; s
 export type InitPromptResult = { ok: true; answers: InitAnswers } | { ok: false; reason: "declined" | "interrupted" | "refused"; message: string };
 
 /** The four questions that are choices of `ahub init` but not rows of the settings table. */
-const NOT_ROWS: ReadonlySet<string> = new Set(["profile", "autonomy", "release-guard", "shadow"]);
+const NOT_ROWS: ReadonlySet<string> = new Set(["profile", TRACK_CONFIG, "autonomy", "release-guard", "shadow"]);
 const MAX_TRIES = 3;
 const NOTHING = "nothing was written";
 const yes = (text: string) => /^(y|yes)$/i.test(text.trim());
@@ -64,6 +64,7 @@ export function shownDefault(id: string): string {
     : id === "coordination" ? DEFAULT_CONFIG.coordination
     : id === "specs.enabled" ? DEFAULT_SPECS_CONFIG.enabled
     : id === "specs.review" ? DEFAULT_SPECS_CONFIG.review
+    : id === "sdlc.required_checks" ? "none"
     : id === "sdlc.mode" ? "off"                    // no file is written for it: the loader's own default (src/hub/sdlc.ts)
     : row.id.endsWith(".enabled") ? false           // a legacy `<kind>.enabled` switch that the template does not carry reads as off
     : undefined;
@@ -84,8 +85,11 @@ const oneOf = (id: string, label: string, values: readonly string[], shown: stri
 export interface InitQuestionContext {
   /** The agent set `ahub setup` chose on this machine (the default shown for the agents question), or `undefined` for the shipped default. */
   machineAgents?: readonly string[];
+  /** Effective research default for this new project, read from the trusted setup choice (else off). */
+  machineResearch?: boolean;
   /** Project packs a profile answer may name besides the shipped profiles. */
   packs?: readonly string[];
+  discoverChecks?: () => Promise<readonly string[]>;
   /** Shadow history is offered only for a folder with no Git work tree. */
   shadowAvailable?: boolean;
 }
@@ -105,15 +109,19 @@ export function initQuestions(context: InitQuestionContext = {}): InitQuestion[]
     id: "start.agents", label: "Agents ahub up starts", choices: `${START_AGENTS_ALLOWED.join(",")} as a comma list, or none`, shown: (context.machineAgents ?? START_AGENTS_DEFAULT).join(", ") || "none",
     read: text => INIT_SETTINGS.find(row => row.id === "start.agents")!.parse(text.trim().toLowerCase()),
   };
-  const switches = INIT_SETTINGS.filter(row => row.id.endsWith(".enabled") && !["specs.enabled", "memory.enabled", "snapshots.enabled"].includes(row.id));
+  const switches = INIT_SETTINGS.filter(row => row.id.endsWith(".enabled") && !["specs.enabled", "memory.enabled", "research.enabled", "snapshots.enabled"].includes(row.id));
   const all: InitQuestion[] = [
     profile,
     agents,
+    // #1411: Enter leaves the choice out, so .gitignore stays as git has it today and the block follows that.
+    { ...onOff(TRACK_CONFIG, "Commit the shared hub config (config.json, routing.toml, sdlc.toml) to git", "off"), shown: "as .gitignore has it" },
     onOff("specs.enabled", "Design specs and their freshness checks", shownDefault("specs.enabled") as "on" | "off"),
     oneOf("specs.review", "Spec review mode", SPEC_REVIEW_MODES, shownDefault("specs.review")),
     oneOf("sdlc.mode", "SDLC mode", SDLC_MODES, shownDefault("sdlc.mode")),
+    { id: "sdlc.required_checks", label: "Required CI checks", choices: "comma-separated names", shown: "none", read: text => INIT_SETTINGS.find(row => row.id === "sdlc.required_checks")!.parse(text) },
     oneOf("coordination", "Coordination", COORDINATION_MODES, shownDefault("coordination")),
     onOff("memory.enabled", "Shared memory", shownDefault("memory.enabled") as "on" | "off"),
+    onOff("research.enabled", "Research records", context.machineResearch === true ? "on" : "off"),
     onOff("snapshots.enabled", "Per-turn snapshots", shownDefault("snapshots.enabled") as "on" | "off"),
     ...switches.map(row => onOff(row.id, row.describe.charAt(0).toUpperCase() + row.describe.slice(1), shownDefault(row.id) as "on" | "off")),
     oneOf("autonomy", "Machine autonomy preset", AUTONOMY_CHOICES, "inherit"),
@@ -133,7 +141,14 @@ export const questionLine = (question: InitQuestion): string => `${question.labe
 export async function runInitPrompt(ports: InitPromptPorts, context: InitQuestionContext, preview: (answers: InitAnswers) => string[]): Promise<InitPromptResult> {
   const answers: InitAnswers = { request: { values: {} }, shadow: false, releaseGuard: false };
   ports.print("ahub init: press Enter to keep the default in brackets. N at the end, Ctrl-C or Ctrl-D writes nothing.");
-  for (const question of initQuestions(context)) {
+  for (const original of initQuestions(context)) {
+    let question = original;
+    if (question.id === "sdlc.required_checks") {
+      if (!["advise", "enforce"].includes(String(answers.request.values["sdlc.mode"]))) continue;
+      const names = await context.discoverChecks?.() ?? [];
+      answers.request.values["sdlc.required_checks"] = [...names];
+      question = { ...question, shown: names.join(", ") || "none; supply check names" };
+    }
     let settled = false;
     for (let attempt = 0; attempt < MAX_TRIES && !settled; attempt++) {
       const answer = await ports.ask(questionLine(question));

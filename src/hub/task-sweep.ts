@@ -52,6 +52,8 @@ export function taskSweepConfig(input: unknown): TaskSweepConfig {
 /** Pure time/kind ladder; Tasks decides whether the responsible peer is available. */
 export function nextSweep(task: Task, config: TaskSweepConfig, now: number, ready = true): SweepRecord | undefined {
   if (!config.enabled || !Number.isFinite(now)) return undefined;
+  // #1176: a person-run leg waits on the person, so no idle step ever escalates it to an agent.
+  if (task.needsPerson) return undefined;
   const kind = task.state === "proposed" && task.owner ? "unaccepted-assignment"
     : task.state === "in_progress" && task.owner ? "idle-owner"
       : task.state === "in_review" && task.reviewer ? "review-pending" : task.state === "proposed" && !task.owner && !task.reviewer && ready ? "ready-unassigned" : undefined;

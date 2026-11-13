@@ -1,0 +1,42 @@
+name: flake-ledger
+
+# #1257 item 3: one tracking issue, edited weekly, listing the gate shard jobs that failed and then passed on the same head SHA, per test file and failing test name, split
+# into macOS-only, Ubuntu-only and both-OS classes. The logic and its tests are scripts/flake-ledger.ts and test/flake-ledger.test.ts; the policy it feeds (rerun once on the
+# same head, then investigate; an owner and a deadline per class) is in docs/agent-notes/tests.md. It reads the Actions runs API and writes only that one issue: no code of a
+# pull request runs here, and the job has no other credential. `actions: read` is the read of runs and job logs; `issues: write` the one issue.
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the ledger without writing the issue
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+concurrency:
+  group: flake-ledger
+  cancel-in-progress: false
+
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Read check.yml runs and update the ledger issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: bun scripts/flake-ledger.ts $DRY_RUN

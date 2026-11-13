@@ -7,7 +7,7 @@ import { projectChain } from "@staix/agent-mem";
 import { Board, taskClaimIdentity, type Task } from "../src/hub/board.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
-import { EVIDENCE_RECORD_TOOL, IMPLEMENTER_HUB_TOOL_NAMES, STUDY_TOOLS, TASK_TOOLS, TASK_TOOL_NAMES, profileTaskTools, projectToolList } from "../src/hub/hub-tools.ts";
+import { EVIDENCE_RECORD_TOOL, GUIDANCE_TOOL_NAMES, IMPLEMENTER_HUB_TOOL_NAMES, STUDY_TOOLS, TASK_TOOLS, TASK_TOOL_NAMES, profileTaskTools, projectToolList } from "../src/hub/hub-tools.ts";
 import { SourceRegistry, sourceProjectionReceipt } from "../src/hub/sources.ts";
 import { readRestartSnapshot } from "../src/hub/restart.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -153,7 +153,9 @@ import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 test("in-process evidence receipts stay JSON when the peer has held-delivery metadata", async () => {
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
   const start = source.indexOf("  const conductedMutations ="), end = source.indexOf("  const deliveryRetryAllowed =", start);
+  const scopeStart = source.indexOf("  const reviewObserverHeld ="), scopeEnd = source.indexOf("  const invocations =", scopeStart);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  expect(scopeStart).toBeGreaterThan(0); expect(scopeEnd).toBeGreaterThan(scopeStart);
   const readOnly = source.split("\n").find(line => line.startsWith("  const readOnlyPeer ="))!, readTools = source.split("\n").find(line => line.startsWith("const READ_ONLY_HUB_TOOLS ="))!;
   const result = { id: "ev:" + "a".repeat(32), revision: 1, taskId: 7 };
   const unexpected = () => { throw new Error("unrelated authority path reached"); };
@@ -161,11 +163,11 @@ test("in-process evidence receipts stay JSON when the peer has held-delivery met
   const cwd=mkdtempSync(join(tmpdir(),"evidence-read-wrapper-")), routing=loadRouting(cwd);
   const currentStart=source.indexOf("  function sourceReadCurrent("),currentEnd=source.indexOf("  const sourceRegistry =",currentStart);
   expect(currentStart).toBeGreaterThan(0);expect(currentEnd).toBeGreaterThan(currentStart);
-  const context = { Error, PreEffectToolRefusal, conductorPeer, ownerToolEffect, declarations: {}, config: { roles: {}, pii:{paths:[]}, mlx:{enabled:false} }, turns: new Map(), reviewerToolObservers: new Map(),
+  const context = { Error, PreEffectToolRefusal, conductorPeer, ownerToolEffect, GUIDANCE_TOOL_NAMES, readReviewObserverScope: () => undefined, declarations: {}, config: { roles: {}, pii:{paths:[]}, mlx:{enabled:false} }, turns: new Map(), reviewerToolObservers: new Map(),
     stopping:false,bus:{peers:new Map([["codex",{}]])},connectionGeneration:()=>1,childToolAuthority:new AsyncLocalStorage(),activeRouting:()=>routing,holdsPii:unexpected,
     runningReviewAuthority: unexpected, auditConduct: unexpected,
     ownHeldHint: () => { hints++; return "held-delivery control metadata"; }, taskOpBody: async (_by:string,op:string) => JSON.stringify(op==="hub_evidence_read"?{...result,status:"unavailable"}:result), extracted: undefined as unknown };
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\n${source.slice(currentStart,currentEnd)}\nlet taskOpsInFlight=0;\n${source.slice(start, end)}\nglobalThis.extracted=taskOp;`);
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\n${source.slice(currentStart,currentEnd)}\nlet taskOpsInFlight=0;\n${source.slice(scopeStart, scopeEnd)}\n${source.slice(start, end)}\nglobalThis.extracted=taskOp;`);
   runInNewContext(script, context);
   const run = context.extracted as (by: string, op: string, input: unknown, inProcess: boolean) => Promise<string>;
   try {
@@ -276,7 +278,7 @@ test("T2 selected evidence becomes private while the real host screen is awaited
   const text="EVIDENCE_READ_ASYNC_PRIVATE_CANARY";
   let entered!:()=>void,release!:()=>void;
   const began=new Promise<void>(resolve=>{entered=resolve;}),held=new Promise<void>(resolve=>{release=resolve;});
-  const f=await rig({piiScreen:async value=>{if(value===text){entered();await held;}return {label:"clear"};}});
+  const f=await rig({piiScreen:async value=>{if(value===text){entered();await held;}return {label:"clear",ms:0};}});
   try{
     const bytes=Buffer.from(text),projection=sourceProjectionReceipt(bytes,text)!;
     const source=f.sources.add({bytes,text,kind:"file",origin:"async-public.txt",private:false,projection});

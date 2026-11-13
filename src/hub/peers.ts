@@ -1,3 +1,4 @@
+import type { DeliveryFailureCause } from "./delivery-failure.ts";
 import type { Envelope, EnvelopeOpts, PeerId, PeerState } from "./envelope.ts";
 import type { PermissionMode } from "./permission-mode.ts";
 import type { StartForm } from "../adapters/registry-types.ts";
@@ -9,6 +10,8 @@ export interface DeliveryReceipt {
   id: string;
   state: "accepted" | "completed" | "failed_safe" | "needs_review";
   reason?: string;
+  /** Public-safe transport cause only, never native error text. */
+  failureCause?: DeliveryFailureCause;
   /** A provider refused before acceptance for quota; requeue without spending poison retries while paused. */
   quota?: true;
 }
@@ -16,6 +19,23 @@ export interface DeliveryReceipt {
 /** Host-owned print child authority, revoked before stop/turn settlement. No terminal ownership. */
 export interface OwnedToolsLaunch {
   launchId: string; generation: string; sessionId: string; signal: AbortSignal; task?: number; permissionHook: true;
+}
+
+/** Display-only identity for a live channel connection waiting for a person's handover. */
+export interface PeerStandbySession { id: string; pid?: number; since: number; }
+/**
+ * Display metadata about the CURRENT owner of an attached channel peer (#1310): who holds it, since when, and which native session the host has already verified. Never authentication,
+ * delivery, takeover or permission evidence, and never derived from a standby id, a process name, a title or attach order. Every field is bounded; none is text from the client.
+ */
+export interface PeerOwnerAttachment { ownerPid?: number; attachedAt: number; nativeSessionId?: string; }
+
+/** Opaque, generation-fenced claim produced by a peer's person-requested takeover port. */
+export interface PeerTakeoverClaim {
+  standbyId: string;
+  socket: object;
+  generation: string | number;
+  isCurrent(): boolean;
+  attach(): boolean;
 }
 
 export interface FrontendProxyPort {
@@ -29,6 +49,21 @@ export interface FrontendProxyPort {
 
 export interface PeerAdapter {
   readonly id: PeerId;
+  /** Live waiting sessions, for display only; ids and pids grant no native identity or authority. */
+  readonly standbySessions?: readonly PeerStandbySession[];
+  /** The current owner's attachment facts, for display only; absent unless a socket is attached and no newer claim is arriving (#1310). */
+  readonly ownerAttachment?: PeerOwnerAttachment;
+  /**
+   * #1385: the agent-hub client this peer runs in another process, for display only. Absent means the adapter runs inside the daemon, so it runs the daemon's own code; `attached` false
+   * means no client is attached now, and an attached client without `version` did not report one. Never admission, compatibility or authorization evidence.
+   */
+  readonly hubClient?: { attached: boolean; version?: string };
+  /** Person-authorized takeover port. The host still performs its own admission and claim fences. */
+  takeover?(standbyId: string | undefined, eligible: (socket: object) => boolean): PeerTakeoverClaim | undefined;
+  /** Exact transport ownership check for guarding a selected standby through its asynchronous preface. */
+  ownsSocket?(socket: object): boolean;
+  /** The explicit own-delivery settlement surface; only a live push channel session opts in. */
+  readonly acceptedSettlement?: "explicit";
   /** Host-owned room transport binding; remote ids never gain local role/console authority. */
   readonly remoteRoom?: string;
   /** Verified roster fingerprint, pinned separately from the reusable display label. */
@@ -71,7 +106,7 @@ export interface PeerAdapter {
   /** Fixed-builtin native proof only; present undefined is unknown, not an absent proxy. */
   readonly frontendProxy?: FrontendProxyPort;
   /** Fixed operator notices from builtin native adapters, never provider text or native ids. */
-  readonly statusNotice?: { code: "unidentified-cancellation" | "qwen-detached" | "qwen-stalled" | "jcode-headless-after-recovery"; message: string };
+  readonly statusNotice?: { code: "unidentified-cancellation" | "qwen-detached" | "qwen-stalled" | "qwen-deny-quiescence" | "jcode-headless-after-recovery"; message: string };
   /** Fixed builtins with session.nativeRevert only. Native conversation effects remain in the adapter. */
   revertTurn?(nativeTurn: string): Promise<void>;
   /** #445 C1: what this peer's native source lists right now (a probed version only), or an empty manifest. Never throws for an unprobed version; a transport failure rejects. */
@@ -80,6 +115,8 @@ export interface PeerAdapter {
   detachForRoster?(resetMode: PermissionMode): void | Promise<void>;
   /** Return to the roster after detachForRoster. */
   resumeFromRoster?(): Promise<void>;
+  /** #1402: the model the native surface reported for the turn that just ended, read once at its `turn_end`. Absent or undefined records nothing: unknown stays unknown. */
+  observedModel?(): import("./events.ts").ModelObservation | undefined;
   /** A peer the hub drives itself (Pi, the local worker). It cannot be trusted to rate its own urgency: the bus caps it. */
   readonly hubNative?: boolean;
   /** Never handed a delivery: its queue waits for `Bus.pull` (a Claude session that cannot show channel pushes, issue #205). */
@@ -92,10 +129,14 @@ export interface PeerAdapter {
   stop(reason?: string): Promise<void>;
   /** Set by the bus. The peer said something worth sharing. */
   onMessage?: (body: string, opts?: EnvelopeOpts) => unknown;
+  /** Host-only Record guidance for the next owned headless turn; never native-client configuration. */
+  recordInstruction?: () => string | undefined;
+  /** Raw model answer boundary, separate from explicit send tools and diagnostics. */
+  onFinalAnswer?: (body: string, opts?: EnvelopeOpts, complete?: boolean) => unknown;
   /** Set by the bus. */
   onState?: (state: PeerState) => void;
   /** Set by the bus. A delivery that had resolved turned out not to reach the agent: put it back. */
-  onFailed?: (envs: Envelope[], failure?: { quota?: true }) => void;
+  onFailed?: (envs: Envelope[], failure?: { quota?: true; failureCause?: DeliveryFailureCause }) => void;
   /** Correlated durable-delivery lifecycle, emitted only when the bus supplied an id. */
   onDelivery?: (receipt: DeliveryReceipt) => void;
   /** Set by the bus (#878): a native session title or current plan item the adapter observed; `reset` on a new session. */
@@ -112,8 +153,12 @@ export const DEFAULT_WATCHDOG_MS = 300_000;
 export abstract class BasePeer implements PeerAdapter {
   /** Returns a reason (a string) when the hub refused the message (issue #38). */
   onMessage?: (body: string, opts?: EnvelopeOpts) => unknown;
+  /** Host-only Record guidance for the next owned headless turn; never native-client configuration. */
+  recordInstruction?: () => string | undefined;
+  /** Raw model answer boundary, separate from explicit send tools and diagnostics. */
+  onFinalAnswer?: (body: string, opts?: EnvelopeOpts, complete?: boolean) => unknown;
   onState?: (state: PeerState) => void;
-  onFailed?: (envs: Envelope[], failure?: { quota?: true }) => void;
+  onFailed?: (envs: Envelope[], failure?: { quota?: true; failureCause?: DeliveryFailureCause }) => void;
   onDelivery?: (receipt: DeliveryReceipt) => void;
   onDoing?: (kind: DoingKind, text?: unknown) => void;
   private _state: PeerState = "offline";
@@ -127,6 +172,18 @@ export abstract class BasePeer implements PeerAdapter {
 
   get state(): PeerState {
     return this._state;
+  }
+
+  /** Decorate only a fixed prompt, once at the delivered-turn boundary. */
+  protected turnRecordPrompt(base: string): string {
+    let instruction: string | undefined;
+    try { instruction = this.recordInstruction?.(); } catch { return base; }
+    if (!instruction || base.includes(instruction)) return base;
+    return base ? `${base}\n\n${instruction}` : instruction;
+  }
+
+  protected finalAnswer(text: string, opts?: EnvelopeOpts, complete = true): unknown {
+    return this.onFinalAnswer ? this.onFinalAnswer(text, opts, complete) : this.onMessage?.(text, opts);
   }
 
   /** Keep the active turn's inactivity bound; a changed setting belongs to the next busy turn. */

@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import type { ModelOverrideSelection } from "../src/adapters/registry-types.ts";
 import { CodexPeer, type CodexOptions } from "../src/adapters/codex-appserver.ts";
 import { Bus } from "../src/hub/bus.ts";
+import type { DeliveryFailureCause } from "../src/hub/delivery-failure.ts";
 import { DIGEST, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { startFakeAppServer } from "./fakes/app-server.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -761,7 +763,7 @@ test("a known steer rejection after native completion remains failed_safe", asyn
 
 async function lateDurableSteerFixture(answer: "accepted" | "silent" | "held", options: Partial<CodexOptions> = {}) {
   const nativeTurns: string[] = [], wire: string[] = [], said: { body: string; opts: any }[] = [];
-  const receipts: { id: string; state: string; reason?: string }[] = [];
+  const receipts: { id: string; state: string; reason?: string; failureCause?: DeliveryFailureCause }[] = [];
   let turns = 0;
   let acceptSteer = () => {}, completeOriginal = () => {}, startOther = () => {};
   const fake = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
@@ -870,7 +872,7 @@ test("an unanswered durable steer stays pending past native completion and holds
     steer.expire(); await steer.result;
     expect(steer.error()).toBe("steer unanswered: RPC timeout");
     expect(steer.timers[0]!.cleared).toBe(true);
-    expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toEqual([{ id: "late-steer", state: "needs_review", reason: "steer unanswered: RPC timeout" }]);
+    expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toEqual([{ id: "late-steer", state: "needs_review", reason: "steer unanswered: RPC timeout", failureCause: "timeout" }]);
   } finally { try { await fixture.stop(); } finally { steer.restore(); } }
 });
 
@@ -986,3 +988,223 @@ test("an admitted Codex proxy socket rechecks live roster before forwarding each
     expect(peer.state).toBe("offline");
   } finally { tui?.close(); await peer.stop(); native.stop(true); }
 });
+
+test("hub turns carry one captured model override and steer never changes the running model", async () => {
+  let desired: string | undefined = "runtime-a", gets = 0;
+  const applied: (string | undefined)[] = [];
+  const dir = mkdtempSync(join(tmpdir(), "codex-model-gate-")), gate = join(dir, "release"), target = join(dir, "fixture.txt");
+  writeFileSync(target, "fixture\n"); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const r = await setup(0, undefined, { getModelOverride: () => { gets++; const model = desired; return { model, applied: () => { applied.push(model); } }; } });
+  r.tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => r.peer.state === "idle");
+  try {
+    await r.peer.deliver([newEnvelope("user", `first model turn EDIT:${target} GATE:${gate}`)]);
+    expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-a");
+    // RPC acceptance can precede turn/started; only the observed native turn id authorizes steering.
+    await until(() => r.seen.some(row => row.method === "turn/started" && row.params?.threadId === "th1"));
+    const started = r.seen.find(row => row.method === "turn/started" && row.params?.threadId === "th1");
+    desired = "runtime-b";
+    await r.peer.steer([newEnvelope("user", "steer same model")]);
+    expect(r.fake.requests.filter(row => row.method === "turn/steer").at(-1).params.model).toBeUndefined();
+    expect(r.fake.requests.filter(row => row.method === "turn/steer").at(-1).params.expectedTurnId).toBe(started.params.turn.id);
+    expect(gets).toBe(1);
+    // The existing fake file gate withholds completion until the steer ownership assertions finish.
+    writeFileSync(gate, "release");
+    await until(() => r.peer.state === "idle");
+    await r.peer.deliver([newEnvelope("user", "next model turn")]); await until(() => r.peer.state === "idle");
+    expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-b");
+    desired = undefined;
+    await r.peer.deliver([newEnvelope("user", "native model turn")]); await until(() => r.peer.state === "idle");
+    expect(Object.hasOwn(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params, "model")).toBe(false);
+    expect(applied).toEqual(["runtime-a", "runtime-b", undefined]);
+  } finally {
+    writeFileSync(gate, "release");
+    await until(() => r.seen.some(row => row.method === "turn/completed" && row.params?.turn?.id === "turn1"));
+  }
+});
+
+test("forwarded turn/start honors an explicit client model and reports sticky clear without overwriting native choice", async () => {
+  let desired: string | undefined = "hub-model";
+  const applied: { selected: string | undefined; native: string | undefined }[] = [], observed: string[] = [];
+  const r = await setup(20, undefined, {
+    getModelOverride: () => { const model = desired; return { model, applied: native => { applied.push({ selected: model, native }); } }; },
+    onNativeModelApplied: model => { observed.push(model); },
+  });
+  r.tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => r.peer.state === "idle");
+  const start = async (id: number, model?: string) => {
+    r.tui.send(JSON.stringify({ id, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: `native ${id}` }], ...(model === undefined ? {} : { model }) } }));
+    await until(() => r.seen.some(row => row.id === id)); await until(() => r.peer.state === "idle");
+  };
+  await start(3);
+  expect(r.fake.requests.find(row => row.id === 3).params.model).toBe("hub-model");
+  expect(applied).toEqual([{ selected: "hub-model", native: "hub-model" }]);
+  await start(4, "client-model");
+  expect(r.fake.requests.find(row => row.id === 4).params.model).toBe("client-model");
+  expect(observed).toEqual(["client-model"]); expect(applied).toHaveLength(1);
+  desired = undefined; await start(5);
+  expect(Object.hasOwn(r.fake.requests.find(row => row.id === 5).params, "model")).toBe(false);
+  expect(applied.at(-1)).toEqual({ selected: undefined, native: "client-model" });
+});
+
+test("an older forwarded model ACK cannot replace a newer accepted hub model or its sticky clear hint", async () => {
+  let desired: string | undefined = "hub-newer";
+  const releases = new Map<string | number, () => void>(), applied: (string | undefined)[] = [], observed: string[] = [];
+  const requests: any[] = [];
+  let turns = 0;
+  const fake = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data)); requests.push(msg);
+      const reply = (result: unknown) => ws.send(JSON.stringify({ id: msg.id, result }));
+      const note = (method: string, params: unknown) => ws.send(JSON.stringify({ method, params }));
+      if (msg.method === "initialize") return void reply({ userAgent: "codex-cli/0.154.0" });
+      if (msg.method === "thread/start") return void reply({ thread: { id: "th1" } });
+      if (msg.method !== "turn/start") return;
+      const turn = { id: `ordered-${++turns}` };
+      note("turn/started", { threadId: "th1", turn });
+      // Every native turn really ends before its RPC reply is released; transport ACKs remain independently held.
+      note("turn/completed", { threadId: "th1", turn: { ...turn, status: "completed" } });
+      releases.set(msg.id, () => reply({ turn }));
+    } },
+  });
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: `ws://127.0.0.1:${fake.port}`, cwd: process.cwd(),
+    getModelOverride: () => { const model = desired; return { model, applied: native => { applied.push(native); } }; },
+    onNativeModelApplied: model => { observed.push(model); } });
+  let tui: WebSocket | undefined;
+  const seen: any[] = [];
+  try {
+    await peer.start(); tui = new WebSocket(peer.proxyUrl); tui.onmessage = event => seen.push(JSON.parse(String(event.data)));
+    await new Promise(resolve => { tui!.onopen = resolve; });
+    tui.send(JSON.stringify({ id: 1, method: "initialize", params: {} }));
+    tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => peer.state === "idle");
+    tui.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", model: "client-older", input: [{ type: "text", text: "A" }] } }));
+    await until(() => releases.has(3) && seen.some(row => row.method === "turn/completed"));
+    const later = peer.deliver([newEnvelope("user", "B")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 2);
+    const laterId = requests.filter(row => row.method === "turn/start")[1].id;
+    await until(() => releases.has(laterId)); releases.get(laterId)!(); await later;
+    expect(applied).toEqual(["hub-newer"]);
+    releases.get(3)!(); await until(() => seen.some(row => row.id === 3));
+    expect(observed).toEqual([]); expect(applied).toEqual(["hub-newer"]);
+    await until(() => peer.state === "idle"); desired = undefined;
+    const clear = peer.deliver([newEnvelope("user", "clear")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 3);
+    const clearId = requests.filter(row => row.method === "turn/start")[2].id;
+    await until(() => releases.has(clearId)); releases.get(clearId)!(); await clear;
+    expect(applied).toEqual(["hub-newer", "hub-newer"]);
+    // A newer model-changing start without its ACK makes an inherited default unknown, not the earlier cached model.
+    tui.send(JSON.stringify({ id: 6, method: "turn/start", params: { threadId: "th1", model: "client-unsettled", input: [{ type: "text", text: "D" }] } }));
+    await until(() => releases.has(6) && seen.some(row => row.method === "turn/completed" && row.params.turn.id === "ordered-4"));
+    const uncertain = peer.deliver([newEnvelope("user", "clear while older choice unacknowledged")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 5);
+    const uncertainId = requests.filter(row => row.method === "turn/start")[4].id;
+    await until(() => releases.has(uncertainId)); releases.get(uncertainId)!(); await uncertain;
+    expect(applied.at(-1)).toBeUndefined();
+    releases.get(6)!(); await until(() => seen.some(row => row.id === 6));
+    expect(observed).toEqual([]);
+    desired = "hub-reset";
+    const restore = peer.deliver([newEnvelope("user", "restore known choice")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 6);
+    const restoreId = requests.filter(row => row.method === "turn/start")[5].id;
+    await until(() => releases.has(restoreId)); releases.get(restoreId)!(); await restore;
+    expect(applied.at(-1)).toBe("hub-reset"); await until(() => peer.state === "idle");
+    const duplicate = (text: string) => tui!.send(JSON.stringify({ id: 7, method: "turn/start", params: { threadId: "th1", model: "client-ambiguous", input: [{ type: "text", text }] } }));
+    duplicate("G"); await until(() => releases.has(7) && seen.some(row => row.method === "turn/completed" && row.params.turn.id === "ordered-7"));
+    const olderDuplicate = releases.get(7)!;
+    duplicate("H"); await until(() => seen.some(row => row.method === "turn/completed" && row.params.turn.id === "ordered-8"));
+    desired = undefined;
+    const ambiguousClear = peer.deliver([newEnvelope("user", "clear with ambiguous native RPC id")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 9);
+    const ambiguousId = requests.filter(row => row.method === "turn/start")[8].id;
+    await until(() => releases.has(ambiguousId)); releases.get(ambiguousId)!(); await ambiguousClear;
+    expect(applied.at(-1)).toBeUndefined();
+    olderDuplicate(); releases.get(7)!(); await until(() => seen.filter(row => row.id === 7).length === 2);
+    expect(observed).toEqual([]);
+  } finally { tui?.close(); await peer.stop(); fake.stop(true); }
+});
+
+
+test("a rejected forwarded start retires its capture before the corrected model is selected", async () => {
+  let desired = "before-rejection", captured: ModelOverrideSelection | undefined;
+  const applied: string[] = [];
+  let rejected = 0;
+  const r = await setup(0, undefined, {
+    getModelOverride: () => captured ??= {
+      model: desired,
+      applied() { applied.push(this.model!); },
+      rejected() { rejected++; if (captured === this) captured = undefined; },
+    },
+  });
+  r.tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => r.peer.state === "idle");
+  r.tui.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "REFUSE_TURN" }] } }));
+  await until(() => r.seen.some(row => row.id === 3));
+  expect(r.seen.find(row => row.id === 3).error.message).toBe("turn rejected");
+  expect(r.seen.some(row => row.method === "turn/started")).toBe(false);
+  expect(rejected).toBe(1); expect(applied).toEqual([]); expect(captured).toBeUndefined();
+  desired = "corrected-model";
+  r.tui.send(JSON.stringify({ id: 4, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "corrected" }] } }));
+  await until(() => r.seen.some(row => row.id === 4));
+  expect(r.fake.requests.find(row => row.id === 3).params.model).toBe("before-rejection");
+  expect(r.fake.requests.find(row => row.id === 4).params.model).toBe("corrected-model");
+  expect(applied).toEqual(["corrected-model"]); expect(rejected).toBe(1);
+});
+
+for (const newerState of ["pending", "accepted", "started", "both-rejected", "explicit-last", "tombstoned"] as const) {
+  test(newerState === "both-rejected" ? "concurrent forwarded rejections retire their capture when the older rejection drains last"
+    : newerState === "explicit-last" ? "a final explicit forwarded rejection retires the earlier rejected implicit capture"
+    : newerState === "tombstoned" ? "a reused forwarded RPC id keeps rejection retirement unknown until reattachment"
+    : `an older forwarded rejection cannot retire a newer ${newerState} model capture`, async () => {
+    const replies = new Map<number, (error: boolean) => void>();
+    const received: number[] = [];
+    const applied: string[] = [];
+    let rejected = 0, observedStart: (() => void) | undefined;
+    const native = Bun.serve({ hostname: "127.0.0.1", port: 0,
+      fetch(req, server) { return server.upgrade(req) ? undefined : new Response("fixture"); },
+      websocket: { message(ws, raw) {
+        const msg = JSON.parse(String(raw));
+        if (msg.method === "thread/start") return void ws.send(JSON.stringify({ id: msg.id, result: { thread: { id: "th1" } } }));
+        if (msg.method !== "turn/start") return;
+        received.push(msg.id);
+        replies.set(msg.id, error => { ws.send(JSON.stringify(error ? { id: msg.id, error: { code: -32000, message: "turn rejected" } } : { id: msg.id, result: { turn: { id: `turn-${msg.id}` } } })); });
+        observedStart = () => { ws.send(JSON.stringify({ method: "turn/started", params: { threadId: "th1", turn: { id: `turn-${msg.id}` } } })); };
+      } },
+    });
+    const selection: ModelOverrideSelection = { model: "captured-model", applied() { applied.push("captured-model"); }, rejected() { rejected++; } };
+    const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: `ws://127.0.0.1:${native.port}`, cwd: process.cwd(),
+      getModelOverride: () => selection,
+    });
+    let tui: WebSocket | undefined;
+    const seen: any[] = [];
+    try {
+      await peer.start(); tui = new WebSocket(peer.proxyUrl);
+      tui.onmessage = event => seen.push(JSON.parse(String(event.data)));
+      await new Promise<void>(resolve => { tui!.onopen = () => resolve(); });
+      tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+      await until(() => peer.state === "idle");
+      const start = (id: number, model?: string) => tui!.send(JSON.stringify({ id, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "fixture" }], ...(model ? { model } : {}) } }));
+      start(3); await until(() => replies.has(3));
+      start(4, newerState === "explicit-last" || newerState === "tombstoned" ? "client-model" : undefined); await until(() => replies.has(4));
+      const firstDuplicate = replies.get(4)!;
+      if (newerState === "tombstoned") {
+        start(4, "client-second"); await until(() => received.filter(id => id === 4).length === 2);
+      }
+      if (newerState === "accepted") { replies.get(4)!(false); await until(() => seen.some(row => row.id === 4)); }
+      if (newerState === "started") { observedStart!(); await until(() => seen.some(row => row.method === "turn/started")); }
+      if (newerState === "both-rejected") {
+        replies.get(4)!(true); await until(() => seen.some(row => row.id === 4));
+        expect(rejected).toBe(0); // The older request still shares the unaccepted boundary.
+      }
+      replies.get(3)!(true); await until(() => seen.some(row => row.id === 3));
+      expect(rejected).toBe(newerState === "both-rejected" ? 1 : 0);
+      if (newerState === "pending") { replies.get(4)!(false); await until(() => seen.some(row => row.id === 4)); }
+      if (newerState === "started" || newerState === "explicit-last") { replies.get(4)!(true); await until(() => seen.some(row => row.id === 4)); }
+      if (newerState === "tombstoned") {
+        firstDuplicate(true); await until(() => seen.filter(row => row.id === 4).length === 1);
+        expect(rejected).toBe(0);
+        replies.get(4)!(true); await until(() => seen.filter(row => row.id === 4).length === 2);
+      }
+      expect(rejected).toBe(newerState === "both-rejected" || newerState === "explicit-last" ? 1 : 0);
+      expect(applied).toEqual(newerState === "pending" || newerState === "accepted" ? ["captured-model"] : []);
+    } finally { tui?.close(); await peer.stop(); native.stop(true); }
+  });
+}

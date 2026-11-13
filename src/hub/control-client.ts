@@ -5,6 +5,7 @@ import { newToolRequestId, TOOL_WRITE_FEATURE, toolWriteOperation, toolWriteUnkn
 import { externalAdapterMetadata, externalInstanceCatalog, type ExternalInstanceCatalog, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 import { negotiateProtocol, protocolWindow, type ProtocolWindow } from "./protocol-window.ts";
 import { ControlWriteTelemetry, controlWriteMetadata, controlWriteSpan } from "./control-write-trace.ts";
+import { VERSION } from "../version.ts";
 
 // The client has no authoritative task privacy view. Keep kind/timing only, never its args or task id.
 const clientWriteTelemetry = new ControlWriteTelemetry({ emit: line => {
@@ -21,7 +22,7 @@ export const PROTOCOL = 17;
 /** The descriptor's legacy protocol field remains this floor for previous published clients. */
 export const PROTOCOL_MIN = 16;
 // Literal metadata is read without executing a recovery target; consistency is pinned in tests.
-export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states", "tool_write_idempotency", "research_evidence"] as const;
+export const DAEMON_FEATURES = ["guidance_views", "guidance_variants", "guidance_probes", "guidance_probe_receipts", "execution_lineage", "model_overrides", "visuals", "project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states", "tool_write_idempotency", "research_evidence", "review_comments", "questions", "accepted_delivery_settlement", "completions", "review_observer_input_state", "task_handoff_key", "task_handoff_seq", "peer_takeover"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, 16, PROTOCOL] as const;
 
@@ -58,6 +59,8 @@ export interface Hello {
   peer?: string;
   /** `peer` only: false when the session cannot show channel pushes; its queue then waits for `inbox` (issue #205). */
   channel?: boolean;
+  /** Closed, display-only evidence for Claude's channel attachment decision. */
+  channelEvidence?: "development-channel-launch" | "inherited-marker" | "launch-unverified" | "unknown" | "unreported";
   /** Managed Claude launch identity; absent for plain or pre-daemon sessions. */
   launchId?: string;
   /** Optional canonical native execution cwd; ownership requires independent host proof. */
@@ -70,6 +73,12 @@ export interface Hello {
   session?: string;
   /** Reclaim after replacement, never an intentional initial takeover. */
   standby?: boolean;
+  /** Opt in to a retained, person-selectable standby connection when another session owns this peer. */
+  retainStandby?: true;
+  /** Display-only process id, never native-session or authorization evidence. */
+  clientPid?: number;
+  /** #1385: the agent-hub version this client was built from. `connect` always sets it from `VERSION`; display only, never admission, compatibility or authorization evidence. */
+  clientVersion?: string;
   projectId?: string;
   instanceId?: string;
   projectRoot?: string;
@@ -117,14 +126,36 @@ const instancePins = new Map<string, { instanceId: string }>();
 /** Maximum supported 3600 s approval plus admission/transport margin; applies to every hub_invoke client path. */
 export const INVOCATION_CONTROL_TIMEOUT_MS = 3_665_000;
 export function controlRequestTimeout(msg: Record<string, unknown>, requested = 30_000): number {
+  if (msg.t === "task" && msg.op === "hub_ask" && requested !== 0) return Math.max(Number.isFinite(requested) ? requested : 0, QUESTION_CONTROL_TIMEOUT_MS);
+  if (msg.t === "task" && msg.op === "hub_task_handoff" && requested !== 0) return Math.max(Number.isFinite(requested) ? requested : 0, HANDOFF_CONTROL_TIMEOUT_MS);
   return msg.t === "task" && msg.op === "hub_invoke" && requested !== 0
     ? Math.max(Number.isFinite(requested) ? requested : 0, INVOCATION_CONTROL_TIMEOUT_MS) : requested;
 }
+/**
+ * #731 (agent-hub#1203): `hub_task_handoff` can legitimately take longer than the default 30 s, because the origin's own recovery runs inside it: a connect and a request to the target, the same
+ * again for the resend with the same key, then a connect and a request for the by-key lookup. The caller (the CLI and the MCP path alike) must outlast that, or it reports a generic timeout before
+ * `outcome_unknown` can name the key to retry with. The budgets are shared with `handoffOut`, so changing one moves the deadline with it.
+ */
+export const HANDOFF_CONNECT_MS = 5_000;
+export const HANDOFF_REQUEST_MS = 30_000;
+export const HANDOFF_LOOKUP_CONNECT_MS = 3_000;
+export const HANDOFF_LOOKUP_REQUEST_MS = 5_000;
+/** Two attempts, one by-key lookup, and a margin for the hello and the reply to travel back. */
+export const HANDOFF_CONTROL_TIMEOUT_MS = 2 * (HANDOFF_CONNECT_MS + HANDOFF_REQUEST_MS) + HANDOFF_LOOKUP_CONNECT_MS + HANDOFF_LOOKUP_REQUEST_MS + 12_000;
+/**
+ * #1053: `hub_ask` holds its request open for the daemon's bounded wait (at most `QUESTION_WAIT_MAX_MS`) plus a margin, so the client's own 30 s cap never turns a
+ * working wait into "no answer from the hub". The daemon, not this bound, decides when the wait ends.
+ */
+export const QUESTION_WAIT_MAX_MS = 600_000;
+export const QUESTION_CONTROL_TIMEOUT_MS = QUESTION_WAIT_MAX_MS + 15_000;
 
 
 /** One authenticated control connection. `request` correlates replies by `rid`; everything else goes to `onPush`. */
 export class ControlClient {
   features: readonly string[] = [];
+  /** A retained peer connection awaiting a person-requested takeover. */
+  standby = false;
+  standbyId?: string;
   /** The id the hub minted for a distinct session (agent-hub#1036); absent for every ordinary connection. */
   sessionId?: string;
   /** Selected wire version, checked against the welcome when that legacy-optional field is present. */
@@ -192,11 +223,17 @@ export class ControlClient {
         try { msg = JSON.parse(String(ev.data)); } catch { return refuse(new Error("invalid hub response")); }
         if (!msg || typeof msg !== "object" || Array.isArray(msg)) return refuse(new Error("invalid hub response"));
         const done = msg.rid !== undefined ? client.pending.get(msg.rid) : undefined;
-        if (!done) return client.onPush(msg);
+        if (!done) {
+          if (msg.t === "peer_attached" && msg.standbyId === client.standbyId) {
+            client.standby = false;
+            client.standbyId = undefined;
+          }
+          return client.onPush(msg);
+        }
         client.pending.delete(msg.rid);
         done(msg);
       };
-      ws.onopen = () => void client.request({ t: "hello", token: control.token, ...hello, ...expected, v: selected, vMin: remote?.vMin === undefined ? selected : Math.max(local.vMin, remote.vMin) }, timeoutMs).then((reply) => {
+      ws.onopen = () => void client.request({ t: "hello", token: control.token, ...hello, ...expected, clientVersion: VERSION, v: selected, vMin: remote?.vMin === undefined ? selected : Math.max(local.vMin, remote.vMin) }, timeoutMs).then((reply) => {
         if (reply.t !== "welcome" || reply.ok === false) return refuse(new Error(reply.error ?? "hub refused handshake"));
         if ((expected.projectId && reply.projectId !== expected.projectId) ||
             (expected.instanceId && reply.instanceId !== expected.instanceId) ||
@@ -208,6 +245,8 @@ export class ControlClient {
         client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature: unknown): feature is string => typeof feature === "string") : []);
         client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
         client.sessionId = typeof reply.session === "string" && reply.session.length <= 64 ? reply.session : undefined;
+        client.standby = reply.standby === true;
+        client.standbyId = client.standby && typeof reply.standbyId === "string" ? reply.standbyId : undefined;
         clearTimeout(timer);
         resolve(client);
       });
@@ -237,7 +276,7 @@ export class ControlClient {
 
   private requestBody(msg: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<any> {
     if (this.ws.readyState !== WebSocket.OPEN || this.closing && msg.t !== "request_cancel") return Promise.resolve({ ok: false, error: "hub connection is not open" });
-    const invocation = msg.t === "task" && msg.op === "hub_invoke";
+    const invocation = msg.t === "task" && (msg.op === "hub_invoke" || msg.op === "hub_ask");
     const operation = toolWriteOperation(msg), write = operation !== undefined;
     const keyedWrite = write && operation !== "hub_delivery_done";
     if (keyedWrite && msg.args && typeof msg.args === "object" && !Array.isArray(msg.args) && Object.hasOwn(msg.args, "request_id")) {
@@ -273,7 +312,7 @@ export class ControlClient {
         if (invocation && this.ws.readyState === WebSocket.OPEN) {
           try { this.ws.send(JSON.stringify({ t: "request_cancel", request: rid })); } catch { /* Socket close also withdraws admission. */ }
         }
-        done(write ? uncertain(error) : { ok: false, error: invocation ? `${error}; invocation admission unconfirmed, inspect before retrying` : error });
+        done(write ? uncertain(error) : { ok: false, error: invocation ? `${error}; ${msg.op === "hub_ask" ? "the question may still be open: it is answered later as a message of kind answer, or never" : "invocation admission unconfirmed, inspect before retrying"}` : error });
       };
       const aborted = () => abandon("hub request cancelled");
       this.pending.set(rid, done);

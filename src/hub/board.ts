@@ -1,6 +1,10 @@
+import { GUIDANCE_VARIANT_LIMITS, GUIDANCE_PAGE_MAX_RECORDS, GUIDANCE_HASH_HEX_LENGTH, parseGuidanceVariantV1, parseGuidanceExperiment, parseGuidanceStoredRecord, validateGuidanceVariantV1, type GuidanceVariantV1, type GuidanceExperimentRecord, type GuidanceStoredRecord, type GuidanceWriteFence } from "./guidance-variants.ts";
+import { ExecutionLinkError, EXECUTION_LINK_LIMITS, executionLinkActor, executionLinkInteger, executionLinkId, executionLinkReferences, executionReferenceDigest, parseExecutionLinkInput, parseExecutionLinkRecord, type ExecutionLinkInput, type ExecutionLinkRecord, type ExecutionLinkFence } from "./execution-links.ts";
+import { executionReferenceKey, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt, type AttemptReceiptV1 } from "./research-runner.ts";
 import { canonicalJson } from "./packs.ts";
 import { parseEvidenceLink, evidenceLinkCanonical, MAX_EVIDENCE_RECORD_BYTES, type EvidenceLinkV1 } from "./research-evidence.ts";
+import { parseStoredReviewComment, reviewCommentIds, emptyReviewCommentCounts, REVIEW_COMMENT_LIMIT, type ReviewCommentRecord, type ReviewCommentFence, type ReviewCommentCounts, type ReviewCommentPackage, type ReviewCommentPackageView } from "./review-comments.ts";
 import { parseComparisonPlan, comparisonPlanHash, evaluatorIdentityHash, parseExperimentProtocol, protocolHash, parseExperimentAttempt, parseExperimentEvent, parseExperimentHostEvidence, experimentStatus, projectExperimentWithObservations, declaredExperimentEvents,
   type ComparisonPlanV1, type ExperimentProtocolRecord, type ExperimentAttemptRecord, type ExperimentEventRecord, type ExperimentWriteFence, type DeclaredExperimentEventInput, type ExperimentHostEvidence, type ExperimentStatus } from "./research-experiments.ts";
 import type { InvocationRow } from "./invocations.ts";
@@ -15,14 +19,30 @@ import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
+import type { AuditFinding, AuditProfile, AuditUnit } from "./security-audit.ts";
+import type { ReviewFinding } from "./review-findings.ts";
 import type { SweepRecord } from "./task-sweep.ts";
-import type { SdlcReceipt } from "./sdlc.ts";
+import type { SpecAcceptance, SdlcReceipt } from "./sdlc.ts";
 import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
+import { storedSecurityPass, type SecurityPassRecord } from "./security-pass.ts";
 import { parseDeliverableRecords, type DeliverableRecord } from "./deliverables.ts";
 import type { CostPlan, ReviewCost } from "./cost-governance.ts";
 import type { SpecRef, SpecTaskReport } from "./specs-task.ts";
 export type { SpecAck, SpecRef, SpecTaskReport } from "./specs-task.ts";
 import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
+
+const GUIDANCE_VARIANT_SELECT = `SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN id END AS id,CASE WHEN typeof(body)='text' AND length(CAST(body AS BLOB))<=? THEN body END AS body,
+      CASE WHEN typeof(body_sha256)='text' AND length(CAST(body_sha256 AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN body_sha256 END AS body_sha256,
+      CASE WHEN typeof(created_by)='text' AND length(CAST(created_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN created_by END AS created_by,CASE WHEN typeof(created_at)='integer' THEN created_at END AS created_at,
+      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN withdrawn_by END AS withdrawn_by,CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN withdrawn_at END AS withdrawn_at,
+      CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN 1 ELSE 0 END AS valid_withdrawn_at,
+      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN 1 ELSE 0 END AS valid_withdrawn_by`;
+
+/** Internal host capability; never accepted from a control or tool argument. */
+export const HOST_MERGE_ADOPTION = Symbol("host merge adoption");
+/** Internal publication capability, independent of the person-only acceptance API. */
+export const HOST_SPEC_ACCEPTANCE_CARRY = Symbol("host spec acceptance carry");
+export interface SpecAcceptanceCommit { source: number; cancellationRevision: number; acceptance: SpecAcceptance; }
 
 export interface ResearchCampaignRecord {
   id: string;
@@ -93,6 +113,17 @@ function researchCampaignFromRow(row: ResearchCampaignRow): ResearchCampaignReco
   } catch { throw researchFailure(); }
 }
 
+const EXECUTION_REFERENCE_SELECT = `SELECT
+  CASE WHEN length(CAST(id AS BLOB))=64 THEN id END AS id,
+  CASE WHEN length(CAST(project_id AS BLOB)) BETWEEN 1 AND 256 THEN project_id END AS project_id,
+  task_id,task_created,
+  CASE WHEN length(CAST(from_json AS BLOB))<=${EXECUTION_LINK_LIMITS.referenceBytes} THEN from_json END AS from_json,
+  CASE WHEN length(CAST(from_sha256 AS BLOB))=64 THEN from_sha256 END AS from_sha256,
+  CASE WHEN length(CAST(reference_json AS BLOB))<=${EXECUTION_LINK_LIMITS.referenceBytes} THEN reference_json END AS reference_json,
+  CASE WHEN length(CAST(reference_sha256 AS BLOB))=64 THEN reference_sha256 END AS reference_sha256,
+  CASE WHEN length(CAST(recorded_by AS BLOB)) BETWEEN 1 AND ${EXECUTION_LINK_LIMITS.actor} THEN recorded_by END AS recorded_by,
+  recorded_at FROM execution_reference_links`;
+
 export interface ExperimentComparisonPlanRecord {
   hash: string;
   project: string;
@@ -132,11 +163,24 @@ const experimentPage = (after: number, limit: number): void => {
 
 export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] as const;
 export type TaskClass = (typeof CLASSES)[number];
+/** #1403 A4: one security audit as stored. `units` is the ledger; it changes only through `Board.auditReport`. */
+export interface StoredAudit { id: number; task: number; taskCreated: number; ref: string; since?: string; profile: AuditProfile; scoped: boolean; at: number; by: string; units: AuditUnit[] }
 export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "approved" | "changes_requested" | "cancelled";
 
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
 export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number; pullOnly?: boolean }
 export interface TaskCancellation { reason: string; supersededBy?: string; flowRevision: number; withheld?: true }
+/** Metadata only: source task text, plans and growing histories never enter a carry lookup. */
+export interface SpecAcceptanceCandidate {
+  id: number; created: number; state: "cancelled"; refs: TaskRefs; signals: string[];
+  supersededBy: string; cancellationRevision: number; withheld: boolean;
+  repo: unknown; issue: unknown; acceptance: unknown;
+}
+// ponytail: one 32-source snapshot; larger sets need a bounded paginated lookup with a shared currentness proof.
+const SPEC_ACCEPTANCE_SOURCE_LIMIT = 32;
+const SPEC_ACCEPTANCE_FIELD_BYTES = 64 * 1024;
+const SPEC_ACCEPTANCE_TOTAL_BYTES = 256 * 1024;
+
 export const TASK_STALL_CODES = ["tests", "spec", "network", "worktree", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "no-writes", "queue-count", "queue-age", "queue-age-unknown"] as const;
 export type TaskStallCode = (typeof TASK_STALL_CODES)[number];
 export interface TaskStall { task: number; signature: string; replanRevision: number; cause: { kind: "reservation" | "no-eligible-peer" | "cancelled-dependency" | "no-writes"; peer?: string; dependency?: number; code: TaskStallCode; turns?: number; acceptance?: number; refusals?: { peer: string; code: TaskStallCode }[] }; at: number }
@@ -237,6 +281,8 @@ export interface HistoryEntry {
   deliverables?: DeliverableRecord[];
   /** #507b: the recorded acceptance criteria (S8 checklist ids) a verdict's unmet items named; derived by the hub from the checklist, never free text. */
   unmetCriteria?: string[];
+  /** #1403 A2: the security pass an approving verdict recorded (units covered and not covered, bound to the reviewed head). Enabled lifecycle only. */
+  securityPass?: SecurityPassRecord;
   /** Host-authored plan content revision, separate from backlog planningRevision. */
   planRevision?: { revision: number; fingerprint: string };
   planObservation?: { repo: string; pr: number; head: string; revision: number; fingerprint: string };
@@ -250,6 +296,7 @@ export interface HistoryEntry {
   /** Opaque artifact identity captured by the host at the queue-held role write. */
   queueReviewBinding?: string;
   reviewerFailure?: { peer: string; head?: string; cause: "start_failed" | "quota" | "no_verdict" };
+  resolvedReviewComments?: string[];
   planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
 }
 /** #901: one person verdict on a plan claim, with the model label the person says produced the claim. All closed or bounded; nothing here is claim text. */
@@ -329,9 +376,12 @@ function plannerMetadata(planner: unknown, reason?: PlannerReason): Pick<History
   return { planner: plannerValue(planner), ...(reason === undefined ? {} : { plannerReason: reason }) };
 }
 /** #604: what this project handed to another project, and the last state that project reported (agent-hub#1030 design 4). */
-export interface HandoffOutboundRow { remoteProject: string; remoteTask: number; originPeer: string; localTask: number | null; title: string; state: string; pr: number | null; head: string | null; updatedAt: number }
+export interface HandoffOutboundRow { remoteProject: string; remoteTask: number; originPeer: string; localTask: number | null; title: string; state: string; pr: number | null; head: string | null; updatedAt: number;
+  /** #733: the target task's flow revision at the last event applied; null for a row from before sequences or from a target that sends none. */
+  seq: number | null }
+const OUTBOUND_COLUMNS = "remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at, seq";
 const handoffOutboundFromRow = (row: Record<string, unknown>): HandoffOutboundRow => ({ remoteProject: String(row.remote_project), remoteTask: Number(row.remote_task), originPeer: String(row.origin_peer),
-  localTask: row.local_task === null ? null : Number(row.local_task), title: String(row.title), state: String(row.last_state), pr: row.pr === null ? null : Number(row.pr), head: row.head === null ? null : String(row.head), updatedAt: Number(row.updated_at) });
+  localTask: row.local_task === null ? null : Number(row.local_task), title: String(row.title), state: String(row.last_state), pr: row.pr === null ? null : Number(row.pr), head: row.head === null ? null : String(row.head), updatedAt: Number(row.updated_at), seq: row.seq === null || row.seq === undefined ? null : Number(row.seq) });
 
 export interface Task extends PlanningFields {
   offer?: TaskOffer;
@@ -364,6 +414,8 @@ export interface Task extends PlanningFields {
   deps?: number[];
   /** Who routing offers the task first once nothing is left to wait for (issue #207); null when nobody was named. */
   reserved?: PeerId | null;
+  /** #1176: only the person can run this leg. Present (true) only when set; no agent is ever offered it, and it counts toward no planner's WIP. */
+  needsPerson?: true;
   signals: string[];
   /** consecutive changes_requested verdicts */
   rejections: number;
@@ -416,6 +468,8 @@ const TASK_SELECT = "SELECT tasks.*, (SELECT CASE WHEN length(CAST(payload AS BL
 /** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `ahub kill` leaves the file. */
 export class Board {
   private readonly db: Database;
+  private reviewObserverCacheStamp = "";
+  private readonly reviewObserverScopeCache = new Map<string, boolean>();
   private pendingChanges: { task: Task; entry: HistoryEntry }[] | undefined;
   /** Every recorded change, as it lands (telemetry, issue #40). */
   onChange?: (task: Task, entry: HistoryEntry) => void;
@@ -503,6 +557,8 @@ export class Board {
       if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN "${col}" INTEGER`);
     }
     if (!have.has("pinned")) this.db.run("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    // #1176: additive, like `pinned`; an older hub ignores the column.
+    if (!have.has("needs_person")) this.db.run("ALTER TABLE tasks ADD COLUMN needs_person INTEGER NOT NULL DEFAULT 0");
     if (!have.has("draft")) this.db.run("ALTER TABLE tasks ADD COLUMN draft INTEGER NOT NULL DEFAULT 0");
     if (!have.has("planning_revision")) this.db.run("ALTER TABLE tasks ADD COLUMN planning_revision INTEGER NOT NULL DEFAULT 0");
     this.db.run(`CREATE TABLE IF NOT EXISTS releases (
@@ -533,8 +589,14 @@ export class Board {
     // is the ORIGIN's record of what it handed to another project and the last state that project reported. Both are additive: a daemon without `task_handoff` never reads them, so a target
     // lacking the feature is refused at recovery while either holds a row.
     this.db.run("CREATE TABLE IF NOT EXISTS task_handoff_origin (task_id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, peer TEXT NOT NULL, origin_task INTEGER, at INTEGER NOT NULL)");
+    // #731 (agent-hub#1203): the origin's idempotency key and a digest of what it asked for. A key is unique per origin project, so a replay can never file a second task. Rows from before keep NULL.
+    for (const [column, type] of [["handoff_key", "TEXT"], ["request_digest", "TEXT"]] as const)
+      if (!(this.db.query("PRAGMA table_info(task_handoff_origin)").all() as { name: string }[]).some(c => c.name === column)) this.db.run(`ALTER TABLE task_handoff_origin ADD COLUMN ${column} ${type}`);
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS task_handoff_origin_key ON task_handoff_origin(project_id, handoff_key) WHERE handoff_key IS NOT NULL");
     this.db.run(`CREATE TABLE IF NOT EXISTS task_handoff_outbound (remote_project TEXT NOT NULL, remote_task INTEGER NOT NULL, origin_peer TEXT NOT NULL, local_task INTEGER,
       title TEXT NOT NULL, last_state TEXT NOT NULL, pr INTEGER, head TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(remote_project, remote_task))`);
+    // #733: the sequence of the last applied event, so an event that arrives late cannot move a row backwards. Rows from before keep NULL and accept any event.
+    if (!(this.db.query("PRAGMA table_info(task_handoff_outbound)").all() as { name: string }[]).some(c => c.name === "seq")) this.db.run("ALTER TABLE task_handoff_outbound ADD COLUMN seq INTEGER");
     this.db.run(`CREATE TABLE IF NOT EXISTS research_handoffs (
       campaign_id TEXT NOT NULL, unit_id TEXT NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL,
       task_id INTEGER NOT NULL, body TEXT NOT NULL, by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL,
@@ -542,6 +604,35 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS research_evidence_links (
       project TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, task_id INTEGER NOT NULL,
       body TEXT NOT NULL, body_sha256 TEXT NOT NULL, PRIMARY KEY(project,id,revision))`);
+    // Private snapshots stay outside Task and every SELECT * task reader.
+    this.db.run(`CREATE TABLE IF NOT EXISTS guidance_experiments (
+      project_id TEXT NOT NULL,task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,experiment_id TEXT NOT NULL,baseline_json TEXT NOT NULL,
+      PRIMARY KEY(project_id,task_id,task_created,experiment_id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS guidance_variants (
+      project_id TEXT NOT NULL,task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,experiment_id TEXT NOT NULL,id TEXT NOT NULL,
+      body TEXT NOT NULL,body_sha256 TEXT NOT NULL,created_by TEXT NOT NULL,created_at INTEGER NOT NULL,withdrawn_by TEXT,withdrawn_at INTEGER,
+      PRIMARY KEY(project_id,task_id,task_created,experiment_id,id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS execution_reference_links (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_id INTEGER NOT NULL, task_created INTEGER NOT NULL,
+      from_json TEXT NOT NULL, from_sha256 TEXT NOT NULL, reference_json TEXT NOT NULL, reference_sha256 TEXT NOT NULL,
+      recorded_by TEXT NOT NULL, recorded_at INTEGER NOT NULL,
+      UNIQUE(project_id,task_id,task_created,from_sha256,reference_sha256))`);
+    this.db.run("CREATE INDEX IF NOT EXISTS execution_reference_task_scope ON execution_reference_links(project_id,task_id,task_created,id)");
+    this.db.run("CREATE INDEX IF NOT EXISTS guidance_variant_task_id ON guidance_variants(project_id,task_id,task_created,id)");
+    // #1403 A4: the security audit coverage ledger. Private local state like the guidance tables: only Tasks writes it (through the methods below), and no column is copied into a Task, a history entry or a public view.
+    this.db.run(`CREATE TABLE IF NOT EXISTS security_audits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, task_created INTEGER NOT NULL, ref TEXT NOT NULL, since TEXT, profile TEXT NOT NULL,
+      scoped INTEGER NOT NULL, at INTEGER NOT NULL, by_peer TEXT NOT NULL, units TEXT NOT NULL, UNIQUE(task_id,task_created))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS security_audit_findings (
+      audit INTEGER NOT NULL, seq INTEGER NOT NULL, finding_id TEXT NOT NULL, body TEXT NOT NULL, found_by TEXT NOT NULL, at INTEGER NOT NULL,
+      verified_by TEXT, rejected_by TEXT, PRIMARY KEY(audit,seq), UNIQUE(audit,finding_id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS review_comments (
+      task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,lifecycle TEXT NOT NULL,revision INTEGER NOT NULL,
+      PRIMARY KEY(task_id,task_created,id))`);
+    this.db.run("CREATE INDEX IF NOT EXISTS review_comments_sent ON review_comments(task_id,task_created,id) WHERE lifecycle='sent'");
+    this.db.run(`CREATE TABLE IF NOT EXISTS review_comment_packages (
+      id TEXT PRIMARY KEY,task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,body TEXT NOT NULL)`);
+    this.db.run("CREATE INDEX IF NOT EXISTS review_comment_packages_owner ON review_comment_packages(CASE WHEN json_valid(body)=1 THEN json_extract(body,'$.owner') END,task_id,task_created)");
     this.db.run(`CREATE TABLE IF NOT EXISTS research_protocols (
       hash TEXT PRIMARY KEY, project TEXT NOT NULL, campaign_id TEXT NOT NULL, campaign_revision INTEGER NOT NULL, task_id INTEGER NOT NULL, body TEXT NOT NULL,
       by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL)`);
@@ -588,26 +679,72 @@ export class Board {
     this.db.query("INSERT INTO task_handoff_origin(task_id, project_id, peer, origin_task, at) VALUES(?,?,?,?,?) ON CONFLICT(task_id) DO NOTHING").run(taskId, origin.projectId, origin.peer, origin.originTask ?? null, Date.now());
   }
 
-  /** ORIGIN side: what this project handed to another one. Keyed by the target project and its task id, so a repeated event updates one row. */
+  /**
+   * #731: the task a handoff key already made for this origin project, with the digest of the request that made it, or undefined. A read: a replayed key is answered from here.
+   */
+  handoffOriginByKey(projectId: string, key: string): { taskId: number; digest: string | null } | undefined {
+    const row = this.db.query("SELECT task_id, request_digest FROM task_handoff_origin WHERE project_id=? AND handoff_key=?").get(projectId, key) as { task_id: number; request_digest: string | null } | null;
+    return row ? { taskId: row.task_id, digest: row.request_digest } : undefined;
+  }
+  /**
+   * #731 (H9): the proposal and its origin row in ONE transaction, so a crash or a failure between them can never leave a task with no origin (which the origin could then never be told about),
+   * and a replayed key answers with the task it already made instead of filing a second one. The unique index is the last guard: even two writers of one key cannot both commit.
+   * Observers (`onChange`) run after the commit, as for every other multi-row write.
+   */
+  proposeHandoff(by: PeerId, t: Parameters<Board["propose"]>[1], origin: { projectId: string; peer: string; originTask?: number; key?: string; digest?: string }): { task: Task; replayed: boolean } {
+    return this.atomic(() => {
+      if (origin.key !== undefined) {
+        const existing = this.handoffOriginByKey(origin.projectId, origin.key);
+        if (existing) { const task = this.get(existing.taskId); if (task) return { task, replayed: true }; }
+      }
+      const task = this.propose(by, t);
+      this.db.query("INSERT INTO task_handoff_origin(task_id, project_id, peer, origin_task, at, handoff_key, request_digest) VALUES(?,?,?,?,?,?,?)")
+        .run(task.id, origin.projectId, origin.peer, origin.originTask ?? null, Date.now(), origin.key ?? null, origin.digest ?? null);
+      return { task, replayed: false };
+    });
+  }
+
+  /**
+   * ORIGIN side: what this project handed to another one, newest first, for the person's list (`ahub board --handoffs`). Keyed by the target project and its task id, so a repeated event updates
+   * one row. Capped for display only: the catch-up never reads this (`handoffOutboundOpen`), so a row the list does not show is still caught up (#733).
+   */
   handoffOutbound(): HandoffOutboundRow[] {
-    return (this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound ORDER BY updated_at DESC, remote_project, remote_task LIMIT 200").all() as Record<string, unknown>[]).map(handoffOutboundFromRow);
+    return (this.db.query(`SELECT ${OUTBOUND_COLUMNS} FROM task_handoff_outbound ORDER BY updated_at DESC, remote_project, remote_task LIMIT 200`).all() as Record<string, unknown>[]).map(handoffOutboundFromRow);
+  }
+  /** #733 (H5): every row the catch-up still asks about, no cap, oldest first so a long backlog is worked through in the same order every pass. The caller filters with `handoffCatchUpRow`. */
+  handoffOutboundOpen(): HandoffOutboundRow[] {
+    return (this.db.query(`SELECT ${OUTBOUND_COLUMNS} FROM task_handoff_outbound WHERE last_state != 'cancelled' ORDER BY updated_at, remote_project, remote_task`).all() as Record<string, unknown>[]).map(handoffOutboundFromRow);
   }
   handoffOutboundFor(remoteProject: string, remoteTask: number): HandoffOutboundRow | undefined {
-    const row = this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound WHERE remote_project=? AND remote_task=?").get(remoteProject, remoteTask) as Record<string, unknown> | null;
+    const row = this.db.query(`SELECT ${OUTBOUND_COLUMNS} FROM task_handoff_outbound WHERE remote_project=? AND remote_task=?`).get(remoteProject, remoteTask) as Record<string, unknown> | null;
     return row ? handoffOutboundFromRow(row) : undefined;
   }
-  recordHandoffOutbound(row: { remoteProject: string; remoteTask: number; originPeer: string; localTask?: number; title: string; state: string; pr?: number; head?: string }): void {
-    this.db.query(`INSERT INTO task_handoff_outbound(remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at) VALUES(?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(remote_project, remote_task) DO UPDATE SET last_state=excluded.last_state, pr=COALESCE(excluded.pr, pr), head=COALESCE(excluded.head, head), updated_at=excluded.updated_at`)
-      .run(row.remoteProject, row.remoteTask, row.originPeer, row.localTask ?? null, row.title, row.state, row.pr ?? null, row.head ?? null, Date.now());
+  /**
+   * Record a state. With a `seq` the write applies only when it is newer than the stored one (#733 H4: events use a connection each and can arrive out of order), decided inside the one statement so
+   * two events cannot both pass a check made before either wrote. Returns whether the row changed. An event with no `seq` (an older target, or the origin's own first write) behaves as before:
+   * it applies, and keeps the highest `seq` already stored.
+   */
+  recordHandoffOutbound(row: { remoteProject: string; remoteTask: number; originPeer: string; localTask?: number; title: string; state: string; pr?: number; head?: string; seq?: number }): { applied: boolean } {
+    const result = this.db.query(`INSERT INTO task_handoff_outbound(remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at, seq) VALUES(?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(remote_project, remote_task) DO UPDATE SET last_state=excluded.last_state, pr=COALESCE(excluded.pr, pr), head=COALESCE(excluded.head, head), updated_at=excluded.updated_at, seq=COALESCE(MAX(excluded.seq, seq), excluded.seq, seq)
+      WHERE excluded.seq IS NULL OR seq IS NULL OR excluded.seq > seq`)
+      .run(row.remoteProject, row.remoteTask, row.originPeer, row.localTask ?? null, row.title, row.state, row.pr ?? null, row.head ?? null, Date.now(), row.seq ?? null);
+    return { applied: result.changes > 0 };
   }
   /** A digest over both tables, so a recovery that restores or loses a row is seen. */
   handoffIntegrity(): { origins: number; outbound: number; digest: string } {
     return this.db.transaction(() => {
       const digest = createHash("sha256").update("agent-hub.handoff-integrity/v1\n");
       let origins = 0, outbound = 0;
-      for (const row of this.db.query("SELECT task_id, project_id, peer, origin_task, at FROM task_handoff_origin ORDER BY task_id").iterate()) { digest.update(JSON.stringify(row)).update("\n"); origins++; }
-      for (const row of this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound ORDER BY remote_project, remote_task").iterate()) { digest.update(JSON.stringify(row)).update("\n"); outbound++; }
+      for (const row of this.db.query("SELECT task_id, project_id, peer, origin_task, at, handoff_key, request_digest FROM task_handoff_origin ORDER BY task_id").iterate() as Iterable<Record<string, unknown>>) {
+        // A row from before handoff keys has no key columns in its digest, so an upgrade does not change what a recovery compares (#731).
+        if (row.handoff_key === null) { delete row.handoff_key; delete row.request_digest; }
+        digest.update(JSON.stringify(row)).update("\n"); origins++;
+      }
+      for (const row of this.db.query(`SELECT ${OUTBOUND_COLUMNS} FROM task_handoff_outbound ORDER BY remote_project, remote_task`).iterate() as Iterable<Record<string, unknown>>) {
+        if (row.seq === null) delete row.seq;   // a row from before sequences keeps its digest (#733)
+        digest.update(JSON.stringify(row)).update("\n"); outbound++;
+      }
       return { origins, outbound, digest: digest.digest("hex") };
     })();
   }
@@ -977,6 +1114,277 @@ export class Board {
     });
   }
 
+  /** Fixed experiment scope; SQL bounds JSON before it reaches JavaScript. No caller may widen a page. */
+  guidanceExperiment(projectKey: string, taskId: number, taskCreated: number, experimentId: string): GuidanceExperimentRecord | undefined {
+    const row = this.db.query(`SELECT CASE WHEN typeof(baseline_json)='text' AND length(CAST(baseline_json AS BLOB))<=? THEN baseline_json END AS baseline
+      FROM guidance_experiments WHERE project_id=? AND task_id=? AND task_created=? AND experiment_id=?`)
+      .get(GUIDANCE_VARIANT_LIMITS.recordBytes, projectKey, taskId, taskCreated, experimentId) as { baseline: unknown } | null;
+    if (!row) return undefined;
+    if (typeof row.baseline !== "string") throw new Error("guidance experiment storage is invalid");
+    const record = parseGuidanceExperiment({ projectKey, taskId, taskCreated, experimentId, baseline: JSON.parse(row.baseline) });
+    if (JSON.stringify(record.baseline) !== row.baseline) throw new Error("guidance experiment storage is not canonical");
+    return record;
+  }
+  guidanceVariants(projectKey: string, taskId: number, taskCreated: number, experimentId: string): GuidanceStoredRecord[] {
+    const experiment = this.guidanceExperiment(projectKey, taskId, taskCreated, experimentId);
+    const rows = this.db.query(`${GUIDANCE_VARIANT_SELECT} FROM guidance_variants
+      WHERE project_id=? AND task_id=? AND task_created=? AND experiment_id=? ORDER BY guidance_variants.id LIMIT ?`)
+      .all(GUIDANCE_VARIANT_LIMITS.recordBytes, projectKey, taskId, taskCreated, experimentId, GUIDANCE_VARIANT_LIMITS.variants + 1) as Record<string, unknown>[];
+    if (rows.length > GUIDANCE_VARIANT_LIMITS.variants || rows.length && !experiment) throw new Error("guidance variant storage is invalid");
+    return rows.map(row => this.guidanceVariantRow(row, experiment!));
+  }
+  private guidanceVariantRow(row: Record<string, unknown>, experiment: GuidanceExperimentRecord): GuidanceStoredRecord {
+      if (row.valid_withdrawn_by !== 1 || row.valid_withdrawn_at !== 1 || typeof row.body !== "string" || createHash("sha256").update(row.body).digest("hex") !== row.body_sha256
+        || (row.withdrawn_by === null) !== (row.withdrawn_at === null)) throw new Error("guidance variant storage is invalid");
+      const record = parseGuidanceStoredRecord({ variant: JSON.parse(row.body), createdBy: row.created_by, createdAt: row.created_at,
+        ...(row.withdrawn_by === null ? {} : { withdrawn: { by: row.withdrawn_by, at: row.withdrawn_at } }) });
+      const value = record.variant;
+      if (JSON.stringify(value) !== row.body || value.id !== row.id || value.projectKey !== experiment.projectKey || value.taskId !== experiment.taskId
+        || value.taskCreated !== experiment.taskCreated || value.experimentId !== experiment.experimentId
+        || JSON.stringify(value.baseline) !== JSON.stringify(experiment.baseline)) throw new Error("guidance variant binding is invalid");
+      return record;
+  }
+  /** After Tasks admission only. The raw experiment id is never part of the public selector. */
+  guidanceVariantLocation(projectKey: string, taskId: number, taskCreated: number, id: string): string | undefined {
+    const rows = this.db.query(`SELECT CASE WHEN typeof(experiment_id)='text' AND length(CAST(experiment_id AS BLOB))<=? THEN experiment_id END AS experiment_id
+      FROM guidance_variants INDEXED BY guidance_variant_task_id WHERE project_id=? AND task_id=? AND task_created=? AND id=? LIMIT 2`)
+      .all(EXECUTION_REFERENCE_LIMITS.id, projectKey, taskId, taskCreated, id) as { experiment_id: unknown }[];
+    if (rows.length > 1 || rows.some(row => typeof row.experiment_id !== "string")) throw new Error("guidance variant selection is ambiguous or unavailable");
+    return rows[0]?.experiment_id as string | undefined;
+  }
+  /** One fixed keyset page: no OFFSET, task history, experiment-count cap or unbounded payload scan. */
+  guidanceVariantPage(projectKey: string, taskId: number, taskCreated: number, after = ""): GuidanceStoredRecord[] {
+    const rows = this.db.query(`${GUIDANCE_VARIANT_SELECT},CASE WHEN typeof(experiment_id)='text' AND length(CAST(experiment_id AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN experiment_id END AS experiment_id
+      FROM guidance_variants INDEXED BY guidance_variant_task_id WHERE project_id=? AND task_id=? AND task_created=? AND guidance_variants.id>? ORDER BY guidance_variants.id LIMIT ?`)
+      .all(GUIDANCE_VARIANT_LIMITS.recordBytes, projectKey, taskId, taskCreated, after, GUIDANCE_PAGE_MAX_RECORDS + 1) as Record<string, unknown>[];
+    if (new Set(rows.map(row => row.id)).size !== rows.length) throw new Error("guidance variant selection is ambiguous");
+    const experiments = new Map<string, GuidanceExperimentRecord>();
+    return rows.map(row => {
+      if (typeof row.experiment_id !== "string") throw new Error("guidance experiment scope is invalid");
+      let experiment = experiments.get(row.experiment_id);
+      if (!experiment) {
+        experiment = this.guidanceExperiment(projectKey, taskId, taskCreated, row.experiment_id);
+        if (!experiment) throw new Error("guidance experiment is unavailable");
+        experiments.set(row.experiment_id, experiment);
+      }
+      return this.guidanceVariantRow(row, experiment);
+    });
+  }
+
+  private guidanceWriteTask(fence: GuidanceWriteFence): Task {
+    const task = this.get(fence.taskId);
+    if (!executionLinkActor(fence.by) || !executionLinkInteger(fence.at) || !task || task.created !== fence.taskCreated
+      || task.history.length !== fence.flowRevision || task.owner !== fence.owner || task.state !== fence.state || task.role !== fence.roleId
+      || task.state === "approved" || task.state === "cancelled" || fence.by !== USER && (task.owner !== fence.by || task.state === "in_review")
+      || task.signals.includes("pii") || task.signals.includes("pii_path")) throw new Error("guidance task binding changed");
+    return task;
+  }
+  /** Tasks alone supplies current runtime/privacy/catalog authority; persisted facts are checked again inside this transaction. */
+  recordGuidanceVariant(value: GuidanceVariantV1, fence: GuidanceWriteFence): { record: GuidanceStoredRecord; already: boolean } {
+    const variant = parseGuidanceVariantV1(value);
+    return this.atomic(() => {
+      this.guidanceWriteTask(fence);
+      if (variant.author !== fence.by || variant.taskId !== fence.taskId || variant.taskCreated !== fence.taskCreated
+        || variant.flowRevision !== fence.flowRevision || variant.baseline.roleId !== fence.roleId) throw new Error("guidance task binding changed");
+      const original = this.guidanceExperiment(variant.projectKey, variant.taskId, variant.taskCreated, variant.experimentId);
+      const records = this.guidanceVariants(variant.projectKey, variant.taskId, variant.taskCreated, variant.experimentId);
+      validateGuidanceVariantV1(variant, { projectKey: variant.projectKey, taskId: variant.taskId, taskCreated: variant.taskCreated,
+        experimentId: variant.experimentId, flowRevision: fence.flowRevision, actor: fence.by, baseline: original?.baseline ?? variant.baseline,
+        currentBaseline: { id: variant.baseline.roleId, layer: variant.baseline.layer, hash: variant.baseline.sha256 }, variantIds: records.map(item => item.variant.id) });
+      const known = records.find(item => item.variant.id === variant.id);
+      if (known) {
+        if (JSON.stringify(known.variant) !== JSON.stringify(variant)) throw new Error("guidance variant id has changed content");
+        return { record: known, already: true };
+      }
+      const body = JSON.stringify(variant), stored = parseGuidanceStoredRecord({ variant, createdBy: fence.by, createdAt: fence.at });
+      if (!original) this.taskWrite(() => this.db.query("INSERT INTO guidance_experiments(project_id,task_id,task_created,experiment_id,baseline_json) VALUES(?,?,?,?,?)")
+        .run(variant.projectKey, variant.taskId, variant.taskCreated, variant.experimentId, JSON.stringify(variant.baseline)));
+      this.taskWrite(() => this.db.query(`INSERT INTO guidance_variants(project_id,task_id,task_created,experiment_id,id,body,body_sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(variant.projectKey, variant.taskId, variant.taskCreated, variant.experimentId, variant.id, body, createHash("sha256").update(body).digest("hex"), fence.by, fence.at));
+      return { record: stored, already: false };
+    });
+  }
+  withdrawGuidanceVariant(projectKey: string, experimentId: string, id: string, fence: GuidanceWriteFence): { record: GuidanceStoredRecord; already: boolean } {
+    return this.atomic(() => {
+      this.guidanceWriteTask(fence);
+      const record = this.guidanceVariants(projectKey, fence.taskId, fence.taskCreated, experimentId).find(item => item.variant.id === id);
+      if (!record) throw new Error("guidance variant is unavailable");
+      if (record.withdrawn) return { record, already: true };
+      const next = parseGuidanceStoredRecord({ ...record, withdrawn: { by: fence.by, at: fence.at } });
+      const result = this.taskWrite(() => this.db.query(`UPDATE guidance_variants SET withdrawn_by=?,withdrawn_at=?
+        WHERE project_id=? AND task_id=? AND task_created=? AND experiment_id=? AND id=? AND withdrawn_by IS NULL AND withdrawn_at IS NULL`)
+        .run(fence.by, fence.at, projectKey, fence.taskId, fence.taskCreated, experimentId, id));
+      if (result.changes !== 1) throw new Error("guidance withdrawal binding changed");
+      return { record: next, already: false };
+    });
+  }
+  /** #1403 A4: a new audit with its seeded ledger, in one transaction. Only `Tasks.auditStart` calls this. */
+  auditCreate(row: { task: number; taskCreated: number; ref: string; since?: string; profile: string; scoped: boolean; by: string; at: number; units: readonly AuditUnit[] }): number {
+    return this.atomic(() => {
+      const result = this.db.query("INSERT INTO security_audits(task_id,task_created,ref,since,profile,scoped,at,by_peer,units) VALUES(?,?,?,?,?,?,?,?,?)")
+        .run(row.task, row.taskCreated, row.ref, row.since ?? null, row.profile, row.scoped ? 1 : 0, row.at, row.by, JSON.stringify(row.units));
+      return Number(result.lastInsertRowid);
+    });
+  }
+  private auditRow(row: { id: number; task_id: number; task_created: number; ref: string; since: string | null; profile: string; scoped: number; at: number; by_peer: string; units: string } | null): StoredAudit | undefined {
+    if (!row) return undefined;
+    const units = JSON.parse(row.units) as AuditUnit[];
+    if (!Array.isArray(units)) throw new Error("security audit storage is invalid");
+    return { id: row.id, task: row.task_id, taskCreated: row.task_created, ref: row.ref, ...(row.since ? { since: row.since } : {}), profile: row.profile as AuditProfile, scoped: row.scoped === 1, at: row.at, by: row.by_peer, units };
+  }
+  audit(id: number): StoredAudit | undefined {
+    return this.auditRow(this.db.query("SELECT * FROM security_audits WHERE id=?").get(id) as never);
+  }
+  auditOfTask(task: number, taskCreated: number): StoredAudit | undefined {
+    return this.auditRow(this.db.query("SELECT * FROM security_audits WHERE task_id=? AND task_created=?").get(task, taskCreated) as never);
+  }
+  /** Newest first. `recorded` keeps only audits whose ledger holds at least one unit the auditor reported (the baseline carry-over and the default scope read these). */
+  audits(limit = 32, recorded = false): StoredAudit[] {
+    const rows = this.db.query("SELECT * FROM security_audits ORDER BY id DESC LIMIT ?").all(limit) as never[];
+    const all = rows.map(row => this.auditRow(row)!);
+    return recorded ? all.filter(row => row.units.some(unit => unit.reportedBy)) : all;
+  }
+  /**
+   * One report in one transaction: the ledger, the filed findings and the verifications land together or not at all. A finding id already verified or rejected is left as decided and returned
+   * in the skipped list (the caller says so); a verification whose guard fails (decided meanwhile, or by its own finder) rolls everything back and returns undefined.
+   */
+  auditApply(id: number, change: { units?: readonly AuditUnit[]; findings: readonly { finding: ReviewFinding; foundBy: string; at: number }[]; decisions: readonly { finding: string; verdict: "verified" | "rejected" }[]; by: string }): string[] | undefined {
+    const skipped: string[] = [];
+    try {
+      this.atomic(() => {
+        if (change.units) this.db.query("UPDATE security_audits SET units=? WHERE id=?").run(JSON.stringify(change.units), id);
+        let seq = (this.db.query("SELECT COALESCE(MAX(seq),0) AS seq FROM security_audit_findings WHERE audit=?").get(id) as { seq: number }).seq;
+        for (const item of change.findings) {
+          const existing = this.db.query("SELECT seq FROM security_audit_findings WHERE audit=? AND finding_id=?").get(id, item.finding.id) as { seq: number } | null;
+          if (!existing) { this.db.query("INSERT INTO security_audit_findings(audit,seq,finding_id,body,found_by,at) VALUES(?,?,?,?,?,?)").run(id, ++seq, item.finding.id, JSON.stringify(item.finding), item.foundBy, item.at); continue; }
+          const changed = this.db.query("UPDATE security_audit_findings SET body=?,found_by=?,at=? WHERE audit=? AND seq=? AND verified_by IS NULL AND rejected_by IS NULL").run(JSON.stringify(item.finding), item.foundBy, item.at, id, existing.seq).changes;
+          if (changed !== 1) skipped.push(item.finding.id);
+        }
+        for (const decision of change.decisions) {
+          const column = decision.verdict === "verified" ? "verified_by" : "rejected_by";
+          const done = this.db.query(`UPDATE security_audit_findings SET ${column}=? WHERE audit=? AND finding_id=? AND verified_by IS NULL AND rejected_by IS NULL AND found_by<>?`).run(change.by, id, decision.finding, change.by).changes;
+          if (done !== 1) throw new Error("audit decision lost");
+        }
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "audit decision lost") return undefined;
+      throw error;
+    }
+    return skipped;
+  }
+  auditFindings(id: number): AuditFinding[] {
+    const rows = this.db.query("SELECT body,found_by,at,verified_by,rejected_by FROM security_audit_findings WHERE audit=? ORDER BY seq").all(id) as { body: string; found_by: string; at: number; verified_by: string | null; rejected_by: string | null }[];
+    return rows.map(row => ({ finding: JSON.parse(row.body) as ReviewFinding, foundBy: row.found_by, at: row.at, ...(row.verified_by ? { verifiedBy: row.verified_by } : {}), ...(row.rejected_by ? { rejectedBy: row.rejected_by } : {}) }));
+  }
+  /** Marks a candidate verified or rejected. The caller already applied `verificationRefusal`; the `IS NULL` guards make a lost race a no-op that reports false. */
+  auditVerify(id: number, findingId: string, by: string, verdict: "verified" | "rejected"): boolean {
+    const column = verdict === "verified" ? "verified_by" : "rejected_by";
+    return this.db.query(`UPDATE security_audit_findings SET ${column}=? WHERE audit=? AND finding_id=? AND verified_by IS NULL AND rejected_by IS NULL AND found_by<>?`).run(by, id, findingId, by).changes === 1;
+  }
+  hasGuidanceVariants(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM guidance_experiments) OR EXISTS(SELECT 1 FROM guidance_variants) AS present").get() as { present: number }).present === 1;
+  }
+  /** Recovery only. Normal reads always address one indexed experiment. */
+  guidanceVariantsIntegrity(): { experiments: number; variants: number; digest: string } {
+    try { return this.db.transaction(() => {
+      const digest = createHash("sha256").update("agent-hub.guidance-variants/v1\n"); let experiments = 0, variants = 0;
+      // ponytail: recovery streams O(historical experiments), with bounded row/page memory. If measured recovery cost warrants it,
+      // upgrade to keyset pages plus a verification budget; a partial scan must never certify complete integrity.
+      const statement = this.db.prepare(`SELECT CASE WHEN typeof(project_id)='text' AND length(CAST(project_id AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.projectKey} THEN project_id END AS project_id,CASE WHEN typeof(task_id)='integer' THEN task_id END AS task_id,CASE WHEN typeof(task_created)='integer' THEN task_created END AS task_created,
+        CASE WHEN typeof(experiment_id)='text' AND length(CAST(experiment_id AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN experiment_id END AS experiment_id FROM guidance_experiments ORDER BY project_id,task_id,task_created,experiment_id`);
+      try {
+        for (const row of statement.iterate() as Iterable<{ project_id: string; task_id: number; task_created: number; experiment_id: string }>) {
+          if (typeof row.project_id !== "string" || typeof row.experiment_id !== "string" || !executionLinkInteger(row.task_id, 1) || !executionLinkInteger(row.task_created)) throw new Error("guidance experiment scope is invalid");
+          const experiment = this.guidanceExperiment(row.project_id, row.task_id, row.task_created, row.experiment_id)!;
+          const records = this.guidanceVariants(row.project_id, row.task_id, row.task_created, row.experiment_id);
+          if (!records.length) throw new Error("guidance experiment is empty");
+          digest.update(JSON.stringify(experiment)).update("\n"); experiments++;
+          for (const record of records) { digest.update(JSON.stringify(record)).update("\n"); variants++; }
+        }
+      } finally { statement.finalize(); }
+      const orphan = this.db.query(`SELECT EXISTS(SELECT 1 FROM guidance_variants AS v WHERE NOT EXISTS(SELECT 1 FROM guidance_experiments AS e
+        WHERE e.project_id=v.project_id AND e.task_id=v.task_id AND e.task_created=v.task_created AND e.experiment_id=v.experiment_id)) AS present`).get() as { present: number };
+      if (orphan.present) throw new Error("guidance variant experiment is unavailable");
+      return { experiments, variants, digest: digest.digest("hex") };
+    })(); }
+    catch { throw new Error("guidance variant integrity is unavailable; inspect retained project state before retrying"); }
+  }
+
+  private executionReferenceRow(row: Record<string, unknown>): ExecutionLinkRecord {
+    try {
+      if (typeof row.from_json !== "string" || typeof row.reference_json !== "string") throw new Error();
+      const record = parseExecutionLinkRecord({ id: row.id, projectKey: row.project_id, taskId: row.task_id, taskCreated: row.task_created,
+        from: JSON.parse(row.from_json), reference: JSON.parse(row.reference_json), strength: "declared", recordedBy: row.recorded_by, recordedAt: row.recorded_at });
+      if (executionReferenceKey(record.from) !== row.from_json || executionReferenceKey(record.reference) !== row.reference_json
+        || executionReferenceDigest(record.from) !== row.from_sha256 || executionReferenceDigest(record.reference) !== row.reference_sha256) throw new Error();
+      return record;
+    } catch { throw new ExecutionLinkError("corrupt"); }
+  }
+  /** Tasks is the only writer; it additionally fences current private/observer/read-only context and exact from membership. */
+  recordExecutionReference(projectKey: string, value: ExecutionLinkInput, fence: ExecutionLinkFence): { record: ExecutionLinkRecord; already: boolean } {
+    const input = parseExecutionLinkInput(value), refs = executionLinkReferences(projectKey, input), id = executionLinkId(projectKey, input);
+    if (!executionLinkActor(fence.by) || !executionLinkInteger(fence.at)) throw new ExecutionLinkError("invalid");
+    try {
+      return this.atomic(() => {
+        const task = this.get(input.taskId);
+        if (!task || task.created !== input.taskCreated || task.history.length !== input.flowRevision
+          || fence.by !== USER && task.owner !== fence.by && task.reviewer !== fence.by
+          || task.signals.includes("pii") || task.signals.includes("pii_path")) throw new ExecutionLinkError("changed");
+        // Fence precedes dedup: a private, stale or removed actor cannot replay an old authorization.
+        const known = this.db.query(`${EXECUTION_REFERENCE_SELECT} WHERE id=?`).get(id) as Record<string, unknown> | null;
+        if (known) {
+          const record = this.executionReferenceRow(known);
+          if (record.projectKey !== projectKey || record.taskId !== input.taskId || record.taskCreated !== input.taskCreated
+            || executionReferenceKey(record.from) !== executionReferenceKey(refs.from) || executionReferenceKey(record.reference) !== executionReferenceKey(refs.reference)) throw new ExecutionLinkError("corrupt");
+          return { record, already: true };
+        }
+        const count = this.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM execution_reference_links WHERE project_id=? AND task_id=? AND task_created=? LIMIT ?)")
+          .get(projectKey, input.taskId, input.taskCreated, EXECUTION_LINK_LIMITS.read) as { n: number };
+        if (count.n >= EXECUTION_LINK_LIMITS.perTask) throw new ExecutionLinkError("limit");
+        this.taskWrite(() => this.db.query(`INSERT INTO execution_reference_links
+          (id,project_id,task_id,task_created,from_json,from_sha256,reference_json,reference_sha256,recorded_by,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+          .run(id, projectKey, input.taskId, input.taskCreated, executionReferenceKey(refs.from), executionReferenceDigest(refs.from),
+            executionReferenceKey(refs.reference), executionReferenceDigest(refs.reference), fence.by, fence.at));
+        return { record: parseExecutionLinkRecord({ id, projectKey, taskId: input.taskId, taskCreated: input.taskCreated,
+          ...refs, strength: "declared", recordedBy: fence.by, recordedAt: fence.at }), already: false };
+      });
+    } catch (error) { if (error instanceof ExecutionLinkError) throw error; throw new ExecutionLinkError("corrupt"); }
+  }
+  /** Metadata only, after Tasks source authorization. 65 is an overflow sentinel, never a truncated complete neighborhood. */
+  executionReferences(projectKey: string, taskId: number, taskCreated: number, limit: number = EXECUTION_LINK_LIMITS.read): ExecutionLinkRecord[] {
+    // Reuse the address boundary without looking up any source, task body or foreign producer.
+    executionLinkReferences(projectKey, { taskId, taskCreated, flowRevision: 0, reference: { v: 1, tool: "ahub", projectKey, kind: "task", id: `${taskId}:${taskCreated}` } });
+    if (!executionLinkInteger(limit, 1) || limit > EXECUTION_LINK_LIMITS.read) throw new ExecutionLinkError("invalid");
+    try {
+      return (this.db.query(`${EXECUTION_REFERENCE_SELECT} WHERE project_id=? AND task_id=? AND task_created=? ORDER BY id LIMIT ?`)
+        .all(projectKey, taskId, taskCreated, limit) as Record<string, unknown>[]).map(row => this.executionReferenceRow(row));
+    } catch { throw new ExecutionLinkError("corrupt"); }
+  }
+  hasExecutionReferences(): boolean {
+    try { return (this.db.query("SELECT EXISTS(SELECT 1 FROM execution_reference_links) AS present").get() as { present: number }).present === 1; }
+    catch { throw new ExecutionLinkError("corrupt"); }
+  }
+  /** Every persisted field, streamed without retaining all rows; reads never resolve references or mutate state. */
+  executionReferencesIntegrity(): { count: number; digest: string } {
+    try {
+      return this.db.transaction(() => {
+        const statement = this.db.prepare(`${EXECUTION_REFERENCE_SELECT} ORDER BY project_id,task_id,task_created,id`);
+        const digest = createHash("sha256").update("agent-hub.execution-reference-links/v1\n");
+        let count = 0, perTask = 0, priorScope: string | undefined;
+        try {
+          for (const row of statement.iterate() as Iterable<Record<string, unknown>>) {
+            const record = this.executionReferenceRow(row), scope = JSON.stringify([record.projectKey, record.taskId, record.taskCreated]);
+            if (scope !== priorScope) { priorScope = scope; perTask = 0; }
+            if (++perTask > EXECUTION_LINK_LIMITS.perTask) throw new ExecutionLinkError("corrupt");
+            const canonical = JSON.stringify(record);
+            digest.update(String(Buffer.byteLength(canonical))).update(":").update(canonical).update("\n"); count++;
+          }
+        } finally { statement.finalize(); }
+        return { count, digest: digest.digest("hex") };
+      })();
+    } catch { throw new ExecutionLinkError("corrupt"); }
+  }
+
   hasResearchEvidenceState(): boolean {
     return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_evidence_links) AS present").get() as { present: number }).present === 1;
   }
@@ -996,6 +1404,197 @@ export class Board {
         digest.update(JSON.stringify([row.project, evidenceLinkCanonical(link)])).update("\n");
       }
       return { links, revisions, digest: digest.digest("hex") };
+    })();
+  }
+
+  reviewComments(task: number, created: number): ReviewCommentRecord[] {
+    const rows = this.db.query(`SELECT id,lifecycle,revision,CASE WHEN length(CAST(body AS BLOB))<=32768 THEN body END AS body FROM review_comments WHERE task_id=? AND task_created=? ORDER BY id LIMIT ${REVIEW_COMMENT_LIMIT + 1}`).all(task, created) as { id: string; lifecycle: string; revision: number; body: string | null }[];
+    if (rows.length > REVIEW_COMMENT_LIMIT) throw new Error("review comment storage limit invalid; restore a trusted hub.db backup before retrying");
+    return rows.map(row => {
+      try {
+        if (typeof row.body !== "string") throw new Error("missing body");
+        const record = parseStoredReviewComment(JSON.parse(row.body));
+        if (record.task !== task || record.taskCreated !== created || record.thread.id !== row.id || record.lifecycle !== row.lifecycle || record.revision !== row.revision) throw new Error("binding differs");
+        return record;
+      } catch { throw new Error("review comment storage invalid; stop the hub and restore a trusted hub.db backup, then restart and retry"); }
+    });
+  }
+  reviewCommentCounts(task: number, created: number): ReviewCommentCounts {
+    const counts = emptyReviewCommentCounts();
+    for (const row of this.db.query("SELECT lifecycle,COUNT(*) AS n FROM review_comments WHERE task_id=? AND task_created=? GROUP BY lifecycle").all(task, created) as { lifecycle: string; n: number }[]) {
+      if (!Object.hasOwn(counts, row.lifecycle)) throw new Error("review comment storage invalid; restore a trusted hub.db backup before retrying");
+      counts[row.lifecycle as keyof ReviewCommentCounts] = row.n;
+    }
+    return counts;
+  }
+  private reviewCommentFence(fence: ReviewCommentFence): Task {
+    const task = this.get(fence.task);
+    if (!task || task.created !== fence.taskCreated || task.history.length !== fence.flow || task.owner !== fence.owner || (task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead) !== fence.head) throw new Error("review task changed; refresh the task review before retrying");
+    return task;
+  }
+  putReviewComment(input: ReviewCommentRecord, fence: ReviewCommentFence, expected?: number): ReviewCommentRecord {
+    const record = parseStoredReviewComment(input);
+    return this.atomic(() => {
+      this.reviewCommentFence(fence);
+      if (record.task !== fence.task || record.taskCreated !== fence.taskCreated || record.lifecycle !== "draft") throw new Error("review comment binding changed; refresh the draft before retrying");
+      const comments = this.reviewComments(record.task, record.taskCreated), previous = comments.find(row => row.thread.id === record.thread.id);
+      if (previous ? previous.lifecycle !== "draft" || previous.revision !== expected || record.revision !== previous.revision + 1 : expected !== undefined || record.revision !== 1 || comments.length >= REVIEW_COMMENT_LIMIT) throw new Error("review draft changed or the comment limit is full; refresh the draft list before retrying");
+      this.taskWrite(() => this.db.query("INSERT INTO review_comments(task_id,task_created,id,body,lifecycle,revision) VALUES(?,?,?,?,?,?) ON CONFLICT(task_id,task_created,id) DO UPDATE SET body=excluded.body,lifecycle=excluded.lifecycle,revision=excluded.revision")
+        .run(record.task, record.taskCreated, record.thread.id, JSON.stringify(record), record.lifecycle, record.revision));
+      return this.reviewComments(record.task, record.taskCreated).find(row => row.thread.id === record.thread.id)!;
+    });
+  }
+  deleteReviewComment(id: string, revision: number, fence: ReviewCommentFence): { deleted: boolean; record: ReviewCommentRecord } {
+    return this.atomic(() => {
+      this.reviewCommentFence(fence);
+      const record = this.reviewComments(fence.task, fence.taskCreated).find(row => row.thread.id === id);
+      if (!record) throw new Error("review comment is unavailable; refresh the draft list before retrying");
+      if (record.lifecycle === "dismissed") return { deleted: false, record };
+      if (record.revision !== revision) throw new Error("review comment revision changed; refresh the list before retrying");
+      if (record.lifecycle === "draft") {
+        this.taskWrite(() => this.db.query("DELETE FROM review_comments WHERE task_id=? AND task_created=? AND id=?").run(fence.task, fence.taskCreated, id));
+        return { deleted: true, record };
+      }
+      const dismissed: ReviewCommentRecord = { ...record, lifecycle: "dismissed", revision: record.revision + 1 };
+      this.taskWrite(() => this.db.query("UPDATE review_comments SET body=?,lifecycle=?,revision=? WHERE task_id=? AND task_created=? AND id=?").run(JSON.stringify(dismissed), dismissed.lifecycle, dismissed.revision, fence.task, fence.taskCreated, id));
+      return { deleted: false, record: dismissed };
+    });
+  }
+  sendReviewComments(selected: readonly ReviewCommentRecord[], packet: ReviewCommentPackage, fence: ReviewCommentFence): Task {
+    return this.atomic(() => {
+      const task = this.reviewCommentFence(fence), rows = this.reviewComments(task.id, task.created);
+      if (!selected.length || selected.length > REVIEW_COMMENT_LIMIT || new Set(selected.map(row => row.thread.id)).size !== selected.length || selected.length !== packet.ids.length
+        || task.id !== packet.task || task.created !== packet.taskCreated || task.owner !== packet.owner || selected.some(row => !packet.ids.includes(row.thread.id))) throw new Error("review package binding changed; refresh the selected drafts before sending");
+      const encodedPacket = JSON.stringify(packet);
+      if (typeof encodedPacket !== "string" || Buffer.byteLength(encodedPacket, "utf8") > 32768) throw new Error("review package storage exceeds 32768 UTF-8 bytes; select fewer ids before sending");
+      for (const expected of selected) {
+        const record = rows.find(row => row.thread.id === expected.thread.id);
+        if (!record || record.lifecycle !== "draft" || record.revision !== expected.revision) throw new Error("review drafts changed; refresh the list before sending");
+        const sent: ReviewCommentRecord = { ...record, lifecycle: "sent", sentAt: packet.at, revision: record.revision + 1 };
+        this.taskWrite(() => this.db.query("UPDATE review_comments SET body=?,lifecycle=?,revision=? WHERE task_id=? AND task_created=? AND id=?").run(JSON.stringify(sent), sent.lifecycle, sent.revision, task.id, task.created, record.thread.id));
+      }
+      this.taskWrite(() => this.db.query("INSERT INTO review_comment_packages(id,task_id,task_created,body) VALUES(?,?,?,?)").run(packet.id, task.id, task.created, encodedPacket));
+      return this.update(task.id, "user", `person review comments sent (${selected.length})`, {}, undefined, {}, task.history.length);
+    });
+  }
+  reviewCommentPackages(task: number, created: number): ReviewCommentPackageView[] {
+    const rows = this.db.query("SELECT id,CASE WHEN length(CAST(body AS BLOB))<=32768 THEN body END AS body FROM review_comment_packages WHERE task_id=? AND task_created=? ORDER BY id LIMIT 65").all(task, created) as { id: string; body: string | null }[];
+    if (rows.length > 64) throw new Error("review comment package storage limit invalid; restore a trusted hub.db backup before retrying");
+    return rows.map(row => {
+      try {
+        if (typeof row.body !== "string") throw new Error();
+        const packet = JSON.parse(row.body) as ReviewCommentPackage;
+        if (!packet || packet.id !== row.id || packet.task !== task || packet.taskCreated !== created || !Array.isArray(packet.ids) || packet.ids.length < 1 || packet.ids.length > REVIEW_COMMENT_LIMIT) throw new Error();
+        const ids = reviewCommentIds(packet.ids);
+        if (packet.visibleIds !== undefined && (reviewCommentIds(packet.visibleIds).some(id => !ids.includes(id)))) throw new Error();
+        const delivery = packet.delivery ?? "unconfirmed";
+        if (delivery !== "queued" && delivery !== "unconfirmed") throw new Error();
+        return { id: row.id, count: packet.ids.length, delivery: packet.body && packet.envelopeId && packet.trace && packet.ts !== undefined && packet.publicationEvidenceVersion === 1 ? delivery : "unavailable" };
+      } catch { throw new Error("review comment package storage invalid; stop the hub and restore a trusted hub.db backup, then restart and retry"); }
+    });
+  }
+  reviewCommentPackage(id: string): ReviewCommentPackage | undefined {
+    const row = this.db.query("SELECT CASE WHEN length(CAST(body AS BLOB))<=32768 THEN body END AS body FROM review_comment_packages WHERE id=?").get(id) as { body: string | null } | null;
+    if (!row) return undefined;
+    try {
+      if (typeof row.body !== "string") throw new Error();
+      const packet = JSON.parse(row.body) as ReviewCommentPackage;
+      if (!packet || packet.id !== id || !Number.isSafeInteger(packet.task) || !Number.isSafeInteger(packet.taskCreated) || !Array.isArray(packet.ids)
+        || packet.ids.length < 1 || packet.ids.length > REVIEW_COMMENT_LIMIT || reviewCommentIds(packet.ids).length !== packet.ids.length
+        || typeof packet.owner !== "string" || typeof packet.head !== "string" || typeof packet.at !== "string"
+        || packet.delivery !== undefined && packet.delivery !== "queued" && packet.delivery !== "unconfirmed"
+        || packet.publicationEvidenceVersion !== undefined && packet.publicationEvidenceVersion !== 1
+        || packet.visibleIds !== undefined && (reviewCommentIds(packet.visibleIds).some(value => !packet.ids.includes(value)))
+        || packet.body !== undefined && (typeof packet.body !== "string" || Buffer.byteLength(packet.body, "utf8") > 12000)
+        || packet.envelopeId !== undefined && !/^[a-f0-9-]{36}$/.test(packet.envelopeId)
+        || packet.trace !== undefined && !/^[a-f0-9-]{36}$/.test(packet.trace)
+        || packet.ts !== undefined && (!Number.isSafeInteger(packet.ts) || packet.ts < 0)) throw new Error();
+      return packet;
+    } catch { throw new Error("review comment package storage invalid; stop the hub and restore a trusted hub.db backup, then restart and retry"); }
+  }
+  markReviewCommentPackageQueued(id: string): void {
+    this.taskWrite(() => {
+      const packet = this.reviewCommentPackage(id);
+      if (!packet || !packet.body || !packet.envelopeId || !packet.trace || packet.ts === undefined) throw new Error("review comment package is unavailable for retry; inspect the task review before sending a new comment");
+      return this.db.query("UPDATE review_comment_packages SET body=? WHERE id=?").run(JSON.stringify({ ...packet, delivery: "queued" }), id);
+    });
+  }
+  hasOpenReviewCommentsFor(owner: string, taskId?: number): boolean {
+    const taskScope = taskId === undefined ? "" : " AND task.id=?", packetScope = taskId === undefined ? "" : " AND packet.task_id=?";
+    const currentOwner = this.db.query(`SELECT EXISTS(SELECT 1 FROM review_comments AS comment JOIN tasks AS task ON task.id=comment.task_id AND task.created=comment.task_created
+      WHERE task.owner=? AND comment.lifecycle='sent'${taskScope}) AS present`).get(...(taskId === undefined ? [owner] : [owner, taskId])) as { present: number };
+    if (currentOwner.present === 1) return true;
+    const savedOwner = this.db.query(`WITH candidates AS (
+        SELECT packet.id,packet.task_id,packet.task_created FROM review_comment_packages AS packet
+        WHERE CASE WHEN json_valid(packet.body)=1 THEN json_extract(packet.body,'$.owner') END=?${packetScope}
+          AND EXISTS(SELECT 1 FROM json_each(packet.body,'$.ids') AS package_id
+            JOIN review_comments AS comment ON comment.task_id=packet.task_id AND comment.task_created=packet.task_created AND comment.id=package_id.value
+            WHERE comment.lifecycle='sent')
+        LIMIT 501
+      ) SELECT COUNT(*) AS count FROM candidates`).get(...(taskId === undefined ? [owner] : [owner, taskId])) as { count: number };
+    return savedOwner.count > 0;
+  }
+  /**
+   * Durable task-scoped exclusion for sent person comments and anchored findings; resolved/dismissed comments no longer hold memory.
+   * ponytail: anchored-finding scope is conservative until task close; upgrade to a persisted review-package epoch for precise closure. Scans cap at 500
+   * tasks and 16 MiB aggregate history; corrupt or over-limit state fails closed. A stamp over local total_changes and cross-connection
+   * data_version makes repeated progress reads O(1) until the board changes.
+   */
+  hasReviewObserverScope(peer: string, taskId: number): boolean {
+    try {
+      const dataVersion = this.db.query("PRAGMA data_version").get() as { data_version: number };
+      const totalChanges = this.db.query("SELECT total_changes() AS changes").get() as { changes: number };
+      const stamp = `${dataVersion.data_version}:${totalChanges.changes}`;
+      if (stamp !== this.reviewObserverCacheStamp) { this.reviewObserverScopeCache.clear(); this.reviewObserverCacheStamp = stamp; }
+      const cacheKey = JSON.stringify([peer, taskId]), cached = this.reviewObserverScopeCache.get(cacheKey);
+      if (cached !== undefined) return cached;
+      const scope = " AND id=?";
+      const params = [peer, peer, taskId];
+      const counts = this.db.query(`WITH candidate AS (
+          SELECT history FROM tasks WHERE state NOT IN ('approved','cancelled') AND (owner=? OR reviewer=?)${scope} LIMIT 501
+        )
+        SELECT COUNT(*) AS tasks, COALESCE(SUM(length(CAST(history AS BLOB))),0) AS bytes,
+          SUM(CASE WHEN json_valid(history)<>1 THEN 1 ELSE 0 END) AS invalid FROM candidate`).get(...params) as { tasks: number; bytes: number; invalid: number };
+      let scoped = counts.tasks > 500 || counts.bytes > 16 * 1024 * 1024 || counts.invalid > 0;
+      if (!scoped) {
+        const comments = this.hasOpenReviewCommentsFor(peer, taskId);
+        const reviewerCommentScope = this.db.query(`WITH candidate AS (
+            SELECT id,created FROM tasks WHERE state='in_review' AND reviewer=?${scope} LIMIT 501
+          ) SELECT EXISTS(SELECT 1 FROM candidate JOIN review_comments AS comment ON comment.task_id=candidate.id AND comment.task_created=candidate.created
+            WHERE comment.lifecycle='sent') AS present`).get(peer, taskId) as { present: number };
+        const findings = this.db.query(`WITH candidate AS (
+            SELECT id,history FROM tasks WHERE state NOT IN ('approved','cancelled') AND (owner=? OR reviewer=?)${scope} LIMIT 501
+          )
+          SELECT EXISTS(SELECT 1 FROM candidate, json_each(candidate.history) AS history,
+            json_each(json_extract(history.value,'$.reviewFindings.items')) AS item
+            WHERE json_type(history.value,'$.reviewFindings.items')='array'
+              AND json_type(item.value,'$.anchor')='object') AS present`).get(...params) as { present: number };
+        scoped = comments || reviewerCommentScope.present === 1 || findings.present === 1;
+      }
+      this.reviewObserverScopeCache.set(cacheKey, scoped);
+      if (this.reviewObserverScopeCache.size > 512) this.reviewObserverScopeCache.delete(this.reviewObserverScopeCache.keys().next().value as string);
+      return scoped;
+    } catch { return true; }
+  }
+  reviewCommentResolution(task: Task, ids: readonly string[]): string[] {
+    const parsed = reviewCommentIds(ids), records = this.reviewComments(task.id, task.created);
+    return parsed.flatMap(id => {
+      const record = records.find(row => row.thread.id === id);
+      if (!record || record.lifecycle === "draft") throw new Error("only sent comments can be resolved; refresh the task review and use sent comment ids");
+      return record.lifecycle === "sent" ? [id] : []; // Dismissal is terminal and can never be reopened by the owner.
+    });
+  }
+  hasReviewCommentsState(): boolean {
+    return (this.db.query(`SELECT EXISTS(SELECT 1 FROM review_comments) OR EXISTS(SELECT 1 FROM review_comment_packages)
+      OR EXISTS(SELECT 1 FROM tasks AS task,json_each(task.history) AS history,json_each(json_extract(history.value,'$.reviewFindings.items')) AS finding
+        WHERE json_type(finding.value,'$.anchor')='object') AS present`).get() as { present: number }).present === 1;
+  }
+  reviewCommentsIntegrity(): { comments: number; packages: number; digest: string } {
+    return this.db.transaction(() => {
+      const digest = createHash("sha256").update("agent-hub.review-comments/v1\n"); let comments = 0, packages = 0;
+      for (const row of this.db.query("SELECT DISTINCT task_id,task_created FROM review_comments ORDER BY task_id,task_created").iterate() as Iterable<{ task_id: number; task_created: number }>) for (const record of this.reviewComments(row.task_id, row.task_created)) { digest.update(JSON.stringify(record)).update("\n"); comments++; }
+      for (const row of this.db.query("SELECT id,task_id,task_created,body FROM review_comment_packages ORDER BY id").iterate()) { digest.update(JSON.stringify(row)).update("\n"); packages++; }
+      return { comments, packages, digest: digest.digest("hex") };
     })();
   }
 
@@ -1479,6 +2078,57 @@ export class Board {
     return (rows as Record<string, unknown>[]).map(parse);
   }
 
+  /** A bounded, read-only source projection. Unknown/capped results never authorize carry. */
+  specAcceptanceCandidates(destination: number): { rows: SpecAcceptanceCandidate[]; complete: boolean } {
+    const unavailable = { rows: [], complete: false };
+    if (!Number.isSafeInteger(destination) || destination <= 0) return unavailable;
+    const object = (column: string) => `CASE WHEN length(CAST(${column} AS BLOB)) <= ${SPEC_ACCEPTANCE_FIELD_BYTES} THEN CASE WHEN json_valid(${column}) THEN json_type(${column})='object' ELSE 0 END ELSE 0 END`;
+    const cancel = object("cancelled"), receipt = object("sdlc");
+    try {
+      const found = this.db.query(`WITH candidates AS (
+        SELECT id,created,
+          CASE WHEN length(CAST(refs AS BLOB)) <= ${SPEC_ACCEPTANCE_FIELD_BYTES} THEN refs END AS refs,
+          CASE WHEN length(CAST(signals AS BLOB)) <= ${SPEC_ACCEPTANCE_FIELD_BYTES} THEN signals END AS signals,
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.supersededBy') END AS superseded_by,
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.flowRevision') END AS cancellation_revision,
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.withheld') END AS withheld,
+          CASE WHEN sdlc IS NULL THEN 1 WHEN ${receipt} THEN 1 ELSE 0 END AS receipt_valid,
+          CASE WHEN ${receipt} THEN json_extract(sdlc,'$.repo') END AS repo,
+          CASE WHEN ${receipt} THEN json_extract(sdlc,'$.issue') END AS issue,
+          CASE WHEN ${receipt} THEN CAST(json_extract(sdlc,'$.acceptance') AS TEXT) END AS acceptance
+        FROM tasks WHERE state='cancelled' AND id < ? AND
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.supersededBy') IN (?,?,?) ELSE 0 END
+        ORDER BY id DESC LIMIT ?
+      ), projections AS (
+        SELECT id,json_object('id',id,'created',created,'refs',refs,'signals',signals,'superseded_by',superseded_by,
+          'cancellation_revision',cancellation_revision,'withheld',withheld,'repo',repo,'issue',issue,'acceptance',acceptance) AS payload,
+          receipt_valid AND refs IS NOT NULL AND signals IS NOT NULL AS valid FROM candidates
+      ), budget AS (
+        SELECT COUNT(*) <= ${SPEC_ACCEPTANCE_SOURCE_LIMIT} AND MIN(valid)
+          AND SUM(length(CAST(payload AS BLOB))) <= ${SPEC_ACCEPTANCE_TOTAL_BYTES} AS complete FROM projections
+      ) SELECT budget.complete, CASE WHEN budget.complete THEN projections.payload END AS payload FROM projections,budget ORDER BY projections.id DESC`)
+        .all(destination, `task #${destination}`, `#${destination}`, String(destination), SPEC_ACCEPTANCE_SOURCE_LIMIT + 1) as { complete: number; payload: string | null }[];
+      if (found.some(row => row.complete !== 1 || row.payload === null)) return unavailable;
+      const rows: SpecAcceptanceCandidate[] = [];
+      for (const projected of found) {
+        const row = JSON.parse(projected.payload!) as Record<string, unknown>;
+        if (typeof row.refs !== "string" || typeof row.signals !== "string") return unavailable;
+        const refs = JSON.parse(row.refs), signals = JSON.parse(row.signals);
+        if (!refs || typeof refs !== "object" || Array.isArray(refs) || refs.repo !== undefined && typeof refs.repo !== "string"
+          || refs.paths !== undefined && (!Array.isArray(refs.paths) || refs.paths.some((value: unknown) => typeof value !== "string"))
+          || !Array.isArray(signals) || signals.some((value: unknown) => typeof value !== "string")
+          || !Number.isSafeInteger(row.id) || typeof row.created !== "number" || !Number.isFinite(row.created)
+          || typeof row.superseded_by !== "string" || !Number.isSafeInteger(row.cancellation_revision) || Number(row.cancellation_revision) <= 0
+          || ![null, 0, 1].includes(row.withheld as null | number)) return unavailable;
+        const acceptance = row.acceptance == null ? undefined : JSON.parse(String(row.acceptance));
+        rows.push({ id: row.id as number, created: row.created, state: "cancelled", refs, signals,
+          supersededBy: row.superseded_by, cancellationRevision: row.cancellation_revision as number, withheld: row.withheld === 1,
+          repo: row.repo, issue: row.issue, acceptance });
+      }
+      return { rows, complete: true };
+    } catch { return unavailable; }
+  }
+
   /** Structural status facts only; avoid decoding text, plans and growing history on each status write. */
   statusTasks(): Pick<Task, "id" | "state" | "owner" | "reviewer">[] {
     return this.db.query("SELECT id, state, owner, reviewer FROM tasks WHERE state NOT IN ('approved','cancelled') ORDER BY id").all() as Pick<Task, "id" | "state" | "owner" | "reviewer">[];
@@ -1508,7 +2158,7 @@ export class Board {
   }
   plannerWip(peer: string, except?: number): number {
     const row = this.db.query(`SELECT COUNT(*) AS n FROM tasks WHERE state NOT IN ('approved', 'cancelled', 'backlog') AND (? IS NULL OR id != ?) AND
-      (owner = ? OR (owner IS NULL AND state = 'proposed' AND reserved = ? AND
+      (owner = ? OR (owner IS NULL AND state = 'proposed' AND reserved = ? AND needs_person = 0 AND
         json_extract((SELECT value FROM json_each(tasks.history) WHERE json_extract(value, '$.event') IN ('backlog pulled', 'backlog returned') ORDER BY CAST(key AS INTEGER) DESC LIMIT 1), '$.planning.pull') = 1))`).get(except ?? null, except ?? null, peer, peer) as { n: number };
     return row.n;
   }
@@ -1522,7 +2172,7 @@ export class Board {
     const rows = this.db.query(`SELECT peer, kind, COUNT(*) AS n FROM (
       SELECT owner AS peer, CASE WHEN state = 'in_review' THEN 'reviewWait' ELSE 'active' END AS kind FROM tasks WHERE state NOT IN ('approved', 'cancelled', 'backlog') AND owner IS NOT NULL
       UNION ALL
-      SELECT reserved AS peer, 'reserved' AS kind FROM tasks WHERE state = 'proposed' AND owner IS NULL AND reserved IS NOT NULL AND
+      SELECT reserved AS peer, 'reserved' AS kind FROM tasks WHERE state = 'proposed' AND owner IS NULL AND reserved IS NOT NULL AND needs_person = 0 AND
         json_extract((SELECT value FROM json_each(tasks.history) WHERE json_extract(value, '$.event') IN ('backlog pulled', 'backlog returned') ORDER BY CAST(key AS INTEGER) DESC LIMIT 1), '$.planning.pull') = 1
     ) GROUP BY peer, kind`).all() as { peer: string; kind: "active" | "reviewWait" | "reserved"; n: number }[];
     const result: Record<string, { active: number; reviewWait: number; reserved: number }> = {};
@@ -1608,17 +2258,53 @@ export class Board {
   }
 
   /** Tasks per state, without parsing a single row: `status.json` is rewritten on every bus event and the board only grows. */
+  /** #1176: ids of open cards only the person can run, for status and the board (ids only, never text). Backlog first, then the rest, by id. */
+  personRunIds(): number[] {
+    return (this.db.query("SELECT id FROM tasks WHERE needs_person = 1 AND state NOT IN ('approved', 'cancelled') ORDER BY id").all() as { id: number }[]).map(row => row.id);
+  }
+
   counts(): Record<string, number> {
     const rows = this.db.query("SELECT state, COUNT(*) AS n FROM tasks GROUP BY state").all() as { state: string; n: number }[];
     return Object.fromEntries(rows.map((r) => [r.state, r.n]));
   }
 
+  /** Tasks alone calls this after current actor, privacy, artifact and GitHub evidence fences. Generic MOVES stays unchanged. */
+  adoptMerge(id: number, by: PeerId, receipt: SdlcReceipt, head: string, expectedFlowRevision: number, authority: typeof HOST_MERGE_ADOPTION): Task {
+    if (authority !== HOST_MERGE_ADOPTION || !Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0)
+      throw new Error("merge adoption requires host authority and a current flow revision; retry through Tasks.adoptMerge");
+    return this.update(id, by, "merged outside the hub", { state: "approved", rejections: 0, sdlc: receipt },
+      `PR #${receipt.pr} merged outside the hub at ${head}`, undefined, expectedFlowRevision, undefined, authority);
+  }
+
+  /** Consent and the admitted outer event publish together, including observer/status-generation rollback. */
+  updateWithSpecAcceptance(carry: SpecAcceptanceCommit, authority: typeof HOST_SPEC_ACCEPTANCE_CARRY, ...args: Parameters<Board["update"]>): Task {
+    const [id, by, event, patch, note, extra, revision, codeSymbolsAuthority, adoptionAuthority] = args;
+    if (authority !== HOST_SPEC_ACCEPTANCE_CARRY || revision === undefined
+      || !["accepted", "lifecycle", "done", "done (checking)", "integration requested", "integration unresolved", "integrated"].includes(event)) throw new Error("spec carry requires host admission authority; inspect the current task and invoke the action through Tasks");
+    return this.atomic(() => {
+      const task = this.get(id), acceptance = carry.acceptance, receipt = patch.sdlc ?? task?.sdlc;
+      if (!task || task.sdlc?.acceptance || !Number.isSafeInteger(carry.source) || carry.source >= id || carry.source <= 0
+        || !Number.isSafeInteger(carry.cancellationRevision) || carry.cancellationRevision <= 0
+        || !receipt || receipt.repo !== acceptance.repo || receipt.issue !== acceptance.issue
+        || task.sdlc?.repo !== acceptance.repo || task.sdlc.issue !== acceptance.issue) throw new Error("spec carry identity changed before publication; inspect the current task and held deliveries before repeating this action");
+      const carried = this.update(id, HUB, "spec acceptance carried", { sdlc: { ...task.sdlc, acceptance } },
+        `from task #${carry.source}; original person acceptance at ${acceptance.acceptedAt}; cancellation revision ${carry.cancellationRevision}`, {}, revision);
+      return this.update(id, by, event, { ...patch, sdlc: { ...receipt, acceptance } }, note, extra, carried.history.length, codeSymbolsAuthority, adoptionAuthority);
+    });
+  }
+
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "planner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "invocation" | "plannerReason" | "planAuthor" | "selfReview" | "profile" | "sweep" | "reason" | "from" | "capacity" | "conductorManual" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewScope" | "evidenceOnly" | "reviewedHead" | "reviewFindings" | "unmetCriteria" | "deliverables" | "checkKey" | "missingKeys" | "claim" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | "specReport" | "specRefBinding" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "planner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "invocation" | "plannerReason" | "planAuthor" | "selfReview" | "profile" | "sweep" | "reason" | "from" | "capacity" | "conductorManual" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewScope" | "evidenceOnly" | "reviewedHead" | "reviewFindings" | "unmetCriteria" | "deliverables" | "checkKey" | "missingKeys" | "claim" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | "specReport" | "specRefBinding" | "resolvedReviewComments" | "securityPass" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS, adoptionAuthority?: typeof HOST_MERGE_ADOPTION): Task {
+    if (extra.resolvedReviewComments?.length && !this.db.inTransaction) return this.atomic(() => this.update(id, by, event, patch, note, extra, expectedFlowRevision, codeSymbolsAuthority, adoptionAuthority));
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
+    const adoption = event === "merged outside the hub" && adoptionAuthority === HOST_MERGE_ADOPTION && expectedFlowRevision !== undefined
+      && ["in_progress", "in_review", "changes_requested"].includes(task.state) && !task.draft
+      && !task.signals.includes("pii") && !task.signals.includes("pii_path") && patch.state === "approved"
+      && Object.keys(patch).every(key => ["state", "rejections", "sdlc"].includes(key));
+    if (event === "merged outside the hub" && !adoption) throw new Error(`task #${id} in state ${task.state}: merge adoption requires a host-only eligible transition and current flow revision; retry through Tasks.adoptMerge`);
     const untouchedReturn = event === "backlog returned untouched" && patch.state === "backlog" && patch.owner === null && patch.reviewer === null
       && ["proposed", "in_progress"].includes(task.state) && expectedFlowRevision !== undefined && !!note?.trim() && !taskHasWorkEvidence(task);
     const returnPlanning: HistoryEntry["planning"] = untouchedReturn && Object.hasOwn(patch, "reserved")
@@ -1637,7 +2323,7 @@ export class Board {
         || event === "changes_requested" && patch.state === "changes_requested" && (by === task.reviewer || by === "user"));
     if (extra.reviewedHead !== undefined && (!/^[a-f0-9]{40}$/.test(extra.reviewedHead) || !["approved", "changes_requested"].includes(event))) throw new Error("invalid verdict head");
     if (task.draft && patch.state && patch.state !== "backlog" && patch.state !== "cancelled") throw new Error(`task #${id} is an intake draft; the person approves it first`);
-    if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state) && !untouchedReturn && !reviewCheck && !approvalReopen) {
+    if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state) && !untouchedReturn && !reviewCheck && !approvalReopen && !adoption) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
     const planner = Object.hasOwn(patch, "planner") ? plannerValue(patch.planner) : task.planner ?? null;
@@ -1666,18 +2352,26 @@ export class Board {
       if (patch.state === "backlog" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);
     }
     if (patch.state === "backlog" && taskHasStarted(task) && !untouchedReturn) throw new Error(`task #${id}: started work cannot return to backlog`);
+    const requestedReviewComments = extra.resolvedReviewComments === undefined ? undefined : reviewCommentIds(extra.resolvedReviewComments);
+    if (requestedReviewComments?.length && (!["done", "done (checking)"].includes(event) || by !== task.owner || expectedFlowRevision === undefined)) throw new Error("comment resolution requires an admitted owner completion; use hub_task_done with sent comment ids");
+    const resolvedReviewComments = requestedReviewComments?.length ? this.reviewCommentResolution(task, requestedReviewComments) : undefined;
     const reviewMetadata = reviewerHistory(extra);
     let reviewFindings: ReviewFindingSet | undefined;
     if (extra.reviewFindings !== undefined) {
       if (!["approved", "changes_requested"].includes(event) || patch.state !== event) throw new Error("finding metadata requires a saved review verdict");
       const head = extra.reviewFindings.head;
       if (head !== undefined && !/^[a-f0-9]{40}$/.test(head)) throw new Error("finding metadata requires a full reviewed head");
-      reviewFindings = { ...(head ? { head } : {}), items: parseReviewFindings(extra.reviewFindings.items, { person: by === "user", maxNits: 64 }) };
+      reviewFindings = { ...(head ? { head } : {}), items: parseReviewFindings(extra.reviewFindings.items, { person: by === "user", maxNits: 64, contract: "stored" }) };
     }
     let deliverables: DeliverableRecord[] | undefined;
     if (extra.deliverables !== undefined) {
       if (!["done", "done (checking)", "lifecycle", "approved"].includes(event)) throw new Error("deliverable records require a done, a lifecycle record or an approval");
       deliverables = parseDeliverableRecords(extra.deliverables);
+    }
+    let securityPass: SecurityPassRecord | undefined;
+    if (extra.securityPass !== undefined) {
+      if (!["approved", "changes_requested"].includes(event) || patch.state !== event) throw new Error("a security pass requires a saved review verdict");
+      securityPass = storedSecurityPass(extra.securityPass);
     }
     let unmetCriteria: string[] | undefined;
     if (extra.unmetCriteria !== undefined) {
@@ -1699,8 +2393,13 @@ export class Board {
       && priorHead !== undefined && /^[a-f0-9]{40}$/.test(priorHead);
     const previousHistory = backfill ? task.history.map((entry, index) => index === priorApproval && !entry.reviewedHead
       ? { ...entry, reviewedHead: entry.reviewFindings?.head ?? priorHead } : entry) : task.history;
-    const history = [...previousHistory, { at: Date.now(), by, event, ...(returnPlanning ? { planning: returnPlanning } : {}), ...(extra.invocation ? { invocation: extra.invocation } : {}), ...plannerHistory, ...authorHistory, ...(extra.selfReview === true ? { selfReview: true as const } : {}), ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...specMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.conductorManual === true ? { conductorManual: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewedHead ? { reviewedHead: extra.reviewedHead } : {}), ...(unmetCriteria?.length ? { unmetCriteria } : {}), ...(deliverables ? { deliverables } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewScope === "code" ? { reviewScope: "code" as const } : {}), ...(extra.evidenceOnly === true && event === "changes_requested" ? { evidenceOnly: true as const } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}), ...(["check passed", "check failed"].includes(event) && typeof extra.checkKey === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(extra.checkKey) ? { checkKey: extra.checkKey } : {}), ...(["check passed", "check failed"].includes(event) && Number.isSafeInteger(extra.missingKeys) && extra.missingKeys! >= 0 && extra.missingKeys! <= 100_000 ? { missingKeys: extra.missingKeys } : {}), ...(event === "claim verdict" && extra.claim ? { claim: extra.claim } : {}) }];
+    const history = [...previousHistory, { at: Date.now(), by, event, ...(resolvedReviewComments?.length ? { resolvedReviewComments } : {}), ...(returnPlanning ? { planning: returnPlanning } : {}), ...(extra.invocation ? { invocation: extra.invocation } : {}), ...plannerHistory, ...authorHistory, ...(extra.selfReview === true ? { selfReview: true as const } : {}), ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...specMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.conductorManual === true ? { conductorManual: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewedHead ? { reviewedHead: extra.reviewedHead } : {}), ...(unmetCriteria?.length ? { unmetCriteria } : {}), ...(securityPass ? { securityPass } : {}), ...(deliverables ? { deliverables } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewScope === "code" ? { reviewScope: "code" as const } : {}), ...(extra.evidenceOnly === true && event === "changes_requested" ? { evidenceOnly: true as const } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}), ...(["check passed", "check failed"].includes(event) && typeof extra.checkKey === "string" && /^[a-z][a-z0-9_]{0,47}$/.test(extra.checkKey) ? { checkKey: extra.checkKey } : {}), ...(["check passed", "check failed"].includes(event) && Number.isSafeInteger(extra.missingKeys) && extra.missingKeys! >= 0 && extra.missingKeys! <= 100_000 ? { missingKeys: extra.missingKeys } : {}), ...(event === "claim verdict" && extra.claim ? { claim: extra.claim } : {}) }];
     this.taskWrite(() => {
+      if (resolvedReviewComments?.length) for (const record of this.reviewComments(task.id, task.created)) {
+        if (!resolvedReviewComments.includes(record.thread.id) || record.lifecycle !== "sent") continue;
+        const resolved: ReviewCommentRecord = { ...record, lifecycle: "resolved", revision: record.revision + 1 };
+        this.db.query("UPDATE review_comments SET body=?,lifecycle=?,revision=? WHERE task_id=? AND task_created=? AND id=?").run(JSON.stringify(resolved), resolved.lifecycle, resolved.revision, task.id, task.created, record.thread.id);
+      }
       const result = this.db.query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ?, planner = ?, planning_revision = ? WHERE id = ?")
         .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), planner, returnPlanning?.revision ?? task.planningRevision ?? 0, id);
       if (result.changes) {
@@ -1723,10 +2422,10 @@ export class Board {
     const next = { ...task, ...patch, sdlc: receipt ?? task.sdlc };
     if (next.plannedStart != null && next.due != null && next.plannedStart > next.due) throw new Error("planned start must not follow due");
     if (next.release != null && !this.release(next.release)) throw new Error("no such release");
-    const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, key === "sdlc" ? { repo: task.sdlc?.repo ?? null, issue: task.sdlc?.issue ?? null } : task[key] ?? (key === "pinned" ? false : key === "deps" ? [] : null)])) as PlanningFields;
+    const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, key === "sdlc" ? { repo: task.sdlc?.repo ?? null, issue: task.sdlc?.issue ?? null } : task[key] ?? (key === "pinned" || key === "needsPerson" ? false : key === "deps" ? [] : null)])) as PlanningFields;
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "planned", planning: { revision: revision + 1, fields, previous }, ...(note ? { note } : {}), ...(withheld && note ? { withheld: true as const } : {}) };
-    const result = this.taskWrite(() => this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=?, sdlc=? WHERE id=? AND planning_revision=?`)
-      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, next.sdlc === undefined ? null : JSON.stringify(next.sdlc), id, revision));
+    const result = this.taskWrite(() => this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, needs_person=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=?, sdlc=? WHERE id=? AND planning_revision=?`)
+      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, next.needsPerson ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, next.sdlc === undefined ? null : JSON.stringify(next.sdlc), id, revision));
     if (result.changes !== 1) throw new Error("planning revision changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
@@ -1779,6 +2478,8 @@ export class Board {
       // #334: the hub's own intake split is only ever for a draft. An approval clears the mark without moving the planning revision, so the revision alone cannot tell the
       // person approved the card while the model answered; checked here, in the same transaction as the write, nothing can slip between this and the children.
       if (requireDraft && !parent.draft) throw new Error("split changed or invalid");
+      // #1176: an agent's split of a person-run card, checked in the transaction so nothing slips in between the planner's check and the write.
+      if (by !== USER && parent.needsPerson) throw new Error("a person-run card is the person's to split");
       const children: Task[] = [];
       for (const part of parts) {
         const inherited = part.afterParts?.length ? (part.deps ?? []).filter(dep => !parent.deps?.includes(dep)) : part.deps ?? [];
@@ -1957,6 +2658,8 @@ function parse(row: Record<string, unknown>): Task {
   if (out.planning_revision) out.planningRevision = out.planning_revision;
   delete out.planning_revision;
   if (out.pinned) out.pinned = true; else delete out.pinned;
+  if (out.needs_person) out.needsPerson = true;
+  delete out.needs_person;
   if (out.draft) out.draft = true; else delete out.draft;
   for (const key of ["rank", "priority", "release", "due"]) if (out[key] == null) delete out[key];
   out.planner = row.planner ?? null;

@@ -1,3 +1,5 @@
+import type { ModelOverrideSelection } from "./registry-types.ts";
+import { isNativeModelToken } from "./model-token.ts";
 import { buildPiLaunch } from "../pi/launch.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
@@ -5,6 +7,7 @@ import { join, resolve } from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { renderDigest, remoteEnvelope, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer, type SessionTitleResult } from "../hub/peers.ts";
+import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { assessVersion, COMPAT, type CompatVerdict } from "./compat.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
@@ -12,7 +15,10 @@ import { PiSessionBookmarkMismatch, validatePiSession } from "../pi/session.ts";
 import { ApprovalWaitStop, toolResultFailed, type ApprovalProvenance } from "../local/tools.ts";
 import { piToolStepCeiling, type PiToolStepCeiling } from "../pi/ceiling.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
+import { QuestionWaitDetached } from "../hub/question-detach.ts";
 import type { StartForm } from "./registry-types.ts";
+import { stateModelId } from "./pi-state-model.ts";
+import type { ModelObservation } from "../hub/events.ts";
 
 export interface PiModelDescriptor { id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean; }
 export interface PiToolSchema { name: string; description?: string; parameters: Record<string, unknown>; }
@@ -39,6 +45,8 @@ export interface PiOptions {
   hubStateDir?: string;
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
   model?: string;
+  /** Host-only choice sampled once at the next turn/review boundary. */
+  getModelOverride?: () => ModelOverrideSelection;
   relay: PiRelay; executeTool: (name: string, args: unknown, toolCallId: string, sessionId?: string, signal?: AbortSignal, context?: PiToolContext) => Promise<string | PiToolResult>; tools: PiToolSchema[];
   preamble?: string;
   /** Host-owned conditional instruction, sampled once per delivered turn. */
@@ -203,6 +211,10 @@ export class PiPeer extends BasePeer {
   private owner = randomUUID();
   private _tuiLaunch?: PiTuiLaunch;
   private requestedModel = "";
+  /** #1402: what the turn that is running, or just ended, was on: the `get_state` model (`session`), else the model the hub set (`configured`). Read once at the turn end; never invented. */
+  private turnModel: ModelObservation | undefined;
+  private baselineRequestedModel = "";
+  private runtimeModelSelected = false;
   private starting?: Promise<void>;
   private ownerClaimed = false;
   private ownerToken = "";
@@ -231,7 +243,7 @@ export class PiPeer extends BasePeer {
   private tuiWaiters: Array<{ resolve: (command: Record<string, unknown> | undefined) => void; timer: ReturnType<typeof setTimeout> }> = [];
 
   /** The fixed production factory supplies preflight separately, preserving transport option identity. */
-  constructor(id: PeerId, private readonly opts: PiOptions, private readonly preflight?: () => Promise<void>) { super(id, opts.watchdogMs); }
+  constructor(id: PeerId, private readonly opts: PiOptions, private readonly preflight?: () => Promise<void>) { super(id, opts.watchdogMs); this.baselineRequestedModel = opts.model ?? ""; }
   get tuiLaunch(): PiTuiLaunch | undefined { return this._tuiLaunch; }
   get pendingResume(): { sessionId?: string; sessionFile?: string } {
     if (this.canReuseVerifiedEmptyResume()) return { sessionId: this.verifiedEmptyResume!.sessionId };
@@ -329,6 +341,35 @@ export class PiPeer extends BasePeer {
     this.starting = this.startImpl();
     try { await this.starting; } finally { this.starting = undefined; }
   }
+  /** The keepalive period of a long tool reply; well under every timer between the hub and Pi's runtime (60 s Bun idle, 300 s undici). A test shortens it. */
+  toolKeepaliveMs = 15_000;
+  /**
+   * A tool reply that may take minutes (`hub_ask`): the status line and headers go out at once, a space is written every `toolKeepaliveMs`, and the JSON body
+   * follows when the call settles. Whitespace before a JSON value is valid JSON, so the extension's `response.json()` reads it unchanged. When the client goes away
+   * the stream is cancelled and the call is aborted through its own signal with `QuestionWaitDetached`, so the wait ends `pending` and the row stays open for the late envelope;
+   * nothing else about `handleToolRequest` changes.
+   */
+  private streamedToolResponse(body: any, clientGone: AbortSignal): Response {
+    const encoder = new TextEncoder();
+    let timer: ReturnType<typeof setInterval> | undefined, closed = false;
+    const stop = () => { closed = true; if (timer) clearInterval(timer); timer = undefined; };
+    return new Response(new ReadableStream({
+      start: controller => {
+        timer = setInterval(() => { if (!closed) try { controller.enqueue(encoder.encode(" ")); } catch { stop(); } }, this.toolKeepaliveMs);
+        timer.unref?.();
+        const abort = () => { stop(); this.pendingToolGenerations.get(String(body?.toolCallId ?? ""))?.abort.abort(new QuestionWaitDetached()); };
+        clientGone.addEventListener("abort", abort, { once: true });
+        void this.handleToolRequest(body).then(async response => {
+          const text = await response.text();
+          if (closed) return;
+          stop();
+          try { controller.enqueue(encoder.encode(text)); controller.close(); } catch { /* the client already left */ }
+        }, () => { if (closed) return; stop(); try { controller.enqueue(encoder.encode(JSON.stringify({ text: "error: Pi tool call failed", failed: true }))); controller.close(); } catch { /* the client already left */ } });
+      },
+      cancel: () => { stop(); this.pendingToolGenerations.get(String(body?.toolCallId ?? ""))?.abort.abort(new QuestionWaitDetached()); },
+    }), { headers: { "content-type": "application/json" } });
+  }
+
   private async handleToolRequest(body: any): Promise<Response> {
     if (!this.acceptingTools || this.state === "offline") return Response.json({ text: this.rosterDetached ? "error: Pi is off roster" : this.rosterUnownedRun ? "error: Pi native turn is pending" : "error: Pi owner is stopped" }, { status: 409 });
     if (!this.verifiedOwner() || typeof body.sessionId !== "string" || !body.sessionId || body.sessionId !== this.sessionId || !Number.isSafeInteger(body.generation) || body.generation !== this.budgetGeneration) {
@@ -494,7 +535,18 @@ export class PiPeer extends BasePeer {
           : boundRefusal && refusal.kind === "prompt_uncertain" ? new PiPromptUncertain("Pi native prompt insertion is uncertain; inspect its retained terminal before retrying") : new Error(String(body.error ?? "Pi TUI command failed")));
         return Response.json({ ok: true });
       }
-      if (url.pathname === "/tool") return this.handleToolRequest(body);
+      if (url.pathname === "/tool") {
+        // #1053: `hub_ask` holds this request open for the person's wait window. Two timers would cut it: Bun's 60 s bridge idle timeout (lifted for this one call with
+        // `timeout(request, 0)`) and the extension's own fetch, whose undici dispatcher Pi installs with headersTimeout and bodyTimeout of 300 s (Pi 1.4.0
+        // `configureHttpDispatcher`, measured: UND_ERR_HEADERS_TIMEOUT). So the reply is streamed: headers go out at once and a space every 15 s keeps both timers
+        // quiet, then the JSON follows (`response.json()` ignores leading whitespace). A client that gives up anyway cancels the stream, which aborts the call; the
+        // question row stays open and its answer takes the late-envelope path.
+        if (body?.name === "hub_ask") {
+          bridge.timeout(request, 0);
+          return this.streamedToolResponse(body, request.signal);
+        }
+        return this.handleToolRequest(body);
+      }
       if (url.pathname === "/budget") return this.handleBudgetRequest(body);
       return new Response("not found", { status: 404 });
     } });
@@ -621,12 +673,12 @@ export class PiPeer extends BasePeer {
     if (!snapshot.idle) this.clearWatchdog();
   }
 
-  async stop(reason?: string): Promise<void> {
+  async stop(reason?: string, failureCause?: DeliveryFailureCause): Promise<void> {
     if (reason !== undefined) this.requestedStopReason = reason;
     this.rosterEpoch++;
     this.terminalOwnerObservation = undefined;
     this.stopping = true; // fence new calls before withdrawing both turn and idle-shell execution
-    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement" });
+    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement", ...(failureCause ? { failureCause } : {}) });
     this.activeDeliveryIds.clear();
     const settling = this.abortTools();
     let unsettled: unknown;
@@ -712,14 +764,25 @@ export class PiPeer extends BasePeer {
     let attempted = false;
     let promptId: string | undefined;
     try {
-      const requested = await this.opts.selectModel?.(envs);
+      const selection = this.opts.getModelOverride?.();
+      if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new Error("runtime model must be one bounded native token");
+      const baseline = await this.opts.selectModel?.(envs);
+      const requested = selection?.model ?? baseline ?? (this.baselineRequestedModel || undefined);
+      if (selection && selection.model === undefined && this.runtimeModelSelected && !requested) throw new Error(`baseline model unavailable; restore the peer model configuration and run ahub restart ${this.id} before retrying`);
       if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
-      if (requested) await this.setRequestedModel(requested);
+      if (requested) {
+        if (selection?.model !== undefined) await this.applyRequestedModel(requested);
+        else await this.setRequestedModel(requested);
+        this.runtimeModelSelected = selection?.model !== undefined;
+      }
+      if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
+      await this.captureTurnModel(requested);
       if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
       this.noteActivity();
       attempted = true;
       if (deliveryId) this.activeDeliveryIds.add(deliveryId);
-      const message = [envs.some(env => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join("\n");
+      const recordPrompt = this.opts.mode === "tui" ? "" : this.turnRecordPrompt("");
+      const message = [recordPrompt, envs.some(env => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join("\n");
       if (this.opts.mode === "tui") { const pending = this.sendTui({ type: "prompt", message }); promptId = this.pendingPromptId; await pending; }
       else await this.sendRpc({ type: "prompt", message });
       if (promptId !== undefined && promptId !== this.pendingPromptId) return;
@@ -728,6 +791,8 @@ export class PiPeer extends BasePeer {
         this.setState("offline");
         return;
       }
+      if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
+      try { selection?.applied(); } catch { /* Only prompt acceptance proves this turn used the selected model or unchanged native default. */ }
       if (deliveryId && this.activeDeliveryIds.has(deliveryId)) this.delivery({ id: deliveryId, state: "accepted" });
     } catch (error) {
       if (promptId !== undefined && promptId !== this.pendingPromptId) return;
@@ -788,8 +853,29 @@ export class PiPeer extends BasePeer {
     }
   }
 
+  /**
+   * #1402 T4: a headless Pi reports its current model in `get_state`; that is `session` evidence. The TUI snapshot (`get_session_state`) carries no model, and a failed or placeholder read leaves the model the hub
+   * itself set through `set_model` (Pi acknowledged it), which is only `configured`. A read that fails never fails the delivery.
+   */
+  private async captureTurnModel(requested: string | undefined): Promise<void> {
+    this.turnModel = undefined;
+    if (this.opts.mode !== "tui") {
+      try {
+        const state = await this.waitRpc("get_state", 5_000);
+        const id = state.success === true ? stateModelId(state.data) : undefined;
+        if (id) { this.turnModel = { model: id, evidence: "session" }; return; }
+      } catch { /* optional metadata: the turn goes on without it */ }
+    }
+    if (requested) this.turnModel = { model: requested, evidence: "configured" };
+  }
+  observedModel(): ModelObservation | undefined { const model = this.turnModel; this.turnModel = undefined; return model; }
   getRequestedModel(): string { return this.requestedModel; }
+  getBaselineRequestedModel(): string { return this.baselineRequestedModel; }
   async setRequestedModel(model: string): Promise<void> {
+    await this.applyRequestedModel(model);
+    this.baselineRequestedModel = model;
+  }
+  private async applyRequestedModel(model: string): Promise<void> {
     if (!this.acceptingTools) throw new Error("Pi is off roster or stopped");
     const slash = model.indexOf("/");
     const provider = "agent-hub-local";
@@ -929,7 +1015,7 @@ export class PiPeer extends BasePeer {
       else if (error?.startsWith("execution budget")) this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
       else if (approvalStopReason) this.onMessage?.(approvalStopReason, reply);
       else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling);
-      else if (text) this.onMessage?.(text, reply);
+      else if (text) this.finalAnswer(text, reply);
       for (const id of this.activeDeliveryIds) this.delivery({ id, state: approvalStopReason ? "completed" : error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
       this.activeDeliveryIds.clear();
       this.currentReply = undefined; this.activeEnvs = [];
@@ -1047,11 +1133,11 @@ export class PiPeer extends BasePeer {
     await this.terminateFailedTurn(new ApprovalWaitStop(reason));
   }
 
-  private async terminateFailedTurn(error: Error): Promise<void> {
+  private async terminateFailedTurn(error: Error, failureCause?: DeliveryFailureCause): Promise<void> {
     const envs = this.activeEnvs.slice(), reply = this.currentReply;
     this.stopping = true;
     try {
-      await this.stop();
+      await this.stop(undefined, failureCause);
       // The process exit handler may already have reported this failure.
       if (this.activeEnvs.length) this.fail(error);
     } catch (stopError) {
@@ -1069,7 +1155,7 @@ export class PiPeer extends BasePeer {
   protected override onWatchdog(): void {
     if (this.stopping || this.rosterDetached || this.rosterUnownedRun) return;
     if (this.activeTools) { this.touch(); return; }
-    void this.terminateFailedTurn(new Error("Pi run became inactive before agent_settled"));
+    void this.terminateFailedTurn(new Error("Pi run became inactive before agent_settled"), "timeout");
   }
 }
 

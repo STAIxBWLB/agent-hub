@@ -283,7 +283,7 @@ function resetHarness() {
   get("tasks").append(make("div", "skeleton skeleton-board", ...[3, 2, 2, 1, 2].map(n => make("div", "skeleton-col", ...bars(n, n - 1)))), el("p", "Loading the board...", "empty"));
   get("peers").append(make("div", "skeleton", ...bars(3, 3)), el("p", "Loading peers...", "empty"));
   const api = runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null,lastSnapshot=null;
-    const officeDesks=new Map(),officeCards=new Map(),signatures=new Map(),managerMode=true,$=get;
+    const officeDesks=new Map(),officeCards=new Map(),signatures=new Map(),reviewCommentsCache=new Map(),managerMode=true,$=get;
     const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{},saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{};
     ${html.slice(start, end)}
     ({reset:resetView})`, { get, empty: (target: Node, text: string) => target.append(el("p", text, "empty")) } as any) as { reset: (id: string, instance: string) => void };

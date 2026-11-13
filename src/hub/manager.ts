@@ -1,3 +1,6 @@
+import { parseGuidanceListQuery, parseGuidanceIdQuery, parseGuidancePageResult, parseGuidanceDiffResult } from "./guidance-variants.ts";
+import { parseGuidanceProbeReceiptExport, probeSha256 } from "./guidance-probes.ts";
+import type { ActionMeta, InboxAnswers } from "@staix/agent-console/contract";
 import { assertExecutableRuntimeRoot } from "./project-runtime-state.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -131,7 +134,8 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       // #1057: the worktree shelf's person actions. The refresh is the one that reads GitHub, so it gets the delivery reads' deadline in its own branch below.
       const worktreeAction = ["worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs"].includes(String(input.action));
       // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
-      if (!["snapshot", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action)) && !worktreeAction) return { ok: false, error: "invalid dashboard action" };
+      if (!["snapshot", "send", "pause", "resume", "permit", "supervision", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "model_preview", "model_confirm", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release", "result_seen", "results_read_all", "results_unread_last"].includes(String(input.action)) && !worktreeAction) return { ok: false, error: "invalid dashboard action" };
+      const visualSelector = input.action === "snapshot" ? visualSnapshotSelector(input) : {};
       client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
       const deliveryRead = input.action === "sdlc_queue" || input.action === "sdlc_release";
       let nominalMs = 10_000;
@@ -142,7 +146,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       else if (input.action === "worktrees_refresh_prs") nominalMs = 40_000; // up to 25 s of bounded gh reads plus two git passes
       const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
       const result = await client.request(input.action === "snapshot"
-        ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
+        ? { t: "ui_snapshot", after: input.after ?? 0, ...visualSelector, ...(input.reviewRefresh === true && input.reviewTask !== undefined ? { reviewTask: input.reviewTask, reviewRefresh: true } : {}), ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
         : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
       // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
       if (input.action === "intake" && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
@@ -158,7 +162,125 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch (error) { return { ok: false, error: safeError(error) }; }
     finally { client?.close(); }
   };
-  return { list, act };
+  // #1053 T5: the acon plugin's answer to a question a peer asked. A port of its own, never an `act` action: `act` is also what the `ahub ui --all` dashboard page reaches, and an answer needs
+  // the console's verified person meta, which only the server-side provider holds (it checks it before calling this). The hub re-validates every answer against the stored row.
+  const answer = async (target: { projectId: unknown; instanceId: unknown }, payload: { questionSet: string; answers: InboxAnswers; person: string }) => {
+    if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project) return { ok: false, error: "unknown project" };
+    if (typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "expected daemon instance is required" };
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      const result = await client.request({ t: "answer", surface: "acon", questionSet: payload.questionSet, answers: payload.answers, person: payload.person }, 10_000);
+      const { rid: _rid, t: _t, ...reply } = result as Record<string, unknown>;
+      return reply;
+    } catch (error) { return { ok: false, error: safeError(error) }; }
+    finally { client?.close(); }
+  };
+  // #1054 T6: the acon plugin's receipt for a result: marking one read, all read, or the last read unread again. A port of its own like `answer`, never an `act` action from the plugin:
+  // the provider checks the console's verified person meta first. The hub's console-role `result_seen` and `results` control messages do the write, on the `acon` surface, and name a
+  // stale or unknown result in their refusal. (The page of `ahub ui` and `ahub ui --all` reaches the same writes as dashboard actions, which is the person's own browser session.)
+  const receipt = async (target: { projectId: unknown; instanceId: unknown }, payload: { op: "result_seen"; id: string } | { op: "results"; action: "read-all" | "unread-last" }) => {
+    if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project) return { ok: false, error: "unknown project" };
+    if (typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "expected daemon instance is required" };
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      const message = payload.op === "result_seen" ? { t: "result_seen", id: payload.id, surface: "acon" } : { t: "results", action: payload.action, surface: "acon" };
+      const result = await client.request(message, 10_000);
+      const { rid: _rid, t: _t, ...reply } = result as Record<string, unknown>;
+      return reply;
+    } catch (error) { return { ok: false, error: safeError(error) }; }
+    finally { client?.close(); }
+  };
+  // #1056: only the server-side acon provider calls this port. Dashboard action bodies
+  // cannot select a control operation or manufacture verified person metadata.
+  const consoleControl = async (target: { projectId: unknown; instanceId: unknown },
+    op: "review_comment_put" | "review_comment_delete" | "review_comment_send" | "review_comments" | "review_blob",
+    payload: Record<string, unknown>, personMeta?: ActionMeta) => {
+    if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
+    if (!["review_comment_put", "review_comment_delete", "review_comment_send", "review_comments", "review_blob"].includes(op)) return { ok: false, error: "invalid review operation" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project) return { ok: false, error: "unknown project" };
+    if (typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "expected daemon instance is required" };
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      const timeoutMs = options.forwardTimeoutMs?.(op, 10_000) ?? 10_000;
+      const result = await client.request({ ...payload, t: op, instanceId: target.instanceId, personMeta }, timeoutMs);
+      if (result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) return { ok: false, unconfirmed: true as const, text: "Review result is unconfirmed. Refresh and check the task before retrying.", error: "Review result is unconfirmed. Refresh and check the task before retrying." };
+      const { rid: _transportId, ...reply } = result;
+      return reply;
+    } catch { return { ok: false, unconfirmed: true as const, text: "Review result is unconfirmed. Refresh and check the task before retrying.", error: "Review result is unconfirmed. Refresh and check the task before retrying." }; }
+    finally { client?.close(); }
+  };
+  // #1220 T3: the acon provider's execution-lineage read. A port of its own like `answer`, never an `act` action: the
+  // dashboard's action list does not grow, so nothing here can link, probe, replay or execute. It sends the control
+  // message the console role already owns, answered in-stack by the same Tasks projection the CLI and MCP read.
+  const lineageQueryKeys = ["taskId", "attemptId", "root", "task", "cursor", "nodes", "edges", "bytes"] as const;
+  const lineage = async (target: { projectId: unknown; instanceId: unknown }, query: Record<string, unknown>) => {
+    if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project) return { ok: false, error: "unknown project" };
+    if (typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "expected daemon instance is required" };
+    // The hub parses a closed query: an unknown field would refuse every read, so name it here instead.
+    if (!query || typeof query !== "object" || Array.isArray(query) || Object.keys(query).some(key => !(lineageQueryKeys as readonly string[]).includes(key))) return { ok: false, error: "invalid lineage query" };
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      const timeoutMs = options.forwardTimeoutMs?.("lineage_show", 10_000) ?? 10_000;
+      const result = await client.request({ t: "lineage_show", ...query }, timeoutMs);
+      // A read has no effect to confirm: a missed deadline is a read that did not happen.
+      if (result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) return { ok: false, error: "the hub did not answer the lineage read in time; refresh and retry" };
+      const { rid: _transportId, ...reply } = result;
+      return reply;
+    } catch (error) { return { ok: false, error: safeError(error) }; }
+    finally { client?.close(); }
+  };
+  /** Producer-only read port; never forwards an action, actor or person-metadata claim. */
+  const guidance = async (target: { projectId: unknown; instanceId: unknown }, op: "list" | "show", input: unknown) => {
+    if (options.stopping?.()) return { ok: false, error: "guidance read is unavailable while the manager stops; reconnect before retrying" };
+    if (op !== "list" && op !== "show") return { ok: false, error: "guidance console is read-only; use the authorized CLI/MCP for mutations" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project || typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "select a running project and current instance before reading guidance" };
+    let query; try { query = op === "list" ? parseGuidanceListQuery(input) : parseGuidanceIdQuery(input); }
+    catch { return { ok: false, error: "invalid guidance query; select the task epoch and existing variant id or cursor" }; }
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      if (!client.features.includes("guidance_views")) return { ok: false, error: "running hub lacks guidance_views; upgrade and restart the hub before reading guidance" };
+      const result = await client.request({ t: op === "list" ? "guidance_list" : "guidance_show", ...query }, options.forwardTimeoutMs?.(`guidance_${op}`, 10_000) ?? 10_000);
+      if (result.ok !== true) return { ok: false, error: "guidance read is unavailable; refresh the task scope and current daemon before retrying" };
+      return { ok: true, guidance: op === "list" ? parseGuidancePageResult(result.guidance, query) : parseGuidanceDiffResult(result.guidance, query) };
+    } catch { return { ok: false, error: "guidance read is unavailable; refresh the task scope or upgrade the hub before retrying" }; }
+    finally { client?.close(); }
+  };
+  /** Producer-only read port for one probe experiment; never forwards an action, an actor or a person-metadata claim, and writes nothing in the hub. */
+  const guidanceProbe = async (target: { projectId: unknown; instanceId: unknown }, input: unknown) => {
+    if (options.stopping?.()) return { ok: false, error: "guidance probe status is unavailable while the manager stops; reconnect before retrying" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project || typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "select a running project and current instance before reading a guidance probe" };
+    // A closed query: exactly one exact registered content id. Any other field is refused here rather than forwarded.
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => key !== "id") || !probeSha256((input as { id?: unknown }).id))
+      return { ok: false, error: "invalid guidance probe query; use the exact 64-character probe id" };
+    const id = (input as { id: string }).id;
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      if (!client.features.includes("guidance_probe_receipts")) return { ok: false, error: "running hub lacks guidance_probe_receipts; upgrade and restart the hub before reading a guidance probe" };
+      const result = await client.request({ t: "guidance_probe_receipts", id }, options.forwardTimeoutMs?.("guidance_probe_receipts", 10_000) ?? 10_000);
+      if (result.ok !== true) return { ok: false, error: typeof result.error === "string" ? result.error.slice(0, 512) : "guidance probe status is unavailable; refresh the probe id and the current daemon before retrying" };
+      const receipts = parseGuidanceProbeReceiptExport(result.receipts);
+      // The reply must be the experiment that was asked for: a well-formed export of another probe never satisfies this selection.
+      if (!receipts || receipts.status.id !== id) return { ok: false, error: "guidance probe receipts are malformed, fail their digest check or name another probe; do not rely on them" };
+      return { ok: true, receipts };
+    } catch { return { ok: false, error: "guidance probe status is unavailable; refresh the probe id or upgrade the hub before retrying" }; }
+    finally { client?.close(); }
+  };
+  return { list, act, answer, receipt, consoleControl, lineage, guidance, guidanceProbe };
 }
 
 export async function startManager(options: ManagerOptions = {}): Promise<ManagerHandle> {
@@ -322,4 +444,16 @@ export async function stopManager(options: ManagerOptions = {}): Promise<void> {
     await Bun.sleep(25);
   }
   throw new Error("manager shutdown is still pending; project hubs were not changed");
+}
+
+/** Closed read selectors only; no caller path, policy or arbitrary control fields are forwarded. */
+export function visualSnapshotSelector(input: Record<string, unknown>): Record<string, string | number> {
+  const keys = ["visual", "visualTask", "visualAsset"].filter(key => Object.hasOwn(input, key));
+  if (!keys.length) return {};
+  if (keys.length !== 1) throw new Error("visual selector is ambiguous; select one visual or task and retry");
+  const key = keys[0]!, value = input[key];
+  const id = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
+  if (key === "visualTask" ? Number.isSafeInteger(value) && Number(value) > 0
+    : typeof value === "string" && new RegExp(key === "visualAsset" ? `^${id}:(before|after)$` : `^${id}$`).test(value)) return { [key]: value as string | number };
+  throw new Error("visual selector is invalid; select a current visual or task and retry");
 }

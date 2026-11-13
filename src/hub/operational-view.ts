@@ -1,4 +1,7 @@
+import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { sanitize } from "./envelope.ts";
+import { MODEL_EVIDENCE } from "./events.ts";
+import { safeModelLabel } from "../omniroute/usage.ts";
 import type { BusEvent } from "./bus.ts";
 import { CLASSES, type Task } from "./board.ts";
 
@@ -11,11 +14,11 @@ export interface OperationalViewPorts {
 }
 /** Closed metadata receipts only. Unsupported nested records are withheld until given their own projection. */
 const EVENT_FIELDS: Record<string,readonly string[]>={
-  state:["peer","state"],hub_start:["instance"],native_thread:["peer","thread","fresh"],turn_start:["peer","turn"],native_turn_end:["peer","id"],
+  state:["peer","state"],hub_start:["instance"],native_thread:["peer","thread","fresh"],turn_start:["peer","turn"],native_turn_end:["peer","id","reason"],
   task:["id","event","by","state","owner","reviewer","class","profile","profileClass","role","pii","reason","release","priority","plannedStart","due"],
   tokens:["peer","n","task","attribution","pii"],
   usage:["peer","source","id","task","attribution","pii","reasoningTokens","measuredAt","inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens"],
-  turn_end:["peer","turn","ms","tokens","files","snapshotMs","task","attribution","pii"],
+  turn_end:["peer","turn","ms","tokens","files","snapshotMs","task","attribution","pii","model","modelEvidence"],
   conduct:["peer","action","task","target"],agent_cli:["peer","command","refused","delegated"],
   pii_screen:["task","item","label","source","category","miss","ms"],
   overflow:["id","from","peer"],undeliverable:["id","from","peer"],stale:["id","from","peer","task"],quiet:["id","from","peers"],
@@ -63,10 +66,12 @@ function metadataValue(type:string,key:string,value:unknown):boolean {
   if(key==="event")return type==="task"?typeof value==="string"&&TASK_EVENTS.has(value):type==="cohort"?oneOf(value,["formed","joined","lifted"]):oneOf(value,["requested","answered","expired","cancelled"]);
   if(key==="attribution")return oneOf(value,["delivery","single_open","unattributed"]);
   if(key==="label")return oneOf(value,["pii","clear"]);
+  if(key==="model")return safeModelLabel(value)!==undefined;
+  if(key==="modelEvidence")return oneOf(value,MODEL_EVIDENCE);
   if(key==="item")return oneOf(value,["task","summary","review note","handoff","note"]);
   if(key==="category")return oneOf(value,["name","student_id","phone","address","grade","health","other"]);
   if(key==="miss")return oneOf(value,["too long","off campus","timeout","unreadable","failed"]);
-  if(key==="source")return type==="pii_screen"?oneOf(value,["regex","screen","unknown","inherited"]):type==="usage"?oneOf(value,["omniroute","claude_transcript","claude_result","codex_appserver","kimi_wire","jcode_acp"]):identifier(value);
+  if(key==="source")return type==="pii_screen"?oneOf(value,["regex","screen","unknown","inherited"]):type==="usage"?oneOf(value,["omniroute","claude_transcript","claude_result","codex_appserver","kimi_wire","jcode_acp","agy_transcript"]):identifier(value);
   if(key==="measuredAt")return type==="context_pressure" || type==="quota_reset"?typeof value==="number"&&Number.isFinite(value):typeof value==="string"&&Number.isFinite(Date.parse(value));
   if(key==="window")return value===null || typeof value==="number"&&Number.isFinite(value)&&value>=0 || identifier(value);
   if(key==="priority")return value===null || typeof value==="number"&&Number.isFinite(value) || oneOf(value,["status","important","fyi"]);
@@ -77,7 +82,17 @@ function metadataValue(type:string,key:string,value:unknown):boolean {
 
 /** Shared by the daemon's existing console stream and operational projection tests. */
 export function redactBusEvent(e:BusEvent):BusEvent {
-  if (!("env" in e) || !e.env.private) return e;
+  if (!("env" in e)) return e;
+  if (isReviewObserverExcluded(e.env)) {
+    const { refs, ...env } = e.env;
+    return { ...e, env: { ...env, refs: { ...(refs?.reviewPackage ? { reviewPackage: refs.reviewPackage } : {}), ...(refs?.reviewResponse ? { reviewResponse: refs.reviewResponse } : {}), ...(refs?.task && /^[0-9]+$/.test(refs.task) ? { task: refs.task } : {}) }, body: "[review package: inspect task review comments]" } };
+  }
+  // #1053: the person's answer to a question is theirs and the asking peer's: the console tail and the dashboard feed show a stub, whoever the envelope is private for.
+  if (e.env.kind === "answer" || e.env.refs?.question) {
+    const set = e.env.refs?.question;
+    return { ...e, env: { ...e.env, refs: set ? { question: set } : undefined, body: `[question ${set ?? "answer"}: body shown only to its peer]` } };
+  }
+  if (!e.env.private) return e;
   const {refs,...env}=e.env;
   const task=refs?.task && /^[0-9]+$/.test(refs.task)?refs.task:undefined;
   return {...e,env:{...env,...(task?{refs:{task}}:{}),body:`[private${task?`: task #${task}, see ahub task show ${task}`:""}]`}};

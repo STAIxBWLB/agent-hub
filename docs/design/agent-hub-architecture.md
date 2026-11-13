@@ -44,6 +44,14 @@ Authority is role-scoped: the person retains decisions requiring judgment or con
 
 Native tools keep their vendor permission and execution boundaries. The local worker applies path and permission checks to its tools, and runs command execution through a host-supported sandbox; the hub does not sandbox vendor-native tools or claim all ACP commands are isolated. This avoids confusing a hub permission mode with execution confinement ([#39](https://github.com/STAIxBWLB/agent-hub/issues/39), [#270](https://github.com/STAIxBWLB/agent-hub/issues/270)).
 
+Channel takeover keeps the same separation: optional adapter-owned takeover and
+socket-ownership ports hold transport state, while the daemon supplies person
+admission and current roster/launch/generation fences. A live standby has no peer
+tool or delivery authority. Its public connection id is not a native conversation
+id and cannot release observer provenance or establish execution isolation. A
+person takeover detaches ownership without terminating the process, and normal
+delivery uncertainty remains independent ([#1174](https://github.com/STAIxBWLB/agent-hub/issues/1174)).
+
 ## Console presentation surfaces
 
 The floating pet belongs to acon Mini (#1012). The compatibility command
@@ -65,6 +73,15 @@ The message bus is separate from task state. `Bus` frames and routes envelopes; 
 
 Encrypted rooms are an optional message transport between project hubs. They do not federate task boards, roles, approvals, or memory; each receiving project makes its own local admission decision. This prevents a remote room membership from becoming local authority ([#446](https://github.com/STAIxBWLB/agent-hub/issues/446)).
 
+Room applications add bounded at-least-once sending with receiver admission
+deduplicated by immutable application id under the existing retention and cap
+contract. Retry and restart retain the original queue
+TTL and revalidate current membership and privacy. ACK deadlines trigger resend;
+late signed recipient receipts may settle unresolved ordinary remote holds but
+never a person-disposed row. Invocation uncertainty keeps its person-only ledger hold. Receipt ciphertext is locally durable before chat transport
+ACK, and remains in its outbox until broker storage confirmation. These room-only
+transitions do not grant native completion or task-offer read evidence ([#1204](https://github.com/STAIxBWLB/agent-hub/issues/1204)).
+
 Claim evidence (#931 T1) uses the same Tasks/Board boundary and #901's canonical
 claim identity and ordered-list revision. Evidence links are append-only
 provenance proposals; they create no separate claim/verdict store and do not
@@ -73,11 +90,83 @@ returns an ids-only receipt and excludes its arguments/results from capture.
 Its T1 authorization, revision and recovery boundaries are defined in
 [the task-board contract](task-board.md#claim-evidence-records-931-t1).
 
+## Bounded visual attachments (#1058)
+
+Bounded visual attachments (#1058) are local project records in `hub.db`, separate
+from task transitions and delivery receipts. The hub validates and privacy-screens
+the exact acon `VisualPayload` shape; peers receive only a sanitized stub with
+`refs.visual`, and explicitly request the source through a guarded read. acon owns
+rendering and its sandbox; the standalone dashboard uses text/source fallback.
+The hub imports contract types only, with no renderer or new runtime dependency.
+Image bytes use the existing guarded deliverable reader and current hash/policy
+checks; console asset identifiers bind their originating project and instance.
+Raw visual tool arguments/results never enter observer capture, even on refusal.
+The unchanged acon shape has additional hub admission ceilings: 1 MiB serialized
+payload; UTF-8 bytes Mermaid source 20 KiB, title 300, caption 2000, alt 1000,
+text side 20 KiB, option
+summary 4000, each pro/con 2000, table cell 4000, key 128, path 4096 and asset
+reference 256. These are hub limits, not a claim that acon imposes each limit;
+validation refuses rather than truncates. acon counts Mermaid UTF-16 code units
+and leaves captions unbounded, while the hub counts UTF-8 bytes. All 42 published
+acon 0.1.7 visual cases are consumed directly; six named valid-acon cases are
+rejected only by these stricter source/caption/asset-ID ceilings. Historical
+hub-owned cases remain extra coverage, not a substitute for the shared fixture.
+
+Periodic dashboard snapshots and task lists project bounded, screened metadata
+only; they do not deserialize or screen complete visual payloads. Explicit show
+and asset requests perform the full current-policy checks. A missing image does
+not erase its visual's public explanation; asset existence and hash validation
+belong to the guarded asset read. Non-sensitive refusals identify recovery,
+authority, concurrent change or unavailable screening and their repair action;
+sensitive privacy refusals keep a uniform message.
+
+Publication does a non-consuming rate check before model screening or image
+reads and still consumes admission once immediately before publication. Visuals
+are explanatory output, not task progress for no-write detection.
+Held controlled recovery compares retained visual integrity before startup
+retention pruning; startup, periodic and tool pruning all wait until both the
+recovery transaction and bus recovery hold are clear.
+
 ## Models and memory
 
-Peer selection, hub-owned model routing, and provider access are distinct layers. Task routing chooses a peer; the in-process route selects a model for hub-owned inference; OmniRoute owns provider keys, provider fallback, and usage. Native CLIs retain their own account and provider configuration; subscription OAuth credentials are not pooled through the gateway. The former Switchyard sidecar is retired; routing now runs in process. This keeps provider credentials and fallback policy in one gateway while avoiding a second routing service ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
+
+Peer selection, hub-owned model routing, and provider access are distinct layers. Task routing chooses a peer; the in-process route selects a model for hub-owned inference; OmniRoute owns provider keys, provider fallback, and usage. Native CLIs retain their own account and provider configuration; subscription OAuth credentials are not pooled through the gateway. Routing runs in process through the hub-owned route implementation. An opt-in `decision` route may consult the loopback agent-decide policy service; execution and provider access remain in the hub and OmniRoute, with the existing heuristic as the consumer fallback. This keeps worker-provider credentials and provider failover in one gateway; the optional policy consult does not proxy the worker's inference traffic ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
+
+For the later host-route question slice, the same loopback service can suggest
+an alias/effort for an existing `plan_execute` phase or `advisor`/`escalation`
+judge call. The phase, host trigger, verdict parsing, escalation latch and
+executor fallback remain owned by the hub; shadow records the proposal without
+applying it. The judge observation is separately marked in route metadata and
+does not create a served-model or usage claim. The ADEc policy examples are
+placeholders, not deployed configuration or evidence of model quality.
+
+Person-owned live model overrides (#1317) are runtime state in `hub.db`, not
+configuration edits. The host owns person admission, desired-versus-applied
+selection, next-turn fencing, status and audit; adapters acknowledge only their
+own captured spawn/transport acceptance. The override does not grant a model,
+provider or account authority to a peer. Unsupported surfaces remain unsupported
+without automatic restarts. Tier 3 configuration, recovery and native isolation
+boundaries stay in place; the [adapter contract](adapters.md#person-owned-live-model-selection-1317)
+defines supported turn paths and evidence limits.
 
 The hub's portable memory storage, sync, indexing, and project helpers come from the pinned first-party `@staix/agent-mem` package. `src/memory/` and `Tasks` provide hub-specific capture, recall, privacy screening, task briefs, and shared notes. Runtime memory is in-process: there is no claude-mem worker HTTP client or model summarizer. claude-mem is an off-by-default, import-only source. This removes a second capture path while keeping caller authority and task privacy in the hub ([#752](https://github.com/STAIxBWLB/agent-hub/issues/752), [agent-mem#13](https://github.com/STAIxBWLB/agent-mem/issues/13)).
+
+Long-term hub writes and core promotion callbacks use the configured standalone sync policy plus hub narrowing. Profile readiness is independent of the current daemon's last automatic sync result. Public status exposes safe cause/count/action metadata; person-only declined inspection exposes IDs and rule categories, with explicit incomplete state when the portable core cannot supply a bounded physical view. Portable row placement and physical sync inspection remain agent-mem responsibilities.
+
+
+The adec backend (#554) is default-off and shadow-first. A shadow pick changes
+neither the heuristic model/effort nor the forwarded conversation. The service
+owns question assembly, hard rules, thresholds, pins and policy fallback; the hub
+owns allowed-pair validation, its default-off shadow switch, current turn and
+budget/campus admission, and original gateway execution. `enforce` is refused at configuration load and
+no pick is applied in this delivery. The bounded evidence
+builder runs only after admission and uses the host public-view screen; it never
+sends tool arguments, system instructions or full history. Sensitive turns are
+campus-gated before evidence and carry dimensions only plus privacy flags.
+Review-observer and remote inputs do not reach this optional observer. Route
+records retain closed metadata, not evidence or service error prose. Direct
+System One integration, the optional stage classifier and the manual triage
+comparison remain outside this consumer slice.
 
 ## Privacy and recovery
 
@@ -98,3 +187,9 @@ Privacy decisions are made at hub boundaries, not delegated to model routing. A 
 Recovery is a coordinated daemon operation over separately persisted board, delivery, and native-session evidence. A restart or upgrade can continue only with compatible feature evidence from the verified target and host-held proofs that still match the project and actor. Adapters report native evidence; they do not certify their own recovery authority. This avoids treating a stale status file or an unverified receipt as proof that a native process is safe to resume ([#37](https://github.com/STAIxBWLB/agent-hub/issues/37), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#900](https://github.com/STAIxBWLB/agent-hub/issues/900)).
 
 The architecture does not claim that a fixture proves a real provider account, native session, campus network, or operating-system sandbox. Those are distinct runtime evidence and remain separate from source-level and automated checks ([#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).
+
+## Person review packages (#1056)
+
+The task-board module owns anchored findings and person-authored comment lifecycles. Transport carries one explicit review package only after `Tasks` admits the selected draft set; drafting and editing do not start peer turns. acon supplies the shared review kit and a server-verified person identity, while the standalone dashboard reads counts and bounded placements only. Neither surface writes the Board directly.
+
+The host-only review package reference is an observer exclusion, not PII authority. Durable open comment/finding scope protects memory notes naming that task after restart or intervening input. Capture, progress and session-title exclusion follows the current review input, not unrelated board history. The read-only own held inbox view (#1328 AC6) creates no durable handout receipt. Its narrow conservative ceiling also excludes retained readable observer-excluded held inputs (trusted review packages and host-stamped peer chat/status responses) across restart until explicit disposition, even if unread; an overflowing or unreadable recipient row/byte window stays unknown and excluded because a previously viewed review can move outside the window. Ordinary queued/deferred review rows do not acquire this ceiling, and verified ordinary replacement retains its existing turn rules. ID-only current-input holds survive daemon restart. An intact, readable, complete store with no matching held record admits a new session as clean. Unreadable or corrupt storage and unconfirmed coverage for the current identity remain excluded. A validated release receipt confirms that identity without declaring other legacy identities clean. For an identified pull-only session, a positive held row remains sticky across restart until confirmed native identity changes. Its own incomplete marker excludes until verified ordinary replacement or a confirmed new session clears that marker; legacy coverage alone does not create a sticky hold. Missing native identity permits handout under an in-RAM unknown-held scope. A never-identified peer can release it with verified ordinary replacement in that daemon run; earlier positive or incomplete SID rows instead keep unidentified observer state held until a real SID is confirmed. First confirmation persists any current RAM quote under that SID before clearing the peer marker, without discarding other SID rows. It does not invent a native identity or weaken write-failure refusal. Legacy coverage completes from settled journal evidence, after which NULL clean receipts can be pruned; corrupt state remains excluded and is named in status with a repair next step. The hold grants no authority; the task-bound recipient summary and check output remain distinct from observer projections. Explicit publication recovery uses the saved immutable envelope and retained journal evidence, never automatic effect replay. Its intended recipient may read a public package, but memory capture, operational views, delivery logging and incoming-message labels exclude its body. Local-worker capture latches exclusion before any tool in a batch that submits an anchored verdict, including a refused verdict, and applies it to subsequent capture, final summaries and retained history. A delayed response cannot become capturable when another turn starts. Recovery advertises the conditional `review_comments` feature when retained comment/package records require it. It also requires `review_observer_input_state` when held or unknown session-input provenance could otherwise be lost. See [the task-board contract](task-board.md#anchored-review-packages-1056) for bounds, immutable snapshot placement and lifecycle authority.

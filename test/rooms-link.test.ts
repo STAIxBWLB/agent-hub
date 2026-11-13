@@ -12,7 +12,7 @@ import { RoomLink, type RoomLinkState, type RoomPresencePeer } from "../src/room
 const clients: FakeBrokerClient[] = [];
 const roots: string[] = [], stores: RoomStore[] = [], links: RoomLink[] = [], brokers: BrokerRuntime[] = [], fakes: ReturnType<typeof Bun.serve>[] = [];
 afterEach(async () => {
-  for (const link of links.splice(0)) link.stop();
+  for (const link of links.splice(0)) await link.stop();
   for (const client of clients.splice(0)) client.close();
   for (const broker of brokers.splice(0)) await broker.stop();
   for (const fake of fakes.splice(0)) await fake.stop(true);
@@ -46,6 +46,25 @@ async function fixture(brokerOffsetMs = 0) {
   const joined = await owner.enroll("test", request);
   await guest.install({ name: "test", broker: broker.publicUrl, wire: joined.wire, expectedDigest: null });
   return { root, owner, guest, broker };
+}
+async function requestFreshPresence(f: Awaited<ReturnType<typeof fixture>>, guest: FakeBrokerClient): Promise<void> {
+  const row = f.guest.get("test")!;
+  guest.send(await sealFrame({ epoch: row.current, identity: f.guest.identity,
+    recipients: [f.owner.identity.public.fingerprint], ephemeral: true,
+    plaintext: canonicalBytes({ v: 1, type: "presence", peers: [], requestReply: true }), sequence: f.guest.sequence }));
+  await guest.take("stored");
+}
+async function freshPresenceFrame(f: Awaited<ReturnType<typeof fixture>>, guest: FakeBrokerClient): Promise<Uint8Array> {
+  // A connection-time request may already be in flight. Drain it before the
+  // explicit request's response, preserving the same final queue assertions.
+  for (let n = 0; n < 8; n++) {
+    const wire = await guest.take("frame");
+    const opened = await openFrame({ wire, identity: f.guest.identity, current: f.guest.get("test")!.current,
+      replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
+    if (opened.status === "accepted" && JSON.parse(new TextDecoder().decode(opened.plaintext)).requestReply !== true) return wire;
+    await guest.ack(encodeBase64url(await sha256(wire)));
+  }
+  throw new Error("fresh presence response not received");
 }
 function linked(store: RoomStore, extra: { presence?: () => readonly { id: string; state: string }[]; onPresence?: (value: { member: string; peers: readonly RoomPresencePeer[] }) => void } = {}) {
   const online = deferred(), offline = deferred(), states: RoomLinkState[] = [];
@@ -151,7 +170,7 @@ test("a refused signed presence is durably retired so later valid broker traffic
   expect(f.owner.pendingInbox("test")).toEqual([]);
   expect(f.owner.refused("test").map(({ digest, reason }) => ({ digest, reason }))).toEqual([{ digest, reason: "invalid_presence" }]);
   expect(JSON.stringify(f.owner.refused("test"))).not.toContain("unexposed");
-  owner.link.stop(); f.owner.close();
+  await owner.link.stop(); f.owner.close();
   const restored = await storeAt(f.root, "owner");
   expect(restored.refused("test").map(({ digest, reason }) => ({ digest, reason }))).toEqual([{ digest, reason: "invalid_presence" }]);
 });
@@ -164,7 +183,7 @@ test("broker challenge authentication accepts independent host clocks in either 
     await guest.link.start(); await guest.online();
     expect(owner.link.status().state).toBe("online");
     expect(guest.link.status().state).toBe("online");
-    owner.link.stop(); guest.link.stop();
+    await owner.link.stop(); await guest.link.stop();
   }
 });
 
@@ -189,6 +208,7 @@ test("a presence exposure removed while encryption waits is withheld before the 
     await owner.link.publishPresence(); // Coalesced while the prior snapshot still awaits encryption.
     release.resolve();
     await publishing;
+    guest.link.refresh(); // Explicit refresh requests an unchanged observation after the withheld seal.
     await bounded(final.promise);
     expect(observations.every(peers => peers.length === 0)).toBe(true);
   } finally { release.resolve(); f.owner.sequence.reserve = reserve; }
@@ -271,9 +291,10 @@ test("a broker's expired previous epoch and wrong epoch frames retire durably be
 test("a failed durable refusal write retains the broker packet without transport ACK", async () => {
   const f = await fixture(), owner = linked(f.owner);
   await owner.link.start(); await owner.online();
-  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room); clients.push(guest);
+  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room, { "x-agent-hub-ephemeral": "1" }); clients.push(guest);
   await guest.authenticate(f.guest.identity);
-  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  await requestFreshPresence(f, guest);
+  const initial = await freshPresenceFrame(f, guest); await guest.ack(encodeBase64url(await sha256(initial)));
   expect(f.broker.stats().queuedFrames).toBe(0);
   const record = f.owner.recordRefused;
   f.owner.recordRefused = () => { throw new Error("fixture storage unavailable"); };
@@ -289,8 +310,9 @@ test("a failed durable refusal write retains the broker packet without transport
 
 test("a new local epoch cannot publish ciphertext before that socket verifies the same roster", async () => {
   const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
-  const guest = await FakeBrokerClient.connect(f.broker.publicUrl, f.guest.get("test")!.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
-  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  const guest = await FakeBrokerClient.connect(f.broker.publicUrl, f.guest.get("test")!.current.room, { "x-agent-hub-ephemeral": "1" }); clients.push(guest); await guest.authenticate(f.guest.identity);
+  await requestFreshPresence(f, guest);
+  const initial = await freshPresenceFrame(f, guest); await guest.ack(encodeBase64url(await sha256(initial)));
   const before = f.owner.get("test")!;
   // Keep the guest so an unfenced publisher has a real recipient and would reserve/send.
   await f.owner.rotate("test", roomMembers(before.current), before.current.digest);
@@ -302,8 +324,9 @@ test("a new local epoch cannot publish ciphertext before that socket verifies th
 
 test("a runtime capacity metadata failure cannot become a safe presence drop or transport ACK", async () => {
   const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
-  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
-  const initial = await guest.take("frame"); await guest.ack(encodeBase64url(await sha256(initial)));
+  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room, { "x-agent-hub-ephemeral": "1" }); clients.push(guest); await guest.authenticate(f.guest.identity);
+  await requestFreshPresence(f, guest);
+  const initial = await freshPresenceFrame(f, guest); await guest.ack(encodeBase64url(await sha256(initial)));
   const available = f.owner.ordinaryInboxAvailable;
   f.owner.ordinaryInboxAvailable = () => { throw new Error("fixture metadata read failed"); };
   try {
@@ -378,7 +401,7 @@ test("a verified owner upgrade holds one old ciphertext without replay, plaintex
 
 for (const mode of ["before-ready", "two"] as const) {
   test(`owner upgrade deferral refuses ${mode === "two" ? "a second in-flight ciphertext" : "a generic pre-handshake ciphertext"} without replay or ACK`, async () => {
-    const f = await ownerUpgradeBroker(mode); await f.link.start(); await f.closed(); f.link.stop();
+    const f = await ownerUpgradeBroker(mode); await f.link.start(); await f.closed(); await f.link.stop();
     expect(f.replayCalls()).toBe(0); expect(f.observations).toEqual([]); expect(f.acks).toEqual([]);
     expect(f.f.owner.pendingInbox("test")).toEqual([]); expect(f.f.owner.refused("test")).toEqual([]);
   });

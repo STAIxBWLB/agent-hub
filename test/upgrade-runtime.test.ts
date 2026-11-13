@@ -1262,7 +1262,7 @@ test("a restarted target whose planned session comes back clears the fresh choic
 
 // #272 review: [k] on the plan screen acts on a plan a person read a while ago. The lock, the hub and the terminal are
 // injected here, so no hub, registry or lock of this machine is read.
-const CUT = "; its turn was cut: a delivery it had not settled is held as needs_review, and its queue stays held until ahub queue resolve";
+const CUT = (peer: string) => `; its turn was cut: a delivery it had not settled is held as needs_review, and its queue stays held until it is resolved (ahub queue list --peer ${peer} names it; ahub queue show on that id prints the full resolve command)`;
 function endFixture(peer: "codex" | "claude" | "pi", root = "/end-272", stateDir = "/end-272/.agenthub/state") {
   const attached = (session: string, state = "idle") => ({ id: peer, state, ...(peer === "codex" ? { threadId: session } : { sessionId: session }), ...(peer === "pi" ? { args: { mode: "tui" } } : {}) });
   const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
@@ -1297,7 +1297,7 @@ test("a TUI agent's terminal is closed while the lock, the hub, its session and 
   expect([reads, late.orca.calls.includes("close")]).toEqual([2, false]);
   // A turn in progress is cut by the close: the line says what the hub holds because of it.
   const busy = endFixture("codex");
-  expect(await busy.end({ inspect: async () => busy.hub({ peers: [busy.attached("session-S", "busy")] }) })).toBe(`p-272/codex: terminal term-planned closed${CUT}`);
+  expect(await busy.end({ inspect: async () => busy.hub({ peers: [busy.attached("session-S", "busy")] }) })).toBe(`p-272/codex: terminal term-planned closed${CUT("codex")}`);
 });
 
 test("a TUI agent is not ended, and nothing is closed, once the lock, the hub, its session or its terminal differ from the plan", async () => {
@@ -1358,7 +1358,7 @@ test("a headless agent is stopped through peer_stop, and a hub that does not kno
   const end = (deps: Parameters<typeof endPlannedPeer>[2] = {}) => endPlannedPeer(planned, planned.source.peers[0]!, { lock: () => undefined, inspect: async () => planned.source, run: async () => { throw new Error("no terminal command for a headless agent"); }, ...deps });
   try {
     expect(await end()).toBe("p-272/kimi: stopped");
-    expect(await end({ inspect: async () => ({ ...planned.source, peers: [{ id: "kimi", state: "busy" }] }) })).toBe(`p-272/kimi: stopped${CUT}`);
+    expect(await end({ inspect: async () => ({ ...planned.source, peers: [{ id: "kimi", state: "busy" }] }) })).toBe(`p-272/kimi: stopped${CUT("kimi")}`);
     // The daemon's answer to a request it does not have (0.12.21 and older).
     answer = { ok: false, error: 'this hub does not know "peer_stop" (restart it: ahub kill && ahub up)' };
     expect(await end()).toBe("p-272/kimi: hub 0.12.21 cannot end a headless agent by itself; it stops with the old hub at the upgrade and the new hub starts it again (ahub stop kimi ends it then)");

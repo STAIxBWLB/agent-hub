@@ -20,6 +20,11 @@ permissions:
   contents: read
   actions: read
 
+# #1257: scripts/check-package.mjs parses `npm pack --dry-run --json`, whose shape is an npm major's to change. The gate shards run this npm, the same
+# version release.yml publishes with (test/npm-pin.test.ts keeps the two equal); raise both together after reading the new shape.
+env:
+  NPM_VERSION: '11.20.0'
+
 concurrency:
   # #609: one group per PR, so PRs run side by side; within a PR a newer pending run replaces the older pending one
   # (queue single), while an admitted controller is never cancelled. Main pushes and dispatches keep queue max.
@@ -40,30 +45,35 @@ jobs:
       admission: ${{ steps.reuse.outputs.admission }}
       verified_run: ${{ steps.reuse.outputs.verified_run }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - id: reuse
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/ci-reuse.mjs
+      # #1268: stale documentation stamps show on every PR, even when the gate is reused; the gate's own check-docs fails on manifest errors and release requires fresh stamps.
+      - name: Report stale documentation stamps
+        continue-on-error: true
+        run: |
+          node scripts/check-docs.mjs | sed -E 's/^docs: (.+): stale (.+)$/::warning file=\1,title=Stale documentation stamp::\1 is stale \2; recheck it against its covered paths and restamp it in the release PR/'
 
   prepare-bundle:
     if: github.event_name == 'workflow_dispatch' && inputs.prepare_bundle && inputs.timing_runs != '20'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plugin-assets-${{ github.sha }}
           include-hidden-files: true
@@ -84,16 +94,18 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+      - name: npm pinned like release.yml
+        run: npm install -g "npm@$NPM_VERSION"
       - name: Gate shard (once-only steps on shard 1, tests of this shard)
         env:
           # Keep the existing bounds: the quiet bound is the hang detector, the total is only the backstop for a run that keeps printing while hung.
@@ -104,7 +116,7 @@ jobs:
         run: scripts/check.sh
       - name: Retain failed restart fixture diagnostics
         if: failure() && needs.decision.outputs.run_gate == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: restart-diagnostics-ubuntu-latest-${{ matrix.shard }}-${{ github.sha }}
           path: ${{ runner.temp }}/ahub-restart-diagnostics
@@ -139,7 +151,9 @@ jobs:
     # exactly one shard). Shard 1 also runs typecheck, roles, bundle freshness, package contents and docs once; the others install and test. Each shard stays under 15 minutes.
     name: check (macos-latest) shard ${{ matrix.shard }}/4
     needs: decision
-    if: needs.decision.outputs.run_gate == 'true'
+    # #1307: GitHub runs at most 5 macOS jobs at once on this account. A stacked PR (base not the default branch) is rebased and rerun once it targets main, so its shards wait;
+    # the aggregator below fails for it rather than letting a skipped required check pass.
+    if: needs.decision.outputs.run_gate == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.base.ref == github.event.repository.default_branch)
     runs-on: macos-latest
     timeout-minutes: 25
     strategy:
@@ -147,16 +161,18 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
+      - name: npm pinned like release.yml
+        run: npm install -g "npm@$NPM_VERSION"
       - name: Gate shard (once-only steps on shard 1, tests of this shard)
         env:
           # The same bounds as Linux: the quiet bound is the hang detector, the total is only the backstop for a run that keeps printing while hung.
@@ -184,7 +200,7 @@ jobs:
           done
       - name: Retain macOS fsmonitor readback diagnostics
         if: failure() && needs.decision.outputs.run_gate == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docs-git-diagnostics-${{ matrix.shard }}-${{ github.sha }}
           path: ${{ runner.temp }}/ahub-docs-git-diagnostics
@@ -192,7 +208,7 @@ jobs:
           retention-days: 1
       - name: Retain failed restart fixture diagnostics
         if: failure() && needs.decision.outputs.run_gate == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: restart-diagnostics-macos-latest-${{ matrix.shard }}-${{ github.sha }}
           path: ${{ runner.temp }}/ahub-restart-diagnostics
@@ -215,6 +231,14 @@ jobs:
         run: |
           test -n "$VERIFIED_RUN" || { echo "missing verified full-gate proof"; exit 1; }
           echo "Reused identical-tree full gate run $VERIFIED_RUN"
+      - name: macOS shards deferred for a stacked PR
+        if: needs.decision.outputs.run_gate == 'true' && github.event_name == 'pull_request' && github.event.pull_request.base.ref != github.event.repository.default_branch
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+        run: |
+          echo "::error title=macOS shards deferred::this PR targets $BASE, not $DEFAULT (#1307). They run on the next run after it targets $DEFAULT: push a commit, or close and reopen the PR."
+          exit 1
       - name: Every macOS shard passed
         if: needs.decision.outputs.run_gate == 'true'
         env:
@@ -235,11 +259,11 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -252,7 +276,7 @@ jobs:
         run: bun scripts/seeded-check.ts --shard ${{ matrix.shard }}/4 --base "$SEED_BASE_REF"
       - name: Retain failed seeded-guard phase diagnostics
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: seeded-diagnostics-${{ matrix.shard }}-${{ github.sha }}
           if-no-files-found: ignore
@@ -291,7 +315,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version

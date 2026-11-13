@@ -1,10 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, type Dirent } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, rmdirSync, rmSync, type Dirent } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
 import { hubGitSync } from "../hub/git.ts";
 import { denyRegexes, hubWriteRegexes, objectStoreRules, sbplString } from "./deny.ts";
+import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 export const OUTPUT_CAP = 20_000;
@@ -197,10 +198,15 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
 export interface ExecResult {
   code: number | null;
   output: string;
+  /** Probe-only owned-process proof; ordinary command results retain their existing shape. */
+  quiescent?: boolean;
+  stop?: () => Promise<void>;
 }
+export interface ProbeCommandOptions { workspaceRoot: string; temporaryRoot: string; home: string; current(): void; physical(): void }
 
 /** Run argv under seatbelt with a scrubbed environment. Never runs unsandboxed: no sandbox, no exec. */
-export function sandboxedExec(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number; env?: Record<string, string>; signal?: AbortSignal; readOnlyData?: boolean }): Promise<ExecResult> {
+export function sandboxedExec(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number; env?: Record<string, string>; signal?: AbortSignal; readOnlyData?: boolean; probe?: ProbeCommandOptions }): Promise<ExecResult> {
+  if (opts.probe) return probeCommand(argv, opts as Parameters<typeof probeCommand>[1]);
   if (opts.readOnlyData && /\(allow file-write\* \(subpath /.test(opts.profile)) return Promise.resolve({ code: null, output: "error: data.readonly command profile contains a broad write grant" });
   if (!sandboxAvailable()) return Promise.resolve({ code: null, output: "error: command execution needs macOS sandbox-exec and is disabled on this host" });
   if (opts.signal?.aborted) return Promise.resolve({ code: null, output: "error: command cancelled before execution" });
@@ -252,6 +258,69 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
     child.on("close", finish);
     // `close` waits for every holder of the pipes; after `exit` give stragglers a moment, then stop waiting and reap them.
     child.on("exit", (code, signal) => setTimeout(() => (killGroup(), finish(code, signal)), 500).unref());
+  });
+}
+
+/** Same sandbox entry point, with a readonly owned temp and verified cleanup for fixed host proof commands. */
+async function probeCommand(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number; env?: Record<string, string>; signal?: AbortSignal; probe: ProbeCommandOptions }): Promise<ExecResult> {
+  const proof = opts.probe;
+  if (!sandboxAvailable()) return { code: null, output: "error: probe confinement needs macOS sandbox-exec", quiescent: true };
+  try {
+    proof.physical(); proof.current();
+    const root = realPath(proof.workspaceRoot), temporary = realPath(proof.temporaryRoot), home = realPath(proof.home);
+    if (realPath(opts.cwd) !== root || !temporary.startsWith(root + "/") || !opts.env || opts.env.HOME !== home
+      || opts.env.PATH !== "/usr/bin:/bin:/usr/sbin:/sbin" || opts.env.LANG !== "C" || opts.env.TERM !== "dumb"
+      || Object.keys(opts.env).some(key => !["PATH", "HOME", "LANG", "TERM"].includes(key))) throw new Error("probe command binding unavailable");
+    if (opts.signal?.aborted) throw new Error("probe command cancelled");
+  } catch { return { code: null, output: "error: probe command authority or environment unavailable", quiescent: true }; }
+  const own = realPath(mkdtempSync(join(proof.temporaryRoot, "command-")));
+  const created = lstatSync(own);
+  let removed = false;
+  const dropOwn = () => {
+    if (removed) return;
+    proof.physical();
+    const current = lstatSync(own);
+    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== created.dev || current.ino !== created.ino || realPath(own) !== own) throw new Error("probe command temp ownership changed");
+    // The lane grants no temp writes. Unexpected contents are retained rather than recursively removed.
+    rmdirSync(own); removed = true;
+  };
+  // Never append the ordinary broad temp read/write/exec suffix: the verified profile already bounds this directory.
+  const env = { ...opts.env, TMPDIR: `${own}/` };
+  return new Promise<ExecResult>(resolve => {
+    let child: ReturnType<typeof spawn>;
+    try { proof.current(); child = spawn(SANDBOX_EXEC, ["-p", opts.profile, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true }); }
+    catch {
+      try { dropOwn(); resolve({ code: null, output: "error: probe command did not launch", quiescent: true }); }
+      catch { resolve({ code: null, output: "error: probe command setup cleanup is unconfirmed", quiescent: false, stop: async () => dropOwn() }); }
+      return;
+    }
+    trackGroup(child);
+    let output = "", settled = false, cancelled = false;
+    let pipeTimer: ReturnType<typeof setTimeout> | undefined;
+    const take = (data: Buffer) => { if (output.length < OUTPUT_CAP) output += data.toString(); };
+    child.stdout?.on("data", take); child.stderr?.on("data", take);
+    const stop = async () => { await stopOwnedProcess(child, { group: true }); dropOwn(); };
+    const finish = async (code: number | null) => {
+      if (settled) return; settled = true;
+      clearTimeout(timer); if (pipeTimer) clearTimeout(pipeTimer); opts.signal?.removeEventListener("abort", abort);
+      let quiescent = false;
+      try { await stop(); quiescent = true; } catch { /* keep the child and directory in the returned owned stop handle */ }
+      const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}\n(output truncated)` : output;
+      const observed = child.signalCode ? `${clipped}\n(probe command signal: ${child.signalCode}; owned pid: ${child.pid})` : clipped;
+      resolve({ code, output: cancelled ? `${observed}\n(probe command cancelled)` : observed, quiescent, ...(quiescent ? {} : { stop }) });
+    };
+    const abort = () => { cancelled = true; void finish(null); };
+    const timer = setTimeout(abort, opts.timeoutMs ?? 5000);
+    opts.signal?.addEventListener("abort", abort, { once: true });
+    child.once("error", error => {
+      output = `error: probe command spawn failed (${(error as NodeJS.ErrnoException).code ?? "unknown"})`;
+      void finish(null);
+    });
+    child.once("close", code => { void finish(code); });
+    // A leader exit is not proof that descendants released pipes. The owned stop proves or retains uncertainty.
+    child.once("exit", code => { pipeTimer = setTimeout(() => { void finish(code); }, 500); });
+    if (child.exitCode !== null || child.signalCode !== null) pipeTimer = setTimeout(() => { void finish(child.exitCode); }, 500);
+    if (opts.signal?.aborted) abort();
   });
 }
 

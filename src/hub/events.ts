@@ -1,10 +1,28 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import type { TaskAttribution } from "./attribution.ts";
 import type { PeerId } from "./envelope.ts";
-import type { SwitchTrace } from "../models/route/stage.ts";
+import type { StageSwitchTrace as SwitchTrace } from "../models/route/stage-fallback.ts";
 import type { ScreenRecord } from "./inference.ts";
+import { safeModelLabel } from "../omniroute/usage.ts";
 
 export interface RoleIdentity { id: string; layer: "shipped" | "project"; hash: string }
+
+/**
+ * #1402: how a turn's model was learned, strongest first. `served`: the provider or the native transcript named it for this turn's responses. `session`: the native session's current model id.
+ * `configured`: only the hub's own override or launch flag is known. An alias is recorded as the native surface reported it, never expanded.
+ */
+export const MODEL_EVIDENCE = ["served", "session", "configured"] as const;
+export type ModelEvidence = (typeof MODEL_EVIDENCE)[number];
+export const isModelEvidence = (value: unknown): value is ModelEvidence => typeof value === "string" && (MODEL_EVIDENCE as readonly string[]).includes(value);
+/** What a peer adapter observed for the turn that just ended. */
+export interface ModelObservation { model: string; evidence: ModelEvidence }
+/** The `turn_end` fields for an observation: both or neither. A label that fails `safeModelLabel` is dropped whole (never truncated into another valid-looking id) and nothing but the id is kept. */
+export function turnModelFields(observed: unknown): { model: string; modelEvidence: ModelEvidence } | Record<string, never> {
+  if (!observed || typeof observed !== "object") return {};
+  const { model, evidence } = observed as { model?: unknown; evidence?: unknown };
+  const label = safeModelLabel(model);
+  return label !== undefined && isModelEvidence(evidence) ? { model: label, modelEvidence: evidence } : {};
+}
 
 /** Bumped whenever a field changes meaning or goes away; new fields and new types do not bump it. */
 export const EVENTS_SCHEMA = 1;
@@ -14,7 +32,9 @@ export const EVENTS_SCHEMA = 1;
  * ids, routing and sizes, tasks carry ids and states, so the file can be exported without leaking what agents wrote.
  */
 export type HubEvent =
+  | { type: "model_change"; peer: string; previousModel: string | null; model: string | null; by: "person"; source: "cli" | "dashboard"; appliesFrom: "next_turn"; afterTurn?: string }
   | { type: "release_authorization"; by: PeerId; authorization: string; commit: string; version: string; docsDigest: string; documents: number }
+  | { type: "release_authorization"; by: PeerId; authorization: string; commit: string; version: string; docs: "none" }
   | { type: "permission_mode"; peer: string; from: import("./permission-mode.ts").PermissionMode; to: import("./permission-mode.ts").PermissionMode }
   | { type: "role"; peer?: string; task?: number; actor: string; stage: "prepared" | "assigned"; roles: { id: string; layer: "shipped" | "project"; hash: string }[] }
   /** A settings change (#269): the registry key, the bounded registry values before/after and their source; an optional person reason is sanitized and capped at 400 UTF-8 bytes. */
@@ -27,12 +47,14 @@ export type HubEvent =
   | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string; origin?: import("./provenance.ts").Origin }
   /** #604 PR B: one per peer-role or tools-role hello, with the same fields an envelope's `origin` carries. No cwd, root or token. */
   | ({ type: "attach" } & import("./provenance.ts").Origin)
+  /** Visual payloads and paths stay local; observer events carry counts only. */
+  | { type: "visual"; id: string; kind: "mermaid" | "comparison" | "table" | "beforeAfter"; bytes: number; files: number; task?: number }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "stale"; id: string; from: string; peer: string; task?: string }
   | { type: "quiet"; id: string; from: string; peers: string[] }
   | { type: "fact"; peer: string; id: string; files: number; plans: number; unknown: number; named: number; bytes: number; via: "hook" | "steer" | "done"; ms?: number; hookMs?: number; rttMs?: number; accepted?: boolean; unanswered?: boolean; probe?: boolean; coverage?: boolean }
   | { type: "fact_ack"; peer: string; id: string; via: string; ms: number }
-  | ({ type: "route"; peer: string; route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default" | "load" | "cooldown" | "pin"; score: number; ms: number; stateless?: boolean; decision?: string; turn?: string; task?: number; pii?: boolean; severity?: number; spinning?: number; exploring?: number; production?: number } & Partial<SwitchTrace>)
+  | ({ type: "route"; peer: string; route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default" | "load" | "cooldown" | "pin" | "decision"; score: number; ms: number; decisionTarget?: "judge"; decisionMode?: "off" | "shadow"; chosenAlias?: string | null; chosenEffort?: string | null; margin?: number; decisionLatencyMs?: number; decisionReason?: string; fallbackApplied?: boolean; decider?: { provider: string; model: string; version?: string; latencyMs: number } | null; stateless?: boolean; decision?: string; turn?: string; task?: number; pii?: boolean; severity?: number; spinning?: number; exploring?: number; production?: number } & Partial<SwitchTrace>)
   | { type: "cooldown"; peer: string; alias: string; event: "start" | "end"; failures: number; ms?: number }
   | { type: "route_outcome"; peer: string; decision: string; turnId: string; turn: "completed" | "failed"; task?: number; pii: boolean; latched: boolean; next?: { severity: number; tests: "pass" | "fail" | "none"; repeat: boolean }; advisor?: "approve" | "redo" | "failed" }
   | { type: "advisor"; peer: string; route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
@@ -40,7 +62,8 @@ export type HubEvent =
   | { type: "stuck"; peer: string; task: number; category: "repetition" | "false_progress" | "drift" | "desperation" | "capability_gap"; streak: number; latched: boolean }
   | { type: "capability"; peer: string; state: "verified" | "lost"; via?: string }
   /** A hub run began: every peer is detached until its next state event (#248: attachments never span a crash). */
-  | { type: "hub_start"; instance: string }
+  /** `personAttribution`: this run writes `task` and `attribution` on permission, question, completion and agent_cli events (#1278). A log with no such start says nothing about which task a person interaction belonged to. */
+  | { type: "hub_start"; instance: string; personAttribution?: true }
   /** #248: the add-ons a peer works with, names and versions from a closed list, at each attach. */
   | { type: "tooling"; peer: string; addons: import("./tooling.ts").Addon[] }
   /** #258: a task brief handed to its owner: how many hub-memory items (and fails among them) and supplemental items (legacy claudeMem field), never their text. New local-library records identify source amem. */
@@ -49,17 +72,23 @@ export type HubEvent =
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "native_thread"; peer: string; thread: string; fresh: boolean }
-  | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null } & Partial<TaskAttribution>)
-  | { type: "native_turn_end"; peer: string; id?: string }
+  | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null; model?: string; modelEvidence?: ModelEvidence } & Partial<TaskAttribution>)
+  | { type: "native_turn_end"; peer: string; id?: string; reason?: "user_canceled" | "error" | "max_invocations" | "max_forced_invocations" | "max_token_budget_exceeded" | "terminal_step_type" | "terminal_custom_hook" }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
-  | { type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true }
-  | { type: "permission"; id: string; peer: string; event: "requested" | "answered" | "expired" | "cancelled"; latencyMs?: number; surface?: "console" | "dashboard" | "terminal"; option?: "allow_once" | "allow_always" | "reject_once" | "reject_always" }
+  | ({ type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true } & Partial<TaskAttribution>)
+  | ({ type: "permission"; id: string; peer: string; event: "requested" | "answered" | "expired" | "cancelled"; latencyMs?: number; surface?: "console" | "dashboard" | "terminal"; option?: "allow_once" | "allow_always" | "reject_once" | "reject_always" } & Partial<TaskAttribution>)
+  /** #1053: one question a peer asked the person, and how it ended. Counts, ids and a closed reason only: never a prompt, an option, an answer or other text. */
+  | ({ type: "question"; set: string; peer: string; event: "asked" | "answered" | "pending" | "superseded" | "cancelled" | "expired" | "unavailable"; latencyMs?: number; surface?: "terminal" | "console" | "dashboard" | "acon"; person?: string; reason?: "superseded" | "stopped" | "turn_aborted" | "session_changed" | "expired" | "unattended"; questions?: number; private?: boolean } & Partial<TaskAttribution>)
   /** Completed native turns that received supervision, not feed enqueues or inferred costs. */
   | { type: "supervision_turn"; peer: string; turn: string; tokens?: number; ms?: number }
+  /** #1054: a run a person started settled (or a restart cut it short). Ids, a closed outcome and a duration only: never the prompt or the reply. */
+  /** #1054: a person (or the hub on a person's command) marked a result read. A receipt only: never read from a snapshot. */
+  | { type: "completion_seen"; id: string; surface: "terminal" | "console" | "dashboard" | "acon" }
+  | ({ type: "completion"; id: string; peer: string; outcome: "done" | "failed" | "limit" | "interrupted"; ms: number } & Partial<TaskAttribution>)
   | { type: "hook_stats"; peer: string; n: number; startupMs: number; hubMs: number; maxStartupMs: number }
   | { type: "cohort"; id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: string[] }
-  | ({ type: "tokens"; peer: string; n: number } & Partial<TaskAttribution>)
-  | ({ type: "usage"; peer: string; source: "omniroute" | "claude_transcript" | "claude_result" | "codex_appserver" | "kimi_wire" | "jcode_acp"; id: string; reasoningTokens?: number; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number } & Partial<TaskAttribution>)
+  | ({ type: "tokens"; peer: string; n: number; source?: "kimi_wire"; id?: string } & Partial<TaskAttribution>)
+  | ({ type: "usage"; peer: string; source: "omniroute" | "claude_transcript" | "claude_result" | "codex_appserver" | "kimi_wire" | "jcode_acp" | "agy_transcript"; id: string; reasoningTokens?: number; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number } & Partial<TaskAttribution>)
   | { type: "planning"; by: string; task?: number; release?: number; fields: string[]; revision: number }
   | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; profile?: string; profileClass?: string; role?: string; roleIdentity?: { id: string; layer: "shipped" | "project"; hash: string }; pii: boolean; reason?: string; release?: number | null; priority?: number | null; plannedStart?: number | null; due?: number | null }
   | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[]; symbols?: string[] }[] }
@@ -133,16 +162,22 @@ export function tokenDeltas(): (peer: string, total: number, session: string) =>
  */
 export function readEvents(file: string, since = 0): StampedEvent[] {
   if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8").split("\n").flatMap((line) => {
-    if (!line.trim()) return [];
-    try {
-      const e = JSON.parse(line) as StampedEvent;
-      const measuredAt = e.type === "usage" && typeof e.measuredAt === "string" ? e.measuredAt : e.at;
-      return Date.parse(measuredAt) >= since ? [e] : [];
-    } catch {
-      return [];
-    }
+  return readFileSync(file, "utf8").split("\n").flatMap(line => {
+    const event = parseEventLine(line, since);
+    return event === undefined ? [] : [event];
   });
+}
+
+/** The historical event-reader predicate, shared without adding shape or line-size restrictions. */
+export function parseEventLine(line: string, since = 0): StampedEvent | undefined {
+  if (!line.trim()) return undefined;
+  try {
+    const e = JSON.parse(line) as StampedEvent;
+    const measuredAt = e.type === "usage" && typeof e.measuredAt === "string" ? e.measuredAt : e.at;
+    return Date.parse(measuredAt) >= since ? e : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** `7d`, `24h`, `90m` or an ISO date, as epoch ms; undefined when it is neither. */

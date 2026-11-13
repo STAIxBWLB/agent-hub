@@ -1,0 +1,726 @@
+{
+ "version": 1,
+ "description": "Strings of the form <N x c> stand for c repeated N times; a list with repeat is count copies of `of` with ids idPrefix+index. Shared ReviewAnchor/ReviewThread cases for agent-console (src/conformance.ts) and agent-hub#1056. Each invalid case names the field that must be rejected; validators may word problems differently.",
+ "bounds": {
+  "exact": 2000,
+  "context": 64,
+  "selectors": 4,
+  "threads": 200,
+  "body": 4000
+ },
+ "anchors": {
+  "valid": [
+   {
+    "name": "text lineRange + textQuote",
+    "value": {
+     "path": "docs/plan.md",
+     "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+     "selectors": [
+      {
+       "kind": "lineRange",
+       "startLine": 2,
+       "endLine": 3
+      },
+      {
+       "kind": "textQuote",
+       "exact": "Ship on Friday.",
+       "prefix": "\n\n",
+       "suffix": "\n"
+      }
+     ]
+    }
+   },
+   {
+    "name": "diff head side with hunk",
+    "value": {
+     "path": "src/a.ts",
+     "side": "head",
+     "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+     "selectors": [
+      {
+       "kind": "lineRange",
+       "startLine": 10,
+       "endLine": 10
+      },
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      },
+      {
+       "kind": "diffHunk",
+       "hunkHeader": "@@ -8,3 +8,4 @@"
+      }
+     ]
+    }
+   },
+   {
+    "name": "projection without hash",
+    "value": {
+     "path": "report.hwp",
+     "projection": {
+      "name": "hwp-text",
+      "version": "1"
+     },
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "결론",
+       "prefix": "",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "structural and region are valid but not created by the kit",
+    "value": {
+     "path": "deck.pdf",
+     "selectors": [
+      {
+       "kind": "structural",
+       "scheme": "pdf-outline",
+       "ref": "2.1"
+      },
+      {
+       "kind": "region",
+       "x": 0,
+       "y": 0,
+       "width": 10,
+       "height": 5,
+       "page": 1
+      }
+     ]
+    }
+   },
+   {
+    "name": "exact at the 2000 limit, context at 64",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "<2000 x x>",
+       "prefix": "<64 x p>",
+       "suffix": "<64 x s>"
+      }
+     ]
+    }
+   }
+  ],
+  "invalid": [
+   {
+    "name": "missing path",
+    "field": "path",
+    "value": {
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "no selectors",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": []
+    }
+   },
+   {
+    "name": "five selectors",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      },
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      },
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      },
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      },
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "uppercase hash",
+    "field": "contentHash",
+    "value": {
+     "path": "a",
+     "contentHash": "911169DDAAF146AFF539F58C26C489AF3B892DFF0FE283C1C264C65AE5AA59A2",
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "short hash",
+    "field": "contentHash",
+    "value": {
+     "path": "a",
+     "contentHash": "abc",
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "bad side",
+    "field": "side",
+    "value": {
+     "path": "a",
+     "side": "left",
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "projection without version",
+    "field": "projection",
+    "value": {
+     "path": "a",
+     "projection": {
+      "name": "p"
+     },
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "lineRange start > end",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "lineRange",
+       "startLine": 5,
+       "endLine": 4
+      }
+     ]
+    }
+   },
+   {
+    "name": "lineRange zero",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "lineRange",
+       "startLine": 0,
+       "endLine": 1
+      }
+     ]
+    }
+   },
+   {
+    "name": "exact over 2000",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "<2001 x x>",
+       "prefix": "",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "prefix over 64",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": "<65 x p>",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "empty exact",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "",
+       "prefix": "",
+       "suffix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "missing suffix",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "textQuote",
+       "exact": "x",
+       "prefix": ""
+      }
+     ]
+    }
+   },
+   {
+    "name": "hunk header not @@",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "diffHunk",
+       "hunkHeader": "-8,3 +8,4"
+      }
+     ]
+    }
+   },
+   {
+    "name": "unknown kind",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "xpath",
+       "ref": "/a"
+      }
+     ]
+    }
+   },
+   {
+    "name": "negative region",
+    "field": "selectors",
+    "value": {
+     "path": "a",
+     "selectors": [
+      {
+       "kind": "region",
+       "x": -1,
+       "y": 0,
+       "width": 1,
+       "height": 1
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "threads": {
+  "valid": [
+   {
+    "name": "open thread",
+    "value": {
+     "id": "t1",
+     "anchor": {
+      "path": "docs/plan.md",
+      "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+      "selectors": [
+       {
+        "kind": "lineRange",
+        "startLine": 2,
+        "endLine": 3
+       },
+       {
+        "kind": "textQuote",
+        "exact": "Ship on Friday.",
+        "prefix": "\n\n",
+        "suffix": "\n"
+       }
+      ]
+     },
+     "body": "Which Friday?",
+     "author": "owner",
+     "at": "2026-11-02T00:00:00Z",
+     "state": "open"
+    }
+   },
+   {
+    "name": "resolved, body at 4000",
+    "value": {
+     "id": "t2",
+     "anchor": {
+      "path": "docs/plan.md",
+      "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+      "selectors": [
+       {
+        "kind": "lineRange",
+        "startLine": 2,
+        "endLine": 3
+       },
+       {
+        "kind": "textQuote",
+        "exact": "Ship on Friday.",
+        "prefix": "\n\n",
+        "suffix": "\n"
+       }
+      ]
+     },
+     "body": "<4000 x b>",
+     "author": "owner",
+     "at": "2026-11-02T00:00:00Z",
+     "state": "resolved"
+    }
+   }
+  ],
+  "invalid": [
+   {
+    "name": "missing id",
+    "field": "id",
+    "value": {
+     "id": "",
+     "anchor": {
+      "path": "docs/plan.md",
+      "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+      "selectors": [
+       {
+        "kind": "lineRange",
+        "startLine": 2,
+        "endLine": 3
+       },
+       {
+        "kind": "textQuote",
+        "exact": "Ship on Friday.",
+        "prefix": "\n\n",
+        "suffix": "\n"
+       }
+      ]
+     },
+     "body": "Which Friday?",
+     "author": "owner",
+     "at": "2026-11-02T00:00:00Z",
+     "state": "open"
+    }
+   },
+   {
+    "name": "body over 4000",
+    "field": "body",
+    "value": {
+     "id": "t1",
+     "anchor": {
+      "path": "docs/plan.md",
+      "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+      "selectors": [
+       {
+        "kind": "lineRange",
+        "startLine": 2,
+        "endLine": 3
+       },
+       {
+        "kind": "textQuote",
+        "exact": "Ship on Friday.",
+        "prefix": "\n\n",
+        "suffix": "\n"
+       }
+      ]
+     },
+     "body": "<4001 x b>",
+     "author": "owner",
+     "at": "2026-11-02T00:00:00Z",
+     "state": "open"
+    }
+   },
+   {
+    "name": "empty body",
+    "field": "body",
+    "value": {
+     "id": "t1",
+     "anchor": {
+      "path": "docs/plan.md",
+      "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+      "selectors": [
+       {
+        "kind": "lineRange",
+        "startLine": 2,
+        "endLine": 3
+       },
+       {
+        "kind": "textQuote",
+        "exact": "Ship on Friday.",
+        "prefix": "\n\n",
+        "suffix": "\n"
+       }
+      ]
+     },
+     "body": "",
+     "author": "owner",
+     "at": "2026-11-02T00:00:00Z",
+     "state": "open"
+    }
+   },
+   {
+    "name": "bad at",
+    "field": "at",
+    "value": {
+     "id": "t1",
+     "anchor": {
+      "path": "docs/plan.md",
+      "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+      "selectors": [
+       {
+        "kind": "lineRange",
+        "startLine": 2,
+        "endLine": 3
+       },
+       {
+        "kind": "textQuote",
+        "exact": "Ship on Friday.",
+        "prefix": "\n\n",
+        "suffix": "\n"
+       }
+      ]
+     },
+     "body": "Which Friday?",
+     "author": "owner",
+     "at": "yesterday",
+     "state": "open"
+    }
+   },
+   {
+    "name": "bad state",
+    "field": "state",
+    "value": {
+     "id": "t1",
+     "anchor": {
+      "path": "docs/plan.md",
+      "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+      "selectors": [
+       {
+        "kind": "lineRange",
+        "startLine": 2,
+        "endLine": 3
+       },
+       {
+        "kind": "textQuote",
+        "exact": "Ship on Friday.",
+        "prefix": "\n\n",
+        "suffix": "\n"
+       }
+      ]
+     },
+     "body": "Which Friday?",
+     "author": "owner",
+     "at": "2026-11-02T00:00:00Z",
+     "state": "closed"
+    }
+   },
+   {
+    "name": "missing author",
+    "field": "author",
+    "value": {
+     "id": "t1",
+     "anchor": {
+      "path": "docs/plan.md",
+      "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+      "selectors": [
+       {
+        "kind": "lineRange",
+        "startLine": 2,
+        "endLine": 3
+       },
+       {
+        "kind": "textQuote",
+        "exact": "Ship on Friday.",
+        "prefix": "\n\n",
+        "suffix": "\n"
+       }
+      ]
+     },
+     "body": "Which Friday?",
+     "at": "2026-11-02T00:00:00Z",
+     "state": "open"
+    }
+   },
+   {
+    "name": "invalid anchor",
+    "field": "anchor",
+    "value": {
+     "id": "t1",
+     "anchor": {
+      "path": "a",
+      "selectors": []
+     },
+     "body": "Which Friday?",
+     "author": "owner",
+     "at": "2026-11-02T00:00:00Z",
+     "state": "open"
+    }
+   }
+  ],
+  "lists": {
+   "invalid": [
+    {
+     "name": "duplicate ids",
+     "field": "id",
+     "value": [
+      {
+       "id": "t1",
+       "anchor": {
+        "path": "docs/plan.md",
+        "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+        "selectors": [
+         {
+          "kind": "lineRange",
+          "startLine": 2,
+          "endLine": 3
+         },
+         {
+          "kind": "textQuote",
+          "exact": "Ship on Friday.",
+          "prefix": "\n\n",
+          "suffix": "\n"
+         }
+        ]
+       },
+       "body": "Which Friday?",
+       "author": "owner",
+       "at": "2026-11-02T00:00:00Z",
+       "state": "open"
+      },
+      {
+       "id": "t1",
+       "anchor": {
+        "path": "docs/plan.md",
+        "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+        "selectors": [
+         {
+          "kind": "lineRange",
+          "startLine": 2,
+          "endLine": 3
+         },
+         {
+          "kind": "textQuote",
+          "exact": "Ship on Friday.",
+          "prefix": "\n\n",
+          "suffix": "\n"
+         }
+        ]
+       },
+       "body": "Which Friday?",
+       "author": "owner",
+       "at": "2026-11-02T00:00:00Z",
+       "state": "open"
+      }
+     ]
+    },
+    {
+     "name": "201 threads",
+     "field": "threads",
+     "repeat": {
+      "count": 201,
+      "of": {
+       "id": "t1",
+       "anchor": {
+        "path": "docs/plan.md",
+        "contentHash": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2",
+        "selectors": [
+         {
+          "kind": "lineRange",
+          "startLine": 2,
+          "endLine": 3
+         },
+         {
+          "kind": "textQuote",
+          "exact": "Ship on Friday.",
+          "prefix": "\n\n",
+          "suffix": "\n"
+         }
+        ]
+       },
+       "body": "Which Friday?",
+       "author": "owner",
+       "at": "2026-11-02T00:00:00Z",
+       "state": "open"
+      },
+      "idPrefix": "t"
+     }
+    }
+   ]
+  }
+ },
+ "contentHash": [
+  {
+   "name": "raw bytes when no projection",
+   "text": "a\nb\n",
+   "sha256": "911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2"
+  },
+  {
+   "name": "projected text when projection is set, not the raw bytes",
+   "projection": {
+    "name": "crlf-to-lf",
+    "version": "1"
+   },
+   "raw": "# Plan\r\n\r\nShip on Friday.\r\n",
+   "projected": "# Plan\n\nShip on Friday.\n",
+   "sha256": "b279a1e888be2c4c3b05da37db723b25216f485407134760b0f0cee00dfe8892",
+   "rawSha256": "4afe3f93cb6aafdc8b99f4299eb4756c539b3ecb66542239950d294d01f43314"
+  },
+  {
+   "name": "UTF-8 bytes of non-ASCII text",
+   "text": "결론\n",
+   "sha256": "4489a5f81336d4ba989acef5d24b8f412ce3d55ca4c54e4bfeda3fc7453ab8fb"
+  }
+ ]
+}

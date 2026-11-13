@@ -3,14 +3,18 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { assertRoomCryptoReady, decodeBase64url, encodeBase64url, signBytes, verifyBytes } from "./crypto.ts";
 import { acceptRoomEpoch, brokerUrl, canonicalBytes, createInvite, createJoin, createRoomEpoch, decodeInvite, decodeJoin, decodeRoster, roomMembers } from "./wire.ts";
-import { RoomStore, type RoomState, type RoomPersonInboxMeta, type RoomPersonInboxItem } from "./store.ts";
+import { RoomStore, type RoomState, type RoomPersonInboxMeta, type RoomPersonInboxItem, type RoomOutgoing } from "./store.ts";
 import { RoomLink } from "./link.ts";
 import { exposedPeers, roomName, RoomPolicy } from "./policy.ts";
 import type { RoomChat } from "./service.ts";
+import { roomHealthCause, roomHealthNextStep, type RoomHealthCause } from "./health.ts";
 import { projectRoomStatus, type RoomStatusView } from "./status.ts";
 
 export interface RoomCommandResult { kind?: string; artifact?: string; name?: string; room?: string; owner?: string; member?: string }
-export interface RoomPreview { owner: string; member: string; commit: () => Promise<RoomCommandResult> }
+export interface RoomPreview { owner: string; member: string; outstanding?: readonly string[]; commit: () => Promise<RoomCommandResult> }
+export class RoomRotationHoldError extends Error {
+  constructor() { super("room epoch rotated but delivery journal holds are unavailable; inspect ahub room status and ahub queue show before another mutation"); this.name = "RoomRotationHoldError"; }
+}
 const FP = /^[0-9a-f]{64}$/;
 function refuse(code: string): never { throw new Error(`room: ${code}`); }
 function fields(input: unknown, keys: string[], optional: string[] = []): Record<string, any> {
@@ -47,38 +51,83 @@ export class RoomCommands {
   private pending?: Promise<RoomStore>;
   private store?: RoomStore;
   private stopped = false;
+  private openFailure?: RoomHealthCause;
+  private openRetry?: ReturnType<typeof setTimeout>;
+  private openAttempts = 0;
+  private stopWork?: Promise<void>;
   private readonly links = new Map<string, RoomLink>();
   private readonly policy: RoomPolicy;
-  constructor(private readonly options: { stateDir: string; cwd: string; clock?: () => number; presence?: () => readonly {id: string; state: string}[]; chat?: RoomChat }) { this.policy = new RoomPolicy(options.cwd); }
+  constructor(private readonly options: { stateDir: string; cwd: string; clock?: () => number; refreshMs?: number; presence?: () => readonly {id: string; state: string}[]; chat?: RoomChat; openStore?: typeof RoomStore.open; retryMs?: number; changed?: () => void }) { this.policy = new RoomPolicy(options.cwd); }
+  private changedAvailability(): void {
+    try { this.options.changed?.(); } catch { /* Diagnostics cannot change store admission. */ }
+  }
+  private retryOpen(): void {
+    if (this.stopped || this.openRetry) return;
+    const delay = Math.min(30_000, (this.options.retryMs ?? 1000) * 2 ** Math.min(this.openAttempts++, 5));
+    this.openRetry = setTimeout(() => {
+      this.openRetry = undefined;
+      if (!this.stopped) void this.start().catch(() => undefined);
+    }, delay);
+    this.openRetry.unref?.();
+  }
   private async open(): Promise<RoomStore> {
     if (this.stopped) refuse("stopped");
-    this.pending ??= RoomStore.open({ stateDir: join(this.options.stateDir, "rooms"), ...(this.options.clock ? { clock: this.options.clock } : {}) }).then(store => {
+    if (this.store) return this.store;
+    if (this.openRetry) throw new Error(`rooms unavailable (${this.openFailure ?? "unavailable"}); ${roomHealthNextStep(this.openFailure ?? "unavailable")}`);
+    this.pending ??= (this.options.openStore ?? RoomStore.open)({ stateDir: join(this.options.stateDir, "rooms"), ...(this.options.clock ? { clock: this.options.clock } : {}) }).then(store => {
       if (this.stopped) { store.close(); return refuse("stopped"); }
-      this.store = store; return store;
+      this.store = store; this.openFailure = undefined; this.openAttempts = 0;
+      this.changedAvailability(); return store;
+    }).catch(error => {
+      this.pending = undefined;
+      if (!this.stopped) {
+        const cause = roomHealthCause(error), changed = this.openFailure !== cause;
+        this.openFailure = cause; this.retryOpen();
+        if (changed) this.changedAvailability();
+      }
+      throw error;
     });
     return this.pending;
   }
   async start(): Promise<void> {
-    if (!existsSync(join(this.options.stateDir, "rooms"))) return;
-    const store = await this.open();
-    if (!this.stopped) for (const state of store.list()) if (!state.left) this.link(state.name);
+    if (this.stopped || !existsSync(join(this.options.stateDir, "rooms"))) return;
+    try {
+      const store = await this.open();
+      if (!this.stopped) for (const state of store.list()) if (!state.left) this.link(state.name);
+      const recovered = this.openFailure !== undefined;
+      this.openFailure = undefined; this.openAttempts = 0;
+      if (recovered) this.changedAvailability();
+    } catch (error) {
+      if (!this.stopped && !this.openRetry) {
+        const cause = roomHealthCause(error), changed = this.openFailure !== cause;
+        this.openFailure = cause; this.retryOpen();
+        if (changed) this.changedAvailability();
+      }
+      throw error;
+    }
   }
-  stop(): void { this.stopped = true; clearTimeout(this.presenceTimer); this.options.chat?.stop(); for (const link of this.links.values()) link.stop(); this.links.clear(); this.store?.close(); }
+  stop(): Promise<void> {
+    if (this.stopWork) return this.stopWork;
+    this.stopped = true; clearTimeout(this.presenceTimer); clearTimeout(this.openRetry); this.options.chat?.stop();
+    const stops = [...this.links.values()].map(link => link.stop()); this.links.clear();
+    this.stopWork = Promise.allSettled([...(this.pending ? [this.pending] : []), ...stops]).then(() => { this.store?.close(); });
+    return this.stopWork;
+  }
   private link(name: string): void {
     if (this.stopped || !this.store || this.store.get(name)?.left) return;
     let link = this.links.get(name);
     if (!link) {
       const store = this.store;
-      const created: RoomLink = new RoomLink({ store, name, application: this.options.chat?.application,
+      const created: RoomLink = new RoomLink({ store, name, application: this.options.chat?.application, refreshMs: this.options.refreshMs, now: this.options.clock,
         onPresence: value => this.options.chat?.presence(store, name, created, value),
-        onState: state => this.options.chat?.linkState(store, name, created, state), presence: () => {
+        onState: state => { this.options.chat?.linkState(store, name, created, state); this.changedAvailability(); }, presence: () => {
         const allowed = new Set(this.policy.get(name));
         return (this.options.presence?.() ?? []).filter(row => allowed.has(row.id));
       } });
       this.links.set(name, created); link = created;
       this.options.chat?.bind(store, name, created);
       void created.start().catch(() => undefined);
-    } else { this.options.chat?.bind(this.store, name, link); link.refresh(); }
+    } else { this.options.chat?.bind(this.store, name, link); link.refresh(); void link.start().catch(() => undefined); }
   }
   private presenceTimer?: ReturnType<typeof setTimeout>;
   changed(): void {
@@ -91,6 +140,26 @@ export class RoomCommands {
     this.presenceTimer.unref?.();
   }
   private current(check: () => boolean): void { if (this.stopped || !check()) refuse("state_changed"); }
+  private async rotate(store: RoomStore, name: string, digest: string, expected: readonly RoomOutgoing[], check: () => boolean,
+    operation: (current: () => boolean) => Promise<RoomState>, after?: () => void): Promise<RoomState> {
+    const ids = expected.map(row => row.deliveryId).sort(), release = await this.links.get(name)?.quiesceApplications();
+    let next: RoomState | undefined, returned = false;
+    const current = () => !this.stopped && check() && store.get(name)?.current.digest === digest
+      && JSON.stringify(store.rotationPending(name).map(row => row.deliveryId).sort()) === JSON.stringify(ids);
+    try {
+      if (!current()) refuse("state_changed");
+      next = await operation(current);
+      const held = next.current.digest === digest || this.options.chat?.epochRotated(store, name, digest, expected) !== false;
+      this.current(check); after?.();
+      if (!held) throw new RoomRotationHoldError();
+      returned = true; return next;
+    } finally {
+      release?.();
+      // A committed epoch still needs publication if its journal label or local
+      // policy update failed; its old sealed intents were already fenced atomically.
+      if (next && !returned && next.current.digest !== digest) this.link(name);
+    }
+  }
   private active(store: RoomStore, name: string): RoomState {
     const state = store.get(name); if (!state || state.left) refuse("unavailable"); return state;
   }
@@ -136,21 +205,42 @@ export class RoomCommands {
   async rows(name?: string, details = name !== undefined): Promise<Record<string, unknown>[]> {
     if (!this.store && !existsSync(join(this.options.stateDir, "rooms"))) return [];
     const store = await this.open(); if (name !== undefined) roomName(name);
-    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline", ...(details && this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) }));
+    return store.list().filter(row => name === undefined || row.name === name).map(row => {
+      const link = this.links.get(row.name)?.status();
+      const result: Record<string, unknown> = { name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch,
+        state: row.left ? "left" : link?.state ?? "offline" };
+      if (details) {
+        result.linkCause = null;
+        if (!row.left) result.linkCause = link?.cause ?? null;
+        result.health = store.health(row.name);
+        if (this.options.chat) {
+          result.deliveries = this.options.chat.rows(row.name);
+          result.remotePeers = this.options.chat.peers(row.name);
+        }
+      }
+      return result;
+    });
   }
-  /** Polling uses only already-loaded public metadata; it never opens room state or reads message rows. */
-  statusView(): RoomStatusView[] | null {
-    if (this.stopped) return null;
-    if (!this.store) return this.pending ? null : [];
+  /** One metadata snapshot binds unavailable diagnostics to the reads that failed. */
+  statusSnapshot(): { rooms: RoomStatusView[] | null; roomsOpening?: true; roomsUnavailable?: { code: RoomHealthCause; nextStep: string } } {
+    const unavailable = (code: RoomHealthCause) => ({ rooms: null, roomsUnavailable: { code, nextStep: roomHealthNextStep(code) } });
+    if (this.stopped) return { rooms: null };
+    if (this.openFailure) return unavailable(this.openFailure);
+    if (!this.store) return this.pending ? { rooms: null, roomsOpening: true } : { rooms: [] };
     try {
-      return projectRoomStatus(this.store.statusMetadata().map(row => ({
+      return { rooms: projectRoomStatus(this.store.statusMetadata().map(row => ({
         name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch,
         state: row.left ? "left" : this.links.get(row.name)?.connectionState ?? "offline", members: row.members,
+        linkCause: row.left ? null : this.links.get(row.name)?.connectionCause ?? null, health: this.store!.health(row.name),
         remotePeers: this.options.chat?.peersForStatus(row.name) ?? null,
         relays: this.options.chat?.metrics(row.name, row.room) ?? null,
-      })));
-    } catch { return null; }
+      }))) };
+    } catch (error) { return unavailable(roomHealthCause(error)); }
   }
+  /** Closed cause metadata only, never raw errors; unavailable is distinct from no rooms. */
+  unavailable(): { code: RoomHealthCause; nextStep: string } | undefined { return this.statusSnapshot().roomsUnavailable; }
+  /** Polling uses loaded public metadata and aggregate counts; never opens storage or loads payloads. */
+  statusView(): RoomStatusView[] | null { return this.statusSnapshot().rooms; }
   async preview(action: unknown, raw: unknown, check: () => boolean): Promise<RoomPreview> {
     if (typeof action !== "string") refuse("invalid_operation");
     await assertRoomCryptoReady(); this.current(check);
@@ -196,9 +286,12 @@ export class RoomCommands {
         ? { room: existing.current.room, owner, minEpoch: existing.current.epoch, digest: existing.current.digest }
         : { room: invitation!.room, owner, minEpoch: "0" } });
       this.current(check);
-      return { owner, member: own, commit: async () => {
+      const outstanding = existing ? store.rotationPending(name) : [];
+      return { owner, member: own, ...(existing ? { outstanding: outstanding.map(row => row.deliveryId).sort() } : {}), commit: async () => {
         this.current(check);
-        const state = await store.install({ name, broker, wire, expectedDigest: existing?.current.digest ?? null, current: check, reactivate: true });
+        const state = existing ? await this.rotate(store, name, existing.current.digest, outstanding, check, current =>
+          store.install({ name, broker, wire, expectedDigest: existing.current.digest, current, reactivate: true }))
+          : await store.install({ name, broker, wire, expectedDigest: null, current: check, reactivate: true });
         return completed(state);
       } };
     }
@@ -235,7 +328,11 @@ export class RoomCommands {
     const state = this.active(store, name), owner = this.owner(state), digest = state.current.digest;
     if (action === "leave") return { owner, member: own, commit: async () => {
       this.current(check); if (store.get(name)?.current.digest !== digest) refuse("state_changed");
-      store.leave(name); this.links.get(name)?.stop(); this.links.delete(name); return { name, room: state.current.room, owner, member: own };
+      await this.links.get(name)?.stop();
+      try {
+        this.current(check); if (store.get(name)?.current.digest !== digest) refuse("state_changed");
+        store.leave(name); this.links.delete(name); return { name, room: state.current.room, owner, member: own };
+      } catch (error) { this.link(name); throw error; }
     } };
     if (action === "invite") {
       if (owner !== own) refuse("owner_only");
@@ -254,9 +351,12 @@ export class RoomCommands {
         if (!sender || exposure.room !== state.current.room || exposure.owner !== owner || exposure.digest !== digest || !await verifyBytes({ fingerprint: sender.fingerprint, signingKey: sender.signingKey, agreementKey: sender.agreementKey }, exposureBytes(body), decodeBase64url(signature, 64))) refuse("untrusted");
       }
       this.current(check);
-      return { owner, member, commit: async () => {
+      const outstanding = store.rotationPending(name);
+      return { owner, member, outstanding: outstanding.map(row => row.deliveryId).sort(), commit: async () => {
         this.current(check);
-        const next = exposure ? await store.rotate(name, roomMembers(state.current).map(m => m.fingerprint === member ? { ...m, exposedPeers: exposedPeers(exposure.peers) } : m), digest, check) : await store.enroll(name, request, check);
+        const next = await this.rotate(store, name, digest, outstanding, check, current => exposure
+          ? store.rotate(name, roomMembers(state.current).map(m => m.fingerprint === member ? { ...m, exposedPeers: exposedPeers(exposure.peers) } : m), digest, current)
+          : store.enroll(name, request, current));
         this.current(check); completed(next);
         return { name, owner, member, kind: "roster", artifact: encodeBase64url(next.wire) };
       } };
@@ -264,19 +364,24 @@ export class RoomCommands {
     if (action === "revoke") {
       if (owner !== own) refuse("owner_only");
       if (typeof row.member !== "string" || !FP.test(row.member) || row.member === own || !roomMembers(state.current).some(m => m.fingerprint === row.member)) refuse("invalid_member");
-      return { owner, member: row.member, commit: async () => {
-        this.current(check); const next = await store.rotate(name, roomMembers(state.current).filter(m => m.fingerprint !== row.member), digest, check); return completed(next);
+      const outstanding = store.rotationPending(name);
+      return { owner, member: row.member, outstanding: outstanding.map(row => row.deliveryId).sort(), commit: async () => {
+        this.current(check); const next = await this.rotate(store, name, digest, outstanding, check, current =>
+          store.rotate(name, roomMembers(state.current).filter(m => m.fingerprint !== row.member), digest, current)); return completed(next);
       } };
     }
     if (action === "expose") {
       const peers = exposedPeers(row.peers ?? []);
       this.policy.assertWritable(name, peers, check);
-      return { owner, member: own, commit: async () => {
+      const outstanding = owner === own ? store.rotationPending(name) : [];
+      return { owner, member: own, ...(owner === own ? { outstanding: outstanding.map(row => row.deliveryId).sort() } : {}), commit: async () => {
         this.current(check); this.policy.assertWritable(name, peers, check);
         if (store.get(name)?.current.digest !== digest) refuse("state_changed");
         if (owner === own) {
-          const next = await store.rotate(name, roomMembers(state.current).map(m => m.fingerprint === own ? { ...m, exposedPeers: peers } : m), digest, check);
-          this.current(check); this.policy.set(name, peers, check); return completed(next);
+          const next = await this.rotate(store, name, digest, outstanding, check, current =>
+            store.rotate(name, roomMembers(state.current).map(m => m.fingerprint === own ? { ...m, exposedPeers: peers } : m), digest, current),
+          () => this.policy.set(name, peers, check));
+          return completed(next);
         }
         const body: Omit<ExposureRequest, "signature"> = { v: 1, type: "exposure", room: state.current.room, owner, member: own, digest, peers };
         const request = canonicalBytes({ ...body, signature: encodeBase64url(await signBytes(store.identity, exposureBytes(body))) });

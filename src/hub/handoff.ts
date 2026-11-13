@@ -1,16 +1,19 @@
 // Cross-project task handoff (#604, agent-hub#1030). Pure: values in, values out, no clock, no file system, no socket. The daemon, the registry and the control client are
 // passed in as data or as small ports, so every refusal here is testable without a second daemon and the policy cannot drift from what the daemon enforces.
+import { createHash } from "node:crypto";
 import { CLASSES, type TaskClass } from "./board.ts";
 
 /**
  * What crosses projects, and nothing else: no memory, evidence, turn content or task history (#1030 design 5). The per-field limits alone allow about 13 KB, so `bodyBytes` is the real
  * ceiling on the whole request: a body that fills several fields is refused whole, and no partial task is built from it.
  */
-export const HANDOFF_LIMITS = Object.freeze({ title: 300, detail: 4000, paths: 16, path: 512, issue: 2_000_000_000, bodyBytes: 8 * 1024 });
-export const HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detail", "paths", "issue", "task"] as const);
+export const HANDOFF_LIMITS = Object.freeze({ title: 300, detail: 4000, paths: 16, path: 512, issue: 2_000_000_000, bodyBytes: 8 * 1024, duplicateOk: 300 });
+export const HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detail", "paths", "issue", "task", "duplicate_ok", "handoffKey"] as const);
+/** #731 (agent-hub#1203): the origin's idempotency key for one handoff request, a lowercase UUID v4 (what `randomUUID` writes). */
+export const HANDOFF_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export type HandoffRefusalCode =
-  | "invalid" | "too_large" | "unregistered" | "same_project" | "not_running" | "older_target" | "pii_turn" | "pii_task" | "no_authority";
+  | "invalid" | "too_large" | "unregistered" | "same_project" | "not_running" | "older_target" | "pii_turn" | "pii_task" | "no_authority" | "duplicate" | "outcome_unknown" | "mismatch";
 
 /** A refusal always names its reason, and for the person-fixable ones the action. The code is for tests and logs, the message for the caller. */
 export class HandoffRefusal extends Error {
@@ -18,7 +21,11 @@ export class HandoffRefusal extends Error {
 }
 
 /** `task` is the caller's OWN task this handoff comes from, so a `[pii]` one is refused and the target can name it in the follow-back. It never crosses as text. */
-export interface HandoffRequest { title: string; class: TaskClass; detail: string; paths: string[]; issue?: number; task?: number }
+export interface HandoffRequest { title: string; class: TaskClass; detail: string; paths: string[]; issue?: number; task?: number;
+  /** #1175: the sender's reason for filing a second task on a spec issue that already has an open one on the target's board. Absent means the target refuses a duplicate. */
+  duplicate_ok?: string;
+  /** #731: the key of this request. Absent means the origin mints one when the target understands keys; it crosses inside the request body only to a target that advertises `task_handoff_key`. */
+  handoffKey?: string }
 
 const hasControl = (text: string): boolean => /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text);
 
@@ -71,9 +78,30 @@ export function parseHandoff(input: unknown): HandoffRequest & { project: string
     task = typeof rawTask === "string" && /^[1-9]\d{0,9}$/.test(rawTask) ? Number(rawTask) : rawTask as number;
     if (typeof task !== "number" || !Number.isSafeInteger(task) || task < 1 || task > HANDOFF_LIMITS.issue) throw new HandoffRefusal("invalid", "handoff task must be a positive task id of this project");
   }
-  const request = { project, title, class: cls as TaskClass, detail, paths, ...(issue === undefined ? {} : { issue }), ...(task === undefined ? {} : { task }) };
+  const duplicateOk = text(field("duplicate_ok"), "duplicate_ok", HANDOFF_LIMITS.duplicateOk, false).replace(/\s+/g, " ").trim();
+  if (field("duplicate_ok") !== undefined && field("duplicate_ok") !== null && field("duplicate_ok") !== "" && !duplicateOk) throw new HandoffRefusal("invalid", "handoff duplicate_ok needs a reason");
+  const rawKey = field("handoffKey");
+  if (rawKey !== undefined && rawKey !== null && rawKey !== "" && (typeof rawKey !== "string" || !HANDOFF_KEY.test(rawKey))) throw new HandoffRefusal("invalid", "handoff handoffKey must be a lowercase UUID v4");
+  const handoffKey = typeof rawKey === "string" && rawKey ? rawKey : undefined;
+  const request = { project, title, class: cls as TaskClass, detail, paths, ...(issue === undefined ? {} : { issue }), ...(task === undefined ? {} : { task }), ...(duplicateOk ? { duplicate_ok: duplicateOk } : {}), ...(handoffKey === undefined ? {} : { handoffKey }) };
   if (Buffer.byteLength(JSON.stringify(request), "utf8") > HANDOFF_LIMITS.bodyBytes) throw new HandoffRefusal("too_large", `handoff is over ${HANDOFF_LIMITS.bodyBytes} bytes`);
   return request;
+}
+
+/**
+ * #731: what a key stands for. The target keeps this with the key, so a replay of the same key answers with the existing task, and the same key with a different request is refused, never
+ * silently answered with a task the caller did not ask for. The key itself and the target are not part of it; the origin's own task id is.
+ */
+export function handoffRequestDigest(request: Pick<HandoffRequest, "title" | "class" | "detail" | "paths" | "issue" | "duplicate_ok">, originTask?: number): string {
+  return createHash("sha256").update(JSON.stringify([request.title, request.class, request.detail, request.paths, request.issue ?? null, request.duplicate_ok ?? null, originTask ?? null])).digest("hex");
+}
+
+/**
+ * #731 (H1): whether a control reply says the request may have reached the target without an answer coming back: the client's own timeout, or a connection that closed while the request was out.
+ * A refusal the target wrote, and a request that was never sent, are definite and are not this. Reads the client's fixed wording (`control-client.ts`), never the target's text.
+ */
+export function handoffOutcomeUnknown(reply: { ok?: unknown; error?: unknown }): boolean {
+  return reply.ok !== true && typeof reply.error === "string" && /^(no answer from the hub within \d+ s|hub connection closed)/.test(reply.error);
 }
 
 export interface RegisteredProject { id: string; root: string; stateDir: string }
@@ -93,6 +121,56 @@ export function resolveTarget(name: string, projects: readonly RegisteredProject
   return match;
 }
 
+/**
+ * #734 (agent-hub#1203 H8): a failed connection to a target hub, named by its cause. The control client throws an `Error` with a `code`: 4426 (the wire versions share no
+ * protocol), 4404 (the hub or instance answering is not the one asked for), or a connect code (`AHUB_CONNECT_TIMEOUT`, `AHUB_CONNECT_UNREACHABLE`) or a socket close code. Each cause has
+ * its own next step, and none is "run `ahub up`" unless the hub really is not running: a version skew is fixed by upgrading, an instance mismatch by asking the right hub.
+ * Pure: the error's `code` and nothing from its message is read, so a target's text never decides a branch.
+ */
+export function handoffConnectFailure(error: unknown, target: { id: string; root: string }): { code: HandoffRefusalCode; reach: "unreachable"; cause: string; message: string } {
+  const code = typeof (error as { code?: unknown })?.code === "number" || typeof (error as { code?: unknown })?.code === "string" ? (error as { code: number | string }).code : undefined;
+  if (code === 4426) return { code: "older_target", reach: "unreachable", cause: "wire version differs",
+    message: `the hub of ${target.id} speaks another wire version than this one: upgrade whichever is older (\`ahub upgrade\` in ${target.root}, and the global CLI the way it was installed; \`ahub doctor\` names the exact step), then hand the task off again` };
+  if (code === 4404) return { code: "mismatch", reach: "unreachable", cause: "another hub or instance answered",
+    message: `the hub answering for ${target.root} is not the instance this project's registry names (it was restarted, or another project took its port): run \`ahub projects\` to see what is registered, and \`ahub up\` in ${target.root} if it is not running` };
+  if (code === "AHUB_CONNECT_TIMEOUT") return { code: "not_running", reach: "unreachable", cause: "no answer in time",
+    message: `the hub of ${target.id} did not answer in time: it may be busy or stuck; check \`ahub status\` in ${target.root}, then hand the task off again (handoffs are not queued)` };
+  return { code: "not_running", reach: "unreachable", cause: "not running",
+    message: `the hub of ${target.id} did not answer; run \`ahub up\` in ${target.root}, then hand the task off again (handoffs are not queued)` };
+}
+
+/** One word for where a handoff row's target stands, shown by `ahub task handoff --list`. `moved` is a project id the registry no longer holds: its root changed or it was removed, and the id is a hash of the root. */
+export type HandoffReach = { reach: "reachable" } | { reach: "unreachable"; cause: string } | { reach: "moved"; cause: string };
+export function handoffReach(input: { registered: boolean; descriptor?: TargetDescriptor | undefined; lastFailure?: string | undefined }): HandoffReach {
+  if (!input.registered) return { reach: "moved", cause: "project not registered (moved?): run `ahub projects`, and `ahub up` in its new root" };
+  if (!input.descriptor) return { reach: "unreachable", cause: input.lastFailure ?? "not running: run `ahub up` in its root" };
+  if (!input.descriptor.features?.includes("task_handoff")) return { reach: "unreachable", cause: "too old for handoffs: upgrade it with `ahub upgrade`" };
+  return input.lastFailure ? { reach: "unreachable", cause: input.lastFailure } : { reach: "reachable" };
+}
+
+/** A person-readable age ("45s", "12m", "3h", "5d") for a row last updated `ms` ago. A negative or non-finite age reads "-": a clock that moved is not a duration. */
+export function handoffAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "-";
+  const s = Math.floor(ms / 1000);
+  if (s < 90) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 90) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
+}
+
+/**
+ * #734 (H7): at most one log line per target and cause in each window, so a target that stays down for a day writes a line per window and not a line per notify or catch-up. The state is a
+ * plain map the caller owns (one per daemon), bounded by `max` keys: past it the oldest key is forgotten, which can only let one extra line through, never suppress a new cause.
+ */
+export function handoffLogGate(seen: Map<string, number>, key: string, now: number, windowMs: number, max = 256): boolean {
+  const last = seen.get(key);
+  if (last !== undefined && now - last < windowMs && now >= last) return false;
+  seen.delete(key); seen.set(key, now);
+  while (seen.size > max) seen.delete(seen.keys().next().value as string);
+  return true;
+}
+
 /** What the target's own status descriptor says. A daemon that is not running, or does not know the handoff, is refused with the person's action. */
 export function checkTarget(project: RegisteredProject, descriptor: TargetDescriptor | undefined): void {
   if (!descriptor) throw new HandoffRefusal("not_running", `the hub of ${project.id} is not running; run \`ahub up\` in ${project.root}, then hand the task off again (handoffs are not queued)`);
@@ -101,7 +179,7 @@ export function checkTarget(project: RegisteredProject, descriptor: TargetDescri
 }
 
 /** The states a target reports back, in the order a task can reach them. `declined` is the owner passing; the task then returns to the target's routing, so it is information, not an end. */
-export const HANDOFF_EVENTS = Object.freeze(["accepted", "in_review", "approved", "declined", "cancelled"] as const);
+export const HANDOFF_EVENTS = Object.freeze(["accepted", "in_review", "approved", "declined", "cancelled", "changes_requested", "reopened"] as const);
 export type HandoffEvent = (typeof HANDOFF_EVENTS)[number];
 
 /** Map a target's task history entry to the event the origin is told about, or undefined for every other entry. Reads only the event name and the task state, never a note. */
@@ -112,9 +190,32 @@ export function handoffEventFor(entryEvent: string, state: string): HandoffEvent
   if (entryEvent === "cancelled" && state === "cancelled") return "cancelled";
   if (entryEvent === "done" && state === "in_review") return "in_review";
   if (entryEvent === "approved" && state === "approved") return "approved";
+  if (entryEvent === "merged outside the hub" && state === "approved") return "approved";
+  // #733 (agent-hub#1203 H10): a reviewer's changes_requested, and the hub's return of that task to its owner, are states the origin used to hear nothing about. A withdrawn approval is the same
+  // verdict on an approved task: the row it reopens is picked up through the sequence.
+  if (entryEvent === "changes_requested" && state === "changes_requested") return "changes_requested";
+  if (entryEvent === "reopened" && state === "in_progress") return "reopened";
   // A class with no reviewer: the done itself approves (`in_progress -> approved`), so the origin hears "approved" for that entry, not "in review".
   if (entryEvent === "done" && state === "approved") return "approved";
   return undefined;
+}
+
+/**
+ * #733: whether the origin still asks a target about a handoff row. An open row always; an approved one for a grace period, because a reviewer can withdraw an approval and the origin only learns
+ * of it through the sequence; a cancelled one never. ponytail: the grace period is a fixed 7 days; a per-row "reopenable" fact from the target would end it, at the cost of one more field per state.
+ */
+export const HANDOFF_APPROVED_GRACE_MS = 7 * 24 * 3600_000;
+export function handoffCatchUpRow(row: { state: string; updatedAt: number }, now: number): boolean {
+  if (row.state === "cancelled") return false;
+  return row.state !== "approved" || now - row.updatedAt <= HANDOFF_APPROVED_GRACE_MS;
+}
+/** One request carries at most this many task ids: the target refuses a longer list (`handoffStatesFor`). */
+export const HANDOFF_STATES_CHUNK = 200;
+/** Split a project's task ids into requests of at most `HANDOFF_STATES_CHUNK`, in order, none dropped. */
+export function handoffChunks(ids: readonly number[]): number[][] {
+  const out: number[][] = [];
+  for (let i = 0; i < ids.length; i += HANDOFF_STATES_CHUNK) out.push(ids.slice(i, i + HANDOFF_STATES_CHUNK));
+  return out;
 }
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -123,4 +224,43 @@ export function followBackLine(remoteTask: number, event: HandoffEvent, evidence
   const pr = typeof evidence.pr === "number" && Number.isSafeInteger(evidence.pr) && evidence.pr > 0 ? ` PR #${evidence.pr}` : "";
   const head = typeof evidence.head === "string" && SHA.test(evidence.head) ? ` at ${evidence.head}` : "";
   return `agent-hub task ${remoteTask} ${event.replace("_", " ")}${pr || head ? `:${pr}${head}` : ""}`;
+}
+
+export interface DuplicateRow { id: number; state: string; title: string; detail?: string; refs?: { repo?: string }; external?: { repo: string; issue: number } | undefined; sdlc?: { issue?: number; repo?: string } | undefined }
+
+/**
+ * #1175: the ids of tasks already open on THIS board for the spec issue a handoff names. Pure: the caller passes the board's rows (a `[pii]` row is the caller's to leave out, so no
+ * private task id is ever named to another project) and the project's own repository slug. A task counts when it is not closed and one of these names the issue: its lifecycle
+ * receipt, a bare `#N` or an `owner/repo#N` of this repository in its title, or the `spec issue: #N in this repository` line a handoff keeps in its detail. A reference qualified
+ * with another repository never counts, and a number that appears in a title as another kind of reference (a PR) is the one false positive: the sender's `duplicate_ok` answers it.
+ */
+export function duplicateIssueTasks(tasks: readonly DuplicateRow[], issue: number, repository?: string): number[] {
+  const slug = (value: string | undefined): string | undefined => value !== undefined && /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(value) ? value.toLowerCase() : undefined;
+  // A project with no GitHub remote has a path, not a slug, for its repository: nothing can then be compared, so no row is foreign and no qualified reference matches.
+  const own = slug(repository);
+  const names = (text: string, bare: boolean): boolean => {
+    for (const match of text.matchAll(/(?<![A-Za-z0-9_./-])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9][0-9]*)\b|#([1-9][0-9]*)\b)/g)) {
+      const qualified = match[1];
+      if (Number(match[2] ?? match[3]) !== issue) continue;
+      if (qualified ? qualified.toLowerCase() === own : bare) return true;
+    }
+    return false;
+  };
+  return tasks.filter(task => {
+    if (task.state === "approved" || task.state === "cancelled") return false;
+    // The repository each identity belongs to: `sdlc.repo`, `external.repo` (an imported issue) and a slug `refs.repo` (a checkout path says nothing). One naming another repository
+    // than this project's keeps its `#N` out: an issue number is only an identity together with its repository. With no own slug nothing can be compared, so the number counts and `duplicate_ok` answers.
+    const foreign = (repo: string | undefined): boolean => own !== undefined && slug(repo) !== undefined && slug(repo) !== own;
+    if (task.external?.issue === issue && !foreign(task.external.repo)) return true;
+    if (task.sdlc?.issue !== undefined) return task.sdlc.issue === issue && !foreign(task.sdlc.repo) && !foreign(task.refs?.repo);
+    if (foreign(task.external?.repo) || foreign(task.refs?.repo)) return false;
+    const line = /(^|\n)spec issue: #([1-9][0-9]*) in this repository/.exec(task.detail ?? "");
+    return names(task.title, true) || line !== null && Number(line[2]) === issue;
+  }).map(task => task.id).sort((a, b) => a - b);
+}
+
+/** One refusal sentence that names the open tasks and both ways forward. The ids are this board's own; no title or text from a task is repeated. */
+export function duplicateRefusalText(issue: number, ids: readonly number[]): string {
+  const named = ids.slice(0, 6).map(id => `#${id}`).join(", ") + (ids.length > 6 ? ` and ${ids.length - 6} more` : "");
+  return `spec issue #${issue} already has open ${ids.length === 1 ? "task" : "tasks"} here: ${named}. Use ${ids.length === 1 ? "it" : "them"} (ask the conductor there), or hand off again with duplicate_ok: <reason> (--duplicate-ok <reason> in the CLI) if this is genuinely separate work`;
 }

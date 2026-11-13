@@ -2,6 +2,7 @@ import { types } from "node:util";
 import type { PeerState } from "../hub/envelope.ts";
 import { decodeBase64url, encodeBase64url } from "./crypto.ts";
 import { parseRemotePeerId } from "./application.ts";
+import { ROOM_HEALTH_CAUSES, roomHealthNextStep, type RoomHealthCause } from "./health.ts";
 
 const ROOM_LIMIT = 64;
 const REMOTE_PEER_LIMIT = 4096;
@@ -15,9 +16,18 @@ const EPOCH = /^[1-9][0-9]{0,19}$/;
 const LINK_STATES = new Set(["online", "connecting", "offline", "left"]);
 const PEER_STATES = new Set<PeerState>(["idle", "busy", "paused", "offline"]);
 
+export interface RoomStatusHealth {
+  refused: { invalid_presence: number; wrong_epoch: number; trust_changed: number; stale: number; invalid_frame: number } | null;
+  outboxDepth: number | null;
+  oldestOutboxAgeMs: number | null;
+  lastReceiptAgeMs: number | null;
+}
+
 export interface RoomStatusPeer {
   id: string;
   state: PeerState;
+  presence?: PeerState | "unknown";
+  liveness?: "untracked";
 }
 
 export interface RoomRelayStats {
@@ -27,8 +37,15 @@ export interface RoomRelayStats {
   withheld: number | null;
 }
 
+export interface RoomStatusDiagnostics {
+  health?: RoomStatusHealth | null;
+  linkCause?: RoomHealthCause | null;
+  linkNextStep?: string | null;
+}
+export interface RoomStatusUnavailable { code: RoomHealthCause | null; nextStep: string | null }
+
 /** Allowlisted room metadata. Missing member counts and peer lists stay unknown. */
-export interface RoomStatusView {
+export interface RoomStatusView extends RoomStatusDiagnostics {
   name: string;
   room: string;
   owner: string;
@@ -95,8 +112,13 @@ function remotePeers(value: unknown, remaining: number): RoomStatusPeer[] | null
     if (!plainRecord(item)) return null;
     const id = ownData(item, "id"), state = ownData(item, "state");
     if (typeof id !== "string" || !parseRemotePeerId(id) || typeof state !== "string" || !PEER_STATES.has(state as PeerState) || ids.has(id)) return null;
+    const presenceField = ownField(item, "presence"), livenessField = ownField(item, "liveness");
+    if (presenceField.present && !Object.hasOwn(presenceField, "value") || livenessField.present && !Object.hasOwn(livenessField, "value")) return null;
+    const presence = presenceField.value, liveness = livenessField.value;
+    if (presence !== undefined && presence !== "unknown" && (typeof presence !== "string" || !PEER_STATES.has(presence as PeerState))) return null;
+    if (liveness !== undefined && liveness !== "untracked") return null;
     ids.add(id);
-    result.push({ id, state: state as PeerState });
+    result.push({ id, state: state as PeerState, ...(presence !== undefined ? { presence: presence as RoomStatusPeer["presence"] } : {}), ...(liveness === "untracked" ? { liveness } : {}) });
   }
   return result;
 }
@@ -114,6 +136,46 @@ function relayStats(value: unknown): RoomRelayStats | null {
   const rawWithheld = relayCount(ownData(value, "withheld"));
   const withheld = outbound !== null && rawWithheld !== null && rawWithheld <= outbound ? rawWithheld : null;
   return { since, outbound, inbound, withheld };
+}
+
+/** Counts and ages remain unknown when an older daemon cannot report them. */
+export function projectRoomHealth(value: unknown): RoomStatusHealth | null {
+  if (!plainRecord(value)) return null;
+  const rawRefused = ownData(value, "refused");
+  let refused: RoomStatusHealth["refused"] = null;
+  if (plainRecord(rawRefused)) {
+    const invalid_presence = relayCount(ownData(rawRefused, "invalid_presence")), wrong_epoch = relayCount(ownData(rawRefused, "wrong_epoch"));
+    const trust_changed = relayCount(ownData(rawRefused, "trust_changed")), stale = relayCount(ownData(rawRefused, "stale")), invalid_frame = relayCount(ownData(rawRefused, "invalid_frame"));
+    if (invalid_presence !== null && wrong_epoch !== null && trust_changed !== null && stale !== null && invalid_frame !== null)
+      refused = { invalid_presence, wrong_epoch, trust_changed, stale, invalid_frame };
+  }
+  return { refused, outboxDepth: relayCount(ownData(value, "outboxDepth")),
+    oldestOutboxAgeMs: relayCount(ownData(value, "oldestOutboxAgeMs")), lastReceiptAgeMs: relayCount(ownData(value, "lastReceiptAgeMs")) };
+}
+
+function healthCause(value: unknown): RoomHealthCause | null {
+  return typeof value === "string" && ROOM_HEALTH_CAUSES.includes(value as RoomHealthCause) ? value as RoomHealthCause : null;
+}
+
+/** Regenerate guidance from closed causes; arbitrary daemon text is never copied. */
+export function projectRoomDiagnostics(value: unknown): RoomStatusDiagnostics {
+  if (!plainRecord(value)) return {};
+  const cause = healthCause(ownData(value, "linkCause"));
+  const result: RoomStatusDiagnostics = {};
+  if (ownField(value, "health").present) result.health = projectRoomHealth(ownData(value, "health"));
+  if (ownField(value, "linkCause").present) {
+    result.linkCause = cause;
+    result.linkNextStep = null;
+    if (cause !== null) result.linkNextStep = roomHealthNextStep(cause);
+  }
+  return result;
+}
+
+/** Absent or malformed availability metadata stays unknown without evaluating getters. */
+export function projectRoomUnavailable(value: unknown): RoomStatusUnavailable | null {
+  if (!plainRecord(value)) return null;
+  const code = healthCause(ownData(value, "code"));
+  return { code, nextStep: code === null ? null : roomHealthNextStep(code) };
 }
 
 /** Project RoomCommands.rows-compatible data to body-free room status metadata. */
@@ -139,6 +201,7 @@ export function projectRoomStatus(value: unknown): RoomStatusView[] {
         memberCount: memberCount(rawMemberCount),
         remotePeers: peers,
         relays: relayStats(ownData(item, "relays")),
+        ...projectRoomDiagnostics(item),
       });
     }
     return views;

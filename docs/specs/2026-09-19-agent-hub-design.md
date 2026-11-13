@@ -44,7 +44,7 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
   vLLM serves `deepseek-ai/DeepSeek-V4-Flash-0731`; GLM-5.3-Flash and
   Qwen3.8-27B are planned (internal deployment plan).
   OpenCode 1.18.31 already has a `dgx-dsv4f` provider for this gateway.
-- Routing policy engine: NVIDIA-NeMo/Switchyard v0.2.0 (Apache-2.0). Route types
+- Historical routing policy engine, superseded by [Hub Model Routes](../design/model-routes.md) in #1352: NVIDIA-NeMo/Switchyard v0.2.0 (Apache-2.0). Route types
   `llm_classifier`, `stage_router`, `escalation_router`; `auto` needs a source build
   until v0.3.0. Standalone `switchyard-server` proxies `/v1/chat/completions`,
   `/v1/messages`, `/v1/responses` and forwards to any `base_url` upstream. Stability:
@@ -71,6 +71,8 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
   PII never leaves the campus network (internal routing criteria).
 
 ## Amendment: retire the Switchyard sidecar (#553, 2026-10-20)
+
+Historical amendment. #1352 supersedes the source-port and provenance requirements below with the newly authored [Hub Model Routes](../design/model-routes.md). The reserved port offset remains 3 under a neutral name; derived modules, their upstream checker and Apache notice are retired. The unrelated Tabler Icons notice remains.
 
 - All model routing runs in process. Remove `src/switchyard/`, the external binary,
   generated config, lifecycle, health/status/doctor entries, `AGENTHUB_SWITCHYARD_BIN`
@@ -227,7 +229,7 @@ interface Envelope {
   kind: "chat" | "task" | "review" | "status" | "budget" | "presence";
   priority: "important" | "status" | "fyi";
   body: string;                          // agent conclusions only, never tool noise
-  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string };
+  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; visual?: string };
   ts: number;
 }
 ```
@@ -370,7 +372,7 @@ pii = "local_only"                      # hard: on-prem models only
 budget_paused = "skip_peer"
 ```
 
-L2 in-process routing (2026-10-04 source port): `[hub_routes."hub/<id>"]` selects
+Historical L2 in-process routing (2026-10-04 source port, superseded by [Hub Model Routes](../design/model-routes.md) in #1352): `[hub_routes."hub/<id>"]` selects
 stage, plan_execute, advisor or escalation policies inside the hub. The host retains
 transport, budget admission and complete-turn history ownership; algorithms make decisions
 from normalized chat input and bounded session state. See
@@ -439,10 +441,15 @@ inside a peer.
   hub's own count of Kimi's session wire log (`src/adapters/kimi-wire-usage.ts`, wire protocol 1.5, read on Kimi 2.3.0; the issue
   read 2.1.1), not an ACP total: each `usage.record` row of the owned session, sub-agents included, is a `usage` event
   (`source: kimi_wire`) and a `tokens` event, and the rolling 5 h sum of `inputOther + inputCacheCreation + output` (cache reads are
-  recorded, never counted) is the `tokens` window, source `hub count, kimi wire log, of kimi_tokens_5h N`. Any read the reader
+  recorded, never counted) is the `tokens` window, source `hub count, kimi wire log, of kimi_tokens_5h N`. #1281 adds one coalesced
+  delayed drain per peer after each cue (250 ms, 1,000 ms and 2,000 ms, at most three follow-ups), cancelled on stop, offline and
+  session replacement; offline keeps the final synchronous `collect -> drop`. A native row time selects a unique interval among the
+  32 most recent captured turns, with no unique match recorded as `unattributed`. Late rows update usage, token increments, the
+  roll-up and soft window without rewriting an earlier `turn_end` or incrementing a later turn. A reader slice commits offsets only
+  after its rows are recorded, so cancellation cannot advance past an unrecorded row. Any read the reader
   cannot trust gives unknown (one notice, the reading dropped), never a short count. `ahub budget set`
   feeds a reading by hand. `local` has no quota and is never paused.
-- Gate at `budget.gate` (default 0.9) on any fresh window; readings older than
+- Gate at `budget.gate` (default 0.99, a registered setting) on any fresh window; readings older than
   `budget.stale_min` are ignored. Checkpoint first, pause second: the peer gets one
   important envelope asking it to write `.agenthub/checkpoint.md` and call `hub_checkpoint`,
   the hub waits up to `budget.checkpoint_timeout_s`, then pauses it; a hard-limited peer is
@@ -714,7 +721,7 @@ M6 internal inference, packaging
 - Room v1 excludes hosted multi-tenant service, multi-owner rooms, forward secrecy, traffic-metadata hiding, approval or permission-request relay, and cross-machine instances. Shared boards, remote roles and remote task ownership remain excluded; memory crosses only through the separate agent-mem git sync. No hub server is exposed.
 - OmniRoute daemon on the Mac; pooling subscription OAuth through any gateway.
 - Gemini CLI and OpenCode adapters beyond the ACP fallback note.
-- Switchyard `auto` route until v0.3.0 ships.
+- Historical exclusion, superseded in #1352: Switchyard `auto` route until v0.3.0 ships. Current routing uses the hub-owned route implementation and optional adec choices.
 - Running Claude Code itself on a local model (depends on the Anthropic-to-chat
   translation check in the OmniRoute plan v1, Phase 0).
 - A hub-owned memory store, cmem.ai cloud sync, automatic corpus building (a project
@@ -803,7 +810,9 @@ atomically install that candidate against its persisted pin. Replaying an old
 candidate must never reset the minimum epoch or a grace deadline.
 
 A frame's public header is `{v,type,room,epoch,sender,recipients,seq}` plus nonce,
-ciphertext and signature. Recipients are hub fingerprints, not local peer ids.
+ciphertext and signature. Presence may add the signed optional `ephemeral: true`
+header (#1204 T1); every other value for that optional field refuses. Recipients
+are hub fingerprints, not local peer ids.
 The body is opaque encrypted bytes, including any eventual local addressing,
 kind, trace and text. Frame AAD is exactly UTF-8 `room|epoch|sender|seq`. A
 sender-specific AES key is HKDF-derived from the epoch root and room/epoch/sender/
@@ -974,7 +983,14 @@ survive queue ACKs/restart: the last accepted digest or an identical retained ol
 packet is idempotent without requeueing; conflicting or
 unknown lower sequences refuse. FIFO uses SQLite admission row order, never lexical
 sequence strings or clock ties. Full queues refuse new packets without evicting
-accepted ones. Prior-epoch grace may expire a packet before its ordinary TTL.
+accepted durable ones. Ephemeral presence replaces only prior ephemeral rows of
+that sender and retains only currently ready recipients; disconnect/restart
+removes those recipients, while sender floors and durable work remain. The same
+queue/byte caps still apply. A frame-level `queue_full` includes its verified
+digest. Links retain the sealed frame and retry after 250 ms, doubling to 30 s,
+with one frame awaiting storage acceptance so later sequences cannot overtake it.
+Applications stay in the local outbox; T2 owns receipt persistence and deadline/
+restart replay changes. Prior-epoch grace may expire a packet before its ordinary TTL.
 
 One packet per recipient socket is in flight. `{v:1,type:"received",digest}` removes
 only that identity from the packet's remaining recipients, then returns
@@ -1114,6 +1130,28 @@ not project config or synced memory. A hub stop closes links and retains members
 A person may explicitly import a pinned signed roster to reactivate a left room;
 automatic link traffic cannot reactivate it.
 
+
+The optional ephemeral field is used only after an opted-in connection receives
+`ephemeral: true` in the broker ready control. The upgrade header is
+`x-agent-hub-ephemeral: 1`; brokers preserve the old closed ready shape for
+clients that do not opt in. Missing advertisement means legacy presence frames,
+with dedupe/backoff still active. The broker withholds ephemeral frames from older member hubs
+until upgraded; application chat stays wire-compatible. See the [compatibility
+ceiling](../design/bus.md#room-wire-compatibility-1204-t1). Codec-aware presence
+keeps `x-agent-hub-ephemeral: 1` and adds `x-agent-hub-codecs: 1` on that same
+WebSocket upgrade. Released brokers ignore the codec header while preserving
+ephemeral presence and liveness. Only explicitly opted-in clients receive the
+bounded current-roster peer connection inventory and signed feature snapshots.
+Feature evidence is tied to the observed source connection token and roster;
+ordinary presence never revokes a same-connection claim. Legacy members receive
+the unchanged legacy presence bytes. A missing observation is pending, grants no
+support, and defers a send under its original queue expiry. Known legacy members
+or signed feature lists missing the required codec refuse with an upgrade step.
+Fresh support and known-legacy observations wake only that member's codec waiters,
+including sends not yet admitted to the room outbox. Requeue rechecks the observation
+to avoid losing a wake that arrived during an await. These signals grant no exposure,
+roles, privacy clearance or native authority. Plain v1 chat stays compatible.
+
 ### Durable state and outbound link
 
 `<hub-state>/rooms/rooms.db` is schema version 1, SQLite DELETE/EXTRA with exclusive
@@ -1152,9 +1190,12 @@ at most 8 pending packets/2 MiB per link, 1 MiB packet/backpressure limits and a
 minutes and do not block local work. Stop, leave, replacement and rotation fence
 all awaited work by link generation.
 
+With latest-per-sender coalescing, A awaiting C can have its queued request replaced by A's broadcast reply to B. T3's periodic idle refresh requests another observation without waiting for a state change or reconnect; per-(sender,recipient) coalescing remains a possible stronger transport design. Legacy brokers retain the state-change/reconnect behavior without periodic refresh.
+
 Presence is an encrypted, signed frame containing only exposed peer ids and closed
 idle/busy/paused/offline states. It is sent on connection and coalesced peer-state
-changes, never titles, bodies, private task context or credentials. Unknown payload
+changes, skipping identical snapshots except explicit peer refresh exchanges,
+never titles, bodies, private task context or credentials. Unknown payload
 types and unexposed ids refuse before replay commit. Broker ACKs are transport
 facts only. A canonical room/recipient-bound frame that is refused or stale is
 recorded in a durable metadata-only drop ledger before transport retirement ACK.
@@ -1256,15 +1297,20 @@ exposed local peer's queue**. It does not mean native or model execution. Person
 views say **completed (admitted)**. Broker `stored` means accepted ciphertext
 only; a transport retirement ACK is not application completion.
 
-Schema3 of the private `rooms.db` migrates schema1/2 without replacing identity,
+Schema5 retains a nullable canonical outgoing content hash. Cross-root reuse of
+a retained application requires matching content and peer/recipient, no disposition
+or permanent hold, and inherited creation/expiry times; legacy NULL refuses it.
+Schema5 of the private `rooms.db` migrates schema1 through 4 without replacing identity,
 pins, counters, floors or retained traffic. A receiver commits its crypto inbox,
 then application `pending -> dispatching` before publishing into the separate
 Bus journal. A crash or failure in that cross-DB publication window becomes
-`needs_review`, with no automatic republish or fabricated receipt. Sender
-`dispatching`/`accepted` rows become `needs_review` at restart. A same-process
-reconnect drains never-handed offline queues once. A late signed receipt is kept
-as evidence on `needs_review` and shown with the person's disposition view; it
-never auto-settles. Known safe refusals retain the Bus's existing poison policy.
+`needs_review`, with no automatic receiver republish or fabricated receipt.
+Sender `dispatching`/`accepted` rows recover from validated durable intent under
+the same application and delivery ids, retaining their original queue expiry.
+A valid late signed receipt may settle an unresolved ordinary sender hold;
+invocation uncertainty remains person-settled. Person dispositions and invalidated
+recipient bindings remain authoritative. Signed
+remote safe refusals are terminal; native poison-envelope policy is unchanged.
 
 Signed seq/floors are the permanent primary replay protection. Duplicate seqs
 are retired without a second admission; a known identical completed application
@@ -1275,6 +1321,9 @@ oldest settled rows are evicted first. Pending, dispatching and unresolved
 `needs_review` are never evicted. An all-unsettled cap refuses with the room and
 count. Outside retention or after settled eviction, there is no historical
 app-id dedupe claim; an old signed frame is still refused by its seq floor.
+Automatic resend can reach this settled-eviction ceiling and repeat admission
+under a fresh ciphertext sequence: exactly once within dedupe ceiling. Pinning
+retryable identities or #737 receipt confirmation is the upgrade path.
 
 The trace high-water mark is kept for the tombstone retention (30 days / 10,000
 per room, settled rows evicted first); outside it there is no historical trace
@@ -1288,16 +1337,17 @@ Offline Bus queues count toward the 200-per-room ceiling before transport starts
 `hub_send` refuses beyond it. Original host deadlines survive handoff and restart.
 Unknown legacy deadlines fail closed to `needs_review`. Machine-local
 `rooms.ack_timeout_s` defaults to 600 (1..86,400); `rooms.queue_ttl_h` defaults to
-24 (1..168). A single deadline-driven host timer handles ack/queue expiry. No
-uncertain work is silently retried. Explicit terminal-history retries without
+24 (1..168). A single deadline-driven host timer handles ACK retries and queue
+expiry. Only validated durable sender intent is retried automatically; missing
+or corrupt local evidence remains held. Explicit terminal-history retries without
 recipient proof refuse; the person can author a fresh message deliberately.
 An expired or missing original enqueue deadline also refuses a person retry
 before any disposition is recorded; a retry never invents a fresh TTL.
 
 The ACK deadline starts at durable application handoff, before a broker `stored`
-reply, and is never extended by that reply. An unstored frame therefore becomes
-`needs_review` within the same ACK timeout instead of holding the peer for the
-queue TTL. Known pre-admission capacity or journal-unavailable refusals retain
+reply, and is never extended by that reply. Its expiry schedules another attempt
+under the same application id, without resetting the original queue TTL. Queue
+expiry or a permanent refusal ends automatic sending. Known pre-admission capacity or journal-unavailable refusals retain
 their pending plaintext for the next online/disposition retry without preventing
 later room packets and receipts from being processed. Status reads apply no
 disposition. Settled chat plaintext rows are pruned independently of presence
@@ -1371,10 +1421,25 @@ confirmed local admissions. Withheld counts are a subset of outbound handoffs,
 not an additional total. Missing or unreadable values stay `null`/unknown, never
 zero. These counters do not prove application completion or lifetime traffic.
 
-The projection contains no message body/title, reason, broker URL, key material
-or delivery history. This projection never reads a person inbox body; X5b below
+Room health additionally exposes retained refused-frame counts by closed reason,
+current outbox depth, oldest outbox age and last retained signed receipt age, and
+a closed link cause with a locally generated next step (#1204 T4). Unknown ages
+remain null, including generic legacy outbox rows without creation time. Counts
+are bounded retained diagnostics, not lifetime totals or delivery authority.
+The projection contains no message body/title, arbitrary error reason, broker URL,
+key material or delivery history. This projection never reads a person inbox body; X5b below
 provides that separate person-only CLI. Native/account and X7 two-machine
 receipts remain separate live verification.
+
+A failed store open is shown as `rooms: unavailable (<code>)` with a next step,
+and retried with exponential delay from one second to a thirty-second ceiling.
+Shutdown cancels the owned retry. Clock rollback is explicitly named; status
+reads never advance the durable clock. A verified Bus journal recovery write
+wakes deferred inbound room admission once without unrelated traffic or plaintext
+polling. This wake preserves recovery, PII, exposure and person-disposition fences.
+The signed sequence remains room-wide. Recipient-selective traffic makes gaps
+unobservable at a member, so operator gap notices are removed; monotone replay
+floors, dedupe and receipt evidence remain unchanged.
 
 ## Encrypted rooms: X5b person inbox (#446)
 
@@ -1454,7 +1519,7 @@ two-machine receipts remain separate verification.
 | Risk | Mitigation |
 | --- | --- |
 | Claude channels are research preview; flag or protocol may change | Adapter isolated in one file; plugin version pinned to a Claude Code range; `hub_inbox` fallback |
-| Model routing algorithm drift | In-process golden tests, Apache-2.0 notices and upstream provenance check |
+| Model routing algorithm drift | Hub-owned spec-derived tests and optional adec policy choices; the historical source-port provenance check is superseded in #1352 |
 | Anthropic-to-chat translation drops `tool_use` | Claude never runs on local models in this design |
 | Local worker executes untrusted room text | Untrusted framing, cwd scope, denylist, no `--unattended` by default |
 | Steering a Codex turn changes its plan mid-flight | Only `important` steers; default tier is `status` |
@@ -2782,6 +2847,12 @@ push `accepted` and show none of them.
   sources add protocol 15 (0.12.17 through 0.12.19); the transition from a real
   0.12.19 hub is not yet proven.
 
+## Amendment: inherited Claude channel marker requires direct-parent evidence (issue #1171)
+
+- `AGENTHUB_CHANNEL=1` alone does not enable push. Claude Code child processes, including `daemon run` and `bg-spare`, inherit it without the development-channel flag. The plugin's direct parent must have a bounded, readable `ps -ww` row whose leading argv tokens are `claude --dangerously-load-development-channels` and one exact supported target (`plugin:agent-hub@agent-hub` or `server:agent-hub`). Print/background/daemon forms, a repeated development-channel flag, unreadable or malformed output, a changed parent pid, and unknown targets fail closed to tools-only.
+- The classifier is conservative because `ps` renders a flattened command line; matching is restricted to the prefix and remaining tokens are checked for known mode-changing forms. This is same-user process observation, not authentication. No client-side Claude channel capability was found in the inspected Claude Code 2.1.318 client path, and the server's own advertised capability is not proof. Unknown evidence keeps messages queued for `hub_inbox`.
+- `status.json` reports `attachMode` and a closed `attachEvidence` label for an attached Claude peer; human `ahub status` shows the same pair. Older clients that omit the evidence field retain their prior attachment behavior and display `unreported`.
+
 ## Amendment: channel queue visibility and explicit pull (issue #493)
 
 - A channel session's `hub_inbox` reads the daemon queue through the same
@@ -3441,17 +3512,18 @@ the queue.
 
 - T0 ran live on Qwen Code 0.26.1 under an isolated HOME ([verification](../verification/2026-10-25-qwen-dual-output-t0.md)): Q2, Q3, Q5 and Q6 pass, Q4 fails. The owner decided on 2026-10-25 to build Part 3 with the two limits below stated, so AC9's condition reads "Q2, Q3, Q5 and Q6 pass; Q4's limit is stated".
 - Launch: `ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the person's terminal, as `ahub pi --mode tui` does. Both files live under the project state dir, mode 0600. The event file is a regular file the adapter tails from a saved offset.
-- Version gate: a separate compat entry for the dual-output contract, verified 0.26.1 only. It does not widen the headless `qwen` entry, whose ACP receipts are separate.
-- Delivery: `deliver()` sets busy synchronously and appends one `{"type":"submit","text"}` line with the digest. Qwen queues a submit that arrives during a turn and runs it after that turn ends.
+- Version gate: a separate compat entry for the dual-output contract, verified 0.26.1, exact 0.27.0 and exact 0.27.1 (matched account-free receipts for [0.27.0](../verification/2026-11-10-qwen-0270-dual-output.md) and [0.27.1](../verification/2026-11-10-qwen-0271-dual-output.md)). It does not widen the headless `qwen` entry, whose ACP receipts are separate.
+- Delivery: `deliver()` sets busy synchronously and appends one `{"type":"submit","text"}` line with the digest. Required Q2 follows the actual normal Bus/QwenDualPeer path: a second envelope is enqueued while the first fixture-provider response is held; only one submit is present before release. After the first non-tool-use assistant and its message_stop, the second user/provider/final-assistant/message_stop must have distinct, ordered event indices. The direct-native-busy-submit claim from the original 0.26.1 receipt was not reproduced by the v2 producer's matched 0.26.1 control; it is recorded characterization, not a substitute Q2 pass/fail. The [2026-11-10 receipt](../verification/2026-11-10-qwen-0270-dual-output.md) records ruling `fa75c5f2-fc78-42a1-85dc-cf206e6a7825` and the revised procedure, whose matched private 0.26.1/candidate 0.27.0 Q2 runs pass two distinct normal-Bus turns; the remaining required Q3/Q5/Q6/Q7 pair also passed, supporting exact 0.27.0 admission with Q4's existing external-stop limit stated.
 - Turn end: Qwen emits no `result` event in this mode. A turn ends at an `assistant` event whose `stop_reason` is not `tool_use`, followed by `message_stop`; that assistant text is the turn's shared answer. A `result` event, if a later build emits one, also ends the turn.
 - Approvals: `control_request` with `subtype: can_use_tool` goes to the hub approval path, and the answer is `{"type":"confirmation_response","request_id","allowed"}`. Allow or deny only. The hub's own tools are approved by the exact `tool_name` (`mcp__<server>__<tool>`), never by prefix. A `control_response` for a pending request that the hub did not answer means the person answered in the TUI: withdraw the hub's pending approval. A `control_response` error for a stale id is logged, never retried.
-- Limit 1, deny: a hub deny cancels Qwen's whole turn and Qwen emits nothing for it. After sending `allowed: false` the adapter ends the turn itself (idle, no shared answer, a notice that the turn was denied).
+- Limit 1, deny: an appended hub deny settles the delivery as known `completed`, without a shared answer, but supplies no native completion ACK. Persist `denyPending: true` before appending it and retain a continuous input fence. Only a newly observed same-session personal USER followed by that personal turn's normal final assistant/message_stop under the same verified owner, or a verified fresh native launch generation, releases the fence. Denied-turn pairs, approval responses, orphan Stops, replayed session starts and file readability do not. The 30 s operational wait expires offline with queued messages unsubmitted and an actionable terminal/restart notice; the durable fence remains and passive recovery still observes those proofs. Detach/adoption invalidate unfinished proof, and adoption cannot reuse buffered personal frames. See [adapter contract](../design/adapters.md#qwen-deny-input-fence-888).
+- Input writes: append one full UTF8 Buffer once, require the exact byte count, and never retry a remainder. Short/throwing writes retain `needs_review` and offline; non-newline input tails before append or attachment fence input until a verified fresh generation, never personal completion. The live uncertain-write latch is RAM-only and crash detection reads the actual tail. A torn prefix ending in newline remains undetected; a durable per-write intent record is the upgrade path if observed.
 - Limit 2, no external stop: the input protocol has only `submit` and `confirmation_response`, and SIGINT does not stop a turn. The inactivity watchdog never cancels a Qwen TUI turn. It reports the stalled turn to the person (status, console and dashboard: "stalled; press Esc in the Qwen terminal") and keeps the peer busy. The hub never types into the terminal or signals the process to stop a turn.
 - Prompt channel: the input file is a prompt channel. Qwen's own write and shell tools reach it only through approval, and the hub's approval path refuses any write or command that names the state dir. No other peer can write it.
 - Detached: the TUI keeps working when nobody reads the event file (T0 Q5). A daemon that cannot read the file treats the peer as detached, not idle; on reattach the adapter resumes from its saved offset.
 - Recovery: `qwen -r <session_id>` with the same two files resumes the conversation, does not replay earlier submits, and appends to the event file. The adapter records `session_id` from `system/session_start` and resumes from its saved offset, so events from before the restart are not processed twice.
 - Implementation notes (#449, measured on 0.26.1 where stated):
-  - Files and state: `<state dir>/qwen/qwen-dual/{input.jsonl,events.jsonl,mcp.json,state.json}`; `state.json` holds `session_id`, the read offset, a generation counter and the bound owner (pid with its `processSignature`). `ahub qwen --mode tui` is explicit only: Qwen's `start.forms` stays `["headless"]`, so Qwen is not a start-mode peer and the hub never opens this terminal itself. The TUI driver is the definition's `start.createTui` on the `qwen-dual` daemon port, a fixed-builtin capability.
+  - Files and state: `<state dir>/qwen/qwen-dual/{input.jsonl,events.jsonl,mcp.json,state.json}`; `state.json` holds `session_id`, the read offset, a generation counter and the bound owner (pid with its `processSignature`), plus the optional host-only `denyPending: true` input fence. `ahub qwen --mode tui` is explicit only: Qwen's `start.forms` stays `["headless"]`, so Qwen is not a start-mode peer and the hub never opens this terminal itself. The TUI driver is the definition's `start.createTui` on the `qwen-dual` daemon port, a fixed-builtin capability.
   - Gate: checked twice, by `qwen --version` against `COMPAT["qwen-dual"]` before any file is made, and by the TUI's own `session_start` (version, `protocol_version` 2, the events the adapter reads). An unverified TUI is not attached and the person gets a notice.
   - Event file: Qwen opens an existing `--json-file` at byte 0 without truncating it (it overwrote the head of a 3 KB file in place), so appending after a restart is not what it does. A fresh or resumed launch therefore starts from empty files (the old event file is kept as `events.prev.jsonl`, the saved offset restarts at 0 for the new file), and a hub restart while the person's Qwen keeps running adopts it and reads on from the saved offset with no launch. Qwen starts reading the input file at its size at start, so earlier submits are not replayed either way.
   - Owner: bound from the host's process table (the one process whose argv contains `--input-file <this adapter's file>`; two matches is no owner), at `session_start` and then every second. No launcher message is trusted for it. When the owner is gone the peer goes offline, an open hub turn settles `needs_review` and a notice says the terminal ended. The hub never signals it.
@@ -4810,8 +4882,11 @@ upgrade remedy. Attached native TUIs without a live launcher or independent exac
 Orca session proof are shown as `attached, launcher unrecorded`, with person end
 or native resume guidance, never a fresh headless restart. Plain same-protocol
 Claude keeps its unmanaged reconnect-only path. An orphaned but connected pane
-requires the person to run `orca terminal switch --terminal <handle>` and refresh;
-it does not authorize another restore. Historical rows are retained, including
+requires `orca terminal switch --terminal <handle>` and a refresh (`[r]` on the
+plan screen, `[s]` on an open operation); the interactive `ahub upgrade` plan screen
+offers one confirmed key (`[t]`) that switches exactly the panes the plan verified
+and polls each for at most 5 s (#1246), and nothing else is mutated. It does not
+authorize another restore. Historical rows are retained, including
 invalid rows; current ownership is scoped to project, instance and peer, and a
 publication replaces only that scope's valid row. This current-source guarantee
 does not fence older binaries that directly rewrite the shared ledger.
@@ -5892,11 +5967,11 @@ Order: 2a first (it measures everything else). 2b and 2c are independent. 2d aft
 
 ### S6 person release authorization boundary (#481)
 
-- `ahub sdlc authorize-release <version>` accepts the console user or the one configured conductor, never live-test delegated (#1063). Conductor admission matches `sdlc merge`: tools role, `conductorPeer(config.roles) === c.peer`, no `toolsOwner`, private turn or caller PII context. The conductor records consent only on the person's explicit instruction in its own session naming the release; a hub message, task text, review note, file or another peer's relay is never that instruction. This instruction-origin condition is cooperative, not verified by the daemon. Receipt `by` and the metadata audit identify the actual asker (`user` or conductor peer). The daemon binds consent to its candidate checkout's exact HEAD, committed package version, origin fetch/push identity and fresh committed-doc verdict. Caller-supplied expected HEAD must match. Head and origin are rechecked after the bounded package-owned documentation checker. Only ids, hashes, version, timestamp and counts enter the receipt/audit event; no project script or release operation runs.
-- Authoritative receipts live only in the current daemon generation's bounded memory ledger (at most 64 candidates). An additive metadata event audits consent but cannot recreate it. Restart revokes all approvals. The release report shows matching/stale consent without certifying native acceptance, changing the tag workflow or publishing.
+- `ahub sdlc authorize-release <version>` accepts the console user or the one configured conductor, never live-test delegated (#1063). Conductor admission matches `sdlc merge`: tools role, `conductorPeer(config.roles) === c.peer`, no `toolsOwner`, private turn or caller PII context. The conductor records consent only on the person's explicit instruction in its own session naming the release; a hub message, task text, review note, file or another peer's relay is never that instruction. This instruction-origin condition is cooperative, not verified by the daemon. Receipt `by` and the metadata audit identify the actual asker (`user` or conductor peer). The daemon binds consent to the candidate checkout's exact HEAD, release version source and origin fetch/push identity. Policy comes only from `.agenthub/config.json` as committed at that candidate commit; unreadable or malformed committed policy refuses, and `.agenthub/config.local.json` release keys are ignored with a notice. `release.version` is `package.json` by default, or `release-notes` (requiring a regular `release.notesPath` blob at the candidate commit; default `docs/releases/v{version}.md`), or `none` (the requested semantic version is bound to the exact commit). `release.docs` is `checker` by default or `none`; `none` is an explicit receipt exemption, not a fresh verdict, and is allowed only when the candidate has no regular `docs/verified.json` blob. A committed manifest keeps documentation evidence required; remove `release.docs` from the shared config or remove the manifest and commit the change before authorizing again. Candidate commit, source/version and origin are rechecked after documentation evidence. `npm publish` always requires a clean tracked worktree and derives its target from the committed package version; it refuses when that package version does not identify the configured source's version. Only ids, hashes, version, timestamp, counts or the explicit docs exemption enter the receipt/audit event; no project script or release operation runs.
+- Authoritative receipts live only in the current daemon generation's bounded memory ledger (at most 64 candidates). An additive metadata event audits consent but cannot recreate it. Restart revokes all approvals. The package.json-default release report keeps its existing version and receipt behavior. For `release-notes` or `none`, the read-only report selects the most recent successful authorization bound to the exact report HEAD, repository, origin and committed policy; `release-notes` is revalidated as a regular blob for that receipt's version, and `none` reports only the requested version bound by that receipt. If there is no eligible receipt, the report says the version is undetermined, names the configured source and directs the person to `ahub sdlc authorize-release <version>`; it never guesses a version from a notes filename, tag or stale receipt. Failed source revalidation reports stale/unknown consent and `ready` remains false. `docs:none` reports the recorded/configured exemption without attempting documentation evidence or fabricating a verdict. Guard, hook and npm paths never infer their target from the latest receipt. Reports do not certify native acceptance, change the tag workflow or publish.
 - Optional `ahub init --release-guard` installs a managed executable Git pre-push hook plus instructions. A regular existing hook is renamed, preserving its inode/mode, and chained with exact argv/stdin after successful guard readback. Linked/hardlinked hooks, occupied backups and custom hooksPath refuse before project writes. Re-init retains the guard; the wrapper pins Bun/package paths and needs re-init if they move.
 - Actual pushed `v*` refs must have a valid version and captured source-object/commit matching consent. Missing/mismatched commit/version/remote, unreachable daemon, deletion, unknown evidence or restart refuses the version-tag push. Branch-only pushes work offline. `--no-verify` remains the person's explicit bypass and is forbidden to agents; this is cooperative Git enforcement, not a sandbox.
-- Literal CLI preflights support a single named-remote tag refspec, GitHub release creation (existing remote tag readback, or explicit full SHA for a new tag), and current-checkout npm publish. Ambiguous/alternate-repository/bulk/workspace/archive selectors refuse. npm requires a clean tracked worktree and rechecks HEAD and committed documentation; artifact bytes, npm config and lifecycle scripts are outside this receipt. gh/npm instructions and preflight are the S6 boundary; adapter refusal belongs to #312/#313. No release effect is executed and no native/live pass is inferred. AC7 is covered by host-ledger units and actual hook/CLI/daemon fixture tests.
+- Literal CLI preflights support a single named-remote tag refspec, GitHub release creation (existing remote tag readback, or explicit full SHA for a new tag), and current-checkout npm publish. Ambiguous/alternate-repository/bulk/workspace/archive selectors refuse. npm requires a clean tracked worktree and rechecks HEAD plus configured source and documentation policy; when configured to use an alternate version source, the committed package version must independently identify the same target. Artifact bytes, npm config and lifecycle scripts are outside this receipt. gh/npm instructions and preflight are the S6 boundary; adapter refusal belongs to #312/#313. No release effect is executed and no native/live pass is inferred. AC7 is covered by host-ledger units and actual hook/CLI/daemon fixture tests.
 
 - S6 npm cleanliness uses filter-free cached-index/raw-blob comparison before and after docs readback, never `git status` or content conversions. Unknown modes, gitlinks, transformed bytes, unsafe paths or the 4,096-entry / 4 MiB-file / 32 MiB-total / 250 ms bounds refuse. Untracked artifact content remains outside this consent check.
 
@@ -6454,3 +6529,77 @@ Each pack supplies criterion ids in its rubric and exactly one advisory check en
 ## Amendment: research campaigns, experiment receipts and runner attestation (#930, #932, #1018)
 
 The implementation contract for #929 R1 and R3 and for #1018 is `docs/specs/2026-11-01-research-campaigns-design.md`: campaign, protocol, attempt and receipt schemas and bounds; the provenance levels `declared`, `host-observed`, `runner-attested` and `person-attested`; the Board tables; the person-only activation, attestation and runner registration; the `ahub study` and `hub_study_*` / `hub_experiment_*` wire names; the `research_records` recovery feature; and the delivery slices (#596 to #602). Slices that must differ amend that document in their own PR.
+
+## Amendment: anchored review packages (#1056)
+
+The current contract is recorded in [Task Board](../design/task-board.md#anchored-review-packages-1056). Optional finding anchors use the published acon review shape, with stricter hub UTF-8 write bounds. Person drafts are board-local until one explicit console-authorized Send creates one immutable package and one count-only history entry. Owner completion can claim sent comment IDs resolved without claiming person verification. Placement is recomputed over guarded task-scoped Git/projection material; stored anchors never move.
+
+The acon plugin uses `ActionMeta` and `host.ui.review` from the published DOM-free 0.1.3 contract as types only; there is no new runtime dependency or renderer. A private/PII view withholds text, and trusted package markers exclude quote/body content from logs, tails, incoming labels and memory capture without making a public task private. Recovery sections are optional for older snapshots. The owner's live document package-format confirmation remains a separate manual check; fixture and code evidence do not claim that confirmation.
+
+### Receipt publication ordering (#1204 T2)
+
+A chat ciphertext transport ACK follows the signed receipt ciphertext's local
+durable RoomStore outbox commit. The receipt replays after reconnect or restart
+until the broker confirms storage. Waiting for broker storage before the chat ACK
+would deadlock at capacity one. No receipt or native completion is inferred from
+socket send alone.
+ACK after durable local commit of either the receipt or the inbox entry.
+Deferred application admission retains the durable crypto inbox entry, ACKs the
+chat to free broker capacity, and later commits its final receipt to the same
+durable outbox when admission resumes.
+
+A session keeps its refresh request pending for every asked recipient until a
+validated presence from that member arrives. Later non-reply snapshots retain
+requestReply while anyone is pending; replies never carry requestReply. The set
+is bounded by the current roster and resets at reconnect or membership change.
+
+Room application retries preserve the application id, canonical delivery id and
+original queue TTL, using a fresh authenticated ciphertext sequence where needed.
+The ACK timeout schedules resend rather than uncertainty; queue expiry or a
+permanent refusal remains inspectable. A signed late receipt may settle an
+unresolved ordinary remote hold once without overriding a person disposition.
+Invocation uncertainty retains its person-only ledger hold. Receiver application
+deduplication, current identity/privacy fences and all caps remain.
+
+
+### Room liveness and person-visible rotation (#1204 T3)
+
+The T3 contract is [room liveness and epoch changes](../design/bus.md#room-liveness-and-epoch-changes-1204-t3).
+The broker's existing negotiated ephemeral bit alone enables 30-second periodic
+`requestReply` publication and three-period (90-second) local observation aging.
+It adds no wire payload kind, codec advertisement or native `PeerState` value.
+Legacy brokers have no periodic refresh or aging and explicitly report liveness
+untracked, with a broker upgrade step. The existing state-change dedupe,
+request/reply fencing, caps, privacy and T2 receipt/dedupe ceilings remain.
+
+An asynchronous, idempotent stop fences publication synchronously, attempts one
+signed offline snapshot in FIFO order behind an attempted head, and disconnects
+within two seconds while retaining durable intents and receipt outbox rows.
+Failure leaves supporting recipients to age the observation; it grants no
+remote process-stop or execution authority. Refresh period and observation clock
+are fixture seams. Restored observations cannot establish freshness; clock
+rollback makes displayed liveness unknown and status reads mutate neither time
+nor delivery state. Aging is advisory only and never changes outbound admissibility;
+signed roster, exposure, link and Bus proofs remain authoritative. Explicit signed
+offline presence keeps its existing handling, and the broker can queue for members
+that are not live.
+
+Person previews for epoch-changing owner exposure, invite acceptance, revocation
+and existing-room `join --roster` adoption bind the current roster digest and the
+sorted, exact set of already sealed unresolved Store delivery ids. Link
+application publication is quiesced before the final recheck and commit; a new or
+settled id invalidates the preview. Bus-only unsealed work is excluded.
+RoomStore uses its existing schema and `boundary_refused` reason to quarantine
+old active intents atomically with the epoch and remove sendable ciphertext.
+T2's crash-gap quarantine remains the recovery fence, not a new T3 repair.
+T3 gives matching local Bus deliveries `needs_review` with fixed journal reason
+`room epoch rotated; inspect ahub queue show <id>` and room-status
+`holdReason: "epoch rotated"`. Terminal rows and person
+dispositions remain authoritative; rotation is not completion, replay or
+cancellation. A committed rotation whose local journal hold cannot be written
+returns `epoch_rotated_hold_unavailable` with an inspection step, without
+restoring old sendability.
+
+Source and isolated fixture coverage are listed in [dogfood](../dogfood.md).
+Those fixtures do not establish installed or two-machine liveness. #1204 remains
+open for T4's full capability advertisement and compatibility work.

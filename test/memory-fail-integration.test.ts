@@ -7,6 +7,8 @@ import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
+import { promotionScreen } from "../src/hub/memory-policy.ts";
+import { createMemorySyncPolicy } from "../src/hub/memory-sync-policy.ts";
 import { MemoryClient } from "../src/memory/client.ts";
 import { composeRememberText } from "../src/hub/memory-fail.ts";
 
@@ -25,9 +27,11 @@ function fixture() {
   mkdirSync(join(dir, "private"));
   const bus = new Bus({ batchMs: 0 }); cleanup.push(() => bus.closeJournal());
   const board = new Board(join(dir, "hub.db")); cleanup.push(() => board.close());
-  const store = new MemoryStore({ home: join(dir, "isolated-home"), screen: () => "promote" }); cleanup.push(() => store.close());
-  const memory = new ObserverMemory(), notices: string[] = [], shared: string[] = [], nativeIds: string[] = [], screens: string[] = [];
+  const home = join(dir, "isolated-home"), project = "synthetic-project";
   const base = loadRouting(dir), routing = { ...base, signals: { ...base.signals, pii_patterns: ["STRUCTURED-PII"], pii_screen: "local" as const }, constraints: { ...base.constraints, pii: "local_only" as const } };
+  const store = new MemoryStore({ home, screen: promotionScreen(project, dir, () => routing, () => ["private/"], () => [],
+    () => createMemorySyncPolicy({ home: join(home, "memory"), cwd: dir, piiPatterns: routing.signals.pii_patterns })) }); cleanup.push(() => store.close());
+  const memory = new ObserverMemory(), notices: string[] = [], shared: string[] = [], nativeIds: string[] = [], screens: string[] = [];
   const tasks = new Tasks({ board, bus, cwd: dir, project: "synthetic-project", routing: () => routing,
     piiPaths: ["private/"], memory, store: { store, project: "synthetic-project", repo: "synthetic/project", onNote: id => nativeIds.push(id) },
     piiScreen: async text => { screens.push(text); return { label: "clear", ms: 0 }; },

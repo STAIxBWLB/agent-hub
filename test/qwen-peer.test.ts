@@ -39,7 +39,7 @@ for (const version of ["0.25.0", "0.26.0"]) for (const mode of ["ask", "ask-when
 
 test("production Qwen refuses wrong native identity/version while legacy benchmark ACP stays unmanaged (#256)", async () => {
   const root = mkdtempSync(join(tmpdir(), "qwen-native-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  for (const version of ["0.24.7", "0.24.1", "0.27.0"]) {
+  for (const version of ["0.24.7", "0.24.1", "0.27.1", "0.28.0"]) {
     const cmd = [...FAKE]; cmd[cmd.indexOf("--agent-version") + 1] = version;
     const peer = new AcpPeer("qwen", { cmd, cwd: root, qwen025: true }); cleanups.push(() => peer.stop());
     await expect(peer.start()).rejects.toThrow("native identity is not verified"); expect(peer.state).toBe("offline");

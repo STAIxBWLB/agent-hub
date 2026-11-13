@@ -1,30 +1,43 @@
 import { KimiWireReader, kimiCountedTokens, type KimiWireReason, type KimiWireRow } from "../adapters/kimi-wire-usage.ts";
+import type { TaskAttribution } from "./attribution.ts";
 import { TokenWindow } from "./token-window.ts";
 
 /**
  * The hub's own count of Kimi's consumption (#285 phase 2): the wire-log rows of the session the adapter owns become `usage` and
- * `tokens` events and a rolling 5 h window against `budget.kimi_tokens_5h`. Read at a turn end and when a `usage_update` arrives:
- * no watcher, no timer. The ports keep the event log, the budget and the clock in the daemon.
+ * `tokens` events and a rolling 5 h window against `budget.kimi_tokens_5h`. Read at a turn end, when a `usage_update` arrives and for
+ * a bounded backoff after each cue. Each scheduled slice returns to the event loop before the next one. The ports keep the event log,
+ * the budget, the clock and delayed scheduling in the daemon.
  */
 export const KIMI_WINDOW_MS = 5 * 3_600_000;
 /** A turn's rows are written after it starts: a row older than the hub's first sight of the session (less this slack) is history. */
 const FLOOR_SLACK_MS = 1000;
 const PASSES = 16;
+const FOLLOW_UP_DELAYS_MS = [250, 1000, 2000] as const;
+const TURN_INTERVAL_LIMIT = 32;
 /** Failures a retry can cure: the log was not there yet, or was cut mid-write. Anything else says the count no longer matches the log. */
 const TRANSIENT: ReadonlySet<KimiWireReason> = new Set(["no-index", "io-error", "partial-line"]);
+
+export type KimiUsageScheduler = (delayMs: number, run: () => void) => () => void;
+export interface KimiTurnStart { id: string; startedAt: number; attribution: TaskAttribution }
+export interface KimiRowAttribution { attribution: TaskAttribution; turn?: string }
+interface KimiTurnInterval extends KimiTurnStart { endedAt?: number }
 
 export interface KimiUsagePorts {
   /** Kimi's data home. */
   home: string;
   /** Per-call byte bound of the reader (its default otherwise); a test shrinks it to force several passes. */
   maxBytes?: number;
+  /** Numeric I/O observations for deterministic benchmarks; no path, row or native text. */
+  observe?(stats: { bytes: number; discovery: number }): void;
   now(): number;
   /** `budget.kimi_tokens_5h`, read live: 0 turns the window off, never the events. */
   ceiling(): number;
   /** The adapter's own session id, undefined when none is bound. */
   session(peer: string): string | undefined;
-  /** One usage event and its counted tokens (`counted` is the one rule in `kimiCountedTokens`). */
-  record(peer: string, row: KimiWireRow, counted: number): void;
+  /** One delayed drain at a time. Its cancellation leaves no live timer. Production uses an unreferenced timer. */
+  schedule?: KimiUsageScheduler;
+  /** One usage event and its counted tokens (`counted` is the one rule in `kimiCountedTokens`), with its captured turn attribution. */
+  record(peer: string, row: KimiWireRow, counted: number, attributed: KimiRowAttribution): void;
   /** The window as a reading: `used` is not clamped here. */
   report(peer: string, window: { used: number; resetsAt: number; ceiling: number }): void;
   /** The count cannot be trusted now: the peer's `tokens` reading is dropped, so it shows unknown rather than a short number. */
@@ -33,7 +46,20 @@ export interface KimiUsagePorts {
   notice(line: string): void;
 }
 
-interface Bound { session: string; reader: KimiWireReader; floor: number; unknown?: KimiWireReason; noticed?: KimiWireReason }
+interface Bound {
+  session: string;
+  reader: KimiWireReader;
+  floor: number;
+  turns: KimiTurnInterval[];
+  followUp: number;
+  passes: number;
+  backlog: boolean;
+  burst: boolean;
+  reportPending: boolean;
+  pending?: () => void;
+  unknown?: KimiWireReason;
+  noticed?: KimiWireReason;
+}
 
 export class KimiUsage {
   private readonly bound = new Map<string, Bound>();
@@ -41,6 +67,7 @@ export class KimiUsage {
   private readonly seen = new Set<string>();
   /** A log that stopped matching the count leaves the window short of the truth until its rows age out. */
   private readonly taintedUntil = new Map<string, number>();
+  private stopped = false;
 
   constructor(private readonly ports: KimiUsagePorts) {}
 
@@ -65,42 +92,110 @@ export class KimiUsage {
   }
 
   /** The peer went offline: its log is no longer read, so an unreadable state of it must not hold the other peers' figure unknown. */
-  drop(peer: string): void { this.bound.delete(peer); }
+  drop(peer: string): void {
+    const held = this.bound.get(peer);
+    if (held) this.cancel(held);
+    this.bound.delete(peer);
+  }
+
+  /** Stop only delayed work. A final synchronous offline read can still use the bound readers. */
+  stop(): void {
+    this.stopped = true;
+    for (const state of this.bound.values()) this.cancel(state);
+  }
 
   /** A new window: the old counts would pause the peer again at once (after a budget resume). */
   reset(): void { this.window.reset(); this.taintedUntil.clear(); }
 
-  /** Called when a turn starts. It only binds the session and fixes the history floor: nothing is read here, and what the log already holds is not this hub's to count. */
-  turnStarted(peer: string): void { this.bind(peer); }
+  /** Called when a turn starts. It binds the session, fixes the history floor and captures this turn's immutable attribution. */
+  turnStarted(peer: string, turn?: KimiTurnStart): void {
+    const bound = this.bind(peer);
+    if (!bound || !turn || bound.turns.some(interval => interval.id === turn.id)) return;
+    bound.turns.push({ ...turn, attribution: { ...turn.attribution } });
+    if (bound.turns.length > TURN_INTERVAL_LIMIT) bound.turns.splice(0, bound.turns.length - TURN_INTERVAL_LIMIT);
+  }
+
+  turnEnded(peer: string, turn: string, endedAt: number): void {
+    const bound = this.bound.get(peer);
+    const index = bound?.turns.findIndex(interval => interval.id === turn) ?? -1;
+    if (!bound || index < 0) return;
+    bound.turns[index] = { ...bound.turns[index]!, endedAt };
+  }
+
+  private cancel(bound: Bound): void {
+    bound.pending?.(); bound.pending = undefined; bound.burst = false; bound.followUp = 0;
+  }
 
   private bind(peer: string): Bound | undefined {
-    const session = this.ports.session(peer);
-    if (!session) return undefined;
-    const held = this.bound.get(peer);
+    const session = this.ports.session(peer), held = this.bound.get(peer);
+    if (!session) {
+      if (held) this.cancel(held);
+      this.bound.delete(peer);
+      return undefined;
+    }
     if (held?.session === session) return held;
-    const next: Bound = { session, reader: new KimiWireReader({ home: this.ports.home, sessionId: session, ...(this.ports.maxBytes ? { maxBytes: this.ports.maxBytes } : {}) }), floor: this.ports.now() - FLOOR_SLACK_MS };
+    if (held) this.cancel(held);
+    const next: Bound = {
+      session,
+      reader: new KimiWireReader({ home: this.ports.home, sessionId: session, ...(this.ports.maxBytes ? { maxBytes: this.ports.maxBytes } : {}) }),
+      floor: this.ports.now() - FLOOR_SLACK_MS,
+      turns: [], followUp: 0, passes: 0, backlog: false, burst: false, reportPending: false,
+    };
     this.bound.set(peer, next);
     return next;
   }
 
-  collect(peer: string): void {
+  collect(peer: string, scheduled = false, terminal = false): void {
     const bound = this.bind(peer);
     if (!bound) return;
-    let added = 0, more = false;
-    for (let pass = 0; pass < PASSES; pass++) {
-      const read = bound.reader.read();
-      // Each successful pass has already moved the reader's offsets: its rows are recorded now, before a later pass can fail, or they would
-      // never be read again and the count would be short.
-      if (read.status === "unknown") { this.unknown(peer, bound, read.reason); return; }
-      added += this.record(peer, bound, read.rows);
-      more = read.more;
-      if (!more) break;
+    try {
+      if (bound.passes >= PASSES) bound.passes = 0;
+      let added = 0, more = false;
+      // Without a scheduler or for the terminal offline read, retain the bounded synchronous drain. Other scheduled work uses one slice per invocation.
+      for (let pass = 0, slices = terminal || !this.ports.schedule ? PASSES : 1; pass < slices; pass++) {
+        const read = bound.reader.readSlice();
+        // A successful slice records and commits every row before a later slice can fail. An event failure leaves the slice uncommitted,
+        // so the next drain reads it again and the seen set removes only rows whose events already succeeded.
+        if (read.status === "unknown") { bound.backlog = false; bound.passes = 0; this.unknown(peer, bound, read.reason); return; }
+        this.ports.observe?.(bound.reader.stats());
+        try { added += this.record(peer, bound, read.rows); }
+        catch (error) { bound.backlog = false; bound.passes = 0; throw error; }
+        read.commit();
+        more = read.more;
+        bound.backlog = more;
+        bound.passes = more ? bound.passes + 1 : 0;
+        if (!more) break;
+      }
+      const recovered = bound.unknown !== undefined;
+      bound.unknown = undefined;
+      // ponytail: PASSES slices per cue burst. A longer backlog continues in the next burst, and no figure is reported until it is
+      // caught up: a window that is still catching up would be short. Upgrade: seek to the end at bind.
+      if (!more && (added > 0 || recovered || bound.reportPending)) { this.report(peer); bound.reportPending = false; }
+    } finally {
+      if (this.bound.get(peer) === bound) this.schedule(peer, bound, scheduled);
     }
-    const recovered = bound.unknown !== undefined;
-    bound.unknown = undefined;
-    // ponytail: PASSES x the reader's per-call bound. A longer unread backlog (a resumed session with a huge log) is finished by the next
-    // call, and no figure is reported until it is: a window that is still catching up would be short. Upgrade: seek to the end at bind.
-    if (!more && (added > 0 || recovered)) this.report(peer);
+  }
+
+  private schedule(peer: string, bound: Bound, scheduled: boolean): void {
+    const schedule = this.ports.schedule;
+    if (!schedule || this.stopped) return;
+    const run = () => {
+      bound.pending = undefined;
+      if (this.bound.get(peer) === bound) try { this.collect(peer, true); } catch { /* scheduled retries stay bounded */ }
+    };
+    if (bound.backlog && bound.passes < PASSES) {
+      if (!bound.pending) bound.pending = schedule(0, run);
+      return;
+    }
+    if (bound.pending) {
+      // A fresh cue during the last pending follow-up still gets a complete bounded retry sequence, without adding another timer.
+      if (!scheduled && bound.followUp >= FOLLOW_UP_DELAYS_MS.length - 1) { bound.burst = true; bound.followUp = 0; }
+      return;
+    }
+    if (!bound.burst) { bound.burst = true; bound.followUp = 0; }
+    if (bound.followUp >= FOLLOW_UP_DELAYS_MS.length) { bound.burst = false; bound.followUp = 0; return; }
+    const delay = FOLLOW_UP_DELAYS_MS[bound.followUp++]!;
+    bound.pending = schedule(delay, run);
   }
 
   private record(peer: string, bound: Bound, rows: KimiWireRow[]): number {
@@ -108,13 +203,21 @@ export class KimiUsage {
     const now = this.ports.now();
     for (const row of rows) {
       if (this.seen.has(row.id) || row.at < bound.floor) continue;
+      const counted = kimiCountedTokens(row), attributed = this.attribute(bound, row.at);
+      this.ports.record(peer, row, counted, attributed);
       this.seen.add(row.id);
-      const counted = kimiCountedTokens(row);
-      this.ports.record(peer, row, counted);
       this.window.add(Math.min(row.at, now), counted);
+      if (counted > 0) bound.reportPending = true;
       added += counted;
     }
     return added;
+  }
+
+  private attribute(bound: Bound, at: number): KimiRowAttribution {
+    const matches = bound.turns.filter(interval => at >= interval.startedAt && (interval.endedAt === undefined || at <= interval.endedAt));
+    if (matches.length !== 1) return { attribution: { attribution: "unattributed" } };
+    const turn = matches[0]!;
+    return { attribution: { ...turn.attribution }, turn: turn.id };
   }
 
   private unknown(peer: string, bound: Bound, reason: KimiWireReason): void {

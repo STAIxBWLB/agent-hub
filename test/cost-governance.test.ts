@@ -133,7 +133,7 @@ test("a none-scope handoff still counts an observed review and its elapsed time 
 import { readReviewReadiness } from "../src/hub/sdlc.ts";
 const readinessReply = (state = "SUCCESS", answered = true) => ({ data: { repository: { pullRequest: {
   headRefOid: head, state: "OPEN", commits: { nodes: [{ commit: { oid: head, tree: { oid: "b".repeat(40) },
-    statusCheckRollup: { contexts: { nodes: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, status: "COMPLETED", conclusion: state })), pageInfo: { hasNextPage: false } } },
+    statusCheckRollup: { contexts: { nodes: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, status: ["PENDING", "IN_PROGRESS"].includes(state) ? "IN_PROGRESS" : "COMPLETED", conclusion: state })), pageInfo: { hasNextPage: false } } },
   } }] },
   reviewThreads: { nodes: [{ isResolved: false, comments: { nodes: [
     { author: { __typename: "Bot" }, createdAt: "2026-10-18T01:00:00Z" },
@@ -142,11 +142,11 @@ const readinessReply = (state = "SUCCESS", answered = true) => ({ data: { reposi
 } } } });
 test("review admission is head-bound, checks full CI and bot replies without fetching bodies (#481 S10)", async () => {
   const calls: string[][] = [];
-  const read = async (reply: unknown) => readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async args => {
+  const read = async (reply: unknown) => readReviewReadiness({ stage: "build", repo: "staixbwlb/agent-hub", pr: 1 }, head, async args => {
     calls.push(args); return { code: 0, stdout: JSON.stringify(reply) };
   });
   expect(await read(readinessReply())).toMatchObject({ head, ready: true, blockers: [] });
-  expect((await read(readinessReply("IN_PROGRESS"))).blockers).toContain("exact-head full CI is not green");
+  expect((await read(readinessReply("IN_PROGRESS"))).blockers).toContain("exact-head full CI is not green: pending check (ubuntu-latest); pending check (macos-latest); pending seeded guards");
   expect((await read(readinessReply("SUCCESS", false))).blockers).toContain("bot review threads unanswered");
   const moved = readinessReply(); moved.data.repository.pullRequest.headRefOid = "c".repeat(40);
   expect((await read(moved)).blockers).toContain("review head changed");
@@ -168,7 +168,7 @@ function scopeRig(mode: "off" | "advise" | "enforce", gh?: SdlcGh, checks: Pick<
   const cwd = mkdtempSync(join(tmpdir(), "ahub-cost-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const notices: string[] = [];
   const roles: Record<string, string[]> = { claude: ["planner"], codex: ["implementer"] }, privacy = { active: false }, policy = { mode };
-  const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles, privateTurn: () => privacy.active, routing: () => loadRouting(cwd), notify: text => notices.push(text), repository: "o/r", ...checks, sdlc: { config: () => sdlcConfig({ mode: policy.mode }), ...(gh ? { gh } : {}) } });
+  const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles, privateTurn: () => privacy.active, routing: () => loadRouting(cwd), notify: text => notices.push(text), repository: "o/r", ...checks, sdlc: { config: () => sdlcConfig({ mode: policy.mode, required_checks: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"] }), ...(gh ? { gh } : {}) } });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   return { tasks, board, bus, roles, privacy, notices, policy };
 }
@@ -226,7 +226,7 @@ function admissionRig(mode: "off" | "advise" | "enforce", ready = true, answered
       issue: { number: Number(issueArg.split("=")[1]), labels: { nodes: [], pageInfo: { hasNextPage: false } } },
     } } } : reply) };
   };
-  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), privateTurn: () => hooks.privateTurn === true, notify: text => notices.push(text), sdlc: { config: () => sdlcConfig({ mode }), gh } });
+  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), privateTurn: () => hooks.privateTurn === true, notify: text => notices.push(text), sdlc: { config: () => sdlcConfig({ mode, required_checks: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"] }), gh } });
   const task = board.propose("user", { title: "finished implementation", class: "implement" });
   board.update(task.id, "user", "accepted", { owner: "codex", reviewer: "user", state: "in_progress", refs: { commit: head }, sdlc: { stage: "build", repo: "o/r", issue: 1, pr: 1, head, localHead: head, localResult: "passed" } });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
@@ -268,8 +268,8 @@ test("review admission honours a successful full gate of the identical tree, nev
     if (args[1]?.includes("git/commits")) return { code: 0, stdout: JSON.stringify({ tree: { sha: "b".repeat(40) } }) };
     return { code: 0, stdout: JSON.stringify({ total_count: 3, jobs: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, conclusion: "success" })) }) };
   };
-  expect(await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, run)).toMatchObject({ ready: true, reusedRun: 7 });
-  expect((await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async args => args.includes("graphql") ? run(args) : { code: 1, stdout: "" })).ready).toBe(false);
+  expect(await readReviewReadiness({ stage: "build", repo: "staixbwlb/agent-hub", pr: 1 }, head, run)).toMatchObject({ ready: true, reusedRun: 7 });
+  expect((await readReviewReadiness({ stage: "build", repo: "staixbwlb/agent-hub", pr: 1 }, head, async args => args.includes("graphql") ? run(args) : { code: 1, stdout: "" })).ready).toBe(false);
 });
 
 test("review readiness never treats successful reuse reporting jobs as a fresh full proof (#481 S10)", async () => {
@@ -280,7 +280,7 @@ test("review readiness never treats successful reuse reporting jobs as a fresh f
     if (args[1]?.includes("git/commits")) return { code: 0, stdout: JSON.stringify({ tree: { sha: "b".repeat(40) } }) };
     return { code: 0, stdout: JSON.stringify({ total_count: 3, jobs: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, conclusion: "success", reused: true })) }) };
   };
-  expect((await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, run)).ready).toBe(false);
+  expect((await readReviewReadiness({ stage: "build", repo: "staixbwlb/agent-hub", pr: 1 }, head, run)).ready).toBe(false);
 });
 
 import { readPrCostHistory } from "../src/hub/sdlc.ts";
@@ -462,16 +462,16 @@ test("the real daemon exposes a read-only planner cost report and typed receipt 
 test("review readiness honours explicit project check names instead of imposing the hub CI catalog (#481 S10)", async () => {
   const fixture = readinessReply();
   fixture.data.repository.pullRequest.commits.nodes[0]!.commit.statusCheckRollup.contexts.nodes = [{ name: "project gate", status: "COMPLETED", conclusion: "SUCCESS" }];
-  const result = await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(fixture) }), ["project gate"]);
+  const result = await readReviewReadiness({ stage: "build", repo: "staixbwlb/agent-hub", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(fixture) }), ["project gate"]);
   expect(result.ready).toBe(true);
 });
 
 test("a running check or unresolved bot follow-up cannot masquerade as review-ready (#481 S10)", async () => {
   const running = readinessReply();
   running.data.repository.pullRequest.commits.nodes[0]!.commit.statusCheckRollup.contexts.nodes[0]!.status = "IN_PROGRESS";
-  expect((await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(running) }))).ready).toBe(false);
+  expect((await readReviewReadiness({ stage: "build", repo: "staixbwlb/agent-hub", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(running) }))).ready).toBe(false);
   const resolved = readinessReply("SUCCESS", false); resolved.data.repository.pullRequest.reviewThreads.nodes[0]!.isResolved = true;
-  expect((await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(resolved) }))).ready).toBe(true);
+  expect((await readReviewReadiness({ stage: "build", repo: "staixbwlb/agent-hub", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(resolved) }))).ready).toBe(true);
 });
 
 // #230 item 3: only a `User` comment answers a bot thread. Any other or missing author kind is a pending bot comment.
@@ -484,7 +484,7 @@ const at = (hour: number) => `2026-10-18T0${hour}:00:00Z`;
 const kind = (typename: string | null | undefined, hour: number) => ({ author: typename === undefined ? null : { __typename: typename }, createdAt: at(hour) });
 test("review-thread authors other than User count as pending bot comments (#230 item 3)", async () => {
   const calls: string[][] = [];
-  const read = (reply: unknown) => readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async args => { calls.push(args); return { code: 0, stdout: JSON.stringify(reply) }; });
+  const read = (reply: unknown) => readReviewReadiness({ stage: "build", repo: "staixbwlb/agent-hub", pr: 1 }, head, async args => { calls.push(args); return { code: 0, stdout: JSON.stringify(reply) }; });
   const table: [string, boolean, ReturnType<typeof kind>[], { ready: boolean; blocker?: string }][] = [
     ["T1 Bot then a null author is unanswered", false, [kind("Bot", 1), { author: null, createdAt: at(2) }], { ready: false, blocker: "bot review threads unanswered" }],
     ["T2 Bot, Mannequin, then User is ready", false, [kind("Bot", 1), kind("Mannequin", 2), kind("User", 3)], { ready: true }],

@@ -7,6 +7,7 @@ import { Board } from "../src/hub/board.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { readEvents } from "../src/hub/events.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { MAX_HOP, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
@@ -53,18 +54,20 @@ async function setup(script: Script, extra: Partial<LocalOptions> = {}, permit =
     if (e.t === "envelope" && e.env.from === "local") said.push(e.env);
   });
   const asked: string[] = [];
+  const limits: string[] = [];
   const peer = new WatchdogLocalPeer("local", {
     cwd,
     omni,
     fixedModel: "vllm/fixed",
     tools: { deny: [], permit: async (t) => (asked.push(t), permit) },
     log,
+    onLimit: kind => limits.push(kind),
     ...extra,
   });
   bus.add(peer);
   await peer.start();
   cleanup.push(model.stop, () => peer.stop());
-  return { cwd, model, omni, bus, peer, said, asked, lines, events, log };
+  return { cwd, model, omni, bus, peer, said, asked, lines, events, log, limits };
 }
 
 test("a bulk edit: tool calls run in the project, one conclusion is shared, the provider is recorded, no reasoning or key leaks", async () => {
@@ -121,12 +124,14 @@ test("a refused approval and a malformed tool call come back to the model as tex
   refused.bus.publish(newEnvelope("user", "edit it", { priority: "important" }));
   await until(() => refused.said.length === 1, "answer after refusal");
   expect(refused.said[0]!.body).toBe("done: error: the user did not approve this edit");
+  expect(refused.limits).toEqual([]);                                               // a turn that concludes on its own reports no ceiling
   expect(readFileSync(join(refused.cwd, "a.txt"), "utf8")).toBe("one\ntwo\n");
 
   const looping = await setup(() => ({ content: "still working", tool_calls: [toolCall("read", "{broken json")] }), { maxSteps: 3 });
   looping.bus.publish(newEnvelope("user", "loop", { priority: "important" }));
   await until(() => looping.said.length === 1, "step limit");
   expect(looping.said[0]!.body).toBe("(stopped after 3 steps) still working");
+  expect(looping.limits).toEqual(["steps"]);                                          // #1054: the ceiling is reported as a closed fact, not left for a caller to parse from the text
   expect(looping.model.requests).toHaveLength(3);
   expect(JSON.stringify(looping.model.requests[2]!.body.messages)).toContain("not valid JSON");
 });
@@ -607,6 +612,9 @@ test("daemon local expiry text and N2 stop use real approval timeout without rep
   expect(daemon.bus.queueSummary("local").heldBy).toBeUndefined();
   expect(answers).toHaveLength(1);
   expect(answers[0]!.body).toContain("two unanswered approvals");
+  // #1054: the delivery settles `completed` so nothing replays, but the work was stopped without its approvals: the person's run ends `failed`, never `done`
+  await until(() => readEvents(join(stateDir, "events.jsonl")).some(e => e.type === "completion"), "the run's completion");
+  expect(readEvents(join(stateDir, "events.jsonl")).filter(e => e.type === "completion")).toEqual([expect.objectContaining({ peer: "local", outcome: "failed" })]);
 
   const second = newEnvelope("user", nextTurn, { to: ["local"] });
   daemon.bus.publish(second);
@@ -671,4 +679,204 @@ test("#1055 local tool publication and dispatch name its session without tool ca
   expect(observations).toEqual([]);
   expect(f.lines.join("\n")).not.toContain(title);
   expect(JSON.stringify(f.model.requests[0]?.body.messages)).toContain(hint);
+});
+
+
+test("#1056 review capture admission is fixed for its turn, ordinary next turns resume, and a late old completion stays excluded", async () => {
+  const rows: unknown[] = [], observations: unknown[] = [], secret = "ANCHORED_REVIEW_CAPTURE_CANARY";
+  const client = { appendCapture: (row: unknown) => { rows.push(row); return Promise.resolve(); } } as unknown as import("../src/memory/client.ts").MemoryClient;
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const began = new Promise<void>(resolve => { entered = resolve; });
+  const ctx = await setup(async body => {
+    const user = String(body.messages.findLast(message => message.role === "user")?.content);
+    const tool = body.messages.at(-1)?.role === "tool";
+    if (user.includes("LATE_REVIEW") && tool) { entered(); await held; }
+    return tool ? { content: user.includes("NORMAL") ? "NORMAL_CAPTURE" : secret }
+      : { tool_calls: [toolCall("read", { path: "a.txt" })] };
+  }, { capture: new Capture(client, { project: "review-test", cwd: "/fixture" }), onTool: observation=>{observations.push(observation);} });
+  let parsedLate!: () => void;
+  const lateParsed = new Promise<void>(resolve => { parsedLate = resolve; });
+  const chat = ctx.omni.chat.bind(ctx.omni);
+  ctx.omni.chat = async (body, options = {}) => {
+    const late = String(body.messages.findLast(message => message.role === "user")?.content).includes("LATE_REVIEW") && body.messages.at(-1)?.role === "tool";
+    const response = await chat(body, late ? { ...options, signal: undefined } : options);
+    if (late) parsedLate();
+    return response;
+  };
+  cleanup.push(() => { ctx.omni.chat = chat; release(); });
+  rows.length = 0;
+  const review = (body: string) => newEnvelope("hub", body, { to: ["local"], kind: "review", priority: "important", refs: { reviewPackage: "review:local-fixture" } });
+  ctx.bus.publish(review(secret));
+  await until(() => ctx.said.length === 1, "review conclusion");
+  expect(rows).toEqual([]);expect(observations).toEqual([]);
+  ctx.bus.publish(review("LATE_REVIEW " + secret));
+  await began;
+  ctx.bus.publish(newEnvelope("user", "NORMAL next turn", { to: ["local"], priority: "important" }));
+  ctx.peer.expireWatchdog();
+  await until(() => ctx.said.some(env => env.body === "NORMAL_CAPTURE"), "ordinary turn after review watchdog");
+  const ordinary = JSON.stringify(rows);
+  expect(ordinary).toContain("NORMAL_CAPTURE");
+  expect(ordinary).not.toContain(secret);
+  const ordinaryInput=ctx.model.requests.find(request=>String(request.body.messages.findLast((message:{role:string})=>message.role==="user")?.content).includes("NORMAL"));
+  expect(ordinaryInput).toBeDefined();expect(JSON.stringify(ordinaryInput!.body.messages)).not.toContain(secret);
+  release();
+  await lateParsed; // the real parser accepts the old response after the ordinary turn finished
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(JSON.stringify(rows)).toBe(ordinary);expect(observations.length).toBeGreaterThan(0);expect(JSON.stringify(observations)).not.toContain(secret);
+  expect(ctx.said.filter(env => env.body === secret)).toHaveLength(1);
+});
+
+
+test("#1056 anchored hub_review submission excludes its final quote from capture and worker history", async () => {
+  const quote = "ANCHORED_REVIEW_SUBMITTED_QUOTE_CANARY";
+  const summaries: string[] = [], observations: unknown[] = [];
+  const capture = {
+    init: () => {},
+    observe: (row: unknown) => observations.push(row),
+    summarize: (text: string) => summaries.push(text),
+    end: async () => {},
+  } as unknown as Capture;
+  const ctx = await setup(body => {
+    const user = String(body.messages.findLast(message => message.role === "user")?.content);
+    if (user.includes("ordinary next input")) return body.messages.at(-1)?.role === "tool"
+      ? { content: "ordinary answer" }
+      : { tool_calls: [toolCall("read", { path: "a.txt" })] };
+    if (body.messages.at(-1)?.role === "tool") return { content: quote };
+    return { tool_calls: [toolCall("read", { path: "a.txt" }), toolCall("hub_review", { id: 7, verdict: "changes_requested", findings: [{ id: "F1", anchor: { path: "a.txt", exact: quote } }] })] };
+  }, {
+    capture,
+    taskTool: async name => { expect(name).toBe("hub_review"); return "error: anchored review refused"; },
+  });
+  ctx.bus.publish(newEnvelope("user", "plain request to review task #7", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 1, "anchored review response");
+  expect(ctx.said[0]!.body).toBe(quote);
+  expect(summaries).toEqual([]);
+  expect(observations).toEqual([]);
+
+  ctx.bus.publish(newEnvelope("user", "ordinary next input", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 2, "ordinary follow-up response");
+  const followUp = ctx.model.requests.at(-1)!;
+  expect(JSON.stringify(followUp.body.messages)).not.toContain(quote);
+  expect(observations.length).toBeGreaterThan(0);
+  expect(summaries).toEqual(["ordinary answer"]);
+});
+
+
+test("#1056 local review turns refuse remember and task proposals until a later ordinary turn", async () => {
+  const quote = "LOCAL_ANCHORED_REVIEW_NOTE_QUOTE_CANARY", taskCalls: { name: string; text: string }[] = [];
+  const ctx = await setup((_body, call) => {
+    if (call === 1) return { tool_calls: [
+      toolCall("hub_remember", { text: quote }),
+      toolCall("hub_task_propose", { title: "review quote follow-up", class: "implement" }),
+      toolCall("hub_review", { id: 7, verdict: "changes_requested", findings: [{ id: "F1", anchor: { path: "a.txt", exact: quote } }] }),
+    ] };
+    if (call === 2) return { tool_calls: [
+      toolCall("hub_remember", { text: "retry after refused anchor" }),
+      toolCall("hub_task_propose", { title: "retry proposal after refused anchor", class: "implement" }),
+    ] };
+    if (call === 3) return { content: "review turn complete" };
+    if (call === 4) return { tool_calls: [
+      toolCall("hub_remember", { text: "ordinary later note" }),
+      toolCall("hub_task_propose", { title: "ordinary later proposal", class: "implement" }),
+    ] };
+    return { content: "ordinary turn complete" };
+  }, { taskTool: async (name, args) => {
+    taskCalls.push({ name, text: JSON.stringify(args) });
+    return name === "hub_review" ? "error: anchored review submission refused" : "saved";
+  } });
+
+  ctx.bus.publish(newEnvelope("user", "review task #7 and save useful follow-up", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 1, "anchored review turn conclusion");
+  expect(taskCalls.map(call => call.name)).toEqual(["hub_review"]);
+  expect(taskCalls[0]!.text).toContain(quote);
+  const reviewToolResults = ctx.model.requests[1]!.body.messages.filter((message: { role: string }) => message.role === "tool");
+  expect(reviewToolResults.map((message: { content: string }) => message.content)).toEqual([
+    "error: anchored review in this batch; save notes in a later turn",
+    "error: anchored review in this batch; save notes in a later turn",
+    "error: anchored review submission refused",
+  ]);
+  const postAnchorResults = ctx.model.requests[2]!.body.messages.filter((message: { role: string }) => message.role === "tool").slice(-2);
+  expect(postAnchorResults.map((message: { content: string }) => message.content)).toEqual([
+    "error: anchored review in this batch; save notes in a later turn",
+    "error: anchored review in this batch; save notes in a later turn",
+  ]);
+
+  ctx.bus.publish(newEnvelope("user", "ordinary later turn", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 2, "ordinary later turn conclusion");
+  expect(taskCalls.map(call => call.name)).toEqual(["hub_review", "hub_remember", "hub_task_propose"]);
+  expect(taskCalls.at(-2)!.text).toContain("ordinary later note");
+  expect(taskCalls.at(-1)!.text).toContain("ordinary later proposal");
+  expect(JSON.stringify(ctx.model.requests[3]!.body.messages)).not.toContain(quote);
+});
+
+
+test("#1056 provider failure during a public review turn never logs or retains its quote", async () => {
+  const secret="REVIEW_FAILURE_QUOTE_CANARY";
+  const ctx=await setup(()=>({content:secret,tool_calls:[toolCall("edit",{path:"a.txt",old:"two",new:"2"})]}));
+  const chat=ctx.omni.chat.bind(ctx.omni);
+  ctx.omni.chat=async(body,options)=>{
+    if(body.messages.at(-1)?.role==="tool")throw new Error(secret);
+    return chat(body,options);
+  };
+  cleanup.push(()=>{ctx.omni.chat=chat;});
+  ctx.bus.publish(newEnvelope("hub",secret,{kind:"review",to:["local"],priority:"important",refs:{reviewPackage:"review:failure-fixture"}}));
+  await until(()=>ctx.said.length===1,"review failure response after side effect");
+  expect(ctx.lines.join("\n")).not.toContain(secret);expect(ctx.said[0]!.body).not.toContain(secret);
+  expect(ctx.said[0]!.private).not.toBe(true);
+  ctx.omni.chat=chat;ctx.model.state.script=()=>({content:"ordinary answer"});
+  ctx.bus.publish(newEnvelope("user","next ordinary request",{to:["local"],priority:"important"}));
+  await until(()=>ctx.said.length===2,"ordinary request after failed review");
+  expect(JSON.stringify(ctx.model.requests.at(-1)!.body.messages)).not.toContain(secret);
+});
+
+test("runtime model stays latched across tool rounds and changes only on the next local turn", async () => {
+  let desired: string | undefined = "runtime-a", gets = 0;
+  const models: string[] = [], applied: (string | undefined)[] = [];
+  const r = await setup(body => {
+    models.push(body.model); desired = "runtime-b";
+    return bulkEdit(body, models.length);
+  }, { getModelOverride: () => { gets++; const model = desired; return { model, applied: () => { applied.push(model); } }; } });
+  await r.peer.deliver([newEnvelope("user", "first")]); await until(() => r.peer.state === "idle");
+  const first = models.length; expect(first).toBeGreaterThan(1); expect(models).toEqual(Array(first).fill("runtime-a"));
+  await r.peer.deliver([newEnvelope("user", "second")]); await until(() => r.peer.state === "idle");
+  expect(models.slice(first).every(model => model === "runtime-b")).toBe(true);
+  desired = undefined; const second = models.length;
+  await r.peer.deliver([newEnvelope("user", "clear")]); await until(() => r.peer.state === "idle");
+  expect(models.slice(second).every(model => model === "vllm/fixed")).toBe(true);
+  expect(gets).toBe(3); expect(applied).toEqual(["runtime-a", "runtime-b", undefined]);
+});
+
+test("#931 evidence read excludes its final quote from capture and worker history", async () => {
+  const quote = "EVIDENCE_READ_QUOTE_CANARY";
+  const summaries: string[] = [], observations: unknown[] = [];
+  const capture = {
+    init: () => {},
+    observe: (row: unknown) => observations.push(row),
+    summarize: (text: string) => summaries.push(text),
+    end: async () => {},
+  } as unknown as Capture;
+  const ctx = await setup(body => {
+    const user = String(body.messages.findLast(message => message.role === "user")?.content);
+    if (user.includes("ordinary next input")) return body.messages.at(-1)?.role === "tool"
+      ? { content: "ordinary answer" }
+      : { tool_calls: [toolCall("read", { path: "a.txt" })] };
+    if (body.messages.at(-1)?.role === "tool") return { content: quote };
+    return { tool_calls: [toolCall("read", { path: "a.txt" }), toolCall("hub_evidence_read", { id: "ev:" + "a".repeat(32) })] };
+  }, {
+    capture,
+    taskTool: async name => { expect(name).toBe("hub_evidence_read"); return JSON.stringify({ status: "resolved", excerpt: quote }); },
+  });
+  ctx.bus.publish(newEnvelope("user", "plain request to review task #7", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 1, "anchored review response");
+  expect(ctx.said[0]!.body).toBe(quote);
+  expect(summaries).toEqual([]);
+  expect(observations).toEqual([]);
+
+  ctx.bus.publish(newEnvelope("user", "ordinary next input", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 2, "ordinary follow-up response");
+  const followUp = ctx.model.requests.at(-1)!;
+  expect(JSON.stringify(followUp.body.messages)).not.toContain(quote);
+  expect(observations.length).toBeGreaterThan(0);
+  expect(summaries).toEqual(["ordinary answer"]);
 });

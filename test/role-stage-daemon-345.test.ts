@@ -11,6 +11,7 @@ import { realPath } from "../src/hub/project.ts";
 import { claudeStateFile } from "../src/hub/claude-state.ts";
 import type { PeerAdapter } from "../src/hub/peers.ts";
 import type { InstanceConfig } from "../src/hub/instances.ts";
+import { untilRecord } from "./helpers/jsonl-trace.ts";
 
 const until = async (condition: () => boolean, label: string) => {
   for (let n = 0; n < 2000 && !condition(); n++) await Bun.sleep(5);
@@ -120,8 +121,8 @@ test("#525-6 AC3: Codex plans, an owned Claude child implements, and a fresh Cod
     const planned = JSON.parse(await task(planner, "hub_backlog_plan", { id, revision: 0, fields: { priority: 1 }, reason: "fixture planner chose its work" }));
     const pulled = JSON.parse(await task(planner, "hub_backlog_pull", { id, revision: planned.planningRevision, reason: "fixture planner pulls its reserved work" }));
     expect(pulled).toMatchObject({ owner: "claude-impl", planner: "codex-plan", plannerReason: "kept" });
-    await until(() => rows(f.claudeCalls).length > 0, "owned Claude task child started");
-    const child = rows(f.claudeCalls)[0]!;
+    // #1263: the fake Claude's record carries the whole prompt, so it can be mid-write when polled too: wait on a complete record, never parse a partial line.
+    const child = (await untilRecord(f.claudeCalls, row => row.cwd !== undefined, "owned Claude task child started"))[0]!;
     expect(child).toMatchObject({ peer: "claude-impl", cwd: join(f.root, ".worktrees", "claude-impl") });
     expect(existsSync(join(f.root, "implemented.ts"))).toBe(false);
     expect(readFileSync(join(child.cwd, "implemented.ts"), "utf8")).toBe("fixture implementation\n");
@@ -136,7 +137,10 @@ test("#525-6 AC3: Codex plans, an owned Claude child implements, and a fresh Cod
     expect(history.find((entry: any) => entry.event === "accepted")).toMatchObject({ by: "claude-impl" });
     expect(history.find((entry: any) => entry.event === "done")).toMatchObject({ by: "claude-impl", reviewerFamily: "codex", reviewerReason: "rotation" });
     expect(history.find((entry: any) => entry.event === "approved")).toMatchObject({ by: "codex-review", reviewContext: "fresh", reviewerFamily: "codex", reviewerReason: "rotation" });
-    const review = rows(f.reviewCalls).find(call => call.argv);
+    // #1263: "approved" proves the hub recorded the verdict, not that the fake reviewer finished its trace. The fake writes its completion record (the show and the review it sent) last, so wait for that
+    // complete record, then read: a half-written line is never parsed.
+    const trace = await untilRecord(f.reviewCalls, row => row.review !== undefined, "the fake reviewer's completion record");
+    const review = trace.find(call => call.argv);
     expect(review?.peer).toBe("codex-review"); expect(review?.argv).toContain("--ephemeral");
     const shown = JSON.parse(await task(planner, "hub_task_show", { id }));
     const consoleShown = JSON.parse(await task(f.console_, "task_show", { id }));

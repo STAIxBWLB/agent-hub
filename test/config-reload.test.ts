@@ -19,7 +19,7 @@ for (const [name, routing] of [
 });
 
 test("#553 strict routing ignores retired table fields and preserves explicit startup fallback", () => {
-  const routing = base + '[targets.custom]\nid = "provider/model"\ncustom_option = 1\n[targets.custom.extension]\nflag = true\n[routes.custom]\ntype = "custom_switchyard_type"\ncustom_option = "kept"\n';
+  const routing = base + '[targets.custom]\nid = "provider/model"\ncustom_option = 1\n[targets.custom.extension]\nflag = true\n[routes.custom]\ntype = "custom_retired_route_type"\ncustom_option = "kept"\n';
   const accepted = parseConfigSources(texts(routing));
   expect(accepted.routing).not.toHaveProperty("targets");
   expect(accepted.routing).not.toHaveProperty("routes");

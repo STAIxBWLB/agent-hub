@@ -17,7 +17,9 @@ if (mode === "staged-error") {
   writeFileSync(log! + ".descendant", String(child.pid));
   await new Promise(() => {});
 } else {
-  const result = { type: "result", subtype: mode === "error" ? "error_during_execution" : "success", is_error: mode === "error", usage: { input_tokens: 7, output_tokens: 3 } };
+  // `FAKE_CLAUDE_MODEL_USAGE` adds the per-model breakdown a real result row carries (#1402).
+  const modelUsage = process.env.FAKE_CLAUDE_MODEL_USAGE ? JSON.parse(process.env.FAKE_CLAUDE_MODEL_USAGE) : undefined;
+  const result = { type: "result", subtype: mode === "error" ? "error_during_execution" : "success", is_error: mode === "error", usage: { input_tokens: 7, output_tokens: 3 }, ...(modelUsage ? { modelUsage } : {}) };
   console.log(JSON.stringify(result));
   if (mode === "duplicate") console.log(JSON.stringify(result));
 }

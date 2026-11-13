@@ -46,6 +46,10 @@ export interface RestartSnapshot {
     manualPaused: PeerId[];
     boardDigest: string;
     budgetDigest: string;
+    modelOverrides?: { count: number; digest: string };
+    guidanceVariants?: { experiments: number; variants: number; digest: string };
+    guidanceProbes?: { experiments: number; sessions: number; digest: string };
+    executionReferences?: { count: number; digest: string };
     /** Whole captured binding set; portable identities are covered alongside queue/board integrity. */
     externalBindingsDigest?: string;
     /** Research state remains part of controlled-recovery integrity when present. */
@@ -55,6 +59,9 @@ export interface RestartSnapshot {
     researchComparisons?: { plans: number; approvals: number; contexts: number; digest: string };
     researchRunners?: { count: number; digest: string };
     researchEvidence?: { links: number; revisions: number; digest: string };
+    reviewComments?: { comments: number; packages: number; digest: string };
+    /** Stored visual payloads and image metadata, never external image bytes. */
+    visuals?: { count: number; digest: string };
   };
 }
 
@@ -105,6 +112,28 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   if (s.peers.some(peer => Object.hasOwn(peer, "controlProtocol") && (typeof peer.controlProtocol !== "number" || !Number.isSafeInteger(peer.controlProtocol) || peer.controlProtocol < 1))) return undefined;
   if (s.integrity !== undefined && (!s.integrity || typeof s.integrity !== "object" || typeof s.integrity.boardDigest !== "string" || typeof s.integrity.budgetDigest !== "string" || !Array.isArray(s.integrity.manualPaused) || !s.integrity.manualPaused.every((id) => typeof id === "string") || !s.integrity.queues || typeof s.integrity.queues !== "object" || !Object.values(s.integrity.queues).every((ids) => Array.isArray(ids) && ids.every((id) => typeof id === "string")))) return undefined;
   if (s.integrity && Object.hasOwn(s.integrity, "externalBindingsDigest") && (typeof s.integrity.externalBindingsDigest !== "string" || !/^[a-f0-9]{64}$/.test(s.integrity.externalBindingsDigest))) return undefined;
+  if (s.integrity && Object.hasOwn(s.integrity, "modelOverrides")) {
+    const value = s.integrity.modelOverrides;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "count,digest"
+      || !Number.isSafeInteger(value.count) || value.count < 0 || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "guidanceVariants")) {
+    const value = s.integrity.guidanceVariants;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "digest,experiments,variants"
+      || !Number.isSafeInteger(value.experiments) || value.experiments < 0 || !Number.isSafeInteger(value.variants) || value.variants < value.experiments
+      || typeof value.digest !== "string" || value.digest.length !== 64 || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "guidanceProbes")) {
+    const value = s.integrity.guidanceProbes;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "digest,experiments,sessions"
+      || !Number.isSafeInteger(value.experiments) || value.experiments < 0 || !Number.isSafeInteger(value.sessions) || value.sessions < value.experiments
+      || typeof value.digest !== "string" || value.digest.length !== 64 || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "executionReferences")) {
+    const value = s.integrity.executionReferences;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "count,digest"
+      || !Number.isSafeInteger(value.count) || value.count < 0 || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
   if (s.integrity && Object.hasOwn(s.integrity, "research")) {
     const research = s.integrity.research;
     if (!research || typeof research !== "object" || Array.isArray(research)
@@ -135,6 +164,18 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     const value = s.integrity.researchEvidence;
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["links", "revisions", "digest"].includes(key))
       || ![value.links, value.revisions].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "reviewComments")) {
+    const value = s.integrity.reviewComments;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["comments", "packages", "digest"].includes(key))
+      || ![value.comments, value.packages].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "visuals")) {
+    const value = s.integrity.visuals;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["count", "digest"].includes(key))
+      || !Number.isSafeInteger(value.count) || value.count < 0
       || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }

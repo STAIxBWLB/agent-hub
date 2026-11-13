@@ -4,7 +4,7 @@ import type { Task } from "./board.ts";
 
 export const BACKLOG_SPLIT_SCREEN_TIMEOUT_MS = 8000;
 
-export const PLANNING_FIELDS = ["rank", "priority", "release", "plannedStart", "due", "pinned", "deps", "reserved", "sdlc"] as const;
+export const PLANNING_FIELDS = ["rank", "priority", "release", "plannedStart", "due", "pinned", "needsPerson", "deps", "reserved", "sdlc"] as const;
 export interface PlanningFields {
   rank?: number | null;
   priority?: number | null;
@@ -12,6 +12,8 @@ export interface PlanningFields {
   plannedStart?: number | null;
   due?: number | null;
   pinned?: boolean;
+  /** #1176: a leg only the person can run (live receipts, their accounts, machines or approvals). It keeps its reservation as the "who will run it" hint, but no agent is ever offered it. */
+  needsPerson?: boolean;
   deps?: number[];
   reserved?: string | null;
   sdlc?: PlanningIssueIdentity;
@@ -61,6 +63,9 @@ export function planningPatch(input: unknown = {}): PlanningPatch {
     } else if (key === "pinned") {
       if (typeof value !== "boolean") throw new Error("pinned must be a boolean");
       result.pinned = value;
+    } else if (key === "needsPerson") {
+      if (typeof value !== "boolean") throw new Error("needsPerson must be a boolean");
+      result.needsPerson = value;
     } else {
       if (value !== null && (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "release" || key === "plannedStart" || key === "due" ? 1 : 0) || (key === "priority" && value > 3) || (["plannedStart", "due"].includes(key) && value > 8_640_000_000_000_000))) throw new Error(`invalid planning field ${key}`);
       result[key] = value as number | null;
@@ -72,7 +77,7 @@ export function planningPatch(input: unknown = {}): PlanningPatch {
 /** Structured lifecycle events only, including reviewerless approval via done. */
 export function actualTaskDates(task: Pick<Task, "history" | "state" | "reviewer">) {
   const first = (events: readonly string[]) => task.history.find(entry => events.includes(entry.event))?.at ?? null;
-  const approved = first(["approved"]), reviewed = task.reviewer !== null || task.history.some(entry => entry.event === "approved" || entry.event === "changes_requested");
+  const approved = first(["approved", "merged outside the hub"]), reviewed = task.reviewer !== null || task.history.some(entry => entry.event === "approved" || entry.event === "changes_requested");
   const reviewerlessDone = task.state === "approved" && !task.reviewer ? [...task.history].reverse().find(entry => entry.event === "done")?.at ?? null : null;
   return { startedAt: first(["accepted"]), reviewAt: reviewed ? first(["done"]) : null, doneAt: approved ?? reviewerlessDone };
 }

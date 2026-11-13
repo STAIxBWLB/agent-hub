@@ -2,6 +2,22 @@
 
 Human explanation. Agent instructions: the area notes in this directory.
 
+Issue #1381 records the package-only release guard blocking a project with no package manifest or documentation checker. The release policy was bound to the candidate commit because choosing a different source or exempting docs relaxes that guard; the shared committed file makes that choice reviewable in the same Git candidate. The runtime/local configuration is a different authority and does not define this consent.
+
+On 2026-11-10, #1352 R1 separated newly authored stage evidence, fallback and
+whole-wire sizing from the remaining legacy route modules. The models note
+points at the stage contract and its single switch planner; generic decision
+evidence v1, the remaining route decisions and notice cleanup had separate
+ownership boundaries. R2 supplied the hub-owned decisions and prompts; R3 retires
+the derived modules, their upstream checker and Apache notice while preserving
+the unrelated Tabler Icons notice and the reserved port offset.
+
+R2 keeps optional model selection separate from host decisions: ADEc may suggest
+an alias/effort for an existing plan phase or judge call, while the hub retains
+phase transitions, review/escalation rules and fallback execution. The off and
+shadow modes preserve that boundary; sample policy text cannot grant authority
+or substantiate a live model-quality claim.
+
 In the #1055 review, the new title-binding lookup preceded invocation,
 pending-delivery and supervision bookkeeping in `Bus.onDelivered`. The bus's
 outer observer catch protected settlement but could not finish bookkeeping
@@ -36,7 +52,7 @@ behavior would have hidden the missing dependency.
 Background moved out of the area notes for 0.12.45:
 
 - Instance execution git budget (#225, daemon.md): `resolveInstanceExecutionCwd` runs synchronously on the daemon's event loop (an extra-instance start, `turn_revert`) with up to four git calls, measured at about 15 ms on a warm local repository. One shared 5 s allowance holds the loop at most 5 s, not 4 x 5 s. It stays synchronous because the CLI and recovery callers are; an async twin for the two daemon call sites is the upgrade if a typical resolution ever costs more than a few ms.
-- Claude steer version gate (#493, #221, daemon.md): mid-turn consumption of a steered important message was proven only on Claude Code 2.1.302 (`docs/verification/2026-10-18-493-claude-busy-channel.md`); on an older client a dropped mid-turn notification stays `accepted` until a person resolves it. The hello does not carry the client version, and the oldest working version is unknown, so a gate would be a guess that could disable a working path.
+- Claude steer version gate (#493, #221, daemon.md): mid-turn consumption of a steered important message was proven only on Claude Code 2.1.302 (`docs/verification/2026-10-18-493-claude-busy-channel.md`); on an older client a dropped mid-turn notification stays `accepted` until a person resolves it. The hello does not carry the Claude Code version (its `clientVersion`, #1385, is the agent-hub version and display only), and the oldest working version is unknown, so a gate would be a guess that could disable a working path.
 - Planner reservation and done gates (tasks.md): in #378 a same-value planner write laundered a person's reservation; in #382 advise recorded overlapping dones, and an owner could neither relink a PR nor be stopped from carrying a head to a new PR.
 - Process-tree stops (adapters.md): three review rounds of #113 found snapshot gaps while the tree ran (groups of its own, an unreadable first read, a child started during the grace period).
 - Local worker (local-worker.md): a bare `private/` deny entry once denied all of `/private/var`; `existsSync` made a dangling link look like a new file, so a write landed at its target.
@@ -64,6 +80,7 @@ Background behind the 0.18.0 rules:
 Background behind the 0.19.0 rules:
 
 - Code-scope verdicts (#852, tasks.md): two review rounds showed that any classifier reading a `code` reviewer's unmet text files real defects, such as "the CI workflow is missing the trigger", as verification-only, so the evidence-only rule reads only the structured findings.
+- VM closure dependencies (#1056, tests.md): review refresh and durable observer checks added cache, snapshot and scope dependencies to existing functions. Searches for the new dependency names missed fixtures that extracted their callers, causing ReferenceError failures or fail-closed paths that pre-empted the behavior under test.
 - Policy-table fixtures (#843, tests.md): a fixture with a fixed list of keys or versions, which a planned `COMPAT` entry was not in, was reported twice in #843.
 - Suite watchdog (#516, tests.md): a total-time kill cut suites that were still passing tests line by line (hosted ubuntu runs at 1080 s, the macOS leg of PR #857 at 1440 s), so a lost-progress bound became the hang detector and the total bound only its backstop.
 
@@ -89,3 +106,63 @@ Review of PR #1050 found that including accepted runner configuration and raw-ke
 Review of PR #1052 found that full-index trust sweeps and hashing every retained capture under the registry writer lock made ordinary startup refuse large repositories or starve other project writers. Per-start scoped trust and bounded quarantine transactions separate execution authority and deletion safety from maintenance cost.
 
 The ledger review of PR #1052 found that applying the startup admission wait to worker completion could strand the ledger in running state after contention or a crash. Signed process ownership, an atomic dead-owner replacement, a normal worker wait and read-only doctor paths keep deferred maintenance recoverable and visible.
+
+On 2026-11-09, #1220 T1 classified malformed root/limit input as source corruption.
+T2 initially repeated that cause error for an explicit attempt address whose id
+was not an owner-supported attempt id. The query-validation rule in tasks.md
+separates caller mistakes from source failures; the execution-lineage and owner
+fixtures cover both cases, including source-lookup traps and neutral agent replies.
+
+On 2026-11-09, the #1320 Record read projection used the global configuration
+revision. A roster-only reload then discarded a held public recall response, so
+the existing #315 preface test lost its preface even though the independent
+off-roster attach guard remained correct. The memory/privacy-specific read
+revision preserves both behaviors; capture still uses its stricter turn fence.
+
+
+## Changes
+
+- 2026-11-10: #850 distinguishes normal-Bus Q2 proof from direct busy-submit characterization and preserves adoption/reattach/deny quiescence ceilings.
+- 2026-11-10: Spec acceptance carry-over (#1328 T4) distinguishes a new person decision from host-verified reuse of the same decision on explicitly superseding work. The narrow exception preserves original consent and records its cancelled source; it does not expose acceptance as a tool or receipt field. Review caught an early carry write before a later plan refusal: staging the host proof and committing only with the admitted outer event preserves the existing pre-effect refusal contract.
+- 2026-11-09: #1328 T6 extended the closed machine-default schema for an explicit setup research choice, reusing guarded publication and preserving the existing autonomy and start choices.
+
+## 2026-11-10: Qwen dual-output Q2
+
+The v2 native workload appended a second submit directly while the first provider
+response was held. Its private 0.26.1 matched control and later candidates emitted
+one user event and one final assistant/stop containing both markers. The extra
+provider POSTs were not classified by response format or role counts, so their
+underlying cause is unknown. That workload did not reproduce the original
+0.26.1 receipt's native-queued-turn claim; the original used a real gateway and a
+global installation that changed during the day.
+
+Ruling fa75c5f2-fc78-42a1-85dc-cf206e6a7825 makes required Q2 follow the actual normal
+Bus and QwenDualPeer path. The second envelope waits in the Bus during the held
+first response. Distinct native user/provider/final assistant/stop boundaries
+remain necessary. Direct native busy-submit behavior is separate characterization.
+The manual producer does not make the receipt harness eligible for automation.
+
+Adoption can report idle with an unknown pre-existing turn; reattachment can
+report idle before proving native quiescence; deny marks the hub turn ended before
+native consumption is acknowledged. Those existing ceilings prevent an absolute
+claim that no input can ever reach a native active turn. The premature deny/idle
+follow-up is outside this compatibility change; the production adapter is unchanged.
+
+The final account-free normal-Bus Q2 runs passed on the private 0.26.1 control
+and 0.27.0 candidate, with two user/final-stop/provider turns after evidence was
+frozen at owned stop. Two earlier normal-path controls failed the strict provider
+check despite observing two real turns. Shipped-source analysis showed `--bare`
+bypassed the private UI follow-up setting; the corrected fixture loads owned full
+settings. The earlier extra requests remain unattributed because their latest
+user bodies were not retained. The [dated receipt](../verification/2026-11-10-qwen-0270-dual-output.md)
+separates these attempts and the 0.26.1 config-only observation from the later
+passing required Q3/Q5/Q6/Q7 pair. The remaining producer preserved a PTY/catalog
+control failure and a host FIFO-helper setup failure before the final matched
+pair passed with owned cleanup/final closure. The independent direct-busy pair
+on both versions observed one user/assistant/Stop with both markers in one
+assistant, while required normal-Bus Q2 retained two distinct turns. No production
+adapter, Bus or automatic receipt-admission behavior changed.
+
+The task 859 deny-readiness correction separates known delivery disposition from native quiescence. Task 850 measured no post-deny completion ACK; normal-Bus assistant/Stop evidence cannot be reused for the denied turn. The durable fence keeps a synchronous Bus drain from submitting queued work and allows recovery through a new personal turn or a verified fresh generation. The 30 s deadline is an operational waiting bound, not evidence that native work stopped.
+
+The same review found that a single append can write a prefix without throwing. The byte-count check and actual tail guard prevent a second append from completing that prefix. This intentionally adds no per-write persisted intent: a crash leaving a torn prefix that already ends with newline remains the explicit ceiling.

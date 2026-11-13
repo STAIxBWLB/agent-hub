@@ -11,6 +11,8 @@ import { sdlcConfig, type SdlcMode } from "../src/hub/sdlc.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+// #1403 A1: an enabled lifecycle requires an important security finding to carry state and boundary; the two enforce-mode tests below use this shape and keep every assertion.
+const proven = { state: "confirmed", boundary: { principal: "a web page", control: "Origin refusal", resource: "the control socket", result: "a request was accepted" } };
 const finding = (id = "missing-origin-check", extra: Record<string, unknown> = {}) => ({ id, pass: "security" as const, severity: "important" as const, disposition: "open" as const, path: "src/server.ts", ...extra });
 function rig(mode: SdlcMode = "off", options: Partial<TasksDeps> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-structured-review-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
@@ -125,6 +127,22 @@ test("S3 a second task with the same finding proposes one durable backlog amendm
   expect(r.board.list("backlog").map(card => card.id)).toEqual(cards.map(card => card.id));
 });
 
+test("anchored findings recur using safe identifier metadata while their source quote stays out of the proposal", async () => {
+  const r = rig(), quote = "SOURCE_QUOTE_CANARY";
+  const anchoredFinding = { ...finding("anchored-recur", { pass: "bugs" }), anchor: {
+    path: "src/server.ts", side: "head" as const,
+    selectors: [{ kind: "textQuote" as const, exact: quote, prefix: "", suffix: "" }],
+  } };
+  const one = r.create(), two = r.create();
+  await submit(r.tasks, one.id, [anchoredFinding]);
+  await submit(r.tasks, two.id, [anchoredFinding]);
+  const cards = r.board.list("backlog");
+  expect(cards).toHaveLength(1);
+  expect(cards[0]?.detail).toContain("Review finding key: bugs:anchored-recur");
+  expect(cards[0]?.detail).not.toContain(quote);
+  expect(JSON.stringify(cards[0])).not.toContain(quote);
+});
+
 test("S3 an asynchronous screen cannot commit findings after ownership or privacy changed", async () => {
   let enter!: () => void, release!: () => void;
   let started = false;
@@ -173,7 +191,7 @@ test("S3 tool schema advertises optional bounded findings without changing legac
 test("S3 R1 invalid owner commit skips to the full local head and cannot evade enforce", async () => {
   const r = rig("enforce"), row = r.create();
   r.board.update(row.id, "user", "refs", { refs: { commit: "aaaaaaa" } });
-  await r.tasks.review("claude", row.id, "changes_requested", undefined, undefined, undefined, undefined, [finding()]);
+  await r.tasks.review("claude", row.id, "changes_requested", undefined, undefined, undefined, undefined, [finding(undefined, proven)]);
   expect(r.board.get(row.id)?.history.findLast(entry => entry.reviewFindings)?.reviewFindings?.head).toBe(A);
   r.reopen(row.id);
   await expect(submit(r.tasks, row.id, undefined, "approved", "user")).rejects.toThrow(/important/i);
@@ -182,7 +200,7 @@ test("S3 R1 invalid owner commit skips to the full local head and cannot evade e
 test("S3 R1 enforce refuses a finding report with no resolvable head", async () => {
   const r = rig("enforce"), row = r.create();
   r.board.update(row.id, "user", "refs", { refs: { commit: "short" }, sdlc: { stage: "review" } });
-  await expect(r.tasks.review("claude", row.id, "changes_requested", undefined, undefined, undefined, undefined, [finding()])).rejects.toThrow(/head/i);
+  await expect(r.tasks.review("claude", row.id, "changes_requested", undefined, undefined, undefined, undefined, [finding(undefined, proven)])).rejects.toThrow(/head/i);
   expect(r.board.get(row.id)?.state).toBe("in_review");
 });
 

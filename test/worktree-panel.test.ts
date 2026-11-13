@@ -290,7 +290,13 @@ test("the inbox raises one worktrees alert only above alert_over, with counts an
   const items = (await at({ live: [], settled: rows(11), alertOver: 10 })).filter(i => i.kind === "worktrees");
   expect(items).toHaveLength(1);
   expect(items[0]).toMatchObject({ group: "alert", id: "worktrees:p1", title: "11 settled worktrees", verbs: [{ id: "open" }], link: { panel: "agents", params: { project: "p1" } } });
-  expect(JSON.stringify(items[0])).not.toMatch(/secret-branch|private\/branch|90\d/);
+  // The row ids (task 900 to 910) must not appear either, but as JSON values and not as a bare three-digit pattern: the item's own `at` is the run's clock, and "90" followed by a digit appears in
+  // about 1 % of all timestamps (".905", "T15:15:45.905Z"), which made this assertion fail on a CI run at that instant (#1262).
+  const text = JSON.stringify(items[0]);
+  expect(text).not.toMatch(/secret-branch|private\/branch/);
+  expect(text).not.toMatch(/"task":|"tasks":|#90\d|\b90\d\b(?![:.])/);
+  for (let i = 0; i < 11; i++) expect(text).not.toContain(`"task":${900 + i}`);
+  expect(items[0].at).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);          // the timestamp is the only digit run of that shape, and it is the run's clock
   expect((await at({ live: [], settled: rows(50), alertOver: 0 })).filter(i => i.kind === "worktrees")).toEqual([]);
   expect((await at(undefined)).filter(i => i.kind === "worktrees")).toEqual([]);                                       // an older hub with no shelf
   expect((await at({ unavailable: true })).filter(i => i.kind === "worktrees")).toEqual([]);
@@ -388,7 +394,8 @@ test("the plugin's inbox alert reads a real daemon's snapshot: it appears once t
   const project: ProjectRecord = { id: "shelf3", root: f.cwd, stateDir: f.stateDir, basePort: 4700, instanceId: f.instanceId, pid: process.pid };
   const registry = { get: (id: string) => id === project.id ? project : undefined, list: () => [project], close() {} } as any;
   const lifecycle: Lifecycle = { inspectProject: async () => ({ state: "running", status: { instanceId: f.instanceId, peers: {} } }), startProject: async () => ({}), stopProject: async () => {} };
-  const provider = createProvider({ home, registry, lifecycle });
+  // #727: this test changes the daemon's settings out of band (not through the provider), so it asks for no inbox cache: what it checks is the alert's snapshot shape, not caching.
+  const provider = createProvider({ home, registry, lifecycle, inboxFreshMs: 0, inboxStaleMs: 0 });
   const items = async () => ((await provider.snapshot({ after: 0, panel: "inbox" })).items as any[]).filter(i => i.kind === "worktrees");
   // the first snapshot only warms the daemon's cache; the alert follows on the next poll, as the panel's 2 s poll would see it
   await items(); await Bun.sleep(500);

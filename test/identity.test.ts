@@ -175,6 +175,9 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["roster", ["--color=always"], "allowed"],
   ["roster", ["add", "kimi"], "conductor"],
   ["roster", ["remove", "kimi", "--yes", "--now"], "conductor"],
+  ["roles", [], "allowed"], // #1411 T2
+  ["roles", ["--json", "--color=never"], "allowed"],
+  ["roles", ["claude"], "console"],
   ["projects", [], "allowed"],
   ["projects", ["--json"], "allowed"],
   ["projects", ["remove", "p1"], "console"],
@@ -389,4 +392,14 @@ test("autonomy, usage and deliverables name their subcommand and never an operan
     const [command = "", ...rest] = label.split(" ");
     expect(cliCommandLabel(command, rest)).toBe(label);
   }
+});
+
+
+test("guidance preserves the authenticated peer and refuses live-test promotion for writes", () => {
+  for (const operation of ["create", "list", "show", "withdraw"]) {
+    expect(classifyPeerCommand("guidance", [operation])).toBe("allowed");
+    expect(cliCommandLabel("guidance", [operation, "SECRET_ARGUMENT"])).toBe(`guidance ${operation}`);
+  }
+  expect(classifyPeerCommand("guidance", ["activate"])).toBe("console");
+  for (const operation of ["create", "withdraw"]) expect(liveTestRefusal("guidance", [operation])).toBe(true);
 });

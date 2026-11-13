@@ -79,6 +79,14 @@ export const BUS_TERMINAL_HISTORY_LIMIT_SETTING = busNumber({
   key: "bus.terminal_history_limit", path: ["bus", "terminal_history_limit"], label: "Unprotected terminal delivery history target",
   max: 2048, defaultValue: 2048, unit: "rows", inventory: "src/hub/delivery-journal.ts:TERMINAL_CAP",
 });
+/** #1172: bounded wait for a push channel's explicit native delivery confirmation. */
+export const BUS_ACCEPTED_SETTLE_MS_SETTING = {
+  ...busNumber({
+    key: "bus.accepted_settle_ms", path: ["bus", "accepted_settle_ms"], label: "Accepted channel delivery confirmation timeout",
+    max: 86_400_000, defaultValue: 600_000, unit: "milliseconds", inventory: "src/hub/operational-settings.ts:BUS_ACCEPTED_SETTLE_MS_SETTING.defaultValue",
+  }),
+  min: 1000,
+} as const satisfies OperationalNumberSetting;
 
 /**
  * #489 H4, recovery and upgrade waits. These are read by the upgrade coordinator (a CLI process) from the project's own config at the START of each wait, so a change applies at the next wait and a wait
@@ -178,7 +186,7 @@ export const CONSOLE_ATTENTION_SETTING = consoleNumber({
 
 /** Fixed metadata; never registration from a file, request, adapter or environment variable. */
 export const OPERATIONAL_NUMBERS: readonly OperationalNumberSetting[] = [GROOM_FYI_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, CONTRADICTION_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_MIN_SETTING, SPLIT_FAILURE_SHARE_SETTING,
-  BUS_MAX_ATTEMPTS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_NOTES_KEPT_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING,
+  BUS_MAX_ATTEMPTS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_NOTES_KEPT_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, BUS_ACCEPTED_SETTLE_MS_SETTING,
   RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING,
   ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING,
   MODEL_COOLDOWN_FAILURES_SETTING, MODEL_COOLDOWN_SETTING, MODEL_COOLDOWN_CAP_SETTING, MODEL_TERMINAL_HISTORY_SETTING, INFERENCE_BACKOFF_SETTING, INFERENCE_DIGEST_ITEMS_SETTING, INFERENCE_DIGEST_CHARS_SETTING,
@@ -197,7 +205,7 @@ export const taskOperationalReaders = (config: () => TaskOperationalConfig) => (
   splitMinObservations: () => config().tasks.split_min_observations ?? SPLIT_MIN_SETTING.defaultValue,
   splitMaxFailureShare: () => config().tasks.split_max_failure_share ?? SPLIT_FAILURE_SHARE_SETTING.defaultValue,
 });
-export interface BusOperationalConfig { bus?: { max_attempts?: number; digest_max?: number; pull_budget_bytes?: number; notes_kept?: number; terminal_history_limit?: number } }
+export interface BusOperationalConfig { bus?: { max_attempts?: number; digest_max?: number; pull_budget_bytes?: number; notes_kept?: number; terminal_history_limit?: number; accepted_settle_ms?: number } }
 /** Read accepted configuration at the next operation; a reload itself never trims or retries work. */
 export const busOperationalReaders = (config: () => BusOperationalConfig) => ({
   maxAttempts: () => config().bus?.max_attempts ?? BUS_MAX_ATTEMPTS_SETTING.defaultValue,
@@ -205,6 +213,7 @@ export const busOperationalReaders = (config: () => BusOperationalConfig) => ({
   pullBudgetBytes: () => config().bus?.pull_budget_bytes ?? BUS_PULL_BUDGET_BYTES_SETTING.defaultValue,
   notesKept: () => config().bus?.notes_kept ?? BUS_NOTES_KEPT_SETTING.defaultValue,
   terminalHistoryLimit: () => config().bus?.terminal_history_limit ?? BUS_TERMINAL_HISTORY_LIMIT_SETTING.defaultValue,
+  acceptedSettleMs: () => config().bus?.accepted_settle_ms ?? BUS_ACCEPTED_SETTLE_MS_SETTING.defaultValue,
 });
 export interface RecoveryOperationalConfig { recovery?: { reconnect_wait_s?: unknown; unmanaged_reconnect_wait_s?: unknown; control_timeout_s?: unknown; shutdown_wait_s?: unknown; terminal_idle_wait_s?: unknown } }
 export interface RecoveryWaits { reconnectWaitMs: number; unmanagedReconnectWaitMs: number; controlTimeoutMs: number; shutdownWaitMs: number; terminalIdleWaitMs: number }

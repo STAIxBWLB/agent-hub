@@ -1,14 +1,18 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import type { BusSnapshot } from "./bus.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
-import { HUB, KINDS, USER, type Envelope, type Kind } from "./envelope.ts";
-import { heldDeliveryHints } from "./delivery-hints.ts";
+import { HUB, KINDS, USER, isInvocationKind, type Envelope, type Kind } from "./envelope.ts";
+import { HELD_DELIVERY_PAGE, heldDeliveryHints } from "./delivery-hints.ts";
+import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { parseRemotePeerId } from "../rooms/application.ts";
 import { validateDeferredHub } from "./deferred-hub.ts";
+import { isDeliveryFailureCause, type DeliveryFailureCause } from "./delivery-failure.ts";
 
 export type JournalDeliveryState =
   | "queued"
@@ -21,8 +25,11 @@ export type JournalDeliveryState =
 export type JournalResolution = "completed" | "retry" | "discard";
 export const MAX_ENVELOPE_BODY = 1_000_000;
 export const TERMINAL_CAP = 2048;
+export const ACCEPTED_SETTLE_TIMEOUT_REASON = "channel delivery confirmation timed out; inspect effects before resolving";
 const SCHEMA_VERSION = 1,
   MAX_ROWS = 100_000,
+  MAX_REVIEW_INPUTS = 4096,
+  REVIEW_INPUT_VERSION = 2,
   MAX_JSON = 20 * 1024 * 1024;
 const STATES = new Set<JournalDeliveryState>([
   "queued",
@@ -47,9 +54,29 @@ export interface JournalDelivery {
   originals: Envelope[];
   out: Envelope[];
   reason?: string;
+  failureCause?: DeliveryFailureCause;
   attempt?: number;
   previousId?: string;
 }
+export interface ReviewInputHold { peer: string; sessionHash: string; inputHash: string | null }
+export interface ReviewInputProvenance { version: 2; instanceId: string; complete: boolean; coverageComplete: boolean; count: number; digest: string; holds: ReviewInputHold[]; incompletePeers: string[]; incompleteSessions: Array<{ peer: string; sessionHash: string }> }
+export type ReviewInputState = { state: "clean" } | { state: "held"; inputHash: string } | { state: "unknown" };
+export interface ReviewInputEvidence {
+  provenance: "available" | "corrupt";
+  coverageComplete: boolean;
+  incompletePeer: boolean;
+  incompleteSession: boolean;
+  sessionState: "clean" | "held" | "unknown";
+  retainedSessionHold: boolean;
+  retainedPeerSessionHold: boolean;
+}
+export type ReviewInputHealthCause = "legacy_coverage" | "incomplete_markers" | "provenance_incomplete" | "provenance_corrupt";
+export interface ReviewInputHealth {
+  state: "healthy" | "incomplete" | "corrupt";
+  cause: ReviewInputHealthCause | null;
+  nextStep: string;
+}
+export interface AcceptedDeliveryCandidate { id: string; peer: string; revision: number; updatedAt: number; notifyConductor: boolean }
 export interface DeliveryJournalOptions {
   file: string;
   projectRoot: string;
@@ -66,7 +93,9 @@ export interface JournalSnapshot {
   bus: BusSnapshot;
   deliveries: JournalDelivery[];
   manualPaused: string[];
+  reviewInputProvenance?: ReviewInputProvenance;
 }
+export type JournalTransportSnapshot = Omit<JournalSnapshot, "reviewInputProvenance">;
 
 function fail(message: string): never {
   throw new Error(`invalid delivery journal: ${message}`);
@@ -80,6 +109,71 @@ function text(value: unknown, name: string, max = 4096): string {
   if (typeof value !== "string" || value.length < 1 || value.length > max)
     fail(`${name} must be a non-empty string`);
   return value;
+}
+function hashText(value: unknown, name: string): string {
+  const hash = text(value, name, 64);
+  if (!/^[a-f0-9]{64}$/.test(hash)) fail(`${name} is invalid`);
+  return hash;
+}
+function closedOwnDataFields(value: unknown, name: string, expected: readonly string[]): Record<string, unknown> {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) fail(`${name} must be a plain object`);
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== expected.length || !expected.every(key => keys.includes(key))) fail(`${name} has unexpected fields`);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (keys.some(key => typeof key !== "string" || !descriptors[key]?.enumerable || !("value" in descriptors[key]!))) fail(`${name} must contain own data fields`);
+    return Object.fromEntries(keys.map(key => [key as string, descriptors[key as string]!.value]));
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("invalid delivery journal:")) throw error;
+    fail(`${name} is unreadable`);
+  }
+}
+function reviewInputHold(value: unknown, name: string): ReviewInputHold {
+  const fields = closedOwnDataFields(value, name, ["peer", "sessionHash", "inputHash"]);
+  const peer = text(fields.peer, `${name}.peer`, 256);
+  const sessionHash = hashText(fields.sessionHash, `${name}.sessionHash`);
+  const inputHash = fields.inputHash === null ? null : hashText(fields.inputHash, `${name}.inputHash`);
+  return { peer, sessionHash, inputHash };
+}
+function reviewInputDigest(instanceId: string, version: number, complete: boolean, coverageComplete: boolean, count: number, holds: readonly ReviewInputHold[], incompletePeers: readonly string[], incompleteSessions: readonly { peer: string; sessionHash: string }[]): string {
+  const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  const normalizedHolds = [...holds].map(hold => ({ peer: hold.peer, sessionHash: hold.sessionHash, inputHash: hold.inputHash }))
+    .sort((a, b) => compare(a.peer, b.peer) || compare(a.sessionHash, b.sessionHash));
+  const normalizedPeers = [...incompletePeers].sort();
+  const normalizedSessions = [...incompleteSessions].map(row => ({ peer: row.peer, sessionHash: row.sessionHash }))
+    .sort((a, b) => compare(a.peer, b.peer) || compare(a.sessionHash, b.sessionHash));
+  return createHash("sha256").update(JSON.stringify({ instanceId, version, complete, coverageComplete, count, holds: normalizedHolds, incompletePeers: normalizedPeers, incompleteSessions: normalizedSessions })).digest("hex");
+}
+function legacyReviewInputMarkerAbsent(meta: Record<string, unknown>): boolean {
+  return Number(meta.review_input_version ?? 0) === 0 && Number(meta.review_input_complete ?? 0) === 0
+    && Number(meta.review_input_coverage_complete ?? 0) === 0 && Number(meta.review_input_count ?? 0) === 0
+    && String(meta.review_input_digest ?? "") === "" && String(meta.review_input_instance_id ?? "") === "";
+}
+function validateReviewInputProvenance(value: unknown, name = "review input provenance"): ReviewInputProvenance {
+  const fields = closedOwnDataFields(value, name, ["version", "instanceId", "complete", "coverageComplete", "count", "digest", "holds", "incompletePeers", "incompleteSessions"]);
+  if (fields.version !== REVIEW_INPUT_VERSION || typeof fields.complete !== "boolean" || typeof fields.coverageComplete !== "boolean") fail(`${name} version or completeness is invalid`);
+  const instanceId = text(fields.instanceId, `${name}.instanceId`, 256);
+  if (Array.isArray(fields.holds) && fields.holds.length > MAX_REVIEW_INPUTS || Array.isArray(fields.incompletePeers) && fields.incompletePeers.length > MAX_REVIEW_INPUTS || Array.isArray(fields.incompleteSessions) && fields.incompleteSessions.length > MAX_REVIEW_INPUTS) fail(`${name} exceeds ${MAX_REVIEW_INPUTS}`);
+  const holds = list(fields.holds, `${name}.holds`, MAX_REVIEW_INPUTS).map((row, index) => reviewInputHold(row, `${name}.holds[${index}]`));
+  const incompletePeers = list(fields.incompletePeers, `${name}.incompletePeers`, MAX_REVIEW_INPUTS).map((peer, index) => text(peer, `${name}.incompletePeers[${index}]`, 256));
+  const incompleteSessions = list(fields.incompleteSessions, `${name}.incompleteSessions`, MAX_REVIEW_INPUTS).map((raw, index) => {
+    const row = closedOwnDataFields(raw, `${name}.incompleteSessions[${index}]`, ["peer", "sessionHash"]);
+    return { peer: text(row.peer, `${name}.incompleteSessions[${index}].peer`, 256), sessionHash: hashText(row.sessionHash, `${name}.incompleteSessions[${index}].sessionHash`) };
+  });
+  if (holds.length + incompletePeers.length + incompleteSessions.length > MAX_REVIEW_INPUTS) fail(`${name} exceeds ${MAX_REVIEW_INPUTS}`);
+  const keys = new Set<string>();
+  for (const hold of holds) {
+    const key = JSON.stringify([hold.peer, hold.sessionHash]);
+    if (keys.has(key)) fail(`${name} has duplicate sessions`);
+    keys.add(key);
+  }
+  if (new Set(incompletePeers).size !== incompletePeers.length) fail(`${name} has duplicate incomplete peers`);
+  const incompleteKeys = new Set(incompleteSessions.map(row => JSON.stringify([row.peer, row.sessionHash])));
+  if (incompleteKeys.size !== incompleteSessions.length) fail(`${name} has duplicate incomplete sessions`);
+  const count = integer(fields.count, `${name}.count`, 0, MAX_REVIEW_INPUTS);
+  const digest = hashText(fields.digest, `${name}.digest`);
+  if (count !== holds.length + incompletePeers.length + incompleteSessions.length || digest !== reviewInputDigest(instanceId, REVIEW_INPUT_VERSION, fields.complete, fields.coverageComplete, count, holds, incompletePeers, incompleteSessions)) fail(`${name} integrity does not match its rows`);
+  return { version: REVIEW_INPUT_VERSION, instanceId, complete: fields.complete, coverageComplete: fields.coverageComplete, count, digest, holds, incompletePeers, incompleteSessions };
 }
 function integer(
   value: unknown,
@@ -204,6 +298,11 @@ function validateBus(value: unknown, name = "bus"): BusSnapshot {
   if (b.journal !== undefined) fail("nested journal snapshot is invalid");
   return b as unknown as BusSnapshot;
 }
+function checkedFailureCause(value: unknown): DeliveryFailureCause | undefined {
+  if (value === undefined) return undefined;
+  if (!isDeliveryFailureCause(value)) fail("delivery.failureCause is invalid");
+  return value;
+}
 function validateDelivery(value: unknown, name = "delivery"): JournalDelivery {
   const d = obj(value, name);
   text(d.id, `${name}.id`, 256);
@@ -220,6 +319,7 @@ function validateDelivery(value: unknown, name = "delivery"): JournalDelivery {
     validateEnvelope(e, `${name}.out[${i}]`),
   );
   if (d.reason !== undefined) text(d.reason, `${name}.reason`, 1_000_000);
+  const failureCause = checkedFailureCause(d.failureCause);
   if (d.attempt !== undefined) integer(d.attempt, `${name}.attempt`, 0, 100);
   if (d.previousId !== undefined) text(d.previousId, `${name}.previousId`, 256);
   return {
@@ -232,6 +332,7 @@ function validateDelivery(value: unknown, name = "delivery"): JournalDelivery {
     originals,
     out,
     ...(d.reason === undefined ? {} : { reason: d.reason as string }),
+    ...(failureCause === undefined ? {} : { failureCause }),
     ...(d.attempt === undefined ? {} : { attempt: d.attempt as number }),
     ...(d.previousId === undefined
       ? {}
@@ -259,6 +360,10 @@ export function validateJournalSnapshot(
     if (ids.has(d.id)) fail(`duplicate delivery ${d.id}`);
     ids.add(d.id);
   }
+  if (Object.hasOwn(s, "reviewInputProvenance")) {
+    const provenance = validateReviewInputProvenance(s.reviewInputProvenance, "snapshot.reviewInputProvenance");
+    if (provenance.instanceId !== s.instanceId) fail("snapshot review input instance binding is invalid");
+  }
   return true;
 }
 
@@ -272,6 +377,11 @@ export class DeliveryJournal {
   private queueMetadataTracking = false;
   private queueMetadataInvalidated = false;
   private pruningDeferred = 0;
+  private legacyReviewCandidateIds = new Set<string>();
+  private legacyReviewCandidatesCaptured = false;
+  private legacyReviewCandidatesOverflow = false;
+  private legacyReviewCandidateFenceIds: string[] | undefined;
+  private legacyReviewCandidateCaptureRevision = -1;
   private readonly operationId?: string;
   private readonly terminalHistoryLimit?: () => number;
   constructor(options: DeliveryJournalOptions) {
@@ -288,29 +398,52 @@ export class DeliveryJournal {
     this.db.run("PRAGMA synchronous = FULL");
     this.createSchema();
     const meta = this.readMeta();
-    if (!meta)
+    let openDeliveryFenceIds: string[] | undefined;
+    if (!meta) {
+      const holds = this.reviewInputRows(), incompletePeers = this.reviewInputIncompletePeerRows(), incompleteSessions = this.reviewInputIncompleteSessionRows();
+      const legacyTable = this.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='review_input_holds'").get();
+      const legacyCount = legacyTable ? Number((this.db.query("SELECT COUNT(*) AS n FROM review_input_holds WHERE project_id=?").get(this.projectId) as { n: number }).n) : 0;
+      const provenanceCount = holds.length + incompletePeers.length + incompleteSessions.length;
+      const complete = provenanceCount === 0 || legacyCount === provenanceCount, coverageComplete = complete && legacyCount === 0;
       this.db
         .query(
-          "INSERT INTO delivery_meta (project_id, project_root, revision, instance_id, operation_id, retry_history_cursor) VALUES (?, ?, 0, ?, ?, 0)",
+          "INSERT INTO delivery_meta (project_id, project_root, revision, instance_id, operation_id, retry_history_cursor, review_input_version, review_input_complete, review_input_coverage_complete, review_input_count, review_input_digest, review_input_instance_id) VALUES (?, ?, 0, ?, ?, 0, 2, ?, ?, ?, ?, ?)",
         )
         .run(
           this.projectId,
           this.projectRoot,
           this.instanceId,
           this.operationId ?? null,
+          complete ? 1 : 0,
+          coverageComplete ? 1 : 0,
+          provenanceCount,
+          reviewInputDigest(this.instanceId, REVIEW_INPUT_VERSION, true, coverageComplete, holds.length + incompletePeers.length + incompleteSessions.length, holds, incompletePeers, incompleteSessions),
+          this.instanceId,
         );
-    else {
-      this.validateStored(meta);
+    } else {
+      openDeliveryFenceIds = this.validateStored(meta, true);
       this.rejectLiveOwner(meta);
+      let reviewInput: ReviewInputProvenance | undefined;
+      try {
+        const prior = this.readReviewInputProvenance(meta);
+        reviewInput = { ...prior, instanceId: this.instanceId, digest: reviewInputDigest(this.instanceId, REVIEW_INPUT_VERSION, prior.complete, prior.coverageComplete, prior.count, prior.holds, prior.incompletePeers, prior.incompleteSessions) };
+      }
+      catch { /* corrupt provenance remains unknown; ordinary delivery state stays available */ }
       this.db.transaction(() => {
         this.db
           .query(
-            "UPDATE delivery_meta SET project_root = ?, instance_id = ?, operation_id = COALESCE(?, operation_id) WHERE project_id = ?",
+            "UPDATE delivery_meta SET project_root = ?, instance_id = ?, operation_id = COALESCE(?, operation_id), review_input_version = ?, review_input_instance_id = ?, review_input_complete = ?, review_input_coverage_complete = ?, review_input_count = ?, review_input_digest = ? WHERE project_id = ?",
           )
           .run(
             this.projectRoot,
             this.instanceId,
             this.operationId ?? null,
+            REVIEW_INPUT_VERSION,
+            this.instanceId,
+            reviewInput?.complete === true ? 1 : 0,
+            reviewInput?.coverageComplete === true ? 1 : 0,
+            reviewInput?.count ?? Number(meta.review_input_count ?? 0),
+            reviewInput?.digest ?? String(meta.review_input_digest ?? ""),
             this.projectId,
           );
         // A new daemon cannot infer completion of an old process's handoffs, including
@@ -318,9 +451,10 @@ export class DeliveryJournal {
         for (const row of this.db.query("SELECT * FROM task_offer_reads WHERE project_id = ?").all(this.projectId) as Record<string, unknown>[]) this.validateOfferRead(row);
         this.recoverRetryHistory(meta);
         this.recoverRetryEvidence();
-        this.recoverInterrupted();
+        this.recoverInterrupted(meta);
       })();
     }
+    this.captureLegacyReviewCandidates(false, openDeliveryFenceIds);
   }
   private harden(): void {
     chmodSync(this.file, 0o600);
@@ -335,7 +469,7 @@ export class DeliveryJournal {
   }
   private createSchema(): void {
     this.db.run(
-      `CREATE TABLE IF NOT EXISTS delivery_meta (project_id TEXT PRIMARY KEY, project_root TEXT, schema_version INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL, instance_id TEXT NOT NULL, operation_id TEXT, manual_paused TEXT NOT NULL DEFAULT '[]', bus_snapshot TEXT NOT NULL DEFAULT '{}')`,
+      `CREATE TABLE IF NOT EXISTS delivery_meta (project_id TEXT PRIMARY KEY, project_root TEXT, schema_version INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL, instance_id TEXT NOT NULL, operation_id TEXT, manual_paused TEXT NOT NULL DEFAULT '[]', bus_snapshot TEXT NOT NULL DEFAULT '{}', review_input_version INTEGER NOT NULL DEFAULT 0, review_input_complete INTEGER NOT NULL DEFAULT 0, review_input_coverage_complete INTEGER NOT NULL DEFAULT 0, review_input_count INTEGER NOT NULL DEFAULT 0, review_input_digest TEXT NOT NULL DEFAULT '', review_input_instance_id TEXT NOT NULL DEFAULT '')`,
     );
     for (const [column, definition] of [
       ["project_root", "TEXT"],
@@ -343,6 +477,12 @@ export class DeliveryJournal {
       ["operation_id", "TEXT"],
       ["retry_unknown_ids", "TEXT NOT NULL DEFAULT '{}'"],
       ["retry_history_cursor", "INTEGER NOT NULL DEFAULT 0"],
+      ["review_input_version", "INTEGER NOT NULL DEFAULT 0"],
+      ["review_input_complete", "INTEGER NOT NULL DEFAULT 0"],
+      ["review_input_coverage_complete", "INTEGER NOT NULL DEFAULT 0"],
+      ["review_input_count", "INTEGER NOT NULL DEFAULT 0"],
+      ["review_input_digest", "TEXT NOT NULL DEFAULT ''"],
+      ["review_input_instance_id", "TEXT NOT NULL DEFAULT ''"],
     ] as const) {
       const columns = this.db
         .query("PRAGMA table_info(delivery_meta)")
@@ -355,6 +495,43 @@ export class DeliveryJournal {
     this.db.run(
       `CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, peer TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, originals TEXT NOT NULL, out_json TEXT NOT NULL, reason TEXT, attempt INTEGER, previous_id TEXT)`,
     );
+    const deliveryColumns = this.db.query("PRAGMA table_info(deliveries)").all() as { name: string }[];
+    if (!deliveryColumns.some(column => column.name === "failure_cause")) this.db.run("ALTER TABLE deliveries ADD COLUMN failure_cause TEXT");
+    this.db.run("CREATE TABLE IF NOT EXISTS review_input_sessions (project_id TEXT NOT NULL, peer TEXT NOT NULL, session_hash TEXT NOT NULL, input_hash TEXT, PRIMARY KEY(project_id,peer,session_hash))");
+    this.db.run("CREATE TABLE IF NOT EXISTS review_input_incomplete_peers (project_id TEXT NOT NULL, peer TEXT NOT NULL, PRIMARY KEY(project_id,peer))");
+    this.db.run("CREATE TABLE IF NOT EXISTS review_input_incomplete_sessions (project_id TEXT NOT NULL, peer TEXT NOT NULL, session_hash TEXT NOT NULL, PRIMARY KEY(project_id,peer,session_hash))");
+    const legacyColumns = this.db.query("PRAGMA table_info(review_input_holds)").all() as { name: string }[];
+    const meta = this.readMeta();
+    const hasCurrentProvenance = !!this.db.query("SELECT 1 FROM review_input_sessions WHERE project_id=? UNION ALL SELECT 1 FROM review_input_incomplete_peers WHERE project_id=? UNION ALL SELECT 1 FROM review_input_incomplete_sessions WHERE project_id=? LIMIT 1")
+      .get(this.projectId, this.projectId, this.projectId);
+    if (legacyColumns.length && (!meta || legacyReviewInputMarkerAbsent(meta) && !hasCurrentProvenance)) {
+      this.db.transaction(() => {
+        const hasSession = legacyColumns.some(column => column.name === "session_hash"), hasHash = legacyColumns.some(column => column.name === "input_hash");
+        if (hasSession && hasHash) {
+          const legacy = this.db.query("SELECT project_id,peer,session_hash,input_hash FROM review_input_holds WHERE project_id=? ORDER BY peer LIMIT ?").all(this.projectId, MAX_REVIEW_INPUTS) as Record<string, unknown>[];
+          for (const row of legacy) {
+            const project = this.projectId;
+            try {
+              const hold = reviewInputHold({ peer: row.peer, sessionHash: row.session_hash, inputHash: row.input_hash }, "legacy review input");
+              this.db.query("INSERT OR IGNORE INTO review_input_sessions(project_id,peer,session_hash,input_hash) VALUES(?,?,?,?)").run(project, hold.peer, hold.sessionHash, hold.inputHash);
+            } catch {
+              if (typeof row.peer === "string" && row.peer.length > 0 && row.peer.length <= 256) {
+                if (typeof row.session_hash === "string" && /^[a-f0-9]{64}$/.test(row.session_hash)) this.db.query("INSERT OR IGNORE INTO review_input_incomplete_sessions(project_id,peer,session_hash) VALUES(?,?,?)").run(project, row.peer, row.session_hash);
+                else this.db.query("INSERT OR IGNORE INTO review_input_incomplete_peers(project_id,peer) VALUES(?,?)").run(project, row.peer);
+              }
+            }
+          }
+        }
+        const holds = this.db.query("SELECT peer,session_hash,input_hash FROM review_input_sessions WHERE project_id=?").all(this.projectId) as Record<string, unknown>[];
+        const normalized = holds.map((row, index) => reviewInputHold({ peer: row.peer, sessionHash: row.session_hash, inputHash: row.input_hash }, `migrated review input ${index}`));
+        const incompletePeers = this.reviewInputIncompletePeerRows(), incompleteSessions = this.reviewInputIncompleteSessionRows();
+        if (meta) {
+          const instance = String(meta.instance_id), count = normalized.length + incompletePeers.length + incompleteSessions.length, digest = reviewInputDigest(instance, REVIEW_INPUT_VERSION, true, false, count, normalized, incompletePeers, incompleteSessions);
+          this.db.query("UPDATE delivery_meta SET review_input_version=?,review_input_complete=1,review_input_coverage_complete=0,review_input_count=?,review_input_digest=?,review_input_instance_id=? WHERE project_id=?")
+            .run(REVIEW_INPUT_VERSION, count, digest, instance, this.projectId);
+        }
+      })();
+    }
     this.db.run("CREATE TABLE IF NOT EXISTS delivery_queue_meta_state (project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)");
     this.db.run("CREATE TABLE IF NOT EXISTS delivery_queue_meta (project_id TEXT NOT NULL, peer TEXT NOT NULL, queued INTEGER NOT NULL, oldest_at INTEGER, unknown_age INTEGER NOT NULL, PRIMARY KEY(project_id,peer))");
     this.db.run("CREATE TABLE IF NOT EXISTS task_offer_reads (project_id TEXT NOT NULL, peer TEXT NOT NULL, envelope_id TEXT NOT NULL, delivery_id TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('adapter','reply','pull')), offer_revision INTEGER NOT NULL CHECK(offer_revision >= 1), PRIMARY KEY(project_id,peer,envelope_id))");
@@ -443,7 +620,7 @@ export class DeliveryJournal {
       if (e instanceof Error && e.message.includes("owned by a live")) throw e;
     }
   }
-  private validateStored(meta: Record<string, unknown>): void {
+  private validateStored(meta: Record<string, unknown>, returnDeliveryIds = false): string[] | undefined {
     if (
       meta.project_root != null &&
       String(meta.project_root) !== this.projectRoot
@@ -480,13 +657,204 @@ export class DeliveryJournal {
         .get(this.projectId, MAX_ROWS)
     )
       fail("too many delivery rows");
+    return returnDeliveryIds ? rows.map(row => text(row.id, "stored delivery id", 256)) : undefined;
   }
-  private recoverInterrupted(): void {
-    this.db
-      .query(
-        "UPDATE deliveries SET state = 'needs_review', revision = revision + 1, updated_at = ?, reason = COALESCE(reason, 'daemon stopped during delivery') WHERE project_id = ? AND state IN ('dispatching', 'accepted')",
-      )
-      .run(Date.now(), this.projectId);
+  private reviewInputRows(): ReviewInputHold[] {
+    const rows = this.db.query("SELECT peer,session_hash,input_hash FROM review_input_sessions WHERE project_id=? ORDER BY peer,session_hash LIMIT ?")
+      .all(this.projectId, MAX_REVIEW_INPUTS + 1) as Record<string, unknown>[];
+    if (rows.length > MAX_REVIEW_INPUTS) fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
+    return rows.map((row, index) => reviewInputHold({ peer: row.peer, sessionHash: row.session_hash, inputHash: row.input_hash }, `stored review input ${index}`));
+  }
+  private reviewInputIncompletePeerRows(): string[] {
+    const rows = this.db.query("SELECT peer FROM review_input_incomplete_peers WHERE project_id=? ORDER BY peer LIMIT ?")
+      .all(this.projectId, MAX_REVIEW_INPUTS + 1) as { peer: unknown }[];
+    if (rows.length > MAX_REVIEW_INPUTS) fail(`too many incomplete review input peers (limit ${MAX_REVIEW_INPUTS})`);
+    return rows.map((row, index) => text(row.peer, `stored incomplete review input peer ${index}`, 256));
+  }
+  private reviewInputIncompleteSessionRows(): Array<{ peer: string; sessionHash: string }> {
+    const rows = this.db.query("SELECT peer,session_hash FROM review_input_incomplete_sessions WHERE project_id=? ORDER BY peer,session_hash LIMIT ?")
+      .all(this.projectId, MAX_REVIEW_INPUTS + 1) as Record<string, unknown>[];
+    if (rows.length > MAX_REVIEW_INPUTS) fail(`too many incomplete review input sessions (limit ${MAX_REVIEW_INPUTS})`);
+    return rows.map((row, index) => ({ peer: text(row.peer, `stored incomplete review input session peer ${index}`, 256), sessionHash: hashText(row.session_hash, `stored incomplete review input session hash ${index}`) }));
+  }
+  private readReviewInputProvenance(meta = this.readMeta()): ReviewInputProvenance {
+    if (!meta) throw new Error("delivery journal metadata missing");
+    const holds = this.reviewInputRows(), incompletePeers = this.reviewInputIncompletePeerRows(), incompleteSessions = this.reviewInputIncompleteSessionRows();
+    if (holds.length + incompletePeers.length + incompleteSessions.length > MAX_REVIEW_INPUTS) fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
+    const instanceId = text(String(meta.instance_id), "review input owner instance", 256), count = holds.length + incompletePeers.length + incompleteSessions.length;
+    const version = Number(meta.review_input_version ?? 0), completeRaw = Number(meta.review_input_complete ?? 0), coverageRaw = Number(meta.review_input_coverage_complete ?? 0);
+    if (version === 0 && completeRaw === 0 && coverageRaw === 0 && Number(meta.review_input_count ?? 0) === 0 && String(meta.review_input_digest ?? "") === "" && String(meta.review_input_instance_id ?? "") === "") {
+      if (count) fail("legacy review input marker is missing for stored provenance rows");
+      return { version: REVIEW_INPUT_VERSION, instanceId, complete: true, coverageComplete: false, count, digest: reviewInputDigest(instanceId, REVIEW_INPUT_VERSION, true, false, count, holds, incompletePeers, incompleteSessions), holds, incompletePeers, incompleteSessions };
+    }
+    if (version !== REVIEW_INPUT_VERSION || ![0, 1].includes(completeRaw)) fail("review input coverage metadata is invalid");
+    if (![0, 1].includes(coverageRaw)) fail("review input coverage metadata is invalid");
+    const storedInstance = text(String(meta.review_input_instance_id ?? ""), "review input coverage instance", 256);
+    const storedCount = integer(Number(meta.review_input_count), "review input coverage count", 0, MAX_REVIEW_INPUTS);
+    const storedDigest = hashText(meta.review_input_digest, "review input coverage digest");
+    if (storedCount !== count || storedDigest !== reviewInputDigest(storedInstance, version, completeRaw === 1, coverageRaw === 1, storedCount, holds, incompletePeers, incompleteSessions)) fail("review input coverage integrity mismatch");
+    const markerMatches = storedInstance === instanceId, complete = completeRaw === 1 && markerMatches, coverageComplete = coverageRaw === 1 && markerMatches;
+    const digest = reviewInputDigest(instanceId, REVIEW_INPUT_VERSION, complete, coverageComplete, count, holds, incompletePeers, incompleteSessions);
+    return { version: REVIEW_INPUT_VERSION, instanceId, complete, coverageComplete, count, digest, holds, incompletePeers, incompleteSessions };
+  }
+  /** Snapshot the pre-existing handed review rows once while legacy coverage is incomplete. */
+  // ponytail: reopen/import recaptures conservatively; if measured restart timing makes guarded rows prolong coverage, persist a bounded IDs-only candidate fence in recovery snapshots, never envelope bodies or a metadata-version change.
+  private captureLegacyReviewCandidates(force = false, importedFenceIds?: readonly string[]): void {
+    this.legacyReviewCandidateIds = new Set();
+    this.legacyReviewCandidatesCaptured = true;
+    this.legacyReviewCandidatesOverflow = false;
+    const revision = Number(this.readMeta()?.revision ?? -1);
+    this.legacyReviewCandidateCaptureRevision = revision;
+    let provenance: ReviewInputProvenance;
+    try {
+      provenance = this.readReviewInputProvenance();
+    } catch {
+      // Corrupt provenance is not repaired by retrying a coverage read.
+      this.legacyReviewCandidatesOverflow = true;
+      return;
+    }
+    if (!provenance.complete) return;
+    if (provenance.coverageComplete && !force) {
+      this.legacyReviewCandidateFenceIds = undefined;
+      return;
+    }
+    if (importedFenceIds !== undefined) {
+      this.legacyReviewCandidateFenceIds = [...importedFenceIds];
+    } else if (force || this.legacyReviewCandidateFenceIds === undefined) {
+      try {
+        const rows = this.db.query("SELECT id FROM deliveries WHERE project_id=? LIMIT ?").all(this.projectId, MAX_ROWS + 1) as { id: unknown }[];
+        if (rows.length > MAX_ROWS) { this.legacyReviewCandidatesOverflow = true; return; }
+        this.legacyReviewCandidateFenceIds = rows.map(row => text(row.id, "legacy delivery fence id", 256));
+      } catch {
+        // Without a frozen id fence, later reads cannot distinguish old rows from current writes.
+        this.legacyReviewCandidatesOverflow = true;
+        return;
+      }
+    }
+    const candidateIds = new Set<string>();
+    try {
+      const fenceIds = this.legacyReviewCandidateFenceIds ?? [];
+      for (let offset = 0; offset < fenceIds.length; offset += 256) {
+        const batch = fenceIds.slice(offset, offset + 256);
+        const rows = this.db.query(`WITH RECURSIVE roots(id) AS (
+            SELECT d.id FROM json_each(?) fence
+            JOIN deliveries d ON d.project_id=? AND d.id=fence.value
+            WHERE (d.state IN ('dispatching','accepted','needs_review')
+              OR (d.state='failed' AND EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id=d.project_id AND c.previous_id=d.id)))
+              AND EXISTS (SELECT 1 FROM json_each(d.originals) e
+                WHERE (json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review')
+                  OR (json_extract(e.value,'$.from') NOT IN ('hub','user') AND json_extract(e.value,'$.kind') IN ('chat','status')
+                    AND json_type(e.value,'$.refs.reviewResponse')='text'))
+          ), lineage(id) AS (
+            SELECT id FROM roots
+            UNION
+            SELECT child.id FROM deliveries child JOIN lineage parent ON child.previous_id=parent.id
+            WHERE child.project_id=? AND (child.state IN ('queued','dispatching','accepted','needs_review')
+              OR (child.state='failed' AND EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id=child.project_id AND c.previous_id=child.id)))
+          )
+          SELECT id FROM lineage LIMIT ?`).all(JSON.stringify(batch), this.projectId, this.projectId, MAX_REVIEW_INPUTS + 1) as { id: unknown }[];
+        for (const row of rows) candidateIds.add(text(row.id, "legacy review delivery id", 256));
+        if (candidateIds.size > MAX_REVIEW_INPUTS) { this.legacyReviewCandidatesOverflow = true; return; }
+      }
+    } catch {
+      // Keep the frozen epoch fence and retry only after the journal advances.
+      this.legacyReviewCandidatesOverflow = true;
+      return;
+    }
+    this.legacyReviewCandidateIds = candidateIds;
+    this.legacyReviewCandidateFenceIds = undefined;
+  }
+  /** Check only captured pre-upgrade rows; current guarded deliveries carry their own provenance. */
+  private hasUnsettledReviewInput(): boolean {
+    if (!this.legacyReviewCandidatesCaptured) this.captureLegacyReviewCandidates();
+    if (this.legacyReviewCandidatesOverflow && Number(this.readMeta()?.revision ?? -1) !== this.legacyReviewCandidateCaptureRevision) this.captureLegacyReviewCandidates();
+    if (this.legacyReviewCandidatesOverflow) return true;
+    const ids = [...this.legacyReviewCandidateIds];
+    for (let offset = 0; offset < ids.length; offset += 256) {
+      const batch = ids.slice(offset, offset + 256);
+      try {
+        const rows = this.db.query(`SELECT d.state FROM json_each(?) candidate
+          LEFT JOIN deliveries d ON d.project_id=? AND d.id=candidate.value`).all(JSON.stringify(batch), this.projectId) as { state: string | null }[];
+        if (rows.length !== batch.length || rows.some(row => !row.state || !["completed", "failed", "discarded"].includes(row.state))) return true;
+      } catch { return true; }
+    }
+    return false;
+  }
+  private markReviewInputCoverageIncomplete(prior: ReviewInputProvenance): void {
+    if (prior.coverageComplete) this.captureLegacyReviewCandidates(true);
+    this.transaction(() => {
+      this.bump();
+      this.writeReviewInputProvenance(prior.complete, false);
+      this.harden();
+    });
+  }
+  /** Complete legacy coverage after every handed review delivery is settled; then NULL means clean by absence. */
+  private refreshReviewInputCoverage(inTransaction = false): void {
+    let prior: ReviewInputProvenance;
+    try { prior = this.readReviewInputProvenance(); }
+    catch { return; } // Corrupt provenance stays held without blocking unrelated journal work.
+    if (!prior.complete) return;
+    const unsettled = !prior.coverageComplete && this.hasUnsettledReviewInput();
+    const cleanRows = prior.coverageComplete ? Number((this.db.query("SELECT COUNT(*) AS n FROM review_input_sessions WHERE project_id=? AND input_hash IS NULL").get(this.projectId) as { n: number }).n) : 0;
+    if (unsettled) return;
+    if (!prior.coverageComplete || cleanRows > 0) {
+      const update = () => {
+        this.bump();
+        if (!prior.coverageComplete) this.db.query("UPDATE delivery_meta SET review_input_coverage_complete=1 WHERE project_id=?").run(this.projectId);
+        if (!prior.coverageComplete || cleanRows > 0) this.db.query("DELETE FROM review_input_sessions WHERE project_id=? AND input_hash IS NULL").run(this.projectId);
+        this.writeReviewInputProvenance(prior.complete, true);
+        this.harden();
+      };
+      if (inTransaction) update(); else this.transaction(update);
+    }
+  }
+  private writeReviewInputProvenance(complete: boolean, coverageComplete: boolean): void {
+    const holds = this.reviewInputRows(), incompletePeers = this.reviewInputIncompletePeerRows(), incompleteSessions = this.reviewInputIncompleteSessionRows();
+    if (holds.length + incompletePeers.length + incompleteSessions.length > MAX_REVIEW_INPUTS) fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
+    const count = holds.length + incompletePeers.length + incompleteSessions.length;
+    this.db.query("UPDATE delivery_meta SET review_input_version=?,review_input_complete=?,review_input_coverage_complete=?,review_input_count=?,review_input_digest=?,review_input_instance_id=? WHERE project_id=?")
+      .run(REVIEW_INPUT_VERSION, complete ? 1 : 0, coverageComplete ? 1 : 0, count, reviewInputDigest(this.instanceId, REVIEW_INPUT_VERSION, complete, coverageComplete, count, holds, incompletePeers, incompleteSessions), this.instanceId, this.projectId);
+  }
+  /** Persist the scoped unknown marker before changing this session's held/clear receipt. */
+  private writePendingReviewInputSession(peer: string, sessionHash: string, complete: boolean, coverageComplete: boolean, clearIncompletePeer = false): void {
+    this.transaction(() => {
+      this.bump();
+      this.db.query("INSERT OR IGNORE INTO review_input_incomplete_sessions(project_id,peer,session_hash) VALUES(?,?,?)")
+        .run(this.projectId, peer, sessionHash);
+      if (clearIncompletePeer) this.db.query("DELETE FROM review_input_incomplete_peers WHERE project_id=? AND peer=?").run(this.projectId, peer);
+      this.writeReviewInputProvenance(complete, coverageComplete);
+      this.harden();
+    });
+  }
+  private recoverInterrupted(meta: Record<string, unknown>): void {
+    const resumable = new Set<string>();
+    try {
+      const raw = JSON.parse(String(meta.bus_snapshot || "{}"));
+      const bus = raw && typeof raw === "object" && Object.keys(raw).length > 0 ? validateBus(raw) : undefined;
+      if (bus) {
+        const now = Date.now();
+        const active = this.db.query("SELECT * FROM deliveries WHERE project_id = ? AND state IN ('dispatching', 'accepted')").all(this.projectId) as Record<string, unknown>[];
+        for (const stored of active) {
+          const row = parseDelivery(stored), peer = row.peer;
+          if (!parseRemotePeerId(peer) || row.originals.length !== 1) continue;
+          const original = row.originals[0]!;
+          const room = bus.remoteQueueRooms?.[peer], member = bus.remoteQueueMembers?.[peer];
+          const expiry = bus.remoteQueueExpires?.[peer]?.[original.id];
+          if (isInvocationKind(original) || original.to?.includes(peer) !== true ||
+              typeof room !== "string" ||
+              typeof member !== "string" || !/^[0-9a-f]{64}$/.test(member) ||
+              !Number.isSafeInteger(expiry) || expiry! <= now) continue;
+          resumable.add(row.id);
+        }
+      }
+    } catch { /* Unreadable or unknown binding metadata keeps the conservative interruption rule. */ }
+
+    const now = Date.now();
+    const update = this.db.query(
+      "UPDATE deliveries SET state = 'needs_review', revision = revision + 1, updated_at = ?, reason = COALESCE(reason, 'daemon stopped during delivery'), failure_cause = COALESCE(failure_cause, 'turn aborted') WHERE project_id = ? AND id = ? AND state IN ('dispatching', 'accepted')",
+    );
+    const active = this.db.query("SELECT id FROM deliveries WHERE project_id = ? AND state IN ('dispatching', 'accepted')").all(this.projectId) as { id: string }[];
+    for (const row of active) if (!resumable.has(row.id)) update.run(now, this.projectId, row.id);
   }
   private ensureOpen(): void {
     if (this.closed) throw new Error("delivery journal is closed");
@@ -571,13 +939,204 @@ export class DeliveryJournal {
   transaction<T>(fn: () => T): T {
     this.ensureOpen();
     const invalidated = this.queueMetadataInvalidated;
+    const legacyReviewCandidateIds = this.legacyReviewCandidateIds;
+    const legacyReviewCandidatesCaptured = this.legacyReviewCandidatesCaptured;
+    const legacyReviewCandidatesOverflow = this.legacyReviewCandidatesOverflow;
+    const legacyReviewCandidateFenceIds = this.legacyReviewCandidateFenceIds;
+    const legacyReviewCandidateCaptureRevision = this.legacyReviewCandidateCaptureRevision;
     try { return this.db.transaction(fn)(); }
-    catch (error) { this.queueMetadataInvalidated = invalidated; throw error; }
+    catch (error) {
+      this.queueMetadataInvalidated = invalidated;
+      this.legacyReviewCandidateIds = legacyReviewCandidateIds;
+      this.legacyReviewCandidatesCaptured = legacyReviewCandidatesCaptured;
+      this.legacyReviewCandidatesOverflow = legacyReviewCandidatesOverflow;
+      this.legacyReviewCandidateFenceIds = legacyReviewCandidateFenceIds;
+      this.legacyReviewCandidateCaptureRevision = legacyReviewCandidateCaptureRevision;
+      throw error;
+    }
   }
-  snapshot(): JournalSnapshot {
+  holdReviewInput(value: unknown): void {
     this.ensureOpen();
-    const meta = this.readMeta();
-    if (!meta) throw new Error("delivery journal metadata missing");
+    const hold = reviewInputHold(value, "review input hold");
+    if (hold.inputHash === null) fail("review input hold requires a positive input hash");
+    const prior = this.readReviewInputProvenance();
+    if (!prior.complete) fail("review input provenance is incomplete");
+    const existing = prior.holds.find(row => row.peer === hold.peer && row.sessionHash === hold.sessionHash);
+    const pending = prior.incompleteSessions.some(row => row.peer === hold.peer && row.sessionHash === hold.sessionHash);
+    if (existing?.inputHash === hold.inputHash) return;
+    if (!existing && !pending && prior.count >= MAX_REVIEW_INPUTS) {
+      this.markReviewInputCoverageIncomplete(prior);
+      fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
+    }
+    try {
+      this.writePendingReviewInputSession(hold.peer, hold.sessionHash, prior.complete, prior.coverageComplete);
+    } catch (error) {
+      try { this.markReviewInputIncomplete(hold.peer, hold.sessionHash); } catch { /* a failed marker write still prevents the host handout */ }
+      throw error;
+    }
+    this.transaction(() => {
+      this.bump();
+      this.db.query("INSERT INTO review_input_sessions(project_id,peer,session_hash,input_hash) VALUES(?,?,?,?) ON CONFLICT(project_id,peer,session_hash) DO UPDATE SET input_hash=excluded.input_hash")
+        .run(this.projectId, hold.peer, hold.sessionHash, hold.inputHash);
+      this.db.query("DELETE FROM review_input_incomplete_sessions WHERE project_id=? AND peer=? AND session_hash=?")
+        .run(this.projectId, hold.peer, hold.sessionHash);
+      this.writeReviewInputProvenance(prior.complete, prior.coverageComplete);
+      this.harden();
+    });
+  }
+  reviewInputState(peerValue: string, sessionHashValue?: string): ReviewInputState {
+    try {
+      const peer = text(peerValue, "review input peer", 256);
+      const sessionHash = sessionHashValue === undefined ? undefined : hashText(sessionHashValue, "review input session hash");
+      const provenance = this.readReviewInputProvenance();
+      if (!provenance.complete || provenance.incompletePeers.includes(peer)) return { state: "unknown" };
+      const peerRows = provenance.holds.filter(row => row.peer === peer);
+      const incompleteSessions = provenance.incompleteSessions.filter(row => row.peer === peer);
+      if (sessionHash === undefined) return peerRows.length || incompleteSessions.length || !provenance.coverageComplete ? { state: "unknown" } : { state: "clean" };
+      const row = peerRows.find(value => value.sessionHash === sessionHash);
+      if (row?.inputHash !== null && row?.inputHash !== undefined) return { state: "held", inputHash: row.inputHash };
+      if (incompleteSessions.some(value => value.sessionHash === sessionHash)) return { state: "unknown" };
+      if (row?.inputHash === null) return { state: "clean" };
+      if (!provenance.coverageComplete) return { state: "unknown" };
+      if (!row) return { state: "clean" };
+      return { state: "unknown" };
+    } catch { return { state: "unknown" }; }
+  }
+  /** Cause projection for host admission; preserves reviewInputState's stable public shape. */
+  reviewInputEvidence(peerValue: string, sessionHashValue?: string): ReviewInputEvidence {
+    this.ensureOpen();
+    try {
+      this.refreshReviewInputCoverage();
+      const peer = text(peerValue, "review input peer", 256), sessionHash = sessionHashValue === undefined ? undefined : hashText(sessionHashValue, "review input session hash");
+      const provenance = this.readReviewInputProvenance();
+      if (!provenance.complete) return { provenance: "corrupt", coverageComplete: false, incompletePeer: false, incompleteSession: false, sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: false };
+      const sessionState = this.reviewInputState(peer, sessionHash).state;
+      return {
+        provenance: "available",
+        coverageComplete: provenance.coverageComplete,
+        incompletePeer: provenance.incompletePeers.includes(peer),
+        incompleteSession: sessionHash !== undefined && provenance.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash),
+        sessionState,
+        retainedSessionHold: sessionHash !== undefined && provenance.holds.some(row => row.peer === peer && row.sessionHash === sessionHash && row.inputHash !== null),
+        retainedPeerSessionHold: provenance.holds.some(row => row.peer === peer && row.inputHash !== null) || provenance.incompleteSessions.some(row => row.peer === peer),
+      };
+    } catch {
+      return { provenance: "corrupt", coverageComplete: false, incompletePeer: false, incompleteSession: false, sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: false };
+    }
+  }
+  /** Public-safe journal health; positive held receipts are normal, expected state. */
+  reviewInputHealth(): ReviewInputHealth {
+    this.ensureOpen();
+    try {
+      this.refreshReviewInputCoverage();
+      const provenance = this.readReviewInputProvenance();
+      if (!provenance.complete) return { state: "corrupt", cause: "provenance_incomplete", nextStep: "Keep affected peers held and inspect or repair only review-input provenance, preserving delivery and task state." };
+      if (provenance.incompletePeers.length || provenance.incompleteSessions.length) return { state: "incomplete", cause: "incomplete_markers", nextStep: "Verify the peer's next ordinary input or confirmed session change to clear its incomplete marker." };
+      if (!provenance.coverageComplete) return { state: "incomplete", cause: "legacy_coverage", nextStep: "Allow existing review-marked deliveries to settle; coverage clears when the journal confirms none remain." };
+      return { state: "healthy", cause: null, nextStep: "No action required." };
+    } catch {
+      return { state: "corrupt", cause: "provenance_corrupt", nextStep: "Keep affected peers held and inspect or repair only review-input provenance, preserving delivery and task state." };
+    }
+  }
+  /** Compatibility reader: only positive held hashes are returned; clean and unknown stay absent. */
+  readReviewInput(peerValue: string, sessionHashValue: string): string | undefined {
+    const state = this.reviewInputState(peerValue, sessionHashValue);
+    return state.state === "held" ? state.inputHash : undefined;
+  }
+  clearReviewInput(peerValue: string, sessionHashValue: string): void {
+    this.ensureOpen();
+    const peer = text(peerValue, "review input peer", 256), sessionHash = hashText(sessionHashValue, "review input session hash");
+    const prior = this.readReviewInputProvenance(), existing = prior.holds.find(row => row.peer === peer && row.sessionHash === sessionHash);
+    if (!prior.complete) fail("review input provenance is incomplete");
+    const pending = prior.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash);
+    const incompletePeer = prior.incompletePeers.includes(peer);
+    const legacyConfirmation = !prior.coverageComplete && !existing && !pending;
+    if ((!existing || existing.inputHash === null) && !pending && !legacyConfirmation && !incompletePeer) return;
+    if (!existing && !pending && !incompletePeer && prior.count >= MAX_REVIEW_INPUTS) {
+      this.markReviewInputCoverageIncomplete(prior);
+      fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
+    }
+    this.writePendingReviewInputSession(peer, sessionHash, prior.complete, prior.coverageComplete, true);
+    this.transaction(() => {
+      this.bump();
+      this.db.query("INSERT INTO review_input_sessions(project_id,peer,session_hash,input_hash) VALUES(?,?,?,NULL) ON CONFLICT(project_id,peer,session_hash) DO UPDATE SET input_hash=NULL")
+        .run(this.projectId, peer, sessionHash);
+      this.db.query("DELETE FROM review_input_incomplete_sessions WHERE project_id=? AND peer=? AND session_hash=?")
+        .run(this.projectId, peer, sessionHash);
+      this.db.query("DELETE FROM review_input_incomplete_peers WHERE project_id=? AND peer=?")
+        .run(this.projectId, peer);
+      this.writeReviewInputProvenance(prior.complete, prior.coverageComplete);
+      this.harden();
+    });
+    this.refreshReviewInputCoverage();
+  }
+  /** A verified ordinary input or confirmed SID change clears only this peer-level incomplete marker. */
+  clearReviewInputIncomplete(peerValue: string): void {
+    this.ensureOpen();
+    const peer = text(peerValue, "incomplete review input peer", 256), prior = this.readReviewInputProvenance();
+    if (!prior.complete) fail("review input provenance is incomplete");
+    if (!prior.incompletePeers.includes(peer)) return;
+    this.transaction(() => {
+      const current = this.readReviewInputProvenance();
+      if (!current.incompletePeers.includes(peer)) return;
+      this.bump();
+      this.db.query("DELETE FROM review_input_incomplete_peers WHERE project_id=? AND peer=?").run(this.projectId, peer);
+      this.writeReviewInputProvenance(current.complete, current.coverageComplete);
+      this.harden();
+    });
+  }
+  /** Forget one closed ephemeral observer receipt only if its exact positive/clear hash still matches. */
+  forgetClosedObserverInput(peerValue: string, sessionHashValue: string, expectedInputHash: string | null): boolean {
+    this.ensureOpen();
+    try {
+      const peer = text(peerValue, "review input peer", 256), sessionHash = hashText(sessionHashValue, "review input session hash");
+      if (expectedInputHash !== null) hashText(expectedInputHash, "expected review input hash");
+      const prior = this.readReviewInputProvenance();
+      if (!prior.complete || prior.incompletePeers.includes(peer) || prior.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash)) return false;
+      if (!prior.holds.some(row => row.peer === peer && row.sessionHash === sessionHash && row.inputHash === expectedInputHash)) return false;
+      return this.transaction(() => {
+        const current = this.readReviewInputProvenance();
+        if (!current.complete || current.incompletePeers.includes(peer) || current.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash)
+          || !current.holds.some(row => row.peer === peer && row.sessionHash === sessionHash && row.inputHash === expectedInputHash)) return false;
+        this.bump();
+        this.db.query("DELETE FROM review_input_sessions WHERE project_id=? AND peer=? AND session_hash=? AND input_hash IS ?")
+          .run(this.projectId, peer, sessionHash, expectedInputHash);
+        if (Number((this.db.query("SELECT changes() AS n").get() as { n: number }).n) !== 1) throw new Error("review input receipt changed during closed-session cleanup");
+        this.writeReviewInputProvenance(current.complete, current.coverageComplete);
+        this.harden();
+        return true;
+      });
+    } catch { return false; }
+  }
+  markReviewInputIncomplete(peerValue: string, sessionHashValue?: string): void {
+    this.ensureOpen();
+    const peer = text(peerValue, "incomplete review input peer", 256);
+    const prior = this.readReviewInputProvenance();
+    if (!prior.complete) fail("review input provenance is incomplete");
+    const sessionHash = sessionHashValue === undefined ? undefined : hashText(sessionHashValue, "incomplete review input session hash");
+    if (sessionHash !== undefined && prior.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash)) return;
+    if (sessionHash === undefined && prior.incompletePeers.includes(peer)) return;
+    if (prior.count >= MAX_REVIEW_INPUTS) {
+      this.markReviewInputCoverageIncomplete(prior);
+      fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
+    }
+    this.transaction(() => {
+      this.bump();
+      if (sessionHash === undefined) this.db.query("INSERT OR IGNORE INTO review_input_incomplete_peers(project_id,peer) VALUES(?,?)").run(this.projectId, peer);
+      else this.db.query("INSERT OR IGNORE INTO review_input_incomplete_sessions(project_id,peer,session_hash) VALUES(?,?,?)").run(this.projectId, peer, sessionHash);
+      this.writeReviewInputProvenance(prior.complete, prior.coverageComplete);
+      this.harden();
+    });
+  }
+  hasReviewInputState(): boolean {
+    this.ensureOpen();
+    try {
+      this.refreshReviewInputCoverage();
+      const provenance = this.readReviewInputProvenance();
+      return !provenance.complete || !provenance.coverageComplete || provenance.holds.some(row => row.inputHash !== null) || provenance.incompletePeers.length > 0 || provenance.incompleteSessions.length > 0;
+    } catch { return true; }
+  }
+  private snapshotTransportBase(meta: Record<string, unknown>): JournalTransportSnapshot {
     this.validateStored(meta);
     const rows = this.db
       .query(
@@ -596,7 +1155,7 @@ export class DeliveryJournal {
             withdrawn: [],
           }
         : storedBus;
-    const result = {
+    const result: JournalTransportSnapshot = {
       schemaVersion: SCHEMA_VERSION,
       revision: Number(meta.revision),
       instanceId: String(meta.instance_id),
@@ -604,6 +1163,23 @@ export class DeliveryJournal {
       manualPaused: JSON.parse(String(meta.manual_paused || "[]")),
       deliveries: rows.map(parseDelivery),
     };
+    validateJournalSnapshot(result);
+    return result;
+  }
+  /** Transport restoration may proceed from the validated bus/delivery projection while review provenance remains unknown. */
+  transportSnapshot(): JournalTransportSnapshot {
+    this.ensureOpen();
+    const meta = this.readMeta();
+    if (!meta) throw new Error("delivery journal metadata missing");
+    return this.snapshotTransportBase(meta);
+  }
+  /** Strict recovery snapshot: malformed or incomplete review provenance refuses recovery. */
+  snapshot(): JournalSnapshot {
+    this.ensureOpen();
+    const meta = this.readMeta();
+    if (!meta) throw new Error("delivery journal metadata missing");
+    const base = this.snapshotTransportBase(meta);
+    const result: JournalSnapshot = { ...base, reviewInputProvenance: this.readReviewInputProvenance(meta) };
     validateJournalSnapshot(result);
     return result;
   }
@@ -632,6 +1208,7 @@ export class DeliveryJournal {
           this.projectId,
         );
       this.writeQueueMetadata(checkedBus, revision, trackQueuePressure);
+      this.refreshReviewInputCoverage(true);
       this.harden();
       return revision;
     });
@@ -672,7 +1249,7 @@ export class DeliveryJournal {
       for (const d of deliveries)
         this.db
           .query(
-            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id, failure_cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .run(
             d.id,
@@ -687,7 +1264,9 @@ export class DeliveryJournal {
             d.reason ?? null,
             d.attempt ?? null,
             d.previousId ?? null,
+            checkedFailureCause(d.failureCause) ?? null,
           );
+      this.refreshReviewInputCoverage(true);
       this.harden();
       return revision;
     });
@@ -737,7 +1316,7 @@ export class DeliveryJournal {
         this.writeQueueMetadata(bus, revision, trackQueuePressure);
         this.db
           .query(
-            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id, failure_cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .run(
             delivery.id,
@@ -752,6 +1331,7 @@ export class DeliveryJournal {
             delivery.reason ?? null,
             delivery.attempt ?? null,
             delivery.previousId ?? null,
+            checkedFailureCause(delivery.failureCause) ?? null,
           );
         this.harden();
         return { ...delivery, revision, updatedAt: now };
@@ -774,7 +1354,7 @@ export class DeliveryJournal {
       const updatedAt = input.updatedAt ?? Date.now();
       this.db
         .query(
-          "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id, failure_cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           input.id,
@@ -789,6 +1369,7 @@ export class DeliveryJournal {
           input.reason ?? null,
           input.attempt ?? null,
           input.previousId ?? null,
+          checkedFailureCause(input.failureCause) ?? null,
         );
       this.pruneTerminal(input.state, input.id);
       return { ...input, revision, updatedAt };
@@ -804,7 +1385,7 @@ export class DeliveryJournal {
     this.ensureOpen(); text(deliveryId, "delivery id", 256); text(peer, "delivery peer", 256);
     if (peer === HUB || peer === USER || !["adapter", "reply", "pull"].includes(source)) throw new Error("invalid delivered completion source");
     if (reason !== undefined) text(reason, "delivery completion reason", 1_000_000);
-    return this.db.transaction((): JournalDelivery => {
+    return this.transaction((): JournalDelivery => {
       const row = this.get(deliveryId);
       if (!row || row.peer !== peer || !["dispatching", "accepted"].includes(row.state)) throw new Error("delivery is not active for this peer");
       const completed = this.withPruningDeferred(() => {
@@ -816,7 +1397,37 @@ export class DeliveryJournal {
       // Proof is now durable in this transaction, and the return receipt is captured.
       this.pruneTerminal("completed", "");
       return completed;
-    })();
+    });
+  }
+  /** A signed room receipt settles its matching remote row without native read evidence. */
+  completeRemoteReceipt(deliveryId: string, peer: string, expectedRevision: number, reason: string): JournalDelivery {
+    this.ensureOpen(); text(deliveryId, "delivery id", 256); text(peer, "delivery peer", 256);
+    integer(expectedRevision, "observed revision"); text(reason, "delivery completion reason", 1_000_000);
+    if (!parseRemotePeerId(peer)) throw new Error("invalid remote receipt peer");
+    return this.transaction(() => {
+      const row = this.get(deliveryId);
+      if (!row || row.peer !== peer || !["needs_review", "dispatching", "accepted"].includes(row.state) || row.originals.length !== 1 || row.originals[0]?.to?.includes(peer) !== true) throw new Error("remote delivery is not unresolved for this peer");
+      if (row.revision !== expectedRevision) throw new Error(`stale delivery revision for ${deliveryId}`);
+      if (this.db.query("SELECT 1 FROM resolution_history WHERE project_id=? AND delivery_id=? LIMIT 1").get(this.projectId, deliveryId)) throw new Error("remote delivery already has a person disposition");
+      const completed = this.transition(deliveryId, "completed", reason, expectedRevision);
+      this.pruneTerminal("completed", "");
+      return completed;
+    });
+  }
+  /** A signed room refusal is terminal transport evidence, not a person or native retry. */
+  failRemoteReceipt(deliveryId: string, peer: string, expectedRevision: number, reason: string): JournalDelivery {
+    this.ensureOpen(); text(deliveryId, "delivery id", 256); text(peer, "delivery peer", 256);
+    integer(expectedRevision, "observed revision"); text(reason, "delivery refusal reason", 1_000_000);
+    if (!parseRemotePeerId(peer)) throw new Error("invalid remote receipt peer");
+    return this.transaction(() => {
+      const row = this.get(deliveryId);
+      if (!row || row.peer !== peer || !["needs_review", "dispatching", "accepted"].includes(row.state) || row.originals.length !== 1 || row.originals[0]?.to?.includes(peer) !== true) throw new Error("remote delivery is not unresolved for this peer");
+      if (row.revision !== expectedRevision) throw new Error(`stale delivery revision for ${deliveryId}`);
+      if (this.db.query("SELECT 1 FROM resolution_history WHERE project_id=? AND delivery_id=? LIMIT 1").get(this.projectId, deliveryId)) throw new Error("remote delivery already has a person disposition");
+      const failed = this.transition(deliveryId, "failed", reason, expectedRevision, "adapter refused");
+      this.pruneTerminal("failed", "");
+      return failed;
+    });
   }
   /** Exact immutable offer id, independent of queue snapshots or generic completed rows. */
   offerRead(peer: string, envelopeId: string): boolean {
@@ -830,23 +1441,28 @@ export class DeliveryJournal {
     state: JournalDeliveryState,
     reason?: string,
     expectedRevision?: number,
+    failureCause?: DeliveryFailureCause,
   ): JournalDelivery {
     this.ensureOpen();
     if (!STATES.has(state)) throw new Error("invalid delivery state");
-    return this.db.transaction(() => {
+    checkedFailureCause(failureCause);
+    return this.transaction(() => {
       const old = this.get(id);
       if (!old) throw new Error(`unknown delivery ${id}`);
       if (expectedRevision !== undefined && old.revision !== expectedRevision)
         throw new Error(`stale delivery revision for ${id}`);
+      // A repeated accepted receipt is not fresh evidence and must not renew the settle deadline.
+      if (old.state === state && state === "accepted") return old;
       const revision = this.bump();
       this.db
         .query(
-          "UPDATE deliveries SET state = ?, revision = ?, updated_at = ?, reason = ? WHERE id = ? AND project_id = ?",
+          "UPDATE deliveries SET state = ?, revision = ?, updated_at = ?, reason = ?, failure_cause = ? WHERE id = ? AND project_id = ?",
         )
-        .run(state, revision, Date.now(), reason ?? null, id, this.projectId);
+        .run(state, revision, Date.now(), reason ?? null, failureCause ?? old.failureCause ?? null, id, this.projectId);
+      this.refreshReviewInputCoverage(true);
       this.pruneTerminal(state, id);
       return this.get(id)!;
-    })();
+    });
   }
   get(id: string): JournalDelivery | undefined {
     this.ensureOpen();
@@ -855,11 +1471,75 @@ export class DeliveryJournal {
       .get(id, this.projectId) as Record<string, unknown> | null;
     return row ? parseDelivery(row) : undefined;
   }
+  /** Explicit package recovery reads durable publication evidence, not the bounded in-memory reply cache. */
+  reviewEnvelopeState(id: string, expected?: Envelope): JournalDeliveryState | undefined {
+    this.ensureOpen();
+    const published = this.db.query(`SELECT d.state AS state, e.value AS envelope FROM deliveries d, json_each(d.originals) e
+      WHERE d.project_id=? AND json_extract(e.value,'$.id')=? AND json_extract(e.value,'$.from')='hub'
+      AND json_extract(e.value,'$.kind')='review' AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*'
+      ORDER BY d.updated_at DESC, d.revision DESC LIMIT 1`).get(this.projectId, id) as { state: JournalDeliveryState; envelope: string } | null;
+    // A queued/deferred publication can precede its first physical delivery row.
+    const saved = published ?? this.db.query(`SELECT e.value AS envelope FROM delivery_meta m, json_tree(m.bus_snapshot) e
+      WHERE m.project_id=? AND e.type='object' AND json_extract(e.value,'$.id')=?
+      AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+      AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*' LIMIT 1`).get(this.projectId, id) as { envelope: string } | null;
+    if (saved && expected && !isDeepStrictEqual(validateEnvelope(JSON.parse(saved.envelope), "saved review package"), validateEnvelope(expected, "review package")))
+      throw new Error("saved review envelope differs from its publication evidence; inspect the package and queue before retrying");
+    return published?.state ?? (saved ? "queued" : undefined);
+  }
+  reviewEnvelopePublished(id: string, expected?: Envelope): boolean {
+    return this.reviewEnvelopeState(id, expected) !== undefined;
+  }
+  /** Pending review recipients remain quote-bearing even when the task's current roles have moved. */
+  hasUnsettledReviewScope(peer: string, task?: number): boolean {
+    this.ensureOpen();
+    const taskId = task === undefined ? null : String(task);
+    return !!this.db.query(`SELECT 1 FROM deliveries d, json_each(d.originals) e
+        WHERE d.project_id=?1 AND d.peer=?2 AND d.state IN ('queued','dispatching','accepted','needs_review')
+          AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+          AND json_type(e.value,'$.refs.reviewPackage')='text' AND (?3 IS NULL OR json_extract(e.value,'$.refs.task')=?3)
+      UNION ALL SELECT 1 FROM delivery_meta m, json_each(m.bus_snapshot,'$.queues') q, json_each(q.value) e
+        WHERE m.project_id=?1 AND q.key=?2 AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+          AND json_type(e.value,'$.refs.reviewPackage')='text' AND (?3 IS NULL OR json_extract(e.value,'$.refs.task')=?3)
+      UNION ALL SELECT 1 FROM delivery_meta m, json_each(m.bus_snapshot,'$.deferredHub') e, json_each(e.value,'$.to') recipient
+        WHERE m.project_id=?1 AND recipient.value=?2 AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+          AND json_type(e.value,'$.refs.reviewPackage')='text' AND (?3 IS NULL OR json_extract(e.value,'$.refs.task')=?3)
+      LIMIT 1`).get(this.projectId, peer, taskId);
+  }
+  /** Observer-only bridge for read-only held inspection; no refresh or delivery receipt. */
+  hasHeldReviewScope(peer: string, includeAccepted: boolean, byteBudget: number): boolean {
+    this.ensureOpen();
+    const states = includeAccepted ? "('needs_review','accepted')" : "('needs_review')";
+    const revision = this.revision();
+    const window = this.db.query(`SELECT length(CAST(originals AS BLOB)) AS bytes FROM deliveries WHERE project_id=? AND peer=? AND state IN ${states} ORDER BY created_at,id LIMIT ?`).all(this.projectId, peer, HELD_DELIVERY_PAGE + 1) as { bytes: number }[];
+    // No durable view receipt exists. A bounded-away row may have been read before
+    // the window shifted, so overflow is unknown/excluded, never proof of absence.
+    let remaining = byteBudget;
+    if (window.length > HELD_DELIVERY_PAGE || window.some(row => { if (row.bytes > remaining) return true; remaining -= row.bytes; return false; })) return true;
+    const metadata = this.db.query(`WITH candidates AS MATERIALIZED (SELECT originals FROM deliveries WHERE project_id=? AND peer=? AND state IN ${states} ORDER BY created_at,id LIMIT ?) SELECT CASE WHEN json_type(d.originals)='array' AND length(CAST(d.originals AS BLOB)) <= ? THEN 1 ELSE 0 END AS readable,e.key AS envelope_key,json_extract(e.value,'$.from') AS sender,json_extract(e.value,'$.kind') AS kind,json_extract(e.value,'$.refs.reviewPackage') AS review_package,json_extract(e.value,'$.refs.reviewResponse') AS review_response FROM candidates d LEFT JOIN json_each(CASE WHEN json_type(d.originals)='array' AND length(CAST(d.originals AS BLOB)) <= ? THEN d.originals ELSE '[]' END) e`).all(this.projectId, peer, HELD_DELIVERY_PAGE, byteBudget, byteBudget) as { readable: number; envelope_key: unknown; sender: unknown; kind: unknown; review_package: unknown; review_response: unknown }[];
+    const excluded = metadata.some(row => {
+      if (row.readable !== 1) return true;
+      if (row.envelope_key === null) return false; // A readable empty original list carries no review input.
+      if (typeof row.sender !== "string" || !KINDS.includes(row.kind as Kind)) return true;
+      return isReviewObserverExcluded({ from: row.sender, kind: row.kind as Kind, refs: {
+        ...(typeof row.review_package === "string" ? { reviewPackage: row.review_package } : {}),
+        ...(typeof row.review_response === "string" ? { reviewResponse: row.review_response } : {}),
+      } });
+    });
+    return excluded || this.revision() !== revision;
+  }
+
   /** Hot roster reads never materialize completed envelope history. */
   pendingPeers(): string[] {
     this.ensureOpen();
     const rows = this.db.query("SELECT DISTINCT peer FROM deliveries WHERE project_id = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY peer").all(this.projectId) as { peer: unknown }[];
     return rows.map(row => text(row.peer, "delivery peer", 256));
+  }
+  /** Status counts unresolved failures without reading envelope payloads or terminal history. */
+  unresolvedFailedCounts(): Record<string, number> {
+    this.ensureOpen();
+    const rows = this.db.query("SELECT d.peer,COUNT(*) AS n FROM deliveries d WHERE d.project_id=? AND d.state='failed' AND NOT EXISTS (SELECT 1 FROM resolution_history r WHERE r.project_id=d.project_id AND r.delivery_id=d.id) GROUP BY d.peer").all(this.projectId) as { peer: unknown; n: unknown }[];
+    return Object.fromEntries(rows.map(row => [text(row.peer, "delivery peer", 256), integer(row.n, "unresolved failed count")]));
   }
   /** The queue needs a current revision, not the recovery snapshot's payloads. */
   revision(): number {
@@ -892,11 +1572,53 @@ export class DeliveryJournal {
       : this.db.query("SELECT * FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY created_at, id").all(this.projectId, peer)) as Record<string, unknown>[];
     return rows.map(parseDelivery);
   }
-  heldDeliveryHints(peer: string) {
+  heldDeliveryHints(peer: string, includeAccepted = false) {
     this.ensureOpen();
-    const count = Number((this.db.query("SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state = 'needs_review'").get(this.projectId, peer) as { n: number }).n);
-    const rows = this.db.query("SELECT d.id, d.revision, d.created_at, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.from')) FROM json_each(d.originals) env) AS senders, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.kind')) FROM json_each(d.originals) env) AS kinds FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state = 'needs_review' ORDER BY d.created_at, d.id LIMIT 33").all(this.projectId, peer) as { id: string; revision: number; created_at: number; senders: string; kinds: string }[];
-    return heldDeliveryHints(rows.map(row => ({ id: row.id, revision: row.revision, createdAt: row.created_at, senders: JSON.parse(row.senders) as string[], kinds: JSON.parse(row.kinds) as Kind[] })), count);
+    const states = includeAccepted ? "('needs_review','accepted')" : "('needs_review')";
+    const count = Number((this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ${states}`).get(this.projectId, peer) as { n: number }).n);
+    const rows = this.db.query(`SELECT d.id, d.revision, d.created_at, d.state, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.from')) FROM json_each(d.originals) env) AS senders, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.kind')) FROM json_each(d.originals) env) AS kinds FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state IN ${states} ORDER BY d.created_at, d.id LIMIT ?`).all(this.projectId, peer, HELD_DELIVERY_PAGE + 1) as { id: string; revision: number; created_at: number; state: "accepted" | "needs_review"; senders: string; kinds: string }[];
+    return heldDeliveryHints(rows.map(row => ({ id: row.id, revision: row.revision, createdAt: row.created_at, ...(includeAccepted ? { state: row.state } : {}), senders: JSON.parse(row.senders) as string[], kinds: JSON.parse(row.kinds) as Kind[] })), count);
+  }
+
+  /** Read-only recipient view. Bound raw JSON bytes in SQL before hydrating originals. */
+  heldInbox(peer: string, includeAccepted: boolean, byteBudget: number) {
+    this.ensureOpen();
+    text(peer, "held inbox peer", 256); integer(byteBudget, "held inbox byte budget", 1);
+    const states = includeAccepted ? "('needs_review','accepted')" : "('needs_review')";
+    const count = Number((this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ${states}`).get(this.projectId, peer) as { n: number }).n);
+    const rows: Array<{ id: string; revision: number; state: "needs_review" | "accepted"; originals: Envelope[] }> = [];
+    if (count === 0) return { count, rows, truncated: false };
+    // This read deliberately does not refresh legacy coverage or persist an input receipt.
+    const provenance = this.readReviewInputProvenance();
+    if (!provenance.complete || !provenance.coverageComplete) return { count, rows, truncated: count > 0, unavailable: true };
+    const candidates = this.db.query(`SELECT id,revision,state,length(CAST(originals AS BLOB)) AS bytes FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ${states} ORDER BY created_at,id LIMIT ?`).all(this.projectId, peer, HELD_DELIVERY_PAGE + 1) as { id: string; revision: number; state: "needs_review" | "accepted"; bytes: number }[];
+    let remaining = byteBudget, unavailable = false;
+    for (const candidate of candidates.slice(0, HELD_DELIVERY_PAGE)) {
+      if (!Number.isSafeInteger(candidate.bytes) || candidate.bytes < 0 || candidate.bytes > remaining) { unavailable = true; break; }
+      const row = this.db.query(`SELECT originals FROM deliveries WHERE project_id = ? AND peer = ? AND id = ? AND revision = ? AND state IN ${states} AND length(CAST(originals AS BLOB)) <= ?`).get(this.projectId, peer, candidate.id, candidate.revision, remaining) as { originals: string } | null;
+      if (!row) { unavailable = true; break; }
+      const originals = list(JSON.parse(row.originals), "held inbox originals", 2048).map((env, i) => validateEnvelope(env, `held inbox original ${i}`));
+      rows.push({ id: candidate.id, revision: candidate.revision, state: candidate.state, originals });
+      remaining -= candidate.bytes;
+    }
+    return { count, rows, truncated: rows.length < count, ...(unavailable ? { unavailable: true } : {}) };
+  }
+
+  /** Bounded indexed scan; the caller performs a revision-fenced state transition. */
+  expiredAccepted(cutoff: number, peers: readonly string[], limit = 256): AcceptedDeliveryCandidate[] {
+    this.ensureOpen(); integer(cutoff, "accepted cutoff"); integer(limit, "accepted expiry limit", 1, 1024);
+    if (!peers.length) return [];
+    if (peers.length > 4096) fail("accepted expiry peer set is too large");
+    for (const peer of peers) text(peer, "accepted expiry peer", 256);
+    const placeholders = peers.map(() => "?").join(",");
+    const rows = this.db.query(`SELECT d.id,d.peer,d.revision,d.updated_at,EXISTS(SELECT 1 FROM json_each(d.originals) env WHERE json_extract(env.value,'$.priority')='important' OR json_extract(env.value,'$.kind') IN ('review','task')) AS notify_conductor FROM deliveries d WHERE d.project_id = ? AND d.state = 'accepted' AND d.updated_at <= ? AND d.peer IN (${placeholders}) ORDER BY d.updated_at,d.id LIMIT ?`).all(this.projectId, cutoff, ...peers, limit) as { id: unknown; peer: unknown; revision: unknown; updated_at: unknown; notify_conductor: unknown }[];
+    return rows.map(row => ({ id: text(row.id, "accepted expiry id", 256), peer: text(row.peer, "accepted expiry peer", 256), revision: integer(row.revision, "accepted expiry revision"), updatedAt: integer(row.updated_at, "accepted expiry age"), notifyConductor: row.notify_conductor === 1 }));
+  }
+
+  /** Cheap recovery guard for timeout holds; reads no delivery payloads. */
+  hasAcceptedTimeoutHolds(): boolean {
+    this.ensureOpen();
+    return !!this.db.query("SELECT 1 FROM deliveries WHERE project_id = ? AND state = 'needs_review' AND reason = ? LIMIT 1").get(this.projectId, ACCEPTED_SETTLE_TIMEOUT_REASON);
   }
   /** Explicit resolutions, not automatic safe failures, consume the immutable originals' retry lineage. */
   retryEvidence(peer: string, originals: readonly Envelope[]): "unused" | "used" | "unknown" {
@@ -971,12 +1693,13 @@ export class DeliveryJournal {
     reason: string,
     requestRevision = revision,
     actor: string = "user",
+    allowAcceptedPeerDisposition = false,
   ): JournalDelivery {
     this.ensureOpen();
     text(reason, "resolution reason", 1_000_000);
     integer(revision, "observed revision");
     if (!ACTIONS.has(action)) throw new Error("invalid resolution action");
-    return this.db.transaction(() => {
+    return this.transaction(() => {
       const resolved = this.resolution(id);
       if (resolved) {
         const current = this.get(id);
@@ -996,7 +1719,7 @@ export class DeliveryJournal {
       if (actor.startsWith("peer:")) {
         const peer = actor.slice(5);
         const recipientRetry = action === "retry" && current.peer === peer && current.state === "needs_review" && this.retryEvidence(current.peer, current.originals) === "unused";
-        const ownerDisposition = (action === "completed" || action === "discard") && current.peer === peer && current.state === "needs_review";
+        const ownerDisposition = (action === "completed" || action === "discard") && current.peer === peer && (current.state === "needs_review" || current.state === "accepted" && allowAcceptedPeerDisposition === true);
         if (!recipientRetry && !ownerDisposition) throw new Error("recipient delivery resolution unavailable; inspect the held delivery or ask the person");
       }
       if (current.revision !== revision)
@@ -1006,9 +1729,18 @@ export class DeliveryJournal {
         actionState(action) !== current.state
       )
         throw new Error(`delivery ${id} is already terminal`);
+      const retryChildId = action === "retry" ? `${id}:retry:${(current.attempt ?? 0) + 1}` : undefined;
+      if (retryChildId && (this.legacyReviewCandidateIds.has(id) || this.legacyReviewCandidateFenceIds?.includes(id))
+        && !this.legacyReviewCandidateIds.has(retryChildId) && !this.legacyReviewCandidateFenceIds?.includes(retryChildId)) {
+        if (this.legacyReviewCandidatesOverflow || this.legacyReviewCandidateIds.size >= MAX_REVIEW_INPUTS) {
+          const fence = this.legacyReviewCandidateFenceIds ?? [...this.legacyReviewCandidateIds];
+          if (fence.length < MAX_ROWS) this.legacyReviewCandidateFenceIds = [...fence, retryChildId];
+          this.legacyReviewCandidatesOverflow = true;
+        } else this.legacyReviewCandidateIds = new Set([...this.legacyReviewCandidateIds, retryChildId]);
+      }
       const result = this.transition(id, actionState(action), reason, revision);
       if (action === "retry") {
-        const childId = `${id}:retry:${(current.attempt ?? 0) + 1}`;
+        const childId = retryChildId!;
         if (!this.get(childId))
           this.createDelivery({
             id: childId,
@@ -1040,7 +1772,7 @@ export class DeliveryJournal {
       if (action === "retry") this.recordRetryEvidence(current.peer, current.originals, id, actor === `peer:${current.peer}`);
       this.pruneTerminal(result.state, result.id);
       return result;
-    })();
+    });
   }
   /** #1096: the ids of every delivery an operator action (completed, retry, discard) already settled. One query, so a list of any length costs one read. */
   resolvedIds(): Set<string> {
@@ -1060,6 +1792,10 @@ export class DeliveryJournal {
     if (this.pruningDeferred) return;
     const terminal = state === "completed" || state === "discarded" || state === "failed";
     const terminalCap = terminal ? this.terminalHistoryLimit?.() ?? TERMINAL_CAP : TERMINAL_CAP;
+    let protectedReviewCandidates: string[] = [];
+    try {
+      if (!this.readReviewInputProvenance().coverageComplete) protectedReviewCandidates = [...this.legacyReviewCandidateIds];
+    } catch { protectedReviewCandidates = [...this.legacyReviewCandidateIds]; }
     // Never delete the receipt this mutation/resolve is still using, at any target.
     const count = Number(
       (
@@ -1071,16 +1807,20 @@ export class DeliveryJournal {
       ).n,
     );
     if (count <= terminalCap) return;
+    // ponytail: person-package receipts retain their terminal payload alongside the saved board package.
+    // A future package archival transaction can replace both with an IDs-only publication tombstone.
     this.db
       .query(
-        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND d.id != ? AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
+        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND d.id != ? AND NOT EXISTS (SELECT 1 FROM json_each(?) protected WHERE protected.value=d.id) AND NOT EXISTS (SELECT 1 FROM json_each(d.originals) e WHERE json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review' AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*') AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
       )
-      .run(this.projectId, currentId, count - terminalCap);
+      .run(this.projectId, currentId, JSON.stringify(protectedReviewCandidates), count - terminalCap);
   }
   importSnapshot(snapshot: JournalSnapshot, operationId: string, trackQueuePressure = false): boolean {
     this.ensureOpen();
     validateJournalSnapshot(snapshot);
     const bus = this.queueMetadataSnapshot(snapshot.bus, trackQueuePressure);
+    const importedReviewInput = snapshot.reviewInputProvenance ?? { version: REVIEW_INPUT_VERSION, instanceId: snapshot.instanceId, complete: true, coverageComplete: false, count: 0, digest: reviewInputDigest(snapshot.instanceId, REVIEW_INPUT_VERSION, true, false, 0, [], [], []), holds: [], incompletePeers: [], incompleteSessions: [] };
+    const reviewInputProvenance: ReviewInputProvenance = { ...importedReviewInput, instanceId: this.instanceId, digest: reviewInputDigest(this.instanceId, REVIEW_INPUT_VERSION, importedReviewInput.complete, importedReviewInput.coverageComplete, importedReviewInput.count, importedReviewInput.holds, importedReviewInput.incompletePeers, importedReviewInput.incompleteSessions) };
     text(operationId, "operationId", 256);
     if (this.operationId !== undefined && this.operationId !== operationId)
       throw new Error("recovery operation does not own delivery journal");
@@ -1097,23 +1837,29 @@ export class DeliveryJournal {
       Object.keys(storedBus).length !== 0
     )
       return false;
-    return this.queueMetadataTransaction(trackQueuePressure, () => {
+    const imported = this.queueMetadataTransaction(trackQueuePressure, () => {
       this.db
         .query(
-          "UPDATE delivery_meta SET revision = ?, bus_snapshot = ?, manual_paused = ?, operation_id = ? WHERE project_id = ?",
+          "UPDATE delivery_meta SET revision = ?, bus_snapshot = ?, manual_paused = ?, operation_id = ?, review_input_version=?,review_input_complete=?,review_input_coverage_complete=?,review_input_count=?,review_input_digest=?,review_input_instance_id=? WHERE project_id = ?",
         )
         .run(
           snapshot.revision,
           JSON.stringify(bus),
           JSON.stringify(snapshot.manualPaused),
           operationId,
+          REVIEW_INPUT_VERSION,
+          reviewInputProvenance.complete ? 1 : 0,
+          reviewInputProvenance.coverageComplete ? 1 : 0,
+          reviewInputProvenance.count,
+          reviewInputProvenance.digest,
+          this.instanceId,
           this.projectId,
         );
       this.writeQueueMetadata(bus, snapshot.revision, trackQueuePressure);
       for (const row of snapshot.deliveries)
         this.db
           .query(
-            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id, failure_cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .run(
             row.id,
@@ -1128,11 +1874,21 @@ export class DeliveryJournal {
             row.reason ?? null,
             row.attempt ?? null,
             row.previousId ?? null,
+            checkedFailureCause(row.failureCause) ?? null,
           );
+      for (const raw of reviewInputProvenance.holds) {
+        const hold = reviewInputHold(raw, "snapshot review input");
+        this.db.query("INSERT INTO review_input_sessions(project_id,peer,session_hash,input_hash) VALUES(?,?,?,?)")
+          .run(this.projectId, hold.peer, hold.sessionHash, hold.inputHash);
+      }
+      for (const peer of reviewInputProvenance.incompletePeers) this.db.query("INSERT INTO review_input_incomplete_peers(project_id,peer) VALUES(?,?)").run(this.projectId, peer);
+      for (const row of reviewInputProvenance.incompleteSessions) this.db.query("INSERT INTO review_input_incomplete_sessions(project_id,peer,session_hash) VALUES(?,?,?)").run(this.projectId, row.peer, row.sessionHash);
       // Snapshots deliberately omit resolution history; only these imported originals have unknown retry rights.
       this.markRetryUnknown(snapshot.deliveries, bus);
       return true;
     });
+    if (imported) this.captureLegacyReviewCandidates(false, snapshot.deliveries.map(row => row.id));
+    return imported;
   }
   close(): void {
     if (!this.closed) {
@@ -1160,6 +1916,7 @@ function parseDelivery(row: Record<string, unknown>): JournalDelivery {
     originals: JSON.parse(String(row.originals)),
     out: JSON.parse(String(row.out_json)),
     ...(row.reason == null ? {} : { reason: String(row.reason) }),
+    ...(row.failure_cause == null ? {} : { failureCause: row.failure_cause }),
     ...(row.attempt == null ? {} : { attempt: Number(row.attempt) }),
     ...(row.previous_id == null ? {} : { previousId: String(row.previous_id) }),
   });

@@ -1,8 +1,9 @@
+import { projectRoomUnavailable, projectRoomDiagnostics, type RoomStatusDiagnostics } from "../rooms/status.ts";
 import { decodeBase64url } from "../rooms/crypto.ts";
 import { roomReceiptReasonText, type RoomReceiptReason } from "../rooms/application.ts";
 import { frame, type Envelope } from "../hub/envelope.ts";
 import { terminalText } from "./console-state.ts";
-import type { RoomPersonInboxMeta, RoomPersonInboxItem } from "../rooms/store.ts";
+import { ROOM_STORE_LIMITS, type RoomPersonInboxMeta, type RoomPersonInboxItem } from "../rooms/store.ts";
 /** Membership mutations and inbox forms are person-only; main.ts refuses agent/live-test calls before importing this module. */
 export const ROOM_USAGE = "usage: ahub room create <name> --broker <url> [--label <id>] | invite <name> [--accept <request>] | join <token> [--name <name>] [--label <id>] | join <name> --roster <signed-roster> | leave <name> | revoke <name> <fingerprint> | expose <name> [<peer>...] | resolve <name> --frame <digest> --action accept|discard (membership mutations and resolve require TTY y/N or --confirm <member-fingerprint-prefix>, 16..64 lowercase hex) | list [--json] | status [<name>] [--json] | inbox [<name>] [--json] | inbox show|done|discard <id>";
 
@@ -17,8 +18,10 @@ export type RoomRequest = (message: Record<string, unknown>) => Promise<any>;
 export interface RoomConfirmationIO { isTTY(): boolean; answer(prompt: string): Promise<string> }
 
 export class RoomCliError extends Error {
-  constructor(readonly code: "usage" | "refused" | "invalid_reply" | "inbox_list_limit" | "confirmation_required" | "not_confirmed" | "confirmation_mismatch") {
-    const message = { refused: "operation refused", invalid_reply: "invalid control reply", inbox_list_limit: "inbox list exceeds the limit; choose a room name", confirmation_required: "confirmation required; use a TTY or --confirm with the member fingerprint prefix", not_confirmed: "not confirmed; nothing executed", confirmation_mismatch: "confirmation does not match the member fingerprint; nothing executed" };
+  constructor(readonly code: "usage" | "refused" | "invalid_reply" | "inbox_list_limit" | "confirmation_required" | "not_confirmed" | "confirmation_mismatch" | "epoch_rotated_hold_unavailable" | "rooms_unavailable", availability?: unknown) {
+    const unavailable = projectRoomUnavailable(availability);
+    const message = { rooms_unavailable: `unavailable (${unavailable?.code ?? "unknown"}); ${unavailable?.nextStep ?? "Run ahub status to inspect room storage before retrying."}`, refused: "operation refused", invalid_reply: "invalid control reply", inbox_list_limit: "inbox list exceeds the limit; choose a room name", confirmation_required: "confirmation required; use a TTY or --confirm with the member fingerprint prefix", not_confirmed: "not confirmed; nothing executed", confirmation_mismatch: "confirmation does not match the member fingerprint; nothing executed",
+      epoch_rotated_hold_unavailable: "epoch rotated but delivery journal holds are unavailable; inspect ahub room status and ahub queue show before another mutation" };
     super(code === "usage" ? ROOM_USAGE : `room: ${message[code]}`);
     this.name = "RoomCliError";
   }
@@ -141,10 +144,10 @@ async function confirmMember(member: string, explicit: string | undefined, io: R
 }
 
 type DeliveryState = "pending" | "dispatching" | "accepted" | "completed" | "completed (admitted)" | "completed (inbox)" | "failed_safe" | "needs_review" | "disposed" | "disposed (accept, by person)" | "disposed (discard, by person)";
-interface DeliveryRow { direction: "inbound" | "outbound"; id: string; application: string; peer: string; state: DeliveryState; disposition?: "accept" | "completed" | "retry" | "discard"; lateReceipt?: "completed (admitted)" | "completed (inbox)" | "failed_safe"; refusalReason?: RoomReceiptReason }
+interface DeliveryRow { direction: "inbound" | "outbound"; id: string; application: string; peer: string; state: DeliveryState; disposition?: "accept" | "completed" | "retry" | "discard"; lateReceipt?: "completed (admitted)" | "completed (inbox)" | "failed_safe"; refusalReason?: RoomReceiptReason; holdReason?: "epoch rotated" }
 interface DeliverySummary { direction: "inbound"; pending: number; needsReview: number; truncated: boolean }
-interface RemotePeerRow { id: string; state: "idle" | "busy" | "paused" | "offline" }
-interface RoomRow { name: string; room: string; owner: string; member: string; epoch: string; state: string; deliveries?: (DeliveryRow | DeliverySummary)[]; remotePeers?: RemotePeerRow[] }
+interface RemotePeerRow { id: string; state: "idle" | "busy" | "paused" | "offline"; presence?: "idle" | "busy" | "paused" | "offline" | "unknown"; liveness?: "untracked" }
+interface RoomRow extends RoomStatusDiagnostics { name: string; room: string; owner: string; member: string; epoch: string; state: string; deliveries?: (DeliveryRow | DeliverySummary)[]; remotePeers?: RemotePeerRow[] }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REMOTE_ID = /^[a-z][a-z0-9-]{0,31}@[a-z][a-z0-9-]{0,31}$/;
 const REFUSAL_REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported", "inbox_admitted", "inbox_full", "inbox_oversize", "inbox_expired", "inbox_age_unavailable"];
@@ -170,10 +173,11 @@ function deliveryRows(value: unknown): (DeliveryRow | DeliverySummary)[] {
     if (row.disposition !== undefined && (typeof row.disposition !== "string" || (row.direction === "inbound" ? !["accept", "discard"].includes(row.disposition) : !["completed", "retry", "discard"].includes(row.disposition)))) return fail("invalid_reply");
     if (row.lateReceipt !== undefined && row.lateReceipt !== "completed (admitted)" && row.lateReceipt !== "completed (inbox)" && row.lateReceipt !== "failed_safe") return fail("invalid_reply");
     if (row.refusalReason !== undefined && (typeof row.refusalReason !== "string" || !REFUSAL_REASONS.includes(row.refusalReason as RoomReceiptReason))) return fail("invalid_reply");
+    if (row.holdReason !== undefined && (row.holdReason !== "epoch rotated" || row.direction !== "outbound" || row.state !== "needs_review")) return fail("invalid_reply");
     if (row.direction === "outbound" && row.state.startsWith("disposed")) return fail("invalid_reply");
     const state = row.state === "completed" ? row.refusalReason === "inbox_admitted" ? "completed (inbox)" : "completed (admitted)" : row.state === "disposed" && row.disposition !== undefined ? `disposed (${row.disposition}, by person)` as DeliveryState : row.state as DeliveryState;
     return { direction: row.direction, id: row.id, application: row.application, peer: row.peer, state,
-      ...(row.disposition !== undefined ? { disposition: row.disposition as DeliveryRow["disposition"] } : {}), ...(row.lateReceipt !== undefined ? { lateReceipt: row.lateReceipt as DeliveryRow["lateReceipt"] } : {}), ...(row.refusalReason !== undefined ? { refusalReason: row.refusalReason as RoomReceiptReason } : {}) };
+      ...(row.disposition !== undefined ? { disposition: row.disposition as DeliveryRow["disposition"] } : {}), ...(row.lateReceipt !== undefined ? { lateReceipt: row.lateReceipt as DeliveryRow["lateReceipt"] } : {}), ...(row.refusalReason !== undefined ? { refusalReason: row.refusalReason as RoomReceiptReason } : {}), ...(row.holdReason === "epoch rotated" ? { holdReason: "epoch rotated" } : {}) };
   });
 }
 function remotePeerRows(value: unknown): RemotePeerRow[] {
@@ -181,7 +185,9 @@ function remotePeerRows(value: unknown): RemotePeerRow[] {
   return value.map<RemotePeerRow>(item => {
     const row = record(item);
     if (typeof row.id !== "string" || !REMOTE_ID.test(row.id) || typeof row.state !== "string" || !["idle", "busy", "paused", "offline"].includes(row.state)) return fail("invalid_reply");
-    return { id: row.id, state: row.state as RemotePeerRow["state"] };
+    if (row.presence !== undefined && (typeof row.presence !== "string" || !["idle", "busy", "paused", "offline", "unknown"].includes(row.presence))) return fail("invalid_reply");
+    if (row.liveness !== undefined && row.liveness !== "untracked") return fail("invalid_reply");
+    return { id: row.id, state: row.state as RemotePeerRow["state"], ...(row.presence !== undefined ? { presence: row.presence as RemotePeerRow["presence"] } : {}), ...(row.liveness === "untracked" ? { liveness: "untracked" as const } : {}) };
   });
 }
 function record(value: unknown): Record<string, unknown> {
@@ -190,7 +196,10 @@ function record(value: unknown): Record<string, unknown> {
 }
 function success(value: unknown): Record<string, unknown> {
   const row = record(value);
-  if (row.ok !== true) fail("refused");
+  if (row.ok !== true) {
+    if (row.code === "rooms_unavailable") throw new RoomCliError("rooms_unavailable", row.roomsUnavailable);
+    fail(row.code === "epoch_rotated_hold_unavailable" ? "epoch_rotated_hold_unavailable" : "refused");
+  }
   return row;
 }
 function roomRows(value: unknown): RoomRow[] {
@@ -202,7 +211,7 @@ function roomRows(value: unknown): RoomRow[] {
       || typeof row.epoch !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(row.epoch)
       || typeof row.state !== "string" || !/^[a-z][a-z_-]{0,31}$/.test(row.state)) return fail("invalid_reply");
     // Ignore all other fields, even from a newer daemon: read output never grows into room bodies or secrets.
-    return { name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch, state: row.state,
+    return { name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch, state: row.state, ...projectRoomDiagnostics(row),
       ...(row.deliveries !== undefined ? { deliveries: deliveryRows(row.deliveries) } : {}), ...(row.remotePeers !== undefined ? { remotePeers: remotePeerRows(row.remotePeers) } : {}) };
   });
 }
@@ -270,10 +279,17 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
     console.log(`Rooms (${rows.length})`);
     for (const row of rows) {
       console.log(`${row.name} ${row.room} epoch ${row.epoch} ${row.state}\n  owner ${row.owner}\n  member ${row.member}`);
-      for (const peer of row.remotePeers ?? []) console.log(`  peer ${peer.id}: ${peer.state}`);
+      if (command.op === "status") {
+        const health = row.health, age = (value: number | null | undefined) => typeof value === "number" ? `${value}ms` : "unknown";
+        if (row.state === "online" && (row.linkCause === null || row.linkCause === undefined)) console.log("  link online");
+        else console.log(`  link cause ${row.linkCause ?? "unknown"}; next: ${row.linkNextStep ?? "Check broker availability, then read ahub room status again."}`);
+        console.log(`  outbox ${health?.outboxDepth ?? "unknown"}; oldest ${age(health?.oldestOutboxAgeMs)}; last receipt ${age(health?.lastReceiptAgeMs)}`);
+        console.log(`  refused: ${health?.refused ? Object.entries(health.refused).map(([reason, count]) => `${reason} ${count}`).join(", ") : "unknown"}`);
+      }
+      for (const peer of row.remotePeers ?? []) console.log(`  peer ${peer.id}: ${peer.presence ?? peer.state}${peer.liveness === "untracked" ? "; liveness not tracked (broker without ephemeral); upgrade the broker to track liveness" : ""}`);
       for (const delivery of row.deliveries ?? []) {
         if (!("id" in delivery)) console.log(`  inbound: pending ${delivery.pending}, needs_review ${delivery.needsReview}${delivery.truncated ? "; truncated" : ""}`);
-        else console.log(`  ${delivery.direction} ${delivery.id}: ${delivery.state}; application ${delivery.application}; peer ${delivery.peer}${delivery.disposition ? `; person disposition ${delivery.disposition}` : ""}${delivery.lateReceipt ? `; late receipt evidence ${delivery.lateReceipt}` : ""}${delivery.refusalReason ? `; refusal ${roomReceiptReasonText(delivery.refusalReason)}` : ""}`);
+        else console.log(`  ${delivery.direction} ${delivery.id}: ${delivery.state}; application ${delivery.application}; peer ${delivery.peer}${delivery.disposition ? `; person disposition ${delivery.disposition}` : ""}${delivery.lateReceipt ? `; late receipt evidence ${delivery.lateReceipt}` : ""}${delivery.refusalReason ? `; refusal ${roomReceiptReasonText(delivery.refusalReason)}` : ""}${delivery.holdReason ? "; reason epoch rotated; inspect ahub queue show before resolving" : ""}`);
       }
     }
     return;
@@ -283,6 +299,12 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
     || typeof preview.ticket !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(preview.ticket)) fail("invalid_reply");
   console.log(`Owner fingerprint: ${preview.owner}`);
   console.log(`Member fingerprint: ${preview.member}`);
+  if (preview.outstanding !== undefined) {
+    if (!Array.isArray(preview.outstanding) || preview.outstanding.length > ROOM_STORE_LIMITS.outboxPerRoom
+      || preview.outstanding.some(value => typeof value !== "string" || !UUID.test(value)) || new Set(preview.outstanding).size !== preview.outstanding.length) fail("invalid_reply");
+    console.log(`Outstanding deliveries on the old epoch (${preview.outstanding.length}):`);
+    for (const id of preview.outstanding) console.log(`  ${id}`);
+  }
   const confirm = await confirmMember(preview.member, command.confirm, io);
   const result = success(await request({ t: "room", op: "execute", ticket: preview.ticket, confirm }));
   if (result.name !== undefined) {

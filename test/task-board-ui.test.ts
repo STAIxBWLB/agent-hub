@@ -30,10 +30,20 @@ function page(options: { cached?: boolean; now?: () => number; focus?: string } 
   const el = (tag: string, text?: unknown, cls = "") => { const node = new Node(tag); if (text !== undefined) node.textContent = String(text); node.className = cls; return node; };
   const elSource = html.match(/const el = [^\n]+/)![0];
   const updateSource = options.cached ? html.match(/^function update\(.*$/m)![0] : "";
-  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true,currentView="board";const dashboardCookie=cookiePrefs;const switchView=()=>{},applyDashboardView=()=>{};const taskRows=new Map(),officeCards=new Map(),signatures=new Map(); ${elSource} ${updateSource} ${source}; ({draw:renderBoard,draggedCard,open:openTaskDetail,refresh:refreshTaskDetail,close:closeTaskDetail,focus:setColumnFocus,stop:()=>{stopped=true}})`, {
+  const snapshot = { projectId: scope.projectId, instanceId: scope.instanceId, boardCapabilities: { backlog: true }, boardLegend: [{ peer: "codex", state: "idle", wip: 1, permissionMode: "ask", activeTasks: [2] }], tasks: [
+    { id: 1, state: "backlog", title: "[pii]", detail: "[pii]", class: "implement", reviewStateKey: "task-1" },
+    { id: 2, state: "proposed", title: "<img src=x onerror=alert(1)>", class: "implement", owner: "codex", urgent: true, reviewStateKey: "task-2" },
+    { id: 3, state: "in_review", title: "review", class: "implement", owner: "claude", reviewer: "codex", reviewStateKey: "task-3" },
+    { id: 4, state: "approved", title: "done", class: "implement", owner: "codex", reviewStateKey: "task-4" },
+  ] };
+  const reviewRequests: unknown[] = [];
+  const api = runInNewContext(`let stopped=false,managerMode=true,snapshotValid=true,currentView="board",viewGeneration=1,cursor=0,lastSnapshot=snapshot;const dashboardCookie=cookiePrefs;const switchView=()=>{},applyDashboardView=()=>{};const taskRows=new Map(),officeCards=new Map(),signatures=new Map(); ${elSource} ${updateSource} ${source}; ({draw:renderBoard,draggedCard,open:openTaskDetail,refresh:refreshTaskDetail,close:closeTaskDetail,focus:setColumnFocus,stop:()=>{stopped=true}})`, {
     cookiePrefs:{get:()=>options.focus ?? "",set:(name:string,value:string)=>cookies.push([name,value])},
     Date: class extends Date { static override now() { return options.now?.() ?? Date.now(); } },
+    reviewKit: null, // standalone dashboard: anchored comments are read-only (#1056)
     location: { origin: "http://127.0.0.1:4000" }, context: () => ({ ...scope }), canMutate: () => true,
+    snapshot, post: async (_path: string, input: Record<string, unknown>) => { reviewRequests.push(input); return { ...snapshot, reviewComments: { task: input.reviewTask, counts: { draft: 0, sent: 0, resolved: 0, dismissed: 0 }, comments: [], packages: [] } }; },
+    render: () => {},
     document: { createElement: (tag: string) => new Node(tag), createElementNS: (_ns: string, tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string, cls = "") => el("span", text, "badge" + (cls ? " " + cls : "")),
     renderTaskProgress: () => {}, renderTaskStage: (stage: { label: string }) => el("p", stage.label),
     empty: (target: Node, text: string) => target.append(el("p", text)),
@@ -44,14 +54,8 @@ function page(options: { cached?: boolean; now?: () => number; focus?: string } 
   function $(id: string) { return get(id); }
   const all = (node: Node): Node[] => [node, ...node.children.flatMap(all)];
   const peers = { codex: { state: "idle", attached: true }, claude: { state: "busy", attached: true } };
-  const snapshot = { projectId: scope.projectId, instanceId: scope.instanceId, boardCapabilities: { backlog: true }, boardLegend: [{ peer: "codex", state: "idle", wip: 1, permissionMode: "ask", activeTasks: [2] }], tasks: [
-    { id: 1, state: "backlog", title: "[pii]", detail: "[pii]", class: "implement" },
-    { id: 2, state: "proposed", title: "<img src=x onerror=alert(1)>", class: "implement", owner: "codex", urgent: true },
-    { id: 3, state: "in_review", title: "review", class: "implement", owner: "claude", reviewer: "codex" },
-    { id: 4, state: "approved", title: "done", class: "implement", owner: "codex" },
-  ] };
   api.draw(snapshot, peers, Object.keys(peers));
-  return { api, scope, calls, cookies, get, all, peers, snapshot };
+  return { api, scope, calls, reviewRequests, cookies, get, all, peers, snapshot };
 }
 
 test("board DOM renders five columns public cards and keyboard actions without flow dragging (#263)", () => {
@@ -162,7 +166,7 @@ test("project reset clears release creation draft before switching projects (#26
   const source = html.slice(html.indexOf("function resetView("), html.indexOf("function projectName("));
   const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   get("release-name").value="project-a";get("release-goal").value="old goal";get("release-order").value="7";
-  runInNewContext(`let selectedProjectId='a',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null,lastSnapshot={};const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map();const managerMode=true,$=get;const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${source};resetView('b','next');`, { get });
+  runInNewContext(`let selectedProjectId='a',selectedInstanceId='old',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null,lastSnapshot={};const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{};const officeDesks=new Map(),officeCards=new Map(),signatures=new Map(),reviewCommentsCache=new Map();const managerMode=true,$=get;const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{},empty=(node,text)=>{node.textContent=text};${source};resetView('b','next');`, { get });
   expect(get("release-name").value).toBe("");expect(get("release-goal").value).toBe("");expect(get("release-order").value).toBe("0");
 });
 
@@ -409,12 +413,12 @@ test("a card with a long title keeps the whole title in the DOM and clamps it to
   const rule = /\.task-card\.compact \.card-title\{([^}]*)\}/.exec(css)![1]!;
   expect(rule).toContain("-webkit-line-clamp:2");expect(rule).toContain("line-clamp:2");expect(rule).toContain("overflow:hidden");
 });
-test("the detail groups its metadata into Status, People, Dates and Links without losing or duplicating a line (#469 R3 AC5)", () => {
-  const { api, get, all, peers, snapshot } = page({ now: () => 10_000 });
+test("the detail groups its metadata and offers on-demand Visuals without losing or duplicating a line (#469 R3 AC5, #1058)", () => {
+  const { api, get, all, peers, snapshot, reviewRequests } = page({ now: () => 10_000 });
   api.draw({ ...snapshot, releases: [{ id: 2, name: "phase two" }], tasks: [{ id: 7, state: "in_progress", title: "grouped", class: "implement", owner: "codex", reviewer: "claude", release: 2, role: "backend-engineer", reworkRound: 2, checking: true, pinned: true, plannedStart: 1000, due: 2000, actualDates: { startedAt: 1500 }, external: { provider: "github", issue: 12, url: "https://example.invalid/12" }, detail: "the description" }] }, peers, Object.keys(peers));
   api.open(7);
   const detail = all(get("task-detail-content")).find(node => node.tag === "article")!, groups = detail.children.filter(node => node.tag === "section");
-  expect(groups.map(node => node.children[0]!.textContent)).toEqual(["Status", "People", "Dates", "Links"]);
+  expect(groups.map(node => node.children[0]!.textContent)).toEqual(["Status", "People", "Dates", "Links", "Visuals"]);
   const text = (node: Node) => all(node).map(child => child.textContent).join("\n");
   const [status, people, dates, links] = groups.map(text) as [string, string, string, string];
   expect(status).toContain("Rework round 2");expect(status).toContain("Check running");expect(status).toContain("Overdue");
@@ -424,11 +428,16 @@ test("the detail groups its metadata into Status, People, Dates and Links withou
   // Each fact appears once, in its own group; the description stays directly under the head.
   for (const line of ["Rework round 2", "Planned ", "Release #2 phase two", "Pinned", "owner: codex"]) expect(text(detail).split(line).length - 1, line).toBe(1);
   expect(detail.children.find(node => node.textContent === "the description")).toBeDefined();
-  // A group with nothing to show is left out rather than shown empty.
+  const visuals = groups[4]!;
+  expect(all(visuals).filter(node => node.tag === "button").map(node => node.textContent)).toEqual(["Show task visuals"]);
+  expect(visuals.children.find(node => node.tag === "div")?.children).toEqual([]);
+  expect(all(visuals).some(node => ["pre", "img", "iframe"].includes(node.tag))).toBe(false);
+  expect(reviewRequests.some(input => { const request = input as Record<string, unknown>; return "visualTask" in request || "visual" in request; })).toBe(false);
+  // Optional metadata groups with nothing to show are omitted; Visuals retains only its explicit load control.
   api.draw({ ...snapshot, tasks: [{ id: 8, state: "backlog", title: "bare", class: "implement" }] }, peers, Object.keys(peers));
   api.open(8);
   const bare = all(get("task-detail-content")).find(node => node.tag === "article")!;
-  expect(bare.children.filter(node => node.tag === "section").map(node => node.children[0]!.textContent)).toEqual(["Status", "People"]);
+  expect(bare.children.filter(node => node.tag === "section").map(node => node.children[0]!.textContent)).toEqual(["Status", "People", "Visuals"]);
 });
 
 // #469 R3 (AC6): the five board forms live in the Plan sheet with the same fields, names and actions as before. The expected

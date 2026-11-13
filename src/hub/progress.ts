@@ -1,7 +1,7 @@
-import { EscalationState, type EscalationCategory, type EscalationVerdict } from "../models/route/escalation.ts";
-import { dimensionsFromSignal } from "../models/route/stage.ts";
-import { extractToolSignalsFromObservations, fingerprint, type ToolObservation, type ToolSignals } from "../models/route/signals.ts";
-import type { Conversation } from "../models/route/normalize.ts";
+import { EscalationControl } from "../models/route/escalation-control.ts";
+import type { EscalationCategory, EscalationReply } from "../models/route/judge-replies.ts";
+import { diagnoseStageResult } from "../models/route/stage-diagnostics.ts";
+import { repeatedObservationFailure, failureFingerprint as fingerprint, type ToolObservation } from "../models/route/observation-signals.ts";
 import type { HubEvent } from "./events.ts";
 import type { Task } from "./board.ts";
 
@@ -10,7 +10,19 @@ const MAX_STATES = 256;
 const MAX_OBSERVATIONS = 28;
 const MAX_TEXT = 500;
 
-type NativeToolObservation = ToolObservation & { turn?: string };
+export type NativeToolObservation = ToolObservation & { turn?: string };
+
+/** The host-owned progress factory's grouped record, not a provider normalizer schema. */
+export interface ProgressConversation {
+  instructions: string[];
+  instructionRoles: "system"[];
+  messages: {
+    role: "user" | "assistant";
+    content: string;
+    toolCalls: { id: string; name: string; arguments: { command?: string } }[];
+    toolResults: { toolCallId: string; content: string; isError?: boolean }[];
+  }[];
+}
 
 /** Normalize only completed Codex work observations; event payloads and unrelated item text are ignored. */
 export function normalizeCodexObservation(value: unknown): ToolObservation | undefined {
@@ -40,7 +52,7 @@ interface ProgressState {
   task: number;
   at: number;
   observations: NativeToolObservation[];
-  escalation: EscalationState;
+  escalation: EscalationControl;
   generation: number;
   checking: boolean;
   attemptedTurns: Set<string>;
@@ -54,16 +66,34 @@ export interface ProgressDimensions {
   production: number;
 }
 
-export function progressDimensions(signals: ToolSignals): ProgressDimensions {
-  const dimensions = dimensionsFromSignal(signals);
-  return { severity: dimensions.severity, spinning: dimensions.spinning, exploring: dimensions.exploring, production: dimensions.productionIntensity };
+/** Observer calibration is independent of stage risk and never reads commands/arguments. */
+export function progressDimensions(observations: readonly NativeToolObservation[]): ProgressDimensions {
+  let severity = 0, reads = 0, mutations = 0, inspected = 0;
+  const turns = new Set<string>();
+  for (let index = Math.max(0, observations.length - MAX_OBSERVATIONS); index < observations.length; index++) {
+    const item = observations[index];
+    if (!item) continue;
+    inspected++;
+    const name = item.name.slice(0, 80).toLowerCase();
+    const read = /^(read|read_file|glob|grep|search|list|list_dir)$/.test(name);
+    const mutation = /^(filechange|write|write_file|edit|apply_patch|patch|delete|create|replace)$/.test(name);
+    if (read) reads++;
+    if (mutation) mutations++;
+    const diagnostic = diagnoseStageResult({ text: item.resultText?.slice(0, MAX_TEXT) ?? "", error: item.isError === true,
+      family: read ? "read" : mutation ? "mutation" : "other", associated: true });
+    if (diagnostic.fault !== "none") severity = 0.7;
+    const turn = validTurn(item.turn);
+    if (turn) turns.add(turn);
+  }
+  return { severity, spinning: turns.size >= 8 && mutations === 0 ? 1 : 0,
+    exploring: reads / Math.max(1, inspected), production: mutations / Math.max(1, inspected) };
 }
 
 export interface ProgressDeps {
   tasks(): Task[];
   /** The same project-wide gate used for turn-free facts: no observation while any PII task is open. */
   isPrivate(): boolean;
-  inference: { escalate(conversation: Conversation, turn: number): Promise<EscalationVerdict | undefined> };
+  inference: { escalate(conversation: ProgressConversation, turn: number): Promise<EscalationReply | undefined> };
   emit(event: HubEvent): void;
   notify(line: string): void;
   now?: () => number;
@@ -89,8 +119,7 @@ export class ProgressObserver {
     state.observations.push(boundedObservation(observation));
     if (state.observations.length > MAX_OBSERVATIONS) state.observations.splice(0, state.observations.length - MAX_OBSERVATIONS);
     pruneAttemptedTurns(state);
-    const signals = signalsFor(state.observations);
-    this.safeEmit({ type: "progress", peer, task: taskId, ...progressDimensions(signals) });
+    this.safeEmit({ type: "progress", peer, task: taskId, ...progressDimensions(state.observations) });
     if (this.judgeEligible(state)) void this.evaluateState(peer, taskId, state);
   }
 
@@ -145,9 +174,8 @@ export class ProgressObserver {
 
   private judgeEligible(state: ProgressState): boolean {
     if (!latestNativeTurn(state.observations) || state.escalation.snapshot().latched) return false;
-    const signals = signalsFor(state.observations);
-    const repeatedAcrossTurns = signals.repeatedFailure && repeatedFailureAcrossTurns(state.observations);
-    return repeatedAcrossTurns || progressDimensions(signals).spinning > 0;
+    const repeatedAcrossTurns = repeatedObservationFailure(state.observations) === true && repeatedFailureAcrossTurns(state.observations);
+    return repeatedAcrossTurns || progressDimensions(state.observations).spinning > 0;
   }
 
   private openTask(peer: string, id: number): Task | undefined {
@@ -171,7 +199,7 @@ export class ProgressObserver {
     let state = this.states.get(id);
     if (!state) {
       if (this.states.size >= MAX_STATES) this.states.delete(this.states.keys().next().value!);
-      state = { peer, task, at: this.now(), observations: [], escalation: new EscalationState(), generation: 0, checking: false, attemptedTurns: new Set(), turn: 0 };
+      state = { peer, task, at: this.now(), observations: [], escalation: new EscalationControl(), generation: 0, checking: false, attemptedTurns: new Set(), turn: 0 };
       this.states.set(id, state);
     }
     return state;
@@ -216,17 +244,13 @@ function repeatedFailureAcrossTurns(observations: readonly NativeToolObservation
   return [...turnsByFingerprint.values()].some((turns) => turns.size >= 2);
 }
 
-function signalsFor(observations: readonly NativeToolObservation[]): ToolSignals {
-  return extractToolSignalsFromObservations(observations, knownTurns(observations).length);
-}
-
 function pruneAttemptedTurns(state: ProgressState): void {
   const active = new Set(knownTurns(state.observations));
   for (const turn of state.attemptedTurns) if (!active.has(turn)) state.attemptedTurns.delete(turn);
 }
 
-function conversation(observations: readonly NativeToolObservation[], task: Task): Conversation {
-  const frames = new Map<string, { role: "assistant"; content: string; toolCalls: { id: string; name: string; arguments: unknown }[]; toolResults: { toolCallId: string; content: string; isError?: boolean }[] }>();
+function conversation(observations: readonly NativeToolObservation[], task: Task): ProgressConversation {
+  const frames = new Map<string, { role: "assistant"; content: string; toolCalls: { id: string; name: string; arguments: { command?: string } }[]; toolResults: { toolCallId: string; content: string; isError?: boolean }[] }>();
   let nextCall = 0;
   for (const item of observations) {
     const nativeTurn = validTurn(item.turn);
@@ -247,5 +271,5 @@ function conversation(observations: readonly NativeToolObservation[], task: Task
   };
 }
 
-export type ProgressVerdict = EscalationVerdict;
+export type ProgressVerdict = EscalationReply;
 export type ProgressCategory = Exclude<EscalationCategory, "none">;

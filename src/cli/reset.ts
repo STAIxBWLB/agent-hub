@@ -149,7 +149,7 @@ export function resetRuntime(stateDir: string, project: Project): { settled: str
     const db = openHubDatabase(file);
     try {
       db.transaction(() => {
-        for (const table of ["budget_pauses", "conductor_holds"]) {
+        for (const table of ["budget_pauses", "conductor_holds", "model_overrides"]) {
           if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) db.run(`DELETE FROM ${table}`);
         }
       })();

@@ -4,25 +4,28 @@ import { runInNewContext } from "node:vm";
 import { conductorPeer } from "../src/hub/conductor.ts";
 import { ownerToolEffect } from "../src/hub/no-writes.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
+import { GUIDANCE_TOOL_NAMES } from "../src/hub/hub-tools.ts";
 
 test("in-process session title JSON and errors are never decorated with a held-delivery hint", async () => {
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
   const start = source.indexOf("  const conductedMutations ="), end = source.indexOf("  const deliveryRetryAllowed =", start);
+  const scopeStart = source.indexOf("  const reviewObserverHeld ="), scopeEnd = source.indexOf("  const invocations =", scopeStart);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  expect(scopeStart).toBeGreaterThan(0); expect(scopeEnd).toBeGreaterThan(scopeStart);
   const readOnly = source.split("\n").find(line => line.startsWith("  const readOnlyPeer ="))!;
   const readTools = source.split("\n").find(line => line.startsWith("const READ_ONLY_HUB_TOOLS ="))!;
   expect(readOnly).toBeDefined(); expect(readTools).toBeDefined();
   let result: unknown = { ok: true }, failure: Error | undefined, hintCalls = 0;
   const unexpected = () => { throw new Error("unrelated authority path reached"); };
   const context = {
-    Error, PreEffectToolRefusal, conductorPeer, ownerToolEffect,
+    Error, PreEffectToolRefusal, conductorPeer, ownerToolEffect, GUIDANCE_TOOL_NAMES,
     declarations: {}, config: { roles: {} }, turns: new Map(), reviewerToolObservers: new Map(),
-    sourceReadCurrent: unexpected, runningReviewAuthority: unexpected, auditConduct: unexpected,
+    sourceReadCurrent: unexpected, runningReviewAuthority: unexpected, auditConduct: unexpected, readReviewObserverScope: () => undefined,
     ownHeldHint: () => { hintCalls++; return "Held delivery fixture: inspect the queued request"; },
     taskOpBody: async () => { if (failure) throw failure; return JSON.stringify(result); },
     extracted: undefined as unknown,
   };
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\nlet taskOpsInFlight=0;\n${source.slice(start, end)}\nglobalThis.extracted={run:taskOp,pending:()=>taskOpsInFlight};`);
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\nlet taskOpsInFlight=0;\n${source.slice(scopeStart, scopeEnd)}\n${source.slice(start, end)}\nglobalThis.extracted={run:taskOp,pending:()=>taskOpsInFlight};`);
   runInNewContext(script, context);
   const wrapper = context.extracted as { run: (by: string, op: string, args: Record<string, unknown>, inProcess: boolean, piiTurn?: boolean) => Promise<string>; pending: () => number };
   for (const peer of ["local", "pi"]) for (const expected of [{ ok: true }, { ok: false, reason: "already_named", error: "keep the name or ask the person to rename" }, { ok: false, reason: "private", error: "finish PII work before naming" }]) {

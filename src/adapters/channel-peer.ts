@@ -1,18 +1,27 @@
-import { BasePeer, type PeerAdapter } from "../hub/peers.ts";
+import { BasePeer, type PeerAdapter, type PeerOwnerAttachment, type PeerStandbySession, type PeerTakeoverClaim } from "../hub/peers.ts";
 import type { Envelope } from "../hub/envelope.ts";
 import { definitionOf } from "./registry.ts";
 import type { StartForm } from "./registry-types.ts";
+import type { ClaudeChannelEvidence } from "./claude-channel-evidence.ts";
 
 /** Only the control socket operations the peer owns; authentication remains in the daemon. */
 export interface ChannelSocket {
   readyState: number;
-  data: { launchId?: string; protocol?: number };
+  data: { launchId?: string; protocol?: number; standbyId?: string; retainStandby?: boolean; clientPid?: number; clientVersion?: string; channel?: boolean; channelEvidence?: ClaudeChannelEvidence; cwd?: string; peerGeneration?: string | number; detachedByPerson?: boolean };
   send(data: string): unknown;
   close(code?: number, reason?: string): void;
 }
 
+const MAX_PID = 2_147_483_647;
+/** A client-reported pid, bounded the way the daemon bounds it at hello; anything else is unknown, never a guess. */
+const boundedPid = (value: unknown): number | undefined => Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_PID ? value as number : undefined;
+/** A native session id that is shown only when it is a short plain token (the agy decoder accepts UUIDs); a longer or odd value is not shown at all, never trimmed into one. */
+const NATIVE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
 /** A peer that lives in another process and attaches over the control WS (the Claude channel plugin). */
 export class WsPeer extends BasePeer {
+  private static readonly MAX_STANDBY_SESSIONS = 8;
+  readonly acceptedSettlement = "explicit" as const;
   readonly form: StartForm = "tui";
   private generation = crypto.randomUUID();
   // Checkpoints become stale at hello/claim, before asynchronous recall finishes and attach changes delivery generation.
@@ -25,16 +34,25 @@ export class WsPeer extends BasePeer {
   private delivered = new Set<string>();
   private sock: ChannelSocket | undefined;
   private claimed: ChannelSocket | undefined;
+  private readonly standbys = new Map<ChannelSocket, PeerStandbySession>();
   private nativeTurnSession: string | undefined;
   private nativeActive = false;
+  /** The owner facts of the current socket, written once when its attach completes and dropped with that socket (#1310). The native session is read live from `nativeSession`, which the same events clear. */
+  private ownerFacts: { socket: ChannelSocket; ownerPid?: number; attachedAt: number } | undefined;
   /** The attached session said it cannot show channel pushes (issue #205): the bus keeps its queue for `inbox`. */
   pullOnly = false;
+  attachMode: "channel" | "tools-only" = "tools-only";
+  attachEvidence: ClaudeChannelEvidence = "unknown";
   steer: PeerAdapter["steer"] = undefined;
   lastInboxAt: number | undefined;
   private claimedPullOnly = false;
+  private claimedEvidence: ClaudeChannelEvidence = "unknown";
   private readonly attachmentWaiters: { generation: string; resolve: (attached: boolean) => void }[] = [];
   private settleAttachmentWaiters(attached: boolean): void {
     for (const waiter of this.attachmentWaiters.splice(0)) waiter.resolve(attached && waiter.generation === this.claimGeneration);
+  }
+  private pruneStandbys(): void {
+    for (const [socket] of this.standbys) if (socket.readyState !== WebSocket.OPEN) this.standbys.delete(socket);
   }
   /** Bounded native-hook observations wait for this exact claim, never a later socket. */
   waitForAttach(generation: string): Promise<boolean> {
@@ -42,15 +60,34 @@ export class WsPeer extends BasePeer {
     return new Promise(resolve => { this.attachmentWaiters.push({ generation, resolve }); });
   }
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
-  claim(sock: ChannelSocket, pullOnly = false): void {
+  claim(sock: ChannelSocket, pullOnly = false, evidence: ClaudeChannelEvidence = "unknown"): void {
+    this.standbys.delete(sock);
+    if (this.claimed && this.claimed !== this.sock && this.claimed !== sock) this.claimed.close(4000, "replaced");
     this.settleAttachmentWaiters(false);
     this.claimGeneration = crypto.randomUUID();
     this.claimed = sock;
     this.claimedPullOnly = pullOnly;
+    this.claimedEvidence = evidence;
   }
   /** Host transport observation, distinct from the peer's activity state. */
   get attached(): boolean { return !!this.sock && this.sock.readyState === WebSocket.OPEN && !this.claiming; }
+  get standbySessions(): readonly PeerStandbySession[] {
+    this.pruneStandbys();
+    return [...this.standbys.values()].map(session => ({ ...session }));
+  }
   get managedLaunchId(): string | undefined { return this.attached ? this.sock?.data.launchId : undefined; }
+  /**
+   * Who holds this peer now, for display only (#1310). Absent while a newer hello is claiming (the peer reads as offline until its preface ends), while offline and after a detach, so a claimant or a
+   * previous owner is never shown as attached. `ownerPid` is the current socket's bounded client pid, `attachedAt` is when its attach completed (not the hello), and `nativeSessionId` appears only
+   * after the host bound a verified native session (`bindNativeSession`, from the daemon's checked native-facts path) and only when it is a short plain token.
+   */
+  get ownerAttachment(): PeerOwnerAttachment | undefined {
+    const facts = this.ownerFacts;
+    if (!facts || facts.socket !== this.sock || !this.attached) return undefined;
+    const native = (this as { nativeSession?: string }).nativeSession;
+    return { ...(facts.ownerPid !== undefined ? { ownerPid: facts.ownerPid } : {}), attachedAt: facts.attachedAt,
+      ...(typeof native === "string" && NATIVE_SESSION_ID.test(native) ? { nativeSessionId: native } : {}) };
+  }
 
   /** A session that shows pushes holds the peer or is arriving: a session without them must not take it (issue #205). */
   get channelHeld(): boolean {
@@ -59,6 +96,52 @@ export class WsPeer extends BasePeer {
   /** Status-file observations are advisory; a replaced client cannot evict a live socket or pending claim. */
   standbyHeld(pullOnly: boolean): boolean {
     return this.claiming || (!!this.sock && this.sock.readyState === WebSocket.OPEN && (pullOnly || !this.pullOnly));
+  }
+  /** Retain an opt-in contender without giving it peer authority or changing current delivery ownership. */
+  retainStandby(sock: ChannelSocket, pid?: number): PeerStandbySession | undefined {
+    this.pruneStandbys();
+    const existing = this.standbys.get(sock);
+    if (existing) return { ...existing };
+    if (sock.readyState !== WebSocket.OPEN || this.standbys.size >= WsPeer.MAX_STANDBY_SESSIONS) return undefined;
+    const session: PeerStandbySession = { id: crypto.randomUUID(), ...(pid !== undefined ? { pid } : {}), since: Date.now() };
+    sock.data.standbyId = session.id;
+    this.standbys.set(sock, session);
+    return { ...session };
+  }
+  /** Promote one currently retained connection. Selection is by stable id, or oldest live when omitted. */
+  takeover(standbyId: string | undefined, eligible: (socket: object) => boolean): PeerTakeoverClaim | undefined {
+    this.pruneStandbys();
+    if (this.claiming || this.sock && !this.attached) return undefined;
+    const candidate = [...this.standbys.entries()]
+      .find(([socket, session]) => socket.readyState === WebSocket.OPEN && (standbyId === undefined || session.id === standbyId) && eligible(socket));
+    if (!candidate) return undefined;
+    const [socket, session] = candidate;
+    const previous = this.sock;
+    this.standbys.delete(socket);
+    if (previous) {
+      previous.data.detachedByPerson = true;
+      this.detach(previous);
+      previous.close(previous.data.retainStandby === true ? 4405 : 4403, "detached by the person");
+    }
+    this.claim(socket, socket.data.channel === false, socket.data.channelEvidence ?? "unknown");
+    const generation = this.claimGeneration;
+    return {
+      standbyId: session.id,
+      socket,
+      generation,
+      isCurrent: () => this.claimGeneration === generation && this.claimed === socket && socket.readyState === WebSocket.OPEN,
+      attach: () => {
+        if (this.claimGeneration !== generation || this.claimed !== socket || socket.readyState !== WebSocket.OPEN) return false;
+        this.attach(socket);
+        return this.owns(socket);
+      },
+    };
+  }
+  /** #1385: whether a client is attached and the agent-hub version its hello reported (validated at hello). Display only. */
+  get hubClient(): { attached: boolean; version?: string } {
+    const sock = this.sock;
+    if (!sock || sock.readyState !== WebSocket.OPEN) return { attached: false };
+    return sock.data.clientVersion ? { attached: true, version: sock.data.clientVersion } : { attached: true };
   }
   /** A hello that has not finished its preface yet. The peer reads as offline until then, and a session standing by
    *  for the id must not take it from a claimant that is still arriving. */
@@ -70,11 +153,16 @@ export class WsPeer extends BasePeer {
     if (this.sock) this.setState("offline"); // unresolved work belongs to the previous connection
     this.sock?.close(4000, "replaced");
     this.sock = sock;
+    // Replaced in the same synchronous step as the socket, so a previous owner's pid or time can never be read beside the new socket (#1310).
+    this.ownerFacts = { socket: sock, ...(boundedPid(sock.data.clientPid) !== undefined ? { ownerPid: boundedPid(sock.data.clientPid) } : {}), attachedAt: Date.now() };
     this.generation = crypto.randomUUID();
     this.delivered.clear();
     this.nativeTurnSession = undefined;
+    delete (this as { nativeSession?: string }).nativeSession;
     this.nativeActive = false;
     this.pullOnly = this.claimedPullOnly; // before idle: the idle transition drains
+    this.attachMode = this.pullOnly ? "tools-only" : "channel";
+    this.attachEvidence = this.claimedEvidence;
     // Native TUI readback in #493 proves important channel input can be consumed before the turn ends.
     // Pull-only transports expose no steer capability; the bus keeps their important work queued.
     this.steer = this.pullOnly ? undefined : async (envs, deliveryId) => {
@@ -82,14 +170,21 @@ export class WsPeer extends BasePeer {
       await this.deliver(envs, deliveryId);
     };
     this.lastInboxAt = undefined;
+    if (sock.data.standbyId) {
+      sock.send(JSON.stringify({ t: "peer_attached", standbyId: sock.data.standbyId }));
+      sock.data.standbyId = undefined;
+    }
     this.setState("idle");
     this.settleAttachmentWaiters(true);
   }
   detach(sock: ChannelSocket): void {
+    this.standbys.delete(sock);
     if (this.claimed === sock) { this.claimed = undefined; this.settleAttachmentWaiters(false); }
     if (this.sock !== sock) return;
     this.sock = undefined;
+    this.ownerFacts = undefined;
     this.steer = undefined;
+    delete (this as { nativeSession?: string }).nativeSession;
     this.nativeActive = false;
     this.pullOnly = false;
     this.setState("offline");
@@ -98,9 +193,13 @@ export class WsPeer extends BasePeer {
     this.settleAttachmentWaiters(false);
     this.claimed?.close(4000, "peer is off roster; retry when a person adds it");
     this.sock?.close(4000, "peer is off roster; retry when a person adds it");
+    for (const socket of this.standbys.keys()) socket.close(4000, "peer is off roster; retry when a person adds it");
+    this.standbys.clear();
     this.claimed = undefined;
     this.sock = undefined;
+    this.ownerFacts = undefined;
     this.steer = undefined;
+    delete (this as { nativeSession?: string }).nativeSession;
     this.nativeActive = false;
     this.pullOnly = false;
     this.setState("offline");
@@ -116,6 +215,11 @@ export class WsPeer extends BasePeer {
     this.sock.send(JSON.stringify({ t: "queued", queued: counts.queued, important: counts.important }));
   }
   owns(sock: ChannelSocket): boolean { return this.sock === sock; }
+  ownsSocket(socket: object): boolean { return this.sock === socket; }
+  bindNativeSession(session: string): void {
+    if (!this.sock || !session) return;
+    Object.defineProperty(this, "nativeSession", { value: session, writable: true, configurable: true, enumerable: true });
+  }
   nativeStarted(session: string): void {
     if (!this.sock) return;
     this.nativeTurnSession = session;
@@ -138,7 +242,10 @@ export class WsPeer extends BasePeer {
   async start(): Promise<void> {}
   async stop(): Promise<void> {
     this.settleAttachmentWaiters(false);
+    this.ownerFacts = undefined;
     this.sock?.close();
+    for (const socket of this.standbys.keys()) socket.close();
+    this.standbys.clear();
   }
 
   recoveryMetadata(): Record<string, unknown> {

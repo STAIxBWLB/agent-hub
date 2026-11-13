@@ -116,7 +116,7 @@ test("the rendered AGENTS blocks stay consistent and carry no copy of the guidan
   const needle = /deferred MCP|tool search|agent-hub-jcode/i;
   expect(block).not.toMatch(needle);
   for (const name of ["general", "research", "writing"]) {
-    const agents = JSON.parse(readFileSync(join(import.meta.dir, `../templates/profiles/${name}.json`), "utf8")).agents as string;
+    const agents = `${block.trim()}\n\n${JSON.parse(readFileSync(join(import.meta.dir, `../templates/profiles/${name}.json`), "utf8")).agents as string}`; // #1399: rendered as init does
     expect(agents, name).not.toMatch(needle);
     expect(jcodeLine(agents), name).toEqual(jcodeLine(block)); // the Jcode bullet is the same text in every template
   }

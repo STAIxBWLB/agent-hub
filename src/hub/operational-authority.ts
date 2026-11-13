@@ -32,7 +32,7 @@ export type ConductorLocalAction = typeof CONDUCTOR_LOCAL_ACTIONS[number];
 export const conductorLocalAction = (value:unknown): value is ConductorLocalAction => typeof value==="string" && (CONDUCTOR_LOCAL_ACTIONS as readonly string[]).includes(value);
 /** Daemon-authorized labels. Recovery labels pass the initial role check, then require their separate per-operation proof. */
 export const CONDUCTOR_DAEMON_OPERATIONS = ["roster add","roster remove","stop","queue show","queue resolve","queue discard","settings set","doctor orphans kill","logs","export",
-  "board import","intake approve","schedule run","schedule pause","schedule resume","goal link","task unassign","restart","upgrade","recovery resume","recovery abort"] as const;
+  "board import","intake approve","schedule run","schedule pause","schedule resume","goal link","task unassign","guidance probe register","guidance probe start","guidance probe show","guidance probe receipts","guidance probe cancel","restart","upgrade","recovery resume","recovery abort"] as const;
 /**
  * #933: forms whose effect runs in the CLI process itself (local files). The daemon admits and audits them once at the handshake (`admit`),
  * after the CLI has validated their arguments. Recovery-bearing restart/upgrade forms use the separate source-issued continuation proof.
@@ -91,6 +91,15 @@ export function conductorOperation(command:string,args:readonly string[]): Condu
   if (command==="intake" && sub==="approve" && words.length===2) return "intake approve";
   if (command==="schedule" && (sub==="run" || sub==="pause" || sub==="resume")) return `schedule ${sub}`;
   if (command==="goal" && args.find(arg=>arg!=="--json")==="link") return "goal link";
+  if (command === "guidance" && args[0] === "probe") {
+    switch (args[1]) {
+      case "register": return "guidance probe register";
+      case "start": return "guidance probe start";
+      case "show": return "guidance probe show";
+      case "receipts": return "guidance probe receipts";
+      case "cancel": return "guidance probe cancel";
+    }
+  }
   return undefined;
 }
 
@@ -119,6 +128,10 @@ export function operationalRequestLabel(value:unknown):string|undefined {
   if(message.t==="peer_stop")return "stop";
   if(message.t==="goal_link")return "goal link";
   if(message.t==="task" && typeof message.op==="string" && Object.hasOwn(CONDUCTOR_TASK_OPS,message.op))return CONDUCTOR_TASK_OPS[message.op];
+  if (typeof message.t === "string" && message.t.startsWith("guidance_probe_")) {
+    const operation = message.t.slice("guidance_probe_".length);
+    return ["register", "start", "show", "receipts", "cancel"].includes(operation) ? `guidance probe ${operation}` : undefined;
+  }
   if(message.t==="queue" && typeof message.op==="string" && ["show","resolve","discard"].includes(message.op))return `queue ${message.op}`;
   if(message.t==="settings_set"||message.t==="settings_preview")return "settings set";
   return undefined;

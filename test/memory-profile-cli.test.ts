@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, memoryProjectKey, migrate } from "@staix/agent-mem";
@@ -61,7 +61,7 @@ test("invalid selected profile refuses before a default CLI open can create lega
   try {
     await expect(memoryCommand(["list"], cwd)).rejects.toThrow();
     expect(existsSync(join(memoryDir, "machine.json"))).toBe(false);
-    expect(existsSync(join(memoryDir, "index.db"))).toBe(false);
+    expect(readdirSync(memoryDir).some((name) => /^index(-v\d+)?\.db$/.test(name))).toBe(false);
     expect(readFileSync(join(memoryDir, "profile.json"))).toEqual(before);
   } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
 });
@@ -76,6 +76,50 @@ test("profile-check is person-only and decay JSON alone carries additive profile
   expect(result.memoryProfile).toMatchObject({ profile: "shared-v1", state: "ready" });
   expect(Array.isArray(result.candidates)).toBe(true);
   expect(JSON.parse(await memoryCommand(["list", "--json"], f.cwd, { store: f.store, person: true }))[0]?.memoryProfile).toBeUndefined();
+});
+
+test("declined person inspection reports complete generation ids without exposing row text", async () => {
+  const f = fixture();
+  const store = await selectGeneration(f.home, f.memoryDir);
+  writeFileSync(join(f.cwd, ".agenthub", "config.json"), JSON.stringify({ pii: { paths: ["private/student.txt"] } }));
+  const id = store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "details in private/student.txt; never print this text", about: ["file:private/student.txt"] });
+  let inspectedTargets = 0, inspectedSnapshots = 0;
+  const openedSyncTargets = store.openedSyncTargets.bind(store), prunePort = store.prunePort.bind(store);
+  store.openedSyncTargets = () => { inspectedTargets++; return openedSyncTargets(); };
+  store.prunePort = () => { inspectedSnapshots++; return prunePort(); };
+  const result = JSON.parse(await memoryCommand(["declined", "--json"], f.cwd, { store, person: true }));
+  expect(result).toMatchObject({ complete: true, rows: [{ id, rule: "host" }], memoryProfile: { profile: "generation", state: "ready" } });
+  expect(inspectedTargets).toBeGreaterThan(0);
+  expect(inspectedSnapshots).toBe(0);
+  expect(JSON.stringify(result)).not.toContain("never print this text");
+  expect(JSON.stringify(result)).not.toContain("private/student.txt");
+  await expect(memoryCommand(["declined"], f.cwd, { store, person: false })).rejects.toThrow("person authority");
+  const human = await memoryCommand(["declined"], f.cwd, { store, person: true });
+  expect(human).toContain(`mem:${id} host`);
+  expect(human).not.toContain("never print this text"); expect(human).not.toContain("private/student.txt");
+});
+
+test("declined person inspection confirms an empty shared-v1 result through bounded physical inspection", async () => {
+  const f = fixture(), store = f.store;
+  let inspectedTargets = 0, inspectedSnapshots = 0;
+  const openedSyncTargets = store.openedSyncTargets.bind(store), prunePort = store.prunePort.bind(store);
+  store.openedSyncTargets = () => { inspectedTargets++; return openedSyncTargets(); };
+  store.prunePort = () => { inspectedSnapshots++; return prunePort(); };
+  const result = JSON.parse(await memoryCommand(["declined", "--json"], f.cwd, { store, person: true }));
+  expect(result).toMatchObject({ rows: [], complete: true });
+  expect(inspectedTargets).toBeGreaterThan(0);
+  expect(inspectedSnapshots).toBe(0);
+  expect(JSON.stringify(result)).not.toContain("selected profile note");
+  expect(await memoryCommand(["declined"], f.cwd, { store, person: true })).toContain("no declined physical outbound rows; inspection complete");
+});
+
+test("manual sync does not apply current-project task paths to a foreign project's task note", async () => {
+  const f = fixture(), task = "foreign-project#1@1";
+  f.store.note({ op: "note", project: "foreign-project", scope: "project", tier: "long", kind: "finding", peer: "codex", source: "hub", task, text: "safe foreign project note", about: [] });
+  const stopped = new AbortController(); stopped.abort();
+  await expect(memoryCommand(["sync"], f.cwd, { store: f.store, person: true, sync: { signal: stopped.signal } }))
+    .rejects.toThrow("stopped");
+  expect(existsSync(join(f.store.dir, ".git"))).toBe(false);
 });
 
 

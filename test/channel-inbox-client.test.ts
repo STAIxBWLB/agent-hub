@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { frame, newEnvelope } from "../src/hub/envelope.ts";
 import { TASK_TOOLS } from "../src/hub/hub-tools.ts";
+import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 async function client(mode: "channel" | "plain" | "tools", failPush = false) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-inbox-client-")));
@@ -29,12 +30,13 @@ async function client(mode: "channel" | "plain" | "tools", failPush = false) {
   if (mode === "channel") env.AGENTHUB_CHANNEL = "1";
   if (mode === "tools") env.AGENTHUB_MODE = "tools";
   const entry = join(import.meta.dir, "../src/adapters/claude-channel.ts");
-  let program = entry;
+  let program = join(root, "channel-client-fixture.ts");
+  const evidence = mode === "channel" ? `${syntheticClaudeParentEvidenceSetup()}\n` : "";
   if (failPush) {
     // A deterministic transport failure exercises the legacy nonjournal fallback without closing MCP stdout.
     program = join(root, "failed-notification.ts");
-    writeFileSync(program, `import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))}; const original = Server.prototype.notification; Server.prototype.notification = function(message, options) { if (message.method === "notifications/claude/channel") return Promise.reject(new Error("synthetic channel push failure")); return original.call(this, message, options); }; await import(${JSON.stringify(entry)});`);
-  }
+    writeFileSync(program, `${evidence}import { Server } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"))}; const original = Server.prototype.notification; Server.prototype.notification = function(message, options) { if (message.method === "notifications/claude/channel") return Promise.reject(new Error("synthetic channel push failure")); return original.call(this, message, options); }; await import(${JSON.stringify(entry)});`);
+  } else writeFileSync(program, `${evidence}await import(${JSON.stringify(entry)});`);
   const child = Bun.spawn([process.execPath, program], { cwd: root, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const stderr = (async () => { for await (const data of child.stderr) diagnostics = (diagnostics + Buffer.from(data).toString()).slice(-16384); })();
   const stdout = (async () => {
@@ -182,6 +184,72 @@ test("#221 a hub_inbox result states the queued count once", async () => {
   } finally { await f.close(); }
 });
 
+test("#1172 hub_inbox renders accepted and held metadata once and suppresses stale polling advice", async () => {
+  const f = await client("channel");
+  try {
+    const accepted = { id: "accepted-1", revision: 4, state: "accepted", senders: ["user"], kinds: ["review"], createdAt: Date.now() - 60_000 };
+    const held = { id: "held-1", revision: 7, state: "needs_review", senders: ["codex"], kinds: ["task"], createdAt: Date.now() - 60_000 };
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, held: { count: 2, rows: [accepted, held], truncated: false }, pollingAdvice: { count: 4, minutes: 3 } });
+    f.holds({ ok: true, held: { count: 1, rows: [held], truncated: false }, queued: 0, important: 0 });
+
+    const shown = output(await f.call("hub_inbox"));
+    expect(shown).toContain("accepted-1");
+    expect(shown).toContain("accepted");
+    expect(shown).toContain("held-1");
+    expect(shown.match(/held-1/g)).toHaveLength(1);
+    expect(shown).not.toContain("(no queued hub messages)");
+    expect(shown).not.toContain("[polling detected]");
+    expect(f.requests.filter(row => row.t === "delivery_holds")).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+test("#1172 hub_inbox keeps accepted delivery metadata visible when the active push blocks a pull", async () => {
+  const f = await client("channel");
+  try {
+    const accepted = { id: "active-accepted", revision: 9, state: "accepted", senders: ["user"], kinds: ["task"], createdAt: Date.now() };
+    f.inbox({ ok: false, error: "an accepted delivery is awaiting your explicit confirmation", held: { count: 1, rows: [accepted], truncated: false } });
+    f.holds({ ok: true, held: { count: 0, rows: [], truncated: false }, queued: 0, important: 0 });
+
+    const shown = output(await f.call("hub_inbox"));
+    expect(shown).toContain("not read: an accepted delivery is awaiting your explicit confirmation");
+    expect(shown).toContain("active-accepted revision 9 accepted");
+    expect(shown).not.toContain("(no queued hub messages)");
+  } finally { await f.close(); }
+});
+
+test("#1172 unavailable held metadata stays advisory and does not hide pulled messages or duplicate a generic hint", async () => {
+  const f = await client("channel");
+  try {
+    const env = newEnvelope("codex", "already pulled message");
+    const held = { id: "held-after-pull", revision: 3, senders: ["user"], kinds: ["task"], createdAt: Date.now() };
+    f.inbox({ ok: true, envs: [env], waiting: 0, waitingImportant: 0, held: { unavailable: true } });
+    f.holds({ ok: true, held: { count: 1, rows: [held], truncated: false }, queued: 0, important: 0 });
+
+    const shown = output(await f.call("hub_inbox"));
+    expect(shown).toContain(frame(env));
+    expect(shown).toContain("Delivery confirmation metadata is unavailable");
+    expect(shown).toContain("ahub queue list --peer claude");
+    expect(shown.match(/held-after-pull/g)).toBeNull();
+    expect(shown).not.toContain("(no queued hub messages)");
+    expect(shown).not.toContain("raw error");
+  } finally { await f.close(); }
+});
+
+test("#1079 held-only inbox retains its legacy empty-queue header without saying nothing is waiting", async () => {
+  const f = await client("plain");
+  try {
+    const held = { id: "needs-review-only", revision: 2, state: "needs_review", senders: ["codex"], kinds: ["task"], createdAt: Date.now() };
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, held: { count: 1, rows: [held], truncated: false } });
+    f.holds({ ok: true, held: { count: 1, rows: [held], truncated: false }, queued: 0, important: 0 });
+
+    const shown = output(await f.call("hub_inbox"));
+    expect(shown).toStartWith("(no queued hub messages)");
+    expect(shown).toContain("Held hub deliveries: 1");
+    expect(shown).not.toContain("Nothing is waiting.");
+    expect(shown.match(/needs-review-only/g)).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
 test("#493 actionable notices are not FYI in both session instruction modes, send guidance and template", async () => {
   for (const mode of ["channel", "tools"] as const) {
     const f = await client(mode);
@@ -201,4 +269,48 @@ test("#493 actionable notices are not FYI in both session instruction modes, sen
   expect(template).toContain("never report the hub as unavailable from the first turn alone");
   expect(TASK_TOOLS.find(tool => tool.name === "hub_task_done")?.description).toContain("no duplicate");
   expect(TASK_TOOLS.find(tool => tool.name === "hub_review")?.description).toContain("no duplicate");
+});
+
+test("malformed additive held bodies preserve committed normal inbox, local fallback and fresh counts (#1328)", async () => {
+  const f = await client("channel", true);
+  try {
+    f.push({ t: "deliver", envs: [newEnvelope("codex", "LOCAL_HELD_FALLBACK")] });
+    await f.waitFor(() => f.diagnostics().includes("queued for hub_inbox"));
+    const normal = newEnvelope("codex", "NORMAL_COMMITTED_CANARY");
+    f.inbox({ ok: true, envs: [normal], waiting: 2, waitingImportant: 1, heldRead: { count: 1, rows: [{ id: null, revision: "injected", state: "needs_review", messages: null }], truncated: false } });
+    const result = output(await f.call("hub_inbox"));
+    expect(result).toContain(frame(normal)); expect(result).toContain("LOCAL_HELD_FALLBACK");
+    expect(result).toContain("2 more waiting"); expect(result).toContain("Held message bodies are unavailable");
+    const repeated = output(await f.call("hub_inbox"));
+    expect(repeated).not.toContain("LOCAL_HELD_FALLBACK"); expect(repeated).toContain(frame(normal));
+    const escape = String.fromCharCode(27);
+    for (const identity of [{ id: `d${escape}control`, from: "user" }, { id: "d", from: `user${escape}control` }]) {
+      f.inbox({ ok: true, envs: [normal], waiting: 2, waitingImportant: 1, heldRead: { count: 1, rows: [{ id: identity.id, revision: 1, state: "needs_review", messages: [{ id: "e", from: identity.from, kind: "chat", priority: "status", body: "HELD_CONTROL_CANARY" }] }], truncated: false } });
+      const safe = output(await f.call("hub_inbox"));
+      expect(safe).toContain(frame(normal)); expect(safe).toContain("2 more waiting");
+      expect(safe).toContain("Held message bodies are unavailable"); expect(safe).not.toContain(escape); expect(safe).not.toContain("HELD_CONTROL_CANARY");
+    }
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, heldRead: { count: 0, rows: [], truncated: false }, pollingAdvice: { count: 3, minutes: 1 } });
+    const empty = output(await f.call("hub_inbox"));
+    expect(empty).toContain("(no queued hub messages)"); expect(empty).toContain("[polling detected]");
+    expect(empty).not.toContain("Held message bodies are unavailable");
+    expect(f.requests.filter(row => ["delivery_complete", "delivery_receipt"].includes(row.t))).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("held inspection has its own MCP text block while the normal empty queue block keeps its prefix (#1328)", async () => {
+  const f = await client("plain");
+  try {
+    const env = newEnvelope("user", "HELD_SECOND_BLOCK_CANARY");
+    const row = { id: "held-block", revision: 1, state: "needs_review", createdAt: Date.now(), senders: ["user"], kinds: ["chat"] };
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, held: { count: 1, rows: [row], truncated: false },
+      heldRead: { count: 1, rows: [{ id: row.id, revision: row.revision, state: row.state, messages: [{ id: env.id, from: env.from, kind: env.kind, priority: env.priority, body: env.body }] }], truncated: false } });
+    const result = await f.call("hub_inbox");
+    expect(result.content[0].text).toStartWith("(no queued hub messages)");
+    expect(result.content[0].text).not.toContain(env.body);
+    expect(result.content[1].text).toContain("Read-only held message inspection");
+    expect(result.content[1].text).toContain(env.body);
+    expect(output(result)).toContain(env.body);
+    expect(f.requests.filter(request => ["delivery_receipt", "delivery_complete"].includes(request.t))).toEqual([]);
+  } finally { await f.close(); }
 });

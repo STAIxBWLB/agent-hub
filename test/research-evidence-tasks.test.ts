@@ -18,7 +18,7 @@ import { MemoryStore, CandidateStore } from "@staix/agent-mem";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
-class Peer extends BasePeer { async start() { this.setState("idle"); } async stop() {} async deliver() {} }
+class Peer extends BasePeer { async start() { this.setState("idle"); } async stop() {} async deliver() { return undefined; } }
 const CLAIMS = ["CLAIM_TEXT_CANARY first", "CLAIM_TEXT_CANARY second"];
 async function fixture() {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-evidence-")), file = join(cwd, "hub.db");

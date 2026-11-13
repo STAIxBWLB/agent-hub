@@ -34,39 +34,44 @@ export const COMPAT = {
     parse: out => plain(out.trim()),
     trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0 and 1.5.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
     receipt: "docs/verification/2026-11-03-pi-150-compat.md" },
-  // Transport receipts: docs/verification/2026-10-23-headless-claude-permissions.md; 2.1.310: docs/verification/2026-10-26-claude-implementer-2.1.310.md; 2.1.314 (transport and wrapper): docs/verification/2026-10-31-claude-implementer-2.1.314.md; 2.1.316: docs/verification/2026-10-31-claude-implementer-2.1.316.md; host-wrapper receipt below repeats with them.
-  "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309", "2.1.310", "2.1.314", "2.1.316"], gate: "contract", probe: ["claude", "--version"],
+  // Transport receipts: docs/verification/2026-10-23-headless-claude-permissions.md; 2.1.310: docs/verification/2026-10-26-claude-implementer-2.1.310.md; 2.1.314 (transport and wrapper): docs/verification/2026-10-31-claude-implementer-2.1.314.md; 2.1.316: docs/verification/2026-10-31-claude-implementer-2.1.316.md; 2.1.318: docs/verification/2026-11-05-claude-implementer-2.1.318.md; 2.1.319: docs/verification/2026-11-06-claude-implementer-2.1.319.md; 2.1.322: docs/verification/2026-11-10-claude-implementer-2.1.322.md; host-wrapper receipt below repeats with them.
+  "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309", "2.1.310", "2.1.314", "2.1.316", "2.1.318", "2.1.319", "2.1.322"], gate: "contract", probe: ["claude", "--version"],
     parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
     trustNote: "The native prompt-tool transport and host-wrapper rewrite, environment isolation and replay contract have isolated receipts. No dontAsk/bypass fallback exists; another version's permission or rewrite behavior is unverified.",
-    receipt: "docs/verification/2026-10-31-claude-implementer-2.1.316.md" },
-  // 0.163.0 receipt: docs/verification/2026-10-22-codex-reviewer-isolation.md; 0.164.0 receipt: docs/verification/2026-10-24-codex-0164-reviewer-isolation.md; 0.166.0: docs/verification/2026-10-31-codex-0166-reviewer-isolation.md
+    receipt: "docs/verification/2026-11-10-claude-implementer-2.1.322.md" },
+  // 0.163.0 receipt: docs/verification/2026-10-22-codex-reviewer-isolation.md; 0.164.0 receipt: docs/verification/2026-10-24-codex-0164-reviewer-isolation.md; 0.166.0: docs/verification/2026-10-31-codex-0166-reviewer-isolation.md; 0.167.0 model-free only, not verified until its model-backed run: docs/verification/2026-11-06-codex-0167-reviewer-isolation.md; 0.167.2 model-free only, not verified until its model-backed run: docs/verification/2026-11-13-codex-01672-reviewer-isolation.md
   "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0", "0.164.0", "0.166.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),
     trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md).",
-    receipt: "docs/verification/2026-10-31-codex-0166-reviewer-isolation.md" },
-  // Kimi 2.3.0 / Qwen 0.26.0 receipt: docs/verification/2026-10-22-kimi-qwen-compat.md; Kimi 2.3.1: docs/verification/2026-10-25-kimi-231-reviewer-compat.md; Kimi 2.3.2: docs/verification/2026-10-26-kimi-232-reviewer-compat.md; Kimi 2.4.1: docs/verification/2026-10-31-kimi-241-reviewer-compat.md
-  "kimi-review": { label: "Kimi reviewer (kimi-code)", verified: ["2.2.0", "2.3.0", "2.3.1", "2.3.2", "2.4.1"], gate: "isolation", probe: ["kimi", "--version"],
+    receipt: "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md" },
+  // Kimi 2.3.0 / Qwen 0.26.0 receipt: docs/verification/2026-10-22-kimi-qwen-compat.md; Kimi 2.3.1: docs/verification/2026-10-25-kimi-231-reviewer-compat.md; Kimi 2.3.2: docs/verification/2026-10-26-kimi-232-reviewer-compat.md; Kimi 2.4.1: docs/verification/2026-10-31-kimi-241-reviewer-compat.md; Kimi 2.5.1: docs/verification/2026-11-06-kimi-251-reviewer-compat.md
+  "kimi-review": { label: "Kimi reviewer (kimi-code)", verified: ["2.2.0", "2.3.0", "2.3.1", "2.3.2", "2.4.1", "2.5.1"], gate: "isolation", probe: ["kimi", "--version"],
     parse: out => plain(out.trim()),
     trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven.",
-    receipt: "docs/verification/2026-10-31-kimi-241-reviewer-compat.md" },
+    receipt: "docs/verification/2026-11-06-kimi-251-reviewer-compat.md" },
+  // The interactive TUI's native-turn and background readbacks are a separate contract from headless ACP and reviewer isolation.
+  "kimi-tui": { label: "Kimi TUI completion facts", verified: ["2.5.2"], gate: "contract", probe: ["kimi", "--version"],
+    parse: out => plain(out.trim()),
+    trustNote: "Only 2.5.2 has a live receipt for turn.prompt/turn.ended/prompt completion rows, background task inventory and launcher-bound plugin hooks. Another version keeps completion receipts disabled.",
+    receipt: "docs/verification/2026-11-08-kimi-tui-completion-1282.md" },
   jcode: { label: "Jcode", verified: ["0.98.1", "0.99.0", "0.99.1"], line: { min: "0.98.0", below: "1.0.0" }, gate: "contract", probe: ["jcode", "--quiet", "version", "--json"], config: "jcode_cmd",
     parse: out => { try { const v = JSON.parse(out).semver; return typeof v === "string" ? plain(v) : undefined; } catch { return undefined; } },
     trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and 0.99.1 and steering on 0.99.0 and 0.99.1; an untested version may change them.",
     receipt: "docs/verification/2026-10-26-jcode-0.99.1.md" },
-  agy: { label: "agy", verified: ["1.4.2", "1.4.7", "1.4.12"], line: { min: "1.4.0", below: "1.5.0" }, gate: "contract", probe: ["agy", "--version"],
+  agy: { label: "agy", verified: ["1.4.2", "1.4.7", "1.4.12", "1.5.3"], line: { min: "1.4.0", below: "1.5.0" }, gate: "contract", probe: ["agy", "--version"],
     parse: out => plain(out.trim()),
-    trustNote: "Only 1.4.2, 1.4.7 and 1.4.12 are T0-verified; the plugin MCP and hook contract of another version is unverified.",
-    receipt: "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md" },
-  qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
+    trustNote: "Exact 1.5.3 repeats the account-free CLI/plugin MCP, hooks, normal close and actual-launcher nonce legs; existing 1.4.x verified receipts remain unchanged. Other 1.5.x versions, real model/account behavior, headless ACP and native permission mappings remain unverified.",
+    receipt: "docs/verification/2026-11-08-agy-1.5.3.md" },
+  qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8", "0.26.9", "0.27.0"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4 and 0.26.5; real model turns remain unverified. Another version may change those contracts.",
-    receipt: "docs/verification/2026-11-03-qwen-0265-acp.md" },
-  // Receipt: docs/verification/2026-10-25-qwen-dual-output-t0.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
+    trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); exact 0.26.9 and 0.27.0 repeat those account-free probes on macOS arm64. Real model turns and Linux repetition of those versions remain unverified. The historical A/B/B setter result did not identify the third request's purpose. Exact 0.26.9 and 0.27.0 pass isolated suggestions-off A/B/clear/A probes; production live-setter admission stays unavailable pending a separate decision. Another version may change those contracts.",
+    receipt: "docs/verification/2026-11-09-qwen-0270-acp.md" },
+  // Receipt: docs/verification/2026-11-10-qwen-0271-dual-output.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
   // the ACP receipts of the headless `qwen` entry say nothing about it, so that entry is not widened and this one carries no `line`.
-  "qwen-dual": { label: "Qwen Code dual-output TUI", verified: ["0.26.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
+  "qwen-dual": { label: "Qwen Code dual-output TUI", verified: ["0.26.1", "0.27.0", "0.27.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "The dual-output file contract (submit and confirmation_response input, user/assistant/stream_event/control events, session_start identity) was verified on 0.26.1 only. A hub deny ends the turn without any Qwen event, and no external stop of a running turn exists; another version may change either.",
-    receipt: "docs/verification/2026-10-25-qwen-dual-output-t0.md" },
+    trustNote: "Exact 0.27.0 and 0.27.1 each repeat normal-Bus Q2 and account-free normal-mode Q3/Q5/Q6/Q7 on macOS arm64 against a matched control (0.26.1, then 0.27.0). Existing deny and external-stop limits remain. Real model/account turns, Linux and lifetime containment remain unverified; direct busy-submit characterization is separate from normal-Bus Q2.",
+    receipt: "docs/verification/2026-11-10-qwen-0271-dual-output.md" },
 } as const satisfies Record<string, CompatPolicy>;
 export type CompatId = keyof typeof COMPAT;
 type CommandConfig = { codex_bin: string; jcode_cmd: string[]; qwen_cmd: string[]; pi?: { cmd: string[] } };

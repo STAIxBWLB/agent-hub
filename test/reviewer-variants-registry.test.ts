@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { expect, test } from "bun:test";
 import * as registry from "../src/adapters/registry.ts";
@@ -105,4 +108,31 @@ test("Kimi fresh reviewer resolves only the task-MCP native-policy backend", () 
   expect(variant.start.create).toBeFunction();
   expect(variant.start.daemonPort).toBe("reviewer-print");
   expect(variant.budget?.account).toBe("kimi");
+});
+
+test("ACP implementation capability does not propagate into fresh reviewers or print getters", () => {
+  const kimi = registry.definitionOf("kimi")!, kimiReviewer = registry.definitionOf("kimi-review", declarations)!;
+  expect(kimi.modelOverride?.acp?.version).toBe("2.5.2");
+  expect(kimiReviewer.modelOverride).toBeUndefined();
+  expect({ ...kimi, ...kimiReviewer }.modelOverride).toBeUndefined();
+  const codexReviewer = registry.definitionOf("codex-review", declarations)!;
+  expect(codexReviewer.modelOverride).toEqual({ boundary: "turn" });
+  const qwen = registry.definitionOf("qwen")!;
+  expect(qwen.reviewerVariant).toBeUndefined(); expect(qwen.modelOverride).toBeUndefined();
+  // Exercise the actual daemon option selector with actual fixed identities, not a mirror or an always-true guard.
+  const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const start = source.indexOf("...(isFixedBuiltinDefinition(adapter) && adapter.modelOverride && !adapter.modelOverride.acp ?");
+  const end = source.indexOf("\n", start); expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  const expression = source.slice(start + 3, end).trim().replace(/,$/, "");
+  let calls = 0;
+  for (const adapter of [kimi, kimiReviewer, qwen, registry.definitionOf("claude-review", declarations)!]) {
+    const options = runInNewContext(`(${expression})`, { adapter, peer: "fixture", isFixedBuiltinDefinition: registry.isFixedBuiltinDefinition,
+      modelSelection: () => { calls++; throw new Error("ACP/unsupported reviewer must not acquire a model getter"); } });
+    expect(options.getModelOverride).toBeUndefined();
+  }
+  expect(calls).toBe(0);
+  const selected = { model: "review-model", applied() {} };
+  const options = runInNewContext(`(${expression})`, { adapter: codexReviewer, peer: "fixture", isFixedBuiltinDefinition: registry.isFixedBuiltinDefinition,
+    modelSelection: () => { calls++; return selected; } });
+  expect(options.getModelOverride()).toBe(selected); expect(calls).toBe(1);
 });

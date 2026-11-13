@@ -84,8 +84,8 @@ test("independent review notices use pure rotation, expose ids only and remain c
     const task = r.board.update(made.id, USER, "fixture bound author", { planner: "claude" });
     const expected = assign({ ...task, state: "proposed" }, { claude: "busy", codex: "busy", local: "busy", kimi: "idle" }, r.routing,
       { roles: r.roles, candidates: [], planners: ["codex", "local"] }).planner!;
-    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "needs independent review" })).rejects.toThrow("plan not reviewed");
-    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "same request" })).rejects.toThrow("plan not reviewed");
+    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "needs independent review" })).rejects.toThrow("spec issue not recorded (owner/planner: hub_sdlc_record)");
+    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "same request" })).rejects.toThrow("spec issue not recorded (owner/planner: hub_sdlc_record)");
     const requests = () => r.bus.pendingEnvelopes(expected).filter(env => env.refs?.planReview !== undefined);
     expect(requests()).toHaveLength(1); const first = requests()[0]!;
     expect(first.to).toEqual([expected]); expect(first.refs).toMatchObject({ task: String(task.id), planReview: 0, planAuthor: "claude" });
@@ -94,7 +94,7 @@ test("independent review notices use pure rotation, expose ids only and remain c
     await r.tasks.recordPlanReview(expected, task.id, { revision: 0, reason: "independent", review: { scope: "full", reviewers: 1 }, ci: "full" });
     expect(r.tasks.relevant(expected, first)).toBe(false);
     await r.tasks.planBacklog("claude", { id: task.id, revision: 0, fields: { priority: 1 }, reason: "new planning revision" });
-    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 1, reason: "new review required" })).rejects.toThrow("plan not reviewed");
+    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 1, reason: "new review required" })).rejects.toThrow("spec issue not recorded (owner/planner: hub_sdlc_record)");
     const current = requests().find(env => env.refs?.planReview === 1)!; expect(current).toBeDefined();
     // Date.now is deliberately unchanged: flow evidence, not a strict millisecond comparison, distinguishes reviews.
     expect(current.ts).toBe(first.ts); expect(r.tasks.relevant(expected, current)).toBe(true);

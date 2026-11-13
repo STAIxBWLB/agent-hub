@@ -1,19 +1,23 @@
+import type { ModelOverrideSelection } from "./registry-types.ts";
+import { isNativeModelToken } from "./model-token.ts";
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BasePeer, type OwnedToolsLaunch } from "../hub/peers.ts";
+import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import { frame, type Envelope } from "../hub/envelope.ts";
 import { realPath } from "../hub/project.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES } from "../hub/hub-tools.ts";
 import { claudeStateFile } from "../hub/claude-state.ts";
 import { sessionSettings } from "../cli/launch.ts";
 import { assessVersion, COMPAT } from "./compat.ts";
-import { OwnedPrintChild, PrintChildCleanupError, type OwnedPrintChildOptions } from "./claude-print-child.ts";
+import { OwnedPrintChild, PrintChildCleanupError, type OwnedInputContext, type OwnedInputObserver, type OwnedPrintChildOptions } from "./claude-print-child.ts";
 import { ClaudeTaskSessions } from "./claude-task-sessions.ts";
 import { formatClaudeFailure, type ClaudeFailureTrace } from "../hub/claude-failure-stage.ts";
 import type { PermissionMode } from "../hub/permission-mode.ts";
 import type { ReviewerPrintUsage } from "./reviewer-print.ts";
+import { resultModel } from "./print-result-model.ts";
 
 const provenVersions = new WeakMap<() => boolean, string>();
 function provenVersion(binding: () => boolean): string | undefined { return provenVersions.get(binding); }
@@ -37,6 +41,8 @@ export interface ClaudeImplementerOptions {
   watchdogMs: number;
   /** Declared `model` of this instance (#844): one validated word passed as `--model`; unset leaves the native default and the argv unchanged. */
   model?: string;
+  /** Host-only choice sampled once at the next turn/review boundary. */
+  getModelOverride?: () => ModelOverrideSelection;
   mode?: "ask" | "ask-when-needed";
   /** Exact host-reported transcript evidence only; unknown/read errors retain the recorded UUID. */
   transcriptPersisted?(task: number, sessionId: string): boolean | "unknown";
@@ -52,6 +58,9 @@ export interface ClaudeImplementerOptions {
   prove?(): Promise<() => boolean>;
   /** Host-observed failure evidence bound to one admitted native launch. */
   failureTrace?(launch: Readonly<OwnedToolsLaunch>, nativeVersion?: string): ClaudeFailureTrace;
+  /** Actual task-session input provenance only; never a peer/native authority port. */
+  beforeInput?: OwnedInputObserver;
+  inputReleased?: OwnedInputObserver;
   /** Resolve current privacy at final rendering; unknown or a throw is private. */
   failurePrivate?(task?: number): boolean;
   /** Optional host observer of the fixed, already privacy-screened failure message. */
@@ -91,6 +100,12 @@ export async function proveClaudeImplementer(peer: string, command: readonly str
 
 /** One owned print child at a time. Idle holds no native process; task continuity is ids-only on disk. */
 export class ClaudeImplementerPeer extends BasePeer {
+  /** #1402: the model the last `result` row's modelUsage named; read once at the turn end. */
+  private servedModel: string | undefined;
+  observedModel(): import("../hub/events.ts").ModelObservation | undefined {
+    const model = this.servedModel; this.servedModel = undefined;
+    return model ? { model, evidence: "served" } : undefined;
+  }
   readonly hubNative = true;
   readonly hubOwned: boolean = true;
   private generation = 0;
@@ -108,6 +123,8 @@ export class ClaudeImplementerPeer extends BasePeer {
   private sessions: ClaudeTaskSessions;
   private stopping: Promise<void> | undefined;
   private stoppingTarget: "idle" | "offline" | undefined;
+  private observerSessionIdValue: string | undefined;
+  private currentInputContext: OwnedInputContext | undefined;
   private mode: "ask" | "ask-when-needed";
   constructor(id: string, private readonly options: ClaudeImplementerOptions) {
     super(id, options.watchdogMs);
@@ -121,6 +138,8 @@ export class ClaudeImplementerPeer extends BasePeer {
     this.mode = mode; // Native remains default: the host facts gate applies this choice to the current child.
   }
   get sessionGeneration(): string | undefined { return this.active?.generation; }
+  /** Privacy-only observer identity; never exposed as PeerAdapter.nativeSession or used for budget/resume authority. */
+  get observerSessionId(): string | undefined { return this.observerSessionIdValue; }
   ownedTools(launchId: unknown): OwnedToolsLaunch | undefined { return typeof launchId === "string" && this.active?.launchId === launchId && !this.abort?.signal.aborted ? this.active : undefined; }
   keepApprovalAlive(): void { if (this.state === "busy" && this.active) this.touch(); }
   recoveryMetadata(): Record<string, unknown> { return { launch: { kind: "claude-implementer", peer: this.id }, ...(this.active ? { sessionId: this.active.sessionId } : {}) }; }
@@ -135,12 +154,12 @@ export class ClaudeImplementerPeer extends BasePeer {
     this.command = command; this.binding = binding; this.setState("idle");
   }
   async stop(reason = "Claude implementer stopped before settlement"): Promise<void> { return this.cancel(reason, "offline"); }
-  protected override onWatchdog(): void { void this.cancel("Claude implementer watchdog timeout", "idle").catch(() => {}); }
-  private settle(state: "completed" | "failed_safe" | "needs_review", reason?: string): void {
+  protected override onWatchdog(): void { void this.cancel("Claude implementer watchdog timeout", "idle", "timeout").catch(() => {}); }
+  private settle(state: "completed" | "failed_safe" | "needs_review", reason?: string, failureCause?: DeliveryFailureCause): void {
     const id = this.deliveryId; this.deliveryId = undefined;
-    if (id) this.delivery({ id, state, ...(reason ? { reason } : {}) });
+    if (id) this.delivery({ id, state, ...(reason ? { reason } : {}), ...(failureCause ? { failureCause } : {}) });
   }
-  private cancel(reason: string, next: "idle" | "offline"): Promise<void> {
+  private cancel(reason: string, next: "idle" | "offline", failureCause?: DeliveryFailureCause): Promise<void> {
     if (this.stopping) {
       if (next === "offline") this.stoppingTarget = "offline";
       return this.stopping;
@@ -148,7 +167,7 @@ export class ClaudeImplementerPeer extends BasePeer {
     this.stoppingTarget = next;
     ++this.generation; this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined; this.abort?.abort(); this.clearWatchdog();
     discardFailureTrace(this.failureTrace); this.failureTrace = undefined;
-    this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);
+    this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason, failureCause);
     if (this.owned || this.running) this.setState("busy");
     const work: Promise<void> = Promise.resolve().then(async () => {
       if (this.owned) await this.owned.stop(); // Retain handle/busy if group cleanup fails.
@@ -180,16 +199,24 @@ export class ClaudeImplementerPeer extends BasePeer {
     }
     const generation = this.generation; this.deliveryId = deliveryId; this.inputReleased = false;
     this.abort = new AbortController(); this.setState("busy");
+    let selection: ModelOverrideSelection | undefined, modelFailure: Error | undefined;
+    try {
+      selection = this.options.getModelOverride?.();
+      if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new Error("invalid model");
+    } catch { modelFailure = new Error("runtime model selection unavailable; check the peer model setting and retry"); }
     if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
     // Register the run identity before any synchronous failure can publish idle.
-    const running: Promise<void> = Promise.resolve().then(() => this.run(groups, generation, running));
+    const running: Promise<void> = Promise.resolve().then(() => this.run(groups, generation, running, selection, modelFailure));
     this.running = running;
     void running.finally(() => { if (this.running === running) this.running = undefined; }).catch(() => {});
   }
-  private async run(groups: { task?: number; envs: Envelope[] }[], generation: number, running: Promise<void>): Promise<void> {
+  private async run(groups: { task?: number; envs: Envelope[] }[], generation: number, running: Promise<void>, selection?: ModelOverrideSelection, modelFailure?: Error): Promise<void> {
     const current = () => generation === this.generation && !this.abort?.signal.aborted;
     let failureReason: string | undefined;
     try {
+      if (modelFailure) throw modelFailure;
+      const model = selection?.model ?? this.options.model;
+      let modelApplied = false;
       for (let group of groups) {
         failureReason = undefined;
         if (!current() || !this.binding?.()) throw new Error("Claude implementer admission changed");
@@ -204,6 +231,10 @@ export class ClaudeImplementerPeer extends BasePeer {
             this.options.notify?.(`${this.id}: task #${group.task} session fresh; recorded transcript is missing`);
           }
         }
+        const inputContext: OwnedInputContext = Object.freeze({ sessionId: turn.sessionId, inputId: randomUUID() });
+        this.observerSessionIdValue = turn.sessionId;
+        this.currentInputContext = inputContext;
+        this.options.beforeInput?.(inputContext, group.envs);
         const launchId = randomUUID(), directory = mkdtempSync(join(this.options.stateDir, "claude-child-")), settings = join(directory, "settings.json");
         let launchFailureTrace: ClaudeFailureTrace | undefined;
         this.cleanup = () => rmSync(directory, { recursive: true, force: true });
@@ -212,7 +243,7 @@ export class ClaudeImplementerPeer extends BasePeer {
           AGENTHUB_INSTANCE_ID: this.options.instanceId, AGENTHUB_LAUNCH_ID: launchId, AGENTHUB_HOOK_PURPOSE: "permission", AGENTHUB_PERMISSION_TOOL: "1" };
         const mcp = JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", this.options.server], env } } });
         let result = false, failed = false;
-        const child = new OwnedPrintChild({ peer: this.id, command: this.command!, args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt, this.options.model), cwd: this.options.cwd,
+        const child = new OwnedPrintChild({ peer: this.id, command: this.command!, args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt, model), cwd: this.options.cwd,
           input: group.envs.map(frame).join("\n\n"), env, current, stop: this.options.stopChild,
           onSpawn: () => {
             try {
@@ -222,13 +253,20 @@ export class ClaudeImplementerPeer extends BasePeer {
               void this.cancel("Claude implementer admission changed before child start", "idle").catch(() => {});
               return;
             }
+            if (!modelApplied) { modelApplied = true; try { selection?.applied(); } catch { /* Status acknowledgement never grants child authority. */ } }
             this.childAbort = new AbortController();
             const launch: OwnedToolsLaunch = Object.freeze({ permissionHook: true, launchId, generation: `${generation}:${launchId}`, sessionId: turn.sessionId, signal: this.childAbort.signal, ...(group.task !== undefined ? { task: group.task } : {}) });
             this.active = launch;
             try { launchFailureTrace = this.options.failureTrace?.(Object.freeze({ ...launch }), provenVersion(this.binding!)); }
             catch { launchFailureTrace = undefined; }
             this.failureTrace = launchFailureTrace;
-            this.inputReleased = true; // OwnedPrintChild releases stdin immediately after this synchronous admission fence.
+            // Admission is synchronous and fenced; settlement must treat the child as having received input
+            // even if cancellation interrupts a later stdin flush callback.
+            this.inputReleased = true;
+          },
+          onInputReleased: () => {
+            if (!current() || this.currentInputContext !== inputContext) return;
+            this.options.inputReleased?.(inputContext, group.envs);
           },
           onLeaderExit: () => { sealFailureTrace(launchFailureTrace); this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined; },
           onActivity: () => this.touch(),
@@ -242,6 +280,7 @@ export class ClaudeImplementerPeer extends BasePeer {
             if (row?.type !== "result" || result) return;
             result = true; failed = row.is_error === true || row.subtype !== "success";
             if (row.usage) this.options.onUsage?.(row.usage, group.task);
+            { const model = resultModel(row); if (model) this.servedModel = model; }
           } });
         this.owned = child;
         let code: number | null;
@@ -296,4 +335,8 @@ export class ClaudeImplementerPeer extends BasePeer {
     try { this.options.failureLog?.(message); } catch { /* host observation never changes settlement */ }
     return message;
   }
+}
+
+export function isClaudeImplementerPeer(value: unknown): value is ClaudeImplementerPeer {
+  return value instanceof ClaudeImplementerPeer;
 }

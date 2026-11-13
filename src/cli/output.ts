@@ -1,3 +1,5 @@
+import { projectModelStatus } from "./model.ts";
+import type { RuntimeModelStatus } from "../hub/model-overrides.ts";
 import type { QueueBackpressureStatus } from "../hub/queue-backpressure.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { windowKind } from "../hub/window-kind.ts";
@@ -5,18 +7,25 @@ import { boardColumns, type BoardPeerInput } from "../ui/task-board.ts";
 import { peerStyle } from "../ui/peer-palette.ts";
 import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
-import { backendLabel } from "./status-lines.ts";
+import { backendLabel, memorySyncLine, reviewInputHealthLine, roomsUnavailableLine } from "./status-lines.ts";
 import { ownerIsolationText } from "./role-holders.ts";
 import { schedulePeriodText, scheduleWhen } from "../hub/schedules.ts";
 import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
 import type { Counter, LimitsResult, TotalResult, UsageResult } from "../hub/usage-rollup.ts";
 import type { SpecsStatus } from "../hub/specs-task.ts";
+import { queueResolveChoices, queueResolveCommand } from "../hub/person-command.ts";
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
+  runtimeModels?: RuntimeModelStatus[];
+  runtimeModelsUnavailable?: boolean;
+  roomsUnavailable?: unknown;
+  roomsOpening?: boolean;
   controlWriteTiming?: { active: number; slowRequests: number; blockedLoopSamples: number; droppedActive: number; droppedRecent: number; droppedLogs: number; droppedSpans?: number; droppedMetadata?: number; expiredRequests?: number };
   specs?: SpecsStatus & { missingBlockHint?: boolean };
   queueBackpressure?: QueueBackpressureStatus;
+  /** Unresolved failed delivery counts, absent when an older hub or storage cannot answer. */
+  deliveryFailures?: Record<string, number>;
   pendingRestart?: readonly { key: string; reason: string }[];
   retainedConfig?: readonly { key: string; reason: string }[];
   /** #572 AC3: advisory, present while the project root checkout is on a branch other than the default. */
@@ -29,18 +38,61 @@ export interface StatusOutput {
   pendingTaskOffers?: readonly { task: number; peer: string }[];
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
   memoryRead?: { truncated: boolean; scanned: number; limit: number };
-  memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string };
+  memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string; sync?: { state: "disabled" | "unavailable" | "notrun" | "not-configured" | "stopped" | "ok" | "failed" | "unknown"; at?: number; cause?: string; declinedCount?: number; declinedIdsKnown?: false; withheldCount?: number; exportedCount?: number; placementActive?: false; writerCategory?: string; writerCauseClass?: string; nextStep?: string } };
   /** #784 AC3: `active`, `reviewWait` and `reserved` add up to `wip`; absent from an older hub. */
   taskWip?: Record<string, { wip: number; wipLimit: number; active?: number; reviewWait?: number; reserved?: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
   ownerIsolation?: Record<string, boolean>; ownerIsolationNotes?: Record<string, string>;
-  tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[];
+  tasks?: Record<string, number>; personRun?: number[]; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; reviewInputHealth?: { state?: string; cause?: string | null }; crash?: string[];
 }
 /** `peers`: one note per peer that shows no number, and why (no quota, nothing read yet); absent from an older hub. */
 export interface BudgetOutput { budget: Record<string, any>; gate?: number; peers?: { peer: string; kind?: string; note: string }[] }
 export interface RosterRow { peer: string; on: boolean; startMode: string; state: string; queued: number; tasks: number }
+export function renderRuntimeModels(models: readonly RuntimeModelStatus[], columns?: number): Span[][] {
+  const out = rows(["PEER", "EFFECTIVE MODEL", "SOURCE", "STATE"], models.map(row => [span(row.peer, "info", true), span(row.effectiveModel ?? "not reported"), span(row.source), span(row.pendingNextTurn ? "pending next turn" : "current")]), columns);
+  for (const row of models) {
+    if (row.pendingNextTurn) out.push(...lines(`${row.peer}: next turn ${row.desiredModel ?? "native default"}; the active turn is unchanged.`, columns, "attention"));
+    if (row.unsupported) out.push(...lines(`${row.peer}: ${row.unsupported.reason}; ${row.unsupported.nextStep}`, columns, "attention"));
+  }
+  return out;
+}
 export function renderRoster(data: RosterRow[], columns?: number): Span[][] {
   return rows(["PEER", "ROSTER", "START", "STATE", "Q", "TASKS"], data.map(row => [span(row.peer, "info", true), span(row.on ? "on" : "off", row.on ? "success" : "muted", true), span(row.startMode, undefined, true), span(row.state, stateTone(row.state), true), span(row.queued, undefined, true), span(row.tasks, undefined, true)]), columns);
+}
+/** #1411 T2: who holds which flow role as the running hub settled them, from its status reply. */
+export interface RolesView {
+  peers: { peer: string; roles: string[] }[];
+  planner: { peers: string[]; source: string } | null;
+  reviewFallback: { required: boolean; sameFamily: string } | null;
+}
+export function rolesView(status: any): RolesView {
+  const off = new Set((Array.isArray(status?.roster) ? status.roster : []).filter((row: any) => row?.on === false).map((row: any) => row.peer));
+  const info = status?.roleInfo && typeof status.roleInfo === "object" ? status.roleInfo : {};
+  const peers = Object.keys(info).filter(peer => !off.has(peer)).sort()
+    .map(peer => ({ peer, roles: Array.isArray(info[peer]?.flowRoles) ? info[peer].flowRoles.map(String) : [] }));
+  const planner = Array.isArray(status?.planner?.peers) ? { peers: status.planner.peers.map(String), source: String(status.planner.source ?? "unknown") } : null;
+  const fallback = status?.reviewFallback;
+  const reviewFallback = fallback && typeof fallback.required === "boolean" ? { required: fallback.required, sameFamily: String(fallback.sameFamily ?? "fallback") } : null;
+  return { peers, planner, reviewFallback };
+}
+/** Who reviews when no pool reviewer can run, as routing decides it (src/hub/routing.ts assign()); an older hub sends no settings, so unknown. */
+function reviewFallbackLine(view: RolesView): string {
+  const fallback = view.reviewFallback;
+  if (!fallback || !view.planner) return "unknown: this hub does not report it; upgrade the running hub";
+  if (fallback.required && fallback.sameFamily !== "never") return "the person (review.pool is set)";
+  const planners = view.planner.peers.join(", ");
+  if (!planners) return "the person (no planner)";
+  return fallback.sameFamily === "never"
+    ? `a planner of another family than the task's owner (${planners}), else the person`
+    : `a planner other than the task's owner (${planners}), another family first, else the person`;
+}
+export function renderRoles(view: RolesView, columns?: number): Span[][] {
+  return [
+    ...rows(["PEER", "ROLES"], view.peers.map(row => [span(row.peer, peerTone(row.peer), true), span(row.roles.length ? row.roles.join(", ") : "-", row.roles.length ? undefined : "muted")]), columns),
+    [],
+    ...lines(`planner: ${view.planner ? `${view.planner.peers.join(", ") || "nobody"} (${view.planner.source})` : "unknown"}`, columns),
+    ...lines(`when no reviewer can run: ${reviewFallbackLine(view)}`, columns),
+  ];
 }
 export function outputWidth(env: { isTTY: boolean; columns?: number; COLUMNS?: string }): number | undefined {
   if (env.isTTY) return Math.max(80, Number.isFinite(env.columns) ? env.columns! : 80);
@@ -214,6 +266,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
   const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
   if (data.cwd) out.push(...lines(data.cwd, columns));
+  if (data.runtimeModelsUnavailable === true) out.push(...lines("Runtime models unavailable: could not read a bounded model catalog; run ahub model list for the cause. For a known peer, use ahub model set <peer> <model> or ahub model clear <peer>; repair storage or reduce the retained peer catalog as indicated before listing again.", columns, "attention"));
+  else if (Array.isArray(data.runtimeModels)) out.push(...renderRuntimeModels(data.runtimeModels.map(projectModelStatus).filter((row): row is RuntimeModelStatus => row !== null), columns));
   const timing = data.controlWriteTiming;
   if (full && timing && Object.values(timing).every(value => Number.isSafeInteger(value) && value >= 0)) {
     out.push(...lines(`control writes: active ${timing.active}, slow ${timing.slowRequests}, loop delays ${timing.blockedLoopSamples}, dropped ${timing.droppedActive + timing.droppedLogs + (timing.droppedSpans ?? 0) + (timing.droppedMetadata ?? 0)}, expired ${timing.expiredRequests ?? 0}; timings in hub.log`, columns, timing.slowRequests || timing.blockedLoopSamples ? "attention" : undefined));
@@ -252,6 +306,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     const memory = data.memoryProfile;
     const profile = memory.profile === "generation" ? `generation ${memory.generation?.slice(0, 8) ?? "unknown"}` : memory.profile ?? "unbound";
     out.push(...detail("memory", `${profile}; ${memory.state ?? "unknown"}; agent-mem ${memory.agentMemVersion ?? "unknown"}${memory.skippedRows ? `; malformed legacy rows skipped: ${memory.skippedRows}` : ""}${memory.error ? `; ${memory.error}` : ""}`, columns, memory.state === "unavailable" ? "attention" : undefined));
+    const sync = memory.sync;
+    out.push(...detail("memory sync", memorySyncLine(sync ?? { state: "unknown" }), columns, sync?.state === "failed" ? "attention" : undefined));
   }
   if (data.memoryRead?.truncated) out.push(...detail("memory view", `truncated: newest ${data.memoryRead.limit} project candidates considered`, columns, "attention"));
   if (data.planner) out.push(...detail("planner", `${data.planner.peers?.join(", ") || "nobody"} (${data.planner.source ?? "unknown"})${data.planner.source === "automatic" || data.planner.source === "none" ? "; pin it with ahub settings set planner <peer>" : ""}`, columns, data.planner.source === "none" ? "attention" : undefined));
@@ -259,7 +315,16 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     const text = ownerIsolationText(isolated, data.ownerIsolationNotes?.[id]);
     if (text) out.push(...detail(`${id} owner isolation`, text, columns, isolated ? undefined : "attention"));
   }
+  if (data.roomsOpening === true) out.push(...lines("rooms: opening; wait for local room storage initialization", columns, "muted"));
+  if (data.roomsUnavailable !== undefined) out.push(...lines(roomsUnavailableLine(data.roomsUnavailable), columns, "failure"));
   if (data.deliveryError) out.push(...detail("delivery storage", `${data.deliveryError}; dispatch is stopped`, columns, "failure"));
+  for (const [peer, count] of Object.entries(data.deliveryFailures ?? {})) {
+    if (Number.isSafeInteger(count) && count > 0) out.push(...detail(`${peer} failed deliveries`, `${count}; next: ahub queue discard --peer ${peer} --state failed`, columns, "attention"));
+  }
+  if (data.reviewInputHealth) {
+    const health = reviewInputHealthLine(data.reviewInputHealth);
+    if (health) out.push(...detail("review input provenance", health, columns, data.reviewInputHealth.state === "corrupt" ? "failure" : "attention"));
+  }
   for (const pending of data.permissionDefaults ?? []) out.push(...detail("permission default", `${pending.peer}: never-ask from ${pending.source}, stays ask until a person confirms in ahub console`, columns, "attention"));
   for (const crash of data.crash ?? []) out.push(...detail("crash recovery", crash, columns, "attention"));
   for (const warning of data.isolatedChecks?.orphans ?? []) out.push(...detail("isolated check warning", warning, columns, "attention"));
@@ -275,16 +340,31 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   let settling = false;
   const peerDetails = Object.entries(data.peers).map(([id, p]) => {
     const out: Span[][] = [];
+    // #1310: the current owner, when the hub reported one. Shown before the standby rows so the owner is never inferred from them. Every value is re-checked here: a pid is a positive integer, a time is
+    // finite, and a native session id is shown only when it is a short plain token; anything else is left out rather than cleaned up.
+    const owner = p.ownerAttachment;
+    if (owner && typeof owner === "object" && Number.isFinite(owner.attachedAt)) {
+      const pid = Number.isSafeInteger(owner.ownerPid) && owner.ownerPid > 0 ? `pid ${owner.ownerPid}` : "pid unknown";
+      const native = typeof owner.nativeSessionId === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(owner.nativeSessionId) ? `native session ${owner.nativeSessionId}` : "native session unverified";
+      out.push(...detail(`${id} owner`, `${pid}; attached ${relative(owner.attachedAt, now)}; ${native}`, columns, "muted"));
+    }
+    for (const session of Array.isArray(p.standbySessions) ? p.standbySessions : []) {
+      if (!session || typeof session.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(session.id)) continue;
+      const pid = Number.isSafeInteger(session.pid) && session.pid > 0 ? String(session.pid) : "unknown";
+      const since = Number.isFinite(session.since) ? `; waiting ${relative(session.since, now)}` : "";
+      out.push(...detail(`${id} standby`, `pid ${pid}; session ${session.id}${since}; ahub peer takeover ${id} ${session.id}`, columns, "attention"));
+    }
     if (typeof p.form === "string") out.push(...detail(`${id} form`, p.form, columns));
     if (Array.isArray(p.capableRoles)) out.push(...detail(`${id} capable roles`, p.capableRoles.join(", ") || "none", columns));
     if (p.flowRoles) out.push(...detail(`${id} flow roles`, p.flowRoles.join(", ") || "none", columns));
     if (p.catalogRoles) { out.push(...detail(`${id} catalog roles`, Array.isArray(p.catalogRoles.value) ? p.catalogRoles.value.join(", ") || "none" : "unconfirmed", columns)); if (p.catalogRoles.pending !== undefined) out.push(...detail(`${id} pending roles`, p.catalogRoles.pending.join(", ") || "none", columns, "attention")); }
     if (p.liveAccepted?.length) { settling = true; out.push(...detail("settling", p.liveAccepted.map((v: string) => shortId(v, columns, full)).join(", "), columns, "attention")); }
+    if (typeof p.reviewObserverHoldNote === "string" && p.reviewObserverHoldNote) out.push(...detail(`${id} review input`, p.reviewObserverHoldNote, columns, "attention"));
     if (p.heldRows?.length) {
       for (const row of p.heldRows) out.push(...detail("held", `${id}: needs_review ${shortId(row.id, columns, full)}; from ${row.senders.join(",")}; kind ${row.kinds.join(",")}; age ${duration(Math.max(0, now - row.createdAt))}${row.context ? `; ${row.context}` : ""}; ahub queue show ${row.id}`, columns, "failure"));
     } else if (p.heldBy) {
       const note = flat(p.holdNote ?? "");
-      const command = `ahub queue resolve ${p.heldBy} --action completed|retry|discard --reason <text>`;
+      const command = `${queueResolveCommand({ id: p.heldBy, peer: id, state: "needs_review" })} (${queueResolveChoices("needs_review")})`;
       const normalized = note.startsWith(`held by needs_review ${p.heldBy}`)
         ? note.replace(`held by needs_review ${p.heldBy}`, `by needs_review ${shortId(p.heldBy, columns, full)}`)
         : `${shortId(p.heldBy, columns, full)}${note ? `: ${note}` : ""}`;
@@ -297,6 +377,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
         : flat(p.paused).replace(/^(budget: .*), resets .+$/, "$1; reset unknown");
       out.push(...detail("paused", pauseText, columns, "attention"));
     }
+    if (p.attachMode === "channel" || p.attachMode === "tools-only") out.push(...detail("attach", `${p.attachMode}; evidence: ${flat(p.attachEvidence ?? "unknown")}`, columns, p.attachMode === "channel" ? "muted" : "attention"));
     if (p.toolsOnly) out.push(...detail(definitionOf(id)?.attach?.pullOnlyForms?.includes("tui") && p.pullOnly ? "pull-only" : "tools-only", flat(p.toolsOnly).replace(/^(?:tools-only|pull-only):\s*/, ""), columns, "attention"));
     if (p.pullOnly && definitionOf(id)?.attach?.pullOnlyForms?.includes("tui")) out.push(...detail(`${id} last read`, typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never", columns, "muted"));
     const actionPolicy = data.actionPolicyInfo?.[id];
@@ -322,6 +403,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   }
   const counts = Object.entries(data.tasks ?? {}).map(([state, count]) => `${count} ${state}`).join(", ");
   if (counts) out.push([], ...lines(`TASKS  ${counts} (ahub board)`, columns));
+  if (data.personRun?.length) out.push(...lines(`WAITING ON YOU  ${data.personRun.map(id => `#${id}`).join(", ")} (person-run: no agent is offered it; ahub backlog list)`, columns, "attention"));
   return out;
 }
 // #724: short next-step codes for the compact board, keyed on the blocker texts of src/hub/sdlc.ts; the full advice stays in --full and ahub task show.
@@ -345,7 +427,7 @@ export function renderBacklog(cards: any[], columns?: number, now = Date.now(), 
   let table: OutputCell[][] = sorted.map(card => {
     const deps: number[] = Array.isArray(card.deps) ? card.deps : [];
     return [span(typeof card.rank === "number" ? card.rank : "-", "muted", true), span(`#${card.id}`, "info", true), span(typeof card.priority === "number" ? `P${card.priority}` : "-", undefined, true),
-      span(card.reserved ?? "-", peerTone(card.reserved ?? ""), true), span(deps.length ? (full || columns === undefined ? deps.map(id => `#${id}`).join(",") : `#${deps[0]}${deps.length > 1 ? `,+${deps.length - 1}` : ""}`) : "-", undefined, true), span(card.class ?? "-", undefined, true),
+      span(card.needsPerson === true ? `${card.reserved ?? ""}${card.reserved ? " " : ""}(person)` : card.reserved ?? "-", card.needsPerson === true ? "attention" : peerTone(card.reserved ?? ""), true), span(deps.length ? (full || columns === undefined ? deps.map(id => `#${id}`).join(",") : `#${deps[0]}${deps.length > 1 ? `,+${deps.length - 1}` : ""}`) : "-", undefined, true), span(card.class ?? "-", undefined, true),
       span(typeof card.created === "number" ? duration(now - card.created) : "-", "muted", true), span(flat(card.title))];
   });
   if (!full && columns !== undefined) {
@@ -357,8 +439,10 @@ export function renderBacklog(cards: any[], columns?: number, now = Date.now(), 
     table = table.map(row => [...row.slice(0, -1), { ...row[row.length - 1]!, text: ellipsis(row[row.length - 1]!.text, titleRoom) }]);
   }
   const owners = new Map<string, number>();
-  for (const card of sorted) owners.set(card.reserved ?? "unreserved", (owners.get(card.reserved ?? "unreserved") ?? 0) + 1);
-  const summary = `${plural(sorted.length, "backlog card")}; reserved: ${[...owners].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([owner, n]) => `${owner} ${n}`).join(", ")}`;
+  const person = sorted.filter(card => card.needsPerson === true);
+  for (const card of sorted.filter(card => card.needsPerson !== true)) owners.set(card.reserved ?? "unreserved", (owners.get(card.reserved ?? "unreserved") ?? 0) + 1);
+  const summary = `${plural(sorted.length, "backlog card")}; reserved: ${[...owners].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([owner, n]) => `${owner} ${n}`).join(", ") || "none"}`
+    + (person.length ? `; waiting on you: ${person.map(card => `#${card.id}`).join(", ")} (a person-run leg; no agent is offered it)` : "");
   return [...rows(names, table, columns), [], ...lines(summary, columns)];
 }
 /** #724: one line per task. TITLE goes last and is cut to the room left; at a narrow width REVIEWER, CLASS and AGE give way first. */
@@ -543,13 +627,17 @@ function fields(value: unknown, columns: number | undefined, now: number, prefix
   visit(value, prefix, prefix);
   return rows(["FIELD", "VALUE"], leaves, columns);
 }
-export function renderQueueShow(delivery: any, columns?: number, now = Date.now()): Span[][] {
+export function renderQueueShow(delivery: any, columns?: number, now = Date.now(), project?: string): Span[][] {
+  // #1399: the resolve line runs as printed: id, revision, a suggested action, a prefilled reason and the project that hosts the hub.
+  const messages: any[] = Array.isArray(delivery?.messages) ? delivery.messages : [];
+  const hint = () => queueResolveCommand({ id: delivery.id, revision: delivery.revision, state: delivery.state, peer: delivery.peer, senders: messages.map(m => String(m?.from ?? "")), kinds: messages.map(m => String(m?.kind ?? "")) }, project);
   const out = [...lines("Delivery", columns, "strong"), ...fields(delivery, columns, now)];
-  if (delivery?.state === "needs_review" && delivery.id) out.push([], ...detail("resolve", `ahub queue resolve ${delivery.id} --action completed|retry|discard --reason <text>`, columns, "failure"));
+  if (delivery?.state === "failed" && delivery.failureCause === undefined) out.push(...detail("failure cause", "unknown (not recorded by this hub version)", columns, "muted"));
+  if (delivery?.state === "needs_review" && delivery.id) out.push([], ...detail("resolve", `${hint()}  (${queueResolveChoices("needs_review")})`, columns, "failure"));
   // #1096: a failed row that no one has settled can be cleared by the person or the conductor; one a resolution already settled says what is left (nothing).
   else if (delivery?.state === "failed" && delivery.id) {
     if (delivery.resolvedBy) out.push([], ...detail("resolve", `already resolved by ${delivery.resolvedBy}; nothing is left to do for this row${delivery.resolvedBy === "retry" ? " (its redelivery is a separate delivery: ahub queue list)" : ""}`, columns, "muted"));
-    else out.push([], ...detail("resolve", `ahub queue resolve ${delivery.id} --action discard|completed --reason <text>  (discard to drop it, completed to acknowledge it as handled; the person or the conductor)`, columns, "failure"));
+    else out.push([], ...detail("resolve", `${hint()}  (${queueResolveChoices("failed")}; the person or the conductor)`, columns, "failure"));
   }
   return out;
 }

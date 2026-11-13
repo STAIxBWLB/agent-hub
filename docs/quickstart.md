@@ -4,7 +4,7 @@ agent-hub lets the coding agents on one machine work as peers in one project dir
 
 ## Install
 
-Needs [Bun](https://bun.sh) 1.4.2 or newer and macOS (Linux works without the `local` worker's `bash` and `git` tools, which need the macOS sandbox).
+Needs [Bun](https://bun.sh) <!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor --> or newer and macOS (Linux works without the `local` worker's `bash` and `git` tools, which need the macOS sandbox).
 
 Node alone is not supported. Keep `bun` on PATH even if you install with npm.
 The registry package uses the `staix` organization scope. Install from npm:
@@ -16,12 +16,28 @@ ahub setup                                # installs the channel plugin and a pr
 
 Or use the matching GitHub release:
 
+<!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.30.0
+bun add -g github:STAIxBWLB/agent-hub#v0.38.0
 ahub setup
 ```
+<!-- /facts:install-tag -->
 
 From a clone instead: `git clone`, `bun install`, `bun link`.
+
+### Installed with dotfiles
+
+If the dotfiles CLI manages ahub (`dot ai family install ahub`), `ahub` runs from `~/.local/share/dotfiles/tools/ahub/<version>/`. Keep that the only copy:
+
+- To update the global CLI, run `dot ai family install ahub --version <version>`, then `ahub setup`, and restart Claude sessions. Use this wherever an upgrade note says `bun add -g @staix/agent-hub@<version>`, or wherever `ahub upgrade` or `ahub doctor` says to update the global CLI the way it was installed. `dot ai rollback ahub` switches back.
+- Do not also install with `bun add -g`. Check with `readlink -f "$(command -v ahub)"`, and remove a bun copy with `bun remove -g @staix/agent-hub` before running `ahub setup`.
+- Moving from a bun install to dotfiles, `ahub setup` can refuse with `refused marketplace removal ... non-user plugin rows were preserved`. Claude still lists an older project- or local-scope agent-hub row (`claude plugin list --json`; after 0.33.0 the refusal names each row). Hub-launched sessions do not load it.
+  - Remove it with `claude plugin uninstall agent-hub@agent-hub --scope project`, run from that row's project directory.
+  - If the row's project path is your home directory, do not: there the project settings file is `~/.claude/settings.json`. Instead back up `<claude home>/plugins/installed_plugins.json` and delete only that row from it.
+  - Then run `ahub setup` again (#1245).
+- If Claude then reports `PreToolUse ... hook error ... Module not found ... claude-profile-hook.ts`, a hook from the removed copy is left behind.
+  - After 0.33.0, `ahub setup` replaces it and `ahub doctor` names the home that needs it.
+  - With 0.33.0 or earlier, delete that one entry from `hooks.PreToolUse` in that home's `settings.json`; `ahub setup` has already installed the current one (#1245).
 
 `ahub doctor` tells you what is installed, running and configured. Rows you do not need can stay red: the hub works with any subset of the peers.
 
@@ -29,13 +45,76 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
-it; other projects keep their version.
+it; other projects keep their version. It then names the `bun add -g` and
+`ahub setup` step when your global CLI or plugin is older than the new daemon.
+
+## Upgrading to 0.38.0
+
+After the upgrade, a command the hub prints for you (a held delivery in `ahub status`, `ahub queue show`, the hold notice) runs as printed, with the project directory, revision, action and reason filled in. `ahub doctor` shows a `hub instructions` warning when the project's AGENTS.md block is older than this release: run `ahub init --dry-run` to preview and `ahub init --yes` to refresh it, then commit AGENTS.md. Guidance probe receipts (`ahub guidance probe receipts`) change nothing until you use them.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.38.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.37.0
+
+The `@staix/agent-mem` pin moves to 0.24.0, whose storage formats equal 0.23.1's (#1396). Raise a shared home's curated format floor to 0.24.0 only after every hub sharing that home runs 0.37.0. The Orca, Herdr and Claude Code companions are no longer in this package: install them from STAIxBWLB/ahub-orca, STAIxBWLB/ahub-herdr and STAIxBWLB/ahub-claude, which read ahub only through the companion CLI contract v1 (#1387, #1392). The replaced routing modules and their Apache notice are gone; routes, `stage` compatibility and route events behave as before (#1393). `ahub console` now shows the daemon, console, global CLI and Claude plugin versions, and an AHUB column per peer (#1386). Nothing else changes until you use it: `ahub sdlc authorize-release` can read a committed version source for a project without `package.json` (#1383), and `ahub guidance probe register|start|show|cancel` records a private probe declaration whose lifecycle runs only with test fixtures; production has no probe runner (#1391, #1395). N-1 is published 0.36.0 and control remains 16 through 17.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.37.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.36.0
+
+The `@staix/agent-mem` pin stays at 0.23.1. In SDLC `advise` or `enforce`, a repository other than `STAIxBWLB/agent-hub` with no configured required checks now reports `required checks unknown` for review readiness and CI watches instead of assuming the native `seeded guards` floor (#1344): set `required_checks` in `.agenthub/sdlc.toml` (`ahub settings edit sdlc.toml`) and restart the hub ([required checks](sdlc.md#required-checks-at-initialization)). After a hub deny, Qwen's dual-output TUI keeps later input fenced until a new personal turn completes in the Qwen terminal or a verified fresh generation starts, and reports offline after 30 s ([Qwen TUI](operations.md#qwens-own-tui-driven-through-dual-output-286-part-3), #1371). `hub_inbox` can also show an agent its own held messages as a read-only view that settles nothing (#1359). Newly verified agent versions: Claude Code 2.1.322 as the headless implementer (#1377), the Qwen dual-output TUI on 0.27.0 and 0.27.1 (#1364, #1378) and Qwen basic ACP on 0.27.0 (#1355); the headless `qwen` ACP entry still refuses 0.27.1. Before saving a machine research default with `ahub setup --research` or `--no-research` (#1347), upgrade every hub and CLI on the machine: a version before 0.36 treats the whole `~/.agenthub/defaults.json` as untrusted, so its machine autonomy preset falls back to off ([research records](operations.md#research-records)). Nothing else changes until you use it: `supervision.mode` (machine-local, off by default) stores bounded supervision proposals in `shadow` and also shows them in the console inbox in `advisory`, where only an explicit accept or dismiss acts ([supervision proposals](operations.md#supervision-proposals), #1362, #1368); `ahub guidance create|list|show|withdraw` records advisory role variants on a task (#1363, #1367, #1376); `ahub lineage show|link` reads bounded execution lineage and admits declared references ([execution lineage](operations.md#execution-lineage-1220-t2), #1341, #1358); a `stage` route with `classifier = "decision"` asks adec only inside its ambiguity band, off or shadow only (#1370, #1373); `ahub sdlc adopt-merge <task> --pr <n>` settles a task whose PR was merged outside the hub (#1348); `ahub init` in `advise` or `enforce` proposes the repository's required checks (#1344) and takes `--research`/`--no-research` (#1347); an explicitly superseding task can carry unchanged spec consent (#1361); and the optional Claude Code companion stays fixture-only with manual session-only placement (#1349, #1365, #1369). N-1 is published 0.35.0 and control remains 16 through 17.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.36.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.35.0
+
+The hub now exact-pins `@staix/agent-mem` 0.23.1 (0.34.x pinned 0.22.1), and managed headless peers (Codex, headless Kimi, Qwen, Jcode, Pi, `local`) start saving compact `amem:` Record lines from their final answers; the hub strips those lines from shared replies (#1320). Upgrade every hub, global `amem` CLI and native amem hook that shares a memory home together: a 0.22.1 hook drain silently discards Record format-3 spool entries, and 0.22.1 refuses the `records` key even when false. To turn Records off, set `records: false` in the amem configuration only after every install is upgraded ([agent-authored records](operations.md#agent-authored-records)). Machine memory sync now supplies amem's placement attestation on every pass (#1173); a refused writer shows as cause `writer` in `ahub status` and the dashboard, with the next step. The budget gate default is 0.99 instead of 0.9 (#1292), but a project whose tracked `.agenthub/config.json` has `"gate": 0.9` from an older `ahub init` keeps 0.9 until you remove that key or run `ahub settings set budget.gate <value>`. On Kimi 2.5.2, `ahub kimi` installs a launch-scoped plugin so turns you start in its TUI leave results (#1282), and `ahub agy` turns off agy's self-update for the run (#1286). Nothing else changes until you use it: `ahub model set|clear|list` (person only) selects a supported peer's next-turn model (#1321), peers can post bounded visuals with `hub_visual` (#1315), and `ahub research export --dataset <dir>` writes per-project research datasets (#1290). N-1 is published 0.34.1 and control remains 16 through 17.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.35.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.34.1
+
+`ahub upgrade` reads npm 12's `npm view --json` output again; with npm 12, 0.34.0 and earlier refused both the default target and `--to`. Update the global CLI to 0.34.1 first, either `bun add -g @staix/agent-hub@0.34.1` or, if you installed with dotfiles, `dot ai family install ahub --version 0.34.1`; then run `ahub upgrade` in each project. If you must run an older CLI's upgrade on npm 12, put npm 11 first on PATH for that run (`npm i --prefix ~/.cache/npm11 npm@11`, then `PATH="$HOME/.cache/npm11/node_modules/.bin:$PATH" ahub upgrade`). Nothing else changes.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.34.1` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.34.0
+
+After an Orca restart, `ahub upgrade` no longer stops at panes that are orphaned but still connected: the plan screen offers `[t]` to reattach exactly the panes it verified (each Orca call bounded by 5 s), and the blocker names the refresh key. `ahub setup` now writes the stable install path of a symlinked CLI (for example a dotfiles-managed `~/.local/bin/ahub`) into the marketplace and the Claude profile hook instead of a versioned one, replaces a stale managed hook in place, and a refused marketplace replacement names every blocking row and the next step; `ahub doctor` checks the profile hook of each Claude home it can see. If you installed with dotfiles, follow [Installed with dotfiles](#installed-with-dotfiles) instead of `bun add -g`. Nothing else changes until you use it; N-1 is published 0.33.0 and control remains 16 through 17.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.34.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.33.0
+
+Rooms now show refused-frame counts, outbox depth/ages and a closed link cause with a recovery step. Store-open failures retry, receive-only work wakes after journal recovery, and selective traffic no longer produces false sequence-gap notices. For a rolling room upgrade, update the broker first, then every member, then reconnect: 0.33.0 person-inbox (`user@label`) and invocation sends to a released 0.32.0 member, or through a released 0.32.0 broker are refused before effects with the upgrade step; plain chat keeps working. Use the matching CLI for the new diagnostics: 0.32.0 `ahub room status` drops the new fields, including in its JSON output, while `ahub status --json` passes raw daemon fields through.
+
+Orca recovery now recognizes its gone-terminal codes. The compat policy adds exactly Claude headless implementer 2.1.319, Kimi reviewer 2.5.1 and Qwen ACP 0.26.8 based on their model-free receipts. Codex reviewer 0.167.0 remains unverified after an unknown tool-call outcome, and Qwen dual-output remains at 0.26.1. These entries do not install agent CLIs or prove real-account/model behavior. N-1 is published 0.32.0 and control remains 16 through 17.
+
+This hub pins agent-mem 0.22.1 while 0.32.0 pins 0.21.0. Placement is opt-in; inactive homes behave as before, and the common formats and `INDEX_VERSION` are unchanged. The person-only activation preview is available, but activation alone does not enable this hub's automatic v3 sync: fresh host `placementAttestation` integration remains #1173. Shared-home activation and writer renewal are separate person operations; upgrading the hub performs neither. See [memory integration](memory.md#automatic-sync-health-1173).
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.33.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.32.0
+
+Rooms on an ephemeral-capable broker now refresh signed presence every 30 seconds; three missed periods display advisory unknown without changing sending authority. A graceful stop attempts a signed offline snapshot within two seconds. Epoch-changing room commands list sealed outstanding delivery IDs before confirmation and immediately hold old-epoch work with the named cause. Upgrade the global CLI and plugin with the step below to see the new previews and advisory status: a 0.31.0 CLI ignores those additive fields, even in JSON. A broker without ephemeral support keeps state-change publication and reports liveness untracked, with no periodic aging. Protocol 16 through 17 and room v1 shapes remain; the N-1 baseline is published 0.31.0, with the same agent-mem 0.21.0 pin.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.32.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.31.0
+
+The control protocol stays at 16 through 17 and hub.db keeps schema version 2, but this release adds the nullable `deliveries.failure_cause` diagnostic column. N-1 recovery ignores the extra snapshot key, and older rows without it remain unknown. The exact `@staix/agent-mem` pin moves from 0.20.1 to 0.21.0; upgrading does not activate placement or migrate a memory home. `ahub memory declined` now lists complete bounded physical IDs and safe rule categories when inspection succeeds. Automatic v3 sync remains unsupported until agent-mem#281 provides activation and fresh host attestation. The [N-1 statement](../CHANGELOG.md) distinguishes the hub 0.30.0 fixture from agent-mem's own 0.20.3 compatibility proof.
+
+Two defaults are new. An accepted channel delivery that is never confirmed moves to needs-review after 10 minutes (`bus.accepted_settle_ms`). A Claude session that only inherits `AGENTHUB_CHANNEL=1`, without the native channel launch, attaches tools-only and reads its messages with `hub_inbox`; `ahub status` names the mode. A 0.30.0 hub sending a handoff here is refused when the spec issue already has an open task, until it is upgraded and passes `--duplicate-ok`.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.31.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.30.0
 
 The hub now exact-pins `@staix/agent-mem` 0.20.1 (#1136). A setup receipt written by 0.20.1 can be v2, which 0.20.0 refuses to apply or undo; undo a setup with the release that wrote it.
 
 Nothing else changes until you use something new. `ahub worktrees` lists the project's live and settled worktrees (settled: its PR merged or closed with no newer work, or quiet for `worktrees.quiet_days`, default 7), and `ahub worktrees tidy` previews which settled ones are safe to remove, with the reasons for each refused row; only you remove them, with `ahub worktrees tidy --confirm <fingerprint>` in your own terminal, which runs `git worktree remove` and `git branch -d` and never forces (#1057). The dashboard's Agents panel gets a Worktrees section with Park, Pin and "Refresh PR states", and an inbox alert fires above `worktrees.alert_over` (default 10). Pi and the local worker name their own session with `hub_set_title`; `ahub title <peer> <text...>` or the console's `t` editor replaces the name (#1157). A plan's `sources` must now name registered `src:<16 hex>` ids (`ahub source list`), or the proposal or acceptance is refused (#1151). Run agy with `AGY_CLI_DISABLE_AUTO_UPDATE=1`: without it agy replaced its own binary during a launch (#1140).
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.30.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.29.0
 
@@ -147,7 +226,7 @@ Restart Claude sessions after upgrading: each keeps the plugin server it started
 
 `ahub jcode` opens its TUI again; on 0.12.39 it stopped after the first hub turn (#564). A busy Jcode now takes an `important` message into its running turn (#572), and `ahub doctor` lists the extra MCP servers the hub-owned Jcode loads from its config files. See [Jcode operations](operations.md#optional-jcode-peer).
 
-The Switchyard sidecar is retired (#553). An existing `routing.toml` keeps working: its `[targets]` and `[routes]` tables are ignored and reported as retired settings, and a route without the `hub/` prefix (such as `sy/coding`) uses the fixed model with one warning. Migrate with the table in [in-process model routes](operations.md#in-process-model-routes); the hub never rewrites the file.
+Model routing runs in process through the hub-owned route implementation, with optional adec model/effort choices. An existing `routing.toml` keeps working: its `[targets]` and `[routes]` tables are ignored and reported as retired settings, and a route without the `hub/` prefix (such as `sy/coding`) uses the fixed model with one warning. Migrate with the table in [in-process model routes](operations.md#in-process-model-routes); the hub never rewrites the file.
 
 Run `ahub init` once per project to refresh the hub block in `AGENTS.md`: it adds the line that tells agents to report a pushed PR with `hub_task_done` and end the turn instead of waiting for CI (#572). Finishing a task now also says when the project root checkout is on a branch other than its default.
 
@@ -177,7 +256,7 @@ The restarted Claude planner gets the release-train tools (`hub_release_new`, `h
 
 Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.20.1. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
+Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.23.1. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
@@ -217,6 +296,105 @@ ahub say "Each of you: reply with your name."      # broadcast
 ahub say @kimi "run the tests and report"          # one peer
 ```
 
+## A new project with SDLC advise or enforce
+
+This flow uses the default lifecycle in a new Git repository. `advise` reports
+lifecycle gaps; `enforce` blocks the corresponding transitions until their
+evidence is current. Ownership, privacy and WIP rules still apply in both modes.
+SDLC defaults to off, and guarded merge has its own opt-in policy.
+
+Run bare `ahub init` from the person's terminal in the new repository to get the
+guided prompt. Choose `advise` or `enforce` when asked. Init proposes required checks
+from this repository's latest completed default-branch CI run, falling back to
+literal workflow job names, and the person confirms or edits the names. For an
+unattended choice, `ahub init --sdlc enforce --yes` takes the discovered names.
+If discovery cannot determine them, give the exact names explicitly, for example
+with `--required-checks 'unit,lint'` after replacing `unit,lint` with this
+repository's required jobs. Enforce without known names refuses before writing.
+The mode and check names are written to `.agenthub/sdlc.toml`.
+See [required checks](sdlc.md#required-checks-at-initialization) for discovery
+limits and repository-specific configuration.
+
+Research recording is another init choice: `--research` or `--no-research` sets
+`research.enabled` in this project's untracked `.agenthub/config.local.json`. A new project otherwise uses the trusted
+machine choice saved by an explicit `ahub setup --research` or
+`ahub setup --no-research`, else off. Init reads that default, never writes it.
+Before saving a shared machine default, follow the
+[upgrade-all-hubs caveat](operations.md#research-records). Setting flags select
+values directly. `--yes` skips questions; `--dry-run` previews without questions or
+writes.
+
+Review `git status --short` and `git diff`, then commit `AGENTS.md`,
+`.agenthub/config.json`, `.agenthub/routing.toml`, `.agenthub/sdlc.toml` and other
+shared init changes such as `.gitignore` as applicable. Keep
+`.agenthub/config.local.json`, `.agenthub/routing.local.toml` and runtime state
+untracked. Start through `ahub up` or the dedicated launchers such as
+`ahub claude` and `ahub codex`, as in [First session](#first-session), so the
+managed session receives its hub integration. Pull-only surfaces use `hub_inbox`.
+
+Use actual task/issue ids and the full lowercase commit SHA for `<head>` below.
+The normal lifecycle is:
+
+1. **Planner:** propose the work with `hub_task_propose`, including the intended
+   plan and repository. Proposal/route guidance identifies the snapshot's next
+   missing step; live admission rechecks currentness.
+2. **Owner or task planner:** record the spec issue with `hub_sdlc_record`.
+   The planner's stage-identity record contains only `stage`, `repo` and `issue`
+   in its receipt, with a planner or owner/planner stage (`spec` in the default
+   lifecycle). See [lifecycle commands](sdlc.md#initial-commands).
+3. **Person:** read the linked issue, then run
+   `ahub sdlc accept <task> --issue <n>` (add `--repo owner/repo` if needed).
+   This is a person-only command, not an agent-shell or live-test delegation.
+   An eligible replacement may reuse existing consent as described below.
+4. **Planner:** read `hub_planner_groom`, then record `hub_plan_review` with the
+   `revision` equal to the current `planningRevision`, a reason and appropriate
+   review/CI scopes. The [plan-review contract](sdlc.md#planner-plan-review-481-s9)
+   defines currentness
+   and planner independence.
+5. **Owner:** accept with `hub_task_accept` and the reviewed plan, then implement
+   and run the project's required local checks. Acceptance re-reads spec and
+   plan evidence; an offer alone is not acceptance.
+6. **Owner:** commit and push, open the PR, record its identity with
+   `hub_sdlc_record` (`receipt.pr`), and obtain the configured required checks
+   green on that exact head. `ahub sdlc explain <task>` names missing, pending and failed checks.
+7. **Owner:** call `hub_task_done` while the PR is still open, with its full
+   commit in `refs.commit`, the summary and check evidence. Follow any queued
+   check or readiness result before asking for a verdict.
+8. **Assigned reviewer:** review that head and record the verdict with
+   `hub_review`. The person's equivalent is
+   `ahub review <task> approved --head <head>` or a changes-requested verdict.
+9. **Person or current configured conductor:** preview with
+   `ahub sdlc merge <task> --dry-run`. Actual guarded merge requires an explicit
+   `auto_merge = "on"` policy for the repository (default off). After applying
+   that file change with a hub restart, use `ahub sdlc merge <task>`. If the policy
+   was already enabled when the reviewer approved, the automatic path can merge
+   after that verdict. See
+   [guarded merge](sdlc.md#guarded-merge-786) for every evidence gate.
+
+The [entry-gate order and exact diagnostics](sdlc.md#named-ci-and-build-entry-diagnostics-1328-t2)
+identify who repairs a missing prerequisite. A plan-review hold is separate from
+peer eligibility, and an owner offer can precede person spec acceptance.
+
+Recovery uses the existing evidence boundaries:
+
+- **PR already merged:** the person or current configured conductor uses
+  `ahub sdlc adopt-merge <task> --pr <n>`. It needs the task's recorded full head,
+  matching merged PR and green required checks, with clean finding/review
+  coverage. Eligible states are `in_progress`, `in_review` and
+  `changes_requested`; see [merge adoption](sdlc.md#adopting-a-pr-merged-outside-the-hub-1328-t3).
+- **Known plan departure:** amend the plan through the owner/planner flow, or
+  the person can run `ahub sdlc accept-departure <task> <head> <reason...>` for a
+  currently known, complete departure on that head. Repair unknown coverage before
+  departure consent; see [plan conformance](sdlc.md#plan-conformance-481-s2).
+- **Obsolete work:** create the newer replacement and record the same repository
+  and issue first. The person can then cancel the old task with an explicit local
+  reference, for example `ahub task cancel 12 --reason "superseded work" --superseded-by "#13"`
+  when task 13 replaces task 12. At the replacement's build admission, the host
+  may carry the original consent only for an unchanged issue body and current
+  public source/destination context. Carry does not copy plan review or head/CI
+  evidence. Cancellation is not approval and releases no dependent tasks; see
+  [spec acceptance](sdlc.md#spec-acceptance-481-s1).
+
 ## The local worker
 
 `local` needs an OpenAI-compatible gateway. Put yours in `.agenthub/config.local.json`
@@ -242,6 +420,8 @@ or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
 | `ahub usage [--by peer\|task\|issue\|pr\|release\|day\|model]` | tokens per group, each number with its source; `ahub usage limits` for pauses and resets |
 | `ahub worktrees` | live and settled worktrees; `ahub worktrees tidy` previews what is safe to remove, and only you confirm it with `--confirm <fingerprint>` |
+| `ahub answer` | the questions agents asked you with `hub_ask`; `ahub answer <set> <question>=<option>` answers one set, or press `A` in `ahub console` |
+| `ahub results [--unread]` | what the runs you started left behind, unread ones marked `*`; `--read <id>` or `--read-all` marks them read, listing never does |
 | `ahub agents` | which installed agent CLI versions the hub accepts; `ahub agents trust <id> <version>` accepts an untested one on this machine |
 | `ahub memory profile-check` | a person's read-only check of running memory bindings in the current registry |
 | `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
@@ -253,7 +433,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 ## Shared memory
 
-The hub exact-pins the first-party `@staix/agent-mem` 0.20.1 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
+The hub exact-pins the first-party `@staix/agent-mem` <!-- facts:agent-mem-pin -->0.25.0<!-- /facts:agent-mem-pin --> core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
 
 Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
@@ -265,7 +445,7 @@ benchmark runs every second. No build step, web server command or browser
 extension is needed.
 
 Use the page to pause/resume a peer, send a console message, propose/assign tasks,
-and allow/deny agent permission requests. Local-worker and Pi requests show no tool
+allow/deny agent permission requests and mark results read. Local-worker and Pi requests show no tool
 contents: inspect them with `ahub tail`, then use `ahub permit <id> <option>` to
 allow. They can be denied on the page. PII task details remain available only via
 `ahub task show <id>` in the terminal. The page also starts a peer in its start
