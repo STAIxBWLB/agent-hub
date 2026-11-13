@@ -3,7 +3,7 @@ import { initShadow, repoOf } from "../hub/snapshots.ts";
 import { PROFILE_NAMES, profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "../hub/profiles.ts";
 import { canonicalJson, loadPacks, packOverrides, type DomainPack } from "../hub/packs.ts";
 import { JCODE_MCP_FILE } from "./jcode-mcp.ts";
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Stats } from "node:fs";
@@ -405,6 +405,19 @@ export function withInitResearch(cwd: string, request: InitSettingsRequest, mach
   if (existsSync(join(cwd, ".agenthub", "config.json")) || Object.hasOwn(request.values, "research.enabled") || !initResearchDefault(cwd, machineValue)) return request;
   return { ...request, values: { ...request.values, "research.enabled": true } };
 }
+/** Read only the bounded frontmatter prefix; a GSD archive is evidence, never an init input to execute or rewrite. */
+function gsdPlanningState(cwd: string): boolean {
+  let fd: number | undefined;
+  try {
+    if (!lstatSync(join(cwd, ".planning")).isDirectory()) return false;
+    fd = openSync(join(cwd, ".planning", "STATE.md"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (!fstatSync(fd).isFile()) return false;
+    const prefix = Buffer.alloc(4096), size = readSync(fd, prefix, 0, prefix.length, 0);
+    const header = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(prefix.toString("utf8", 0, size));
+    return !!header && /^gsd_state_version:[ \t]*["']?[0-9]+(?:\.[0-9]+)*["']?[ \t]*(?:#.*)?$/m.test(header[1]!);
+  } catch { return false; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
 /** Prepare person guidance before writes; the CLI prints it only after successful apply. Creates no lifecycle evidence or acceptance. */
 export function initNextSteps(cwd: string, settings?: InitSettingsRequest): string[] {
   const track = settings?.values[TRACK_CONFIG];
@@ -436,6 +449,8 @@ export function initNextSteps(cwd: string, settings?: InitSettingsRequest): stri
     "- When a plan departure needs your consent: ahub sdlc accept-departure <task> <head> <reason...>.",
     "- After hub_task_done on the open PR, reviewer approval and green exact-head CI, use guarded merge: ahub sdlc merge <task>.",
   );
+  if (["advise", "enforce"].includes(String(settings?.values["sdlc.mode"])) && gsdPlanningState(cwd))
+    lines.push("- GSD planning state found: see docs/sdlc.md#moving-from-gsd before migrating; archive .planning/ and retain its evidence.");
   return lines;
 }
 /** Returns the paths it changed, applying the same plan as the preview. */

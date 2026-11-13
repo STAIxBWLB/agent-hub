@@ -76,6 +76,74 @@ S0/S8 establish vocabulary and checklist compatibility only. Later slices must r
 
 The repository uses feature branches and PRs. Release PRs require merge commits because documentation stamps name release-branch ancestors. Do not describe squash as a universal release practice. Worktree/branch cleanup follows confirmed merge; installation and native readback are separate live receipts. A successful source gate cannot certify those receipts.
 
+## Moving from GSD
+
+This is a migration from the GSD planning tool and its `.planning/` artifacts.
+The retired `gsd-lite` setting below is a different compatibility path. The hub
+uses the issue as the spec and the board as the current work record.
+
+| GSD artifact | Hub destination |
+| --- | --- |
+| Milestone | Release line and release train |
+| Phase and plan | Board task with a file/symbol plan and dependencies |
+| Requirements and acceptance | Spec issue acceptance criteria and a head-bound `criteria` receipt |
+| `.planning/STATE.md` | Task board and `ahub sdlc status` |
+| CONTEXT decisions, `D-xx` and `GATE-xx` | The spec issue's Decisions section, retaining the IDs; `hub_remember` for a public operational decision |
+
+Archive `.planning/`; do not delete it. First find scripts and tests that read
+its plans, receipts, decisions or gates, then preserve those paths or update
+readers in a reviewed change before relocating anything. Keep the original
+artifacts and their references in version control. Archiving marks them historical;
+it does not make their evidence disposable. Move current scope and acceptance
+criteria into spec issues and board tasks without inventing completed gates.
+
+Review the project's AGENTS.md and README in the same migration: replace GSD
+execution instructions and milestone-based version rules with the project's
+current task, review and release rules. Preserve historical decision references.
+The init notice only points here; it never imports or edits `.planning/`.
+
+Set the release policy in committed `.agenthub/config.json` before requesting
+release authorization. For a project with `package.json` and no
+`docs/verified.json`, the relevant fragment is:
+
+```json
+{
+  "release": {
+    "version": "package.json",
+    "docs": "none"
+  }
+}
+```
+
+`release.version` may instead be `release-notes` with `release.notesPath`
+(default `docs/releases/v{version}.md`), or `none` for an exact-commit version
+binding. Use `release.docs: "checker"` when retaining `docs/verified.json`.
+`none` is refused while that manifest exists; local config does not override
+committed release policy. This exemption skips documentation checking only,
+without supplying release consent, a tag or publication.
+
+Run the following setup steps in order from a separate person-owned terminal.
+An agent or delegated live test cannot impersonate that person. Command forms
+are the ones printed by `ahub help`; placeholders name values to choose.
+
+1. Enable `advise` first with `ahub init --sdlc advise`, then review its shared
+   changes. To edit existing lifecycle settings, use the help form
+   `ahub settings edit <config.local.json|sdlc.toml> (set <path> <json> | remove <path>)... [--reason <text>] [--preview] [--yes] | backups [--json]`.
+   For example, `ahub settings edit sdlc.toml set mode '"advise"'`.
+2. Record the long-term goal with
+   `ahub goal new <title> [--milestone <text>]... [--depends <id>]... [--shared]`.
+3. Create its release line with `ahub release new <name> <goal> <order>`.
+   The goal is the ID returned in the preceding step. Creating a release line
+   records planning intent only; it does not ship anything.
+4. Have the planner file the spec issues and board tasks, retaining the old
+   decision IDs and acceptance evidence. Inspect `ahub sdlc status`; the person
+   accepts each spec with `ahub sdlc accept <task> --issue <n>`.
+5. After required CI checks and the new task flow have been checked, the person
+   may select `ahub init --sdlc enforce --required-checks <a,b,...>`.
+   Release authorization remains a separate decision with
+   `ahub sdlc authorize-release <version>` after committing the release policy
+   and preparing the release candidate.
+
 ## Configuration and persistence contract
 
 .agenthub/sdlc.toml contains mode off|advise|enforce and a bounded ordered stage list, using the built-in stages above by default. The loader validates built-in mappings and bounded custom stage/gate/actor definitions; custom guidance does not grant authority. Unknown stages/gates, duplicate stages, cycles, unbounded lists and unknown keys are refused with a field-level reason. A project file may define guidance/gates, but it does not expand capabilities or permissions.
