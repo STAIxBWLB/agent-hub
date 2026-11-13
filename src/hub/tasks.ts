@@ -15,6 +15,7 @@ import { readExecutionLineage, type LineageResult } from "./execution-lineage.ts
 import { parseExecutionLinkInput, taskExecutionReference, executionLinkActor, executionReferenceDigest, type ExecutionLinkInput } from "./execution-links.ts";
 import { executionReferenceKey, executionText, EXECUTION_REFERENCE_LIMITS, type ExecutionReferenceV1 } from "./execution-reference.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
+import { checkSynthesis, inventoryBinding, parseSynthesisManifest, type SynthesisCurrent, type SynthesisCurrentClaim, type SynthesisArtifactSnapshot, type SynthesisReadiness } from "./synthesis-readiness.ts";
 import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt, type EvidenceLinkV1 } from "./research-evidence.ts";
 import type { ActionMeta, ReviewAnchor } from "@staix/agent-console/contract";
 import { parseReviewAnchor, reviewAnchorErrorMessage, anchorStatus, type ReviewAnchorStatus } from "./review-anchor.ts";
@@ -92,7 +93,7 @@ const learnVerdict = (card: Pick<Task, "state" | "history">): "accepted" | "reje
   return closed.note?.startsWith(LEARN_ACCEPTED) ? "accepted" : closed.note?.startsWith(LEARN_REJECTED) ? "rejected" : undefined;
 };
 import { approvedDeliverables, latestDeliverables, parseDeliverableClaims, publicDeliverables, type DeliverableRecord, type DeliverableStatus } from "./deliverables.ts";
-import { checkDeliverables, DeliverableRefusal, hashDeliverables, vetDeliverables, type DeliverablePorts } from "./deliverable-files.ts";
+import { checkDeliverables, DeliverableRefusal, hashDeliverables, vetDeliverables, readGuardedDeliverable, guardedDeliverableCurrent, type GuardedDeliverableRead, type DeliverablePorts } from "./deliverable-files.ts";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
@@ -128,7 +129,7 @@ function requireLocalTaskPeer(peer: unknown): void {
 
 export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
 export type EvidenceReadOrigins = { state: "known"; group: string; groups: number } | { state: "unknown" };
-export type EvidenceReadResult = EvidenceReceipt & ({ status: "private" | "stale" | "unavailable" }
+export type EvidenceReadResult = EvidenceReceipt & ({ status: "private" | "stale" | "unavailable" | "withdrawn" }
   | { status: "resolved"; link: EvidenceLinkV1; excerpt: string; excerptSha256: string; locator: EvidenceLinkV1["locator"]; origins: EvidenceReadOrigins });
 
 /** What `hub_remember` carries (#802: one shape for `remember` and `rememberOutcome`). */
@@ -287,7 +288,9 @@ export interface TasksDeps {
   reviewMaterials?: (task: Task, requests: readonly { path: string; side?: "base" | "head" }[]) => Promise<ReviewMaterialBatch>;
   studySource?: (id: string) => { id: string; sha256: string; private: boolean } | undefined;
   /** Host-owned screened snapshot read, never a public source-read excerpt reconstructed as a projection. */
-  evidenceSourceRead?: (by: PeerId, link: EvidenceLinkV1, current: () => boolean) => Promise<EvidenceSourceRead>;
+  /** Opaque host-only current raw/projection/converter token, never client evidence. */
+  evidenceSourceSnapshotKey?: (link: EvidenceLinkV1) => string | undefined;
+  evidenceSourceRead?: (by: PeerId, link: EvidenceLinkV1, current: () => boolean, mode?: { offline: true }) => Promise<EvidenceSourceRead>;
   /** Fresh registered metadata for bounded, ephemeral origin grouping; no converter or model call. */
   evidenceSourceMeta?: (id: string) => SourceMeta | undefined;
   /** Host-only fixture clock; never read from model input or project configuration. */
@@ -4998,6 +5001,164 @@ export class Tasks {
     // Advice joins the planner's next delivery; it must not manufacture a turn beside a withheld backlog batch.
     for (const peer of this.taskPlanner(task).filter(peer => this.d.bus.isRostered(peer))) this.releaseNotice(`task #${task.id}: stall notice unavailable`, () => this.d.tell?.(peer, noteLine(HUB, "finding", text)));
   }
+  private synthesisTask(by: PeerId, id: unknown): Task {
+    requireLocalTaskPeer(by);
+    if (this.d.profile !== "research") throw new PreEffectToolRefusal("synthesis evidence is research-only; use a research profile and a visible task");
+    const task = this.studyParent(this.studyNumber(id, "taskId"));
+    if (task.profile !== "research" || by !== USER && !taskShowAllowed(by, task, this.d.roles, this.isConfiguredPlanner(by)))
+      throw new PreEffectToolRefusal("synthesis task unavailable; use a research task visible through hub_task_show");
+    return task;
+  }
+
+  private synthesisPrivate(task: Task, by: PeerId): boolean {
+    try { return !!this.d.privateTurn?.(by) || this.isPii(task) || !this.publicMetadataText(JSON.stringify(task.plan?.claims ?? [])); }
+    catch { return true; }
+  }
+
+  private synthesisPolicy(task: Task): string {
+    let root: string | undefined;
+    try { root = this.deliverablePorts(task).cwd; } catch { /* unknown is part of the fence */ }
+    return JSON.stringify([this.d.profile, this.d.routing().signals, this.d.piiPaths, this.d.deny, root]);
+  }
+
+  private synthesisRows(links: readonly EvidenceLinkV1[]) {
+    return links.map(link => ({ link, status: link.status === "withdrawn" ? "withdrawn" as const : "active" as const }));
+  }
+
+  private synthesisInventories(task: Task) {
+    const claims = task.plan?.claims;
+    if (!Array.isArray(claims) || claims.length > 50) throw new PreEffectToolRefusal("synthesis claims unavailable; refresh the task's bounded declared claim list");
+    return claims.map((_claim, index) => {
+      const identity = taskClaimIdentity(task, index + 1);
+      try { return { ...identity, inventory: this.d.board.latestEvidenceLinks(this.d.project, task.id, identity.claimId, identity.claimRevision, 128) }; }
+      catch { return { ...identity, inventory: { links: [] as EvidenceLinkV1[], complete: false } }; }
+    });
+  }
+
+  private synthesisSources(links: readonly EvidenceLinkV1[]): { private: boolean; key: string; bytes: number } {
+    const meta: unknown[] = [], seen = new Set<string>(); let bytes = 0;
+    for (const link of links) {
+      if (seen.has(link.sourceId)) continue; seen.add(link.sourceId);
+      const source = (() => { try { return this.d.evidenceSourceMeta?.(link.sourceId) ?? this.studySource(link.sourceId); } catch { return undefined; } })();
+      if (source?.private || source && !this.publicMetadataText(JSON.stringify(source))) return { private: true, key: "", bytes: 0 };
+      meta.push([link.sourceId, source]);
+      if (source && "bytes" in source && typeof source.bytes === "number") bytes += source.bytes;
+    }
+    return { private: false, key: createHash("sha256").update(JSON.stringify(meta)).digest("hex"), bytes };
+  }
+
+  /** Explicit authoring metadata only: no claim text, source identity, passage, origin or path. */
+  async synthesisEvidence(by: PeerId, input: unknown) {
+    const fields = this.studyFields(input, ["taskId"]), check = this.requestCheck(by, () => this.studyHold());
+    return this.studyWrite(async () => {
+      check(); const revision = this.d.board.statusRevision(), task = this.synthesisTask(by, fields.taskId);
+      if (this.synthesisPrivate(task, by)) return { taskId: task.id, status: "private" as const };
+      const claims = this.synthesisInventories(task), links = claims.flatMap(claim => claim.inventory.links);
+      if (this.synthesisSources(links).private) return { taskId: task.id, status: "private" as const };
+      const delivered = latestDeliverables(task.history) ?? [];
+      const artifacts = delivered.filter(record => !record.private && record.path && !this.experimentOutputPrivate(task, record.path))
+        .map(({ id, sha256, format }) => ({ id, sha256, format }));
+      check();
+      if (this.d.board.statusRevision() !== revision) return { taskId: task.id, status: "unavailable" as const, cause: "inventory_changed" };
+      return { taskId: task.id, taskCreated: task.created, status: "available" as const, scope: "declared_inventory" as const,
+        deliverables: artifacts, claims: claims.map(claim => {
+          const binding = inventoryBinding(this.synthesisRows(claim.inventory.links), claim.inventory.complete);
+          return { claimId: claim.claimId, claimRevision: claim.claimRevision, complete: claim.inventory.complete,
+            ...(binding ? { inventory: binding } : {}), evidence: this.synthesisRows(claim.inventory.links).map(({ link, status }) => ({ id: link.id, revision: link.revision, status })) };
+        }) };
+    });
+  }
+
+  /** Deterministic, explicit and offline: no caller-supplied current state and no semantic/model judge. */
+  async synthesisCheck(by: PeerId, input: unknown): Promise<SynthesisReadiness | { taskId: number; status: "unavailable" | "stale"; cause: string }> {
+    const fields = this.studyFields(input, ["taskId", "manifest"]), manifest = parseSynthesisManifest(fields.manifest);
+    if (fields.taskId !== manifest.taskId) throw new PreEffectToolRefusal("synthesis manifest names another task; refresh its task binding and retry");
+    const check = this.requestCheck(by, () => this.studyHold());
+    return this.studyWrite(async () => {
+      check(); const boardRevision = this.d.board.statusRevision(), task = this.synthesisTask(by, fields.taskId), taskId = task.id;
+      if (this.synthesisPrivate(task, by)) return { taskId, status: "private" };
+      // An offline check cannot replace a required privacy model with an assumed clear verdict.
+      if (this.screenOn()) return { taskId, status: "unavailable", cause: "offline_privacy_screen_required" };
+      const before = this.synthesisInventories(task), allLinks = before.flatMap(claim => claim.inventory.links);
+      const sources = this.synthesisSources(allLinks);
+      if (sources.private) return { taskId, status: "private" };
+      const activeLinks = allLinks.filter(link => link.status !== "withdrawn");
+      if (this.synthesisSources(activeLinks).bytes > 64 * 1024 * 1024) return { taskId, status: "unavailable", cause: "source_input_limit" };
+      const delivered = latestDeliverables(task.history) ?? [], policy = this.synthesisPolicy(task);
+      // ponytail: any concurrent board write stales this explicit batch. A task-scoped evidence generation narrows the fence later.
+      const base = JSON.stringify([task.created, task.owner, task.reviewer, task.history.length, task.plan?.claims, delivered]);
+      const current = () => {
+        try { check(); const now = this.synthesisTask(by, taskId); return !this.synthesisPrivate(now, by)
+          && this.d.board.statusRevision() === boardRevision && this.synthesisPolicy(now) === policy
+          && JSON.stringify([now.created, now.owner, now.reviewer, now.history.length, now.plan?.claims, latestDeliverables(now.history) ?? []]) === base; }
+        catch { return false; }
+      };
+      const changed = () => {
+        check(); const now = this.synthesisTask(by, taskId);
+        if (this.synthesisPrivate(now, by) || this.synthesisSources(allLinks).private) return { taskId, status: "private" as const };
+        return { taskId, status: "stale" as const, cause: "context_changed" };
+      };
+      try { if (by !== USER) this.d.onReviewObserverInput?.(by); } catch { return { taskId, status: "unavailable", cause: "observer_unavailable" }; }
+      const sourceKeys = new Map<string, string | undefined>();
+      for (const link of activeLinks) if (!sourceKeys.has(link.sourceId)) {
+        let key: string | undefined;
+        try { const meta = this.d.evidenceSourceMeta?.(link.sourceId); key = meta && Number.isSafeInteger(meta.bytes) && meta.bytes >= 0 ? this.d.evidenceSourceSnapshotKey?.(link) : undefined; } catch { /* unavailable source cannot verify provenance */ }
+        sourceKeys.set(link.sourceId, key);
+      }
+      if (!current()) return changed();
+      const reads: { path: string; read: GuardedDeliverableRead }[] = [];
+      const artifact = async (reference: { id: string; sha256: string }, limit: number): Promise<SynthesisArtifactSnapshot | "private"> => {
+        const record = delivered.find(record => record.id === reference.id);
+        if (!record) return { id: reference.id, state: "missing" };
+        if (record.private || !record.path || this.experimentOutputPrivate(task, record.path)) return "private";
+        if (record.sha256 !== reference.sha256) return { id: record.id, sha256: record.sha256, state: "changed" };
+        try {
+          const read = await readGuardedDeliverable(record.path, this.deliverablePorts(task, { failClosedOnDiscoveryLimit: true }), limit);
+          const text = new TextDecoder("utf-8", { fatal: true }).decode(read.data);
+          if (!this.publicMetadataText(text)) return "private";
+          reads.push({ path: record.path, read });
+          return { id: record.id, sha256: read.sha256, state: read.sha256 === reference.sha256 ? "unchanged" : "changed", text };
+        } catch { return { id: record.id, state: "unknown" }; }
+      };
+      const doc = await artifact(manifest.deliverable, 256 * 1024); if (doc === "private") return { taskId, status: "private" };
+      if (!current()) return changed();
+      const bib = await artifact(manifest.bibliography, 4 * 1024 * 1024); if (bib === "private") return { taskId, status: "private" };
+      if (!current()) return changed();
+      const observed: SynthesisCurrentClaim[] = [];
+      for (const claim of before) {
+        const resolutions: NonNullable<NonNullable<SynthesisCurrent["claims"]>[number]["resolutions"]>[number][] = [];
+        for (const link of claim.inventory.links) {
+          if (!current()) return changed();
+          const withdrawn = link.status === "withdrawn";
+          if (withdrawn) { resolutions.push({ id: link.id, revision: link.revision, status: "withdrawn" }); continue; }
+          if (!this.d.evidenceSourceRead || !sourceKeys.get(link.sourceId)) { resolutions.push({ id: link.id, revision: link.revision, status: "unavailable" }); continue; }
+          let resolution: EvidenceSourceRead["resolution"];
+          try { resolution = (await this.d.evidenceSourceRead(by, link, current, { offline: true })).resolution; }
+          catch { resolution = { status: "unavailable", cause: "source_unavailable" }; }
+          if (resolution.status === "unavailable" && resolution.cause === "private") return { taskId, status: "private" };
+          if (!current()) return changed();
+          resolutions.push({ id: link.id, revision: link.revision, status: resolution.status === "resolved" ? "resolved" : resolution.status === "stale" ? "stale" : "unavailable" });
+        }
+        const entry = task.history.findLast(entry => entry.by === USER && entry.event === "claim verdict" && entry.claim?.slot === claim.slot && entry.claim.list === claim.claimRevision)?.claim;
+        const synthesis = entry?.synthesis;
+        observed.push({ claimId: claim.claimId, claimRevision: claim.claimRevision,
+          inventory: { ...claim.inventory, links: this.synthesisRows(claim.inventory.links) },
+          resolutions, judgment: { present: !!entry, ...(synthesis ? synthesis : {}) } });
+      }
+      if (!current()) return changed();
+      if (this.synthesisSources(allLinks).key !== sources.key) return changed();
+      const fencedSources = new Set<string>();
+      for (const link of activeLinks) if (!fencedSources.has(link.sourceId)) {
+        fencedSources.add(link.sourceId);
+        try { if (sourceKeys.get(link.sourceId) && this.d.evidenceSourceSnapshotKey?.(link) !== sourceKeys.get(link.sourceId)) return changed(); } catch { return changed(); }
+      }
+      if (reads.some(value => !guardedDeliverableCurrent(value.path, this.deliverablePorts(task, { failClosedOnDiscoveryLimit: true }), value.read))) return changed();
+      if (this.synthesisSources(allLinks).key !== sources.key) return changed();
+      if (!current()) return changed();
+      return checkSynthesis(manifest, { taskId, taskCreated: task.created, deliverable: doc, bibliography: bib, claims: observed });
+    });
+  }
+
   /** Resolve declared provenance afresh, without manufacturing a #901 judgment or synthesis readiness. */
   async evidenceRead(by: PeerId, input: unknown): Promise<EvidenceReadResult> {
     const refuse = () => new PreEffectToolRefusal("evidence read unavailable; use a current evidence id on a research task visible through hub_task_show");
@@ -5016,7 +5177,7 @@ export class Tasks {
       check(); const link = this.d.board.evidenceLink(this.d.project, id, revision);
       if (!link) throw refuse();
       const receipt = { id: link.id, revision: link.revision, taskId: link.taskId };
-      const stub = (status: "private" | "stale" | "unavailable"): EvidenceReadResult => ({ ...receipt, status });
+      const stub = (status: "private" | "stale" | "unavailable" | "withdrawn"): EvidenceReadResult => ({ ...receipt, status });
       const context = () => {
         check(); let task: Task;
         try { task = this.studyParent(link.taskId); } catch { throw refuse(); }
@@ -5037,6 +5198,7 @@ export class Tasks {
         return { task, status, key: JSON.stringify([task.created, task.history.length, task.owner, task.reviewer, task.plan?.claims, source]) };
       };
       const before = context(); if (before.status) return stub(before.status);
+      if (link.status === "withdrawn") return stub("withdrawn");
       if (!this.d.evidenceSourceRead) return stub("unavailable");
       const current = () => { try { const next = context(); return !next.status && next.key === before.key; } catch { return false; } };
       // A returned passage can be quoted by any later tool or final answer in this input.
@@ -5064,7 +5226,7 @@ export class Tasks {
     if (!inventory.complete || !inventory.links.some(row => row.id === link.id && row.revision === link.revision)) return unknown;
     try {
       const groups: Set<string>[] = [], member: { id: string; keys: readonly string[] }[] = [];
-      for (const row of inventory.links) {
+      for (const row of inventory.links.filter(row => row.status !== "withdrawn")) {
         const meta = this.d.evidenceSourceMeta(row.sourceId);
         if (!meta || meta.id !== row.sourceId || meta.private || meta.sha256 !== row.rawSha256 || this.publicMetadataText(JSON.stringify(meta)) !== true) return unknown;
         const keys = evidenceOriginKeys(meta); if (!keys?.length) return unknown;
@@ -5737,7 +5899,7 @@ export class Tasks {
     try { requireLocalTaskPeer(by); }
     catch { throw new PreEffectToolRefusal("remote peers cannot record local evidence; ask the current local research task owner to record it"); }
     const requestCheck = this.requestCheck(by, () => this.studyHold());
-    let proposed: EvidenceRecordInput;
+    let proposed: ReturnType<typeof parseEvidenceRecord>;
     try { proposed = parseEvidenceRecord(input); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid evidence record; check the bounded evidence fields before retrying"); }
     return this.studyWrite(async () => {
@@ -5803,6 +5965,7 @@ export class Tasks {
     const claims = task.plan?.claims?.length ?? 0;
     if (!claims) throw new Error(`task #${task.id} declares no plan claims: add them to its plan first`);
     const claim = parseClaimVerdict(input, claims);
+    if (claim.synthesis && (this.d.profile !== "research" || task.profile !== "research")) throw new Error("synthesis dispositions require a research task and profile");
     // Bound to the claim list it evaluated: a hash of the plan's claims (never their text), so a later replacement or reorder of the list leaves this verdict naming no claim of the new list.
     const identity = taskClaimIdentity(task, claim.slot);
     return this.d.board.update(task.id, USER, "claim verdict", {}, undefined, { claim: { ...claim, list: identity.claimRevision } });  // no note: nothing a person typed beyond the closed fields is kept

@@ -215,3 +215,20 @@ export function evidenceOriginKeys(meta: SourceMeta): readonly string[] | undefi
     return [...keys].sort();
   } catch { return undefined; }
 }
+
+
+/** Host-only freshness token for a registered immutable snapshot; no content or origin leaves this boundary. */
+export function evidenceSnapshotKey(registry: SourceEvidenceRegistry, sourceId: string, projectionVersion: EvidenceSourcePolicy["projectionVersion"]): string | undefined {
+  try {
+    const meta = registry.get(sourceId);
+    if (!meta || meta.private) return;
+    const receipt = parseSourceProjectionReceipt(meta.projection);
+    if (!receipt) return;
+    const raw = registry.readRaw(sourceId), text = registry.readText(sourceId);
+    if (!raw || text === undefined) return;
+    const version = projectionVersion(receipt); if (!version) return;
+    const final = registry.get(sourceId);
+    if (!final || final.private || !sameRecord(meta, final)) return;
+    return sha256Of(Buffer.from(JSON.stringify([meta, sha256Of(raw), sha256Of(Buffer.from(text, "utf8")), version])));
+  } catch { return; }
+}

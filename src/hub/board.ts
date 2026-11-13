@@ -10,6 +10,7 @@ import { parseComparisonPlan, comparisonPlanHash, evaluatorIdentityHash, parseEx
 import type { InvocationRow } from "./invocations.ts";
 import { HOST_CODE_SYMBOLS, parseTaskCodeSymbols, type TaskCodeSymbols } from "./task-code-symbols.ts";
 import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { planFingerprint } from "./plan-conformance.ts";
 import type { PlannerReason } from "./routing.ts";
 import type { ReviewerPoolReason } from "./reviewer-pool.ts";
@@ -302,7 +303,7 @@ export interface HistoryEntry {
 /** #901: one person verdict on a plan claim, with the model label the person says produced the claim. All closed or bounded; nothing here is claim text. */
 export const CLAIM_VERDICTS = ["supported", "unsupported", "unclear"] as const;
 /** `modelVerdict` is what the model's own fact check said of the claim, as the person enters it: with it the scorecard can say whether person and model agree; without it agreement is unknown. */
-export interface ClaimVerdict { slot: number; verdict: (typeof CLAIM_VERDICTS)[number]; model?: string; modelVerdict?: (typeof CLAIM_VERDICTS)[number]; /** `claimListId` of the plan's claims when the verdict was entered: the list it evaluated, as a hash. Set by the hub, never by the person. */ list?: string }
+export interface ClaimVerdict { slot: number; verdict: (typeof CLAIM_VERDICTS)[number]; model?: string; modelVerdict?: (typeof CLAIM_VERDICTS)[number]; /** Person-only disposition, valid only for this exact synthesis manifest. */ synthesis?: { manifestSha256: string; disposition: "resolved" | "qualified" }; /** `claimListId` of the plan's claims when the verdict was entered: the list it evaluated, as a hash. Set by the hub, never by the person. */ list?: string }
 /** A short opaque identity of an ordered claim list (a sha-256 prefix of its canonical form): equal lists, in order, give equal ids; it reveals nothing of the claims. Absent list: the empty list's id. */
 export function claimListId(claims: readonly string[] | undefined): string {
   return createHash("sha256").update(planFingerprint({ claims: [...(claims ?? [])] })).digest("hex").slice(0, 16);
@@ -317,14 +318,27 @@ export function taskClaimIdentity(task: Pick<Task, "id" | "created" | "plan">, s
 }
 /** A claim slot is a position in the plan's claim list (at most 50, as the scorecard's own bound); a model label is a bounded token, never prose. */
 export function parseClaimVerdict(value: unknown, slots: number): ClaimVerdict {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("claim verdict must be an object");
+  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length
+    || Object.values(Object.getOwnPropertyDescriptors(value)).some(field => !Object.hasOwn(field, "value") || !field.enumerable)) throw new Error("claim verdict must be an object");
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).some(key => !["slot", "verdict", "model", "modelVerdict"].includes(key))) throw new Error("claim verdict carries only slot, verdict, model and modelVerdict");
+  if (Object.keys(v).some(key => !["slot", "verdict", "model", "modelVerdict", "synthesis"].includes(key))) throw new Error("claim verdict carries only slot, verdict, model, modelVerdict and synthesis");
   if (!Number.isSafeInteger(v.slot) || (v.slot as number) < 1 || (v.slot as number) > Math.min(50, slots)) throw new Error(`claim slot must name one of the task's ${slots} declared claim${slots === 1 ? "" : "s"}`);
   if (typeof v.verdict !== "string" || !(CLAIM_VERDICTS as readonly string[]).includes(v.verdict)) throw new Error(`claim verdict must be one of ${CLAIM_VERDICTS.join(", ")}`);
   if (v.model !== undefined && (typeof v.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$/.test(v.model))) throw new Error("model label must be a short identifier (letters, digits and . _ : / @ + -)");
   if (v.modelVerdict !== undefined && (typeof v.modelVerdict !== "string" || !(CLAIM_VERDICTS as readonly string[]).includes(v.modelVerdict))) throw new Error(`model verdict must be one of ${CLAIM_VERDICTS.join(", ")}`);
-  return { slot: v.slot as number, verdict: v.verdict as ClaimVerdict["verdict"], ...(v.model === undefined ? {} : { model: v.model }), ...(v.modelVerdict === undefined ? {} : { modelVerdict: v.modelVerdict as ClaimVerdict["verdict"] }) };
+  let synthesis: ClaimVerdict["synthesis"];
+  if (v.synthesis !== undefined) {
+    const item = v.synthesis;
+    if (!item || typeof item !== "object" || Array.isArray(item) || types.isProxy(item)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(item)) || Object.getOwnPropertySymbols(item).length
+      || Object.values(Object.getOwnPropertyDescriptors(item)).some(field => !Object.hasOwn(field, "value") || !field.enumerable)
+      || Object.keys(item).some(key => key !== "manifestSha256" && key !== "disposition")) throw new Error("synthesis disposition requires only manifestSha256 and disposition");
+    const row = item as Record<string, unknown>;
+    if (typeof row.manifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(row.manifestSha256) || row.disposition !== "resolved" && row.disposition !== "qualified") throw new Error("synthesis disposition needs a manifest SHA-256 and resolved or qualified");
+    synthesis = { manifestSha256: row.manifestSha256, disposition: row.disposition };
+  }
+  return { slot: v.slot as number, verdict: v.verdict as ClaimVerdict["verdict"], ...(v.model === undefined ? {} : { model: v.model }), ...(v.modelVerdict === undefined ? {} : { modelVerdict: v.modelVerdict as ClaimVerdict["verdict"] }), ...(synthesis ? { synthesis } : {}) };
 }
 /** The ids a stored verdict may carry (#507b): bounded criterion identifiers in the S8 checklist's own format, at most its 32, each once. */
 function criterionIdList(value: unknown): string[] {
@@ -1387,6 +1401,11 @@ export class Board {
 
   hasResearchEvidenceState(): boolean {
     return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_evidence_links) AS present").get() as { present: number }).present === 1;
+  }
+
+  /** Older evidence readers reject the new optional stored withdrawal field. Keep that downgrade fence conditional. */
+  hasWithdrawnEvidenceState(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_evidence_links WHERE json_extract(body,'$.status')='withdrawn') AS present").get() as { present: number }).present === 1;
   }
 
   researchEvidenceIntegrity(): { links: number; revisions: number; digest: string } {

@@ -125,3 +125,58 @@ export function renderExperiments(view: unknown, columns?: number): Span[][] {
   for (const row of attempts) if (row.eventsComplete === false && row.nextEventCursor !== undefined) out.push([s(`more events of ${row.id}: ahub study experiments --attempt ${row.id} --events-after ${row.nextEventCursor}; the values above come from the events shown so far`, "attention")]);
   return out;
 }
+
+
+/** Screened passage or declared manifest-authoring metadata, never an entailment/quality claim. */
+export function renderStudyEvidence(value: unknown, columns?: number): Span[][] {
+  const v = value as any;
+  if (v?.status !== "resolved" && v?.status !== "available") return [[s(`Evidence ${v?.status ?? "unavailable"}; use a visible research task and current public evidence`, "attention")]];
+  const out: Span[][] = [...heading(v.status === "resolved" ? `Evidence ${v.id} r${v.revision}` : `Declared evidence inventory, task ${v.taskId}`, columns)];
+  if (v.status === "resolved") {
+    out.push(...pair("status", "resolved provenance only; no entailment or source-quality certification", columns, 12));
+    out.push(...pair("source", v.link?.sourceId, columns, 12));
+    out.push(...pair("scalars", `${v.locator?.start}..${v.locator?.end}`, columns, 12));
+    out.push(...pair("passage", v.excerpt, columns, 12));
+  } else {
+    out.push(...pair("incarnation", v.taskCreated, columns, 12));
+    for (const artifact of list(v.deliverables)) out.push(...pair("artifact", `${artifact.id} ${artifact.format} ${artifact.sha256}`, columns, 12));
+    for (const claim of list(v.claims)) {
+      out.push(...pair("claim", `${claim.claimId} @ ${claim.claimRevision}`, columns, 12));
+      out.push(...pair("inventory", claim.complete && claim.inventory ? `r${claim.inventory.revision} ${claim.inventory.sha256}` : "unknown/incomplete: obtain complete inventory before checking", columns, 12));
+      for (const link of list(claim.evidence)) out.push(...pair("link", `${link.id} r${link.revision} ${link.status}`, columns, 12));
+    }
+    out.push([s("Declared bindings only. Select citation mappings in a synthesis manifest; invoke ahub study check explicitly.", "muted")]);
+  }
+  return out;
+}
+
+const SYNTHESIS_NEXT: Record<string, string> = {
+  refresh_manifest: "refresh claim, link, inventory and artifact bindings in the manifest",
+  provide_artifact: "register unchanged public Markdown/BibTeX deliverables through the existing deliverable workflow",
+  repair_citations: "repair declared Markdown citation keys and their BibTeX entries",
+  record_evidence: "record current claim evidence with hub_evidence_record",
+  resolve_locator: "inspect ahub study evidence for current public registered projection/locator provenance",
+  record_person_judgment: "a person records the claim's verdict with ahub task claim; model labels do not count",
+  resolve_contradiction: "a person adjudicates or explicitly qualifies the current manifest-bound conclusion",
+  read_complete_inventory: "obtain a complete readable inventory; split oversized tasks or repair stored evidence before retrying",
+  complete_manifest_claims: "include every current declared task claim in the manifest",
+};
+export function renderSynthesisReadiness(value: unknown, columns?: number): Span[][] {
+  const v = value as any, out: Span[][] = [...heading(`Synthesis ${v?.status ?? "unavailable"}`, columns)];
+  if (v?.status === "private") return [...out, [s("Readiness withheld by current task/source/artifact privacy; no research content is disclosed.", "attention")]];
+  if (!v?.scope) {
+    const reason = v?.cause === "offline_privacy_screen_required" ? "Current privacy policy requires a model screen, which an offline check does not run; inspect privacy policy through the normal screened read path."
+      : v?.cause === "source_input_limit" ? "Source input exceeds this bounded check; split the synthesis into smaller tasks."
+      : "Inputs or policy changed/unavailable; refresh current public bindings and run ahub study check again.";
+    return [...out, [s(reason, "attention")]];
+  }
+  out.push(...pair("scope", "structural/provenance only; not truth, entailment or source-quality verification", columns, 12));
+  for (const key of ["manifestSha256", "binding", "claimCoverage", "deliverable", "bibliography"]) out.push(...pair(key, v[key], columns, 12));
+  out.push(...pair("citations", `${v.citations?.state} (cited ${v.citations?.cited ?? "unknown"}, missing ${v.citations?.missing ?? "unknown"})`, columns, 12));
+  for (const claim of list(v.claims)) {
+    out.push(...heading(claim.claimId, columns));
+    for (const key of ["claim", "inventory", "citationKey", "evidenceLink", "locator", "provenance", "judgment", "contradiction"]) out.push(...pair(key, claim[key], columns, 14));
+  }
+  for (const next of list(v.next)) out.push(...pair("next", SYNTHESIS_NEXT[next] ?? "inspect the current manifest bindings", columns, 12, "attention"));
+  return out;
+}

@@ -81,9 +81,53 @@ text; reads never invent a converter version or page coordinates. An already bou
 opaque IDs. Private, unknown or over-bound inventories make that result unknown.
 Repeated copies or a shared origin do not supply another group. These are
 provenance groups, not proof of independent corroboration, semantic support or
-truth. Source revalidation is offline and performs no download. Study CLI,
-synthesis manifests and readiness checks remain T3. A matching citation key,
-resolved passage or evidence relation never creates a #901 person verdict.
+truth. Source revalidation is offline and performs no download. A matching
+citation key, resolved passage or evidence relation never creates a #901 person verdict.
+
+Use `ahub study evidence <ev-id> [--revision <n>]` to re-read a link through
+current task/source privacy and projection checks. The person can run
+`ahub study evidence --task <task>` for authoring bindings: task incarnation,
+claim identities/revisions, complete-inventory hashes, evidence IDs/revisions
+and registered deliverable IDs/hashes. This view includes no claim prose,
+document, path or origin.
+
+`ahub study check <task> <manifest.json>` explicitly checks a bounded version-1
+manifest naming the task incarnation, registered Markdown and BibTeX
+deliverable IDs/hashes, each current claim's revision and complete latest-link
+inventory revision/hash, and selected evidence IDs/revisions with citation
+keys. It reads local snapshots and guarded artifacts without fetching documents
+or running a semantic judge. A configured privacy screen needing a model makes
+the offline check unavailable; unknown privacy is never clear.
+
+The result separately reports citation resolution, source/locator provenance,
+person judgment, open contradictions and unchanged artifacts. `ready` means
+structural/provenance readiness for the complete declared claim list, not
+truth, entailment, source quality or independent corroboration. Changing a
+claim, artifact, projection/converter or any inventory link invalidates the
+earlier binding, including unselected counterevidence. Missing, private,
+truncated or unavailable inputs cannot produce ready. Non-ready exits 1;
+JSON and text report the same statuses. This check runs only on explicit
+invocation. The existing `scripts/check-citations.ts` mode is unchanged.
+The manifest is capped at 64 KiB, 50 claims, 128 selected links total and
+128 ASCII characters per citation key. Existing latest-inventory reads use a
+128-row task window; overflow is incomplete, never a truncated success.
+Guarded Markdown/BibTeX reads retain 256 KiB/4 MiB caps. Active registered raw
+inputs have a 64 MiB aggregate ceiling for one check.
+
+To withdraw a link, its owner records the next revision with the same link ID
+and `status: "withdrawn"` through `hub_evidence_record`. Omitting status means
+active; an explicit `active` normalizes to omission. Prior revisions remain
+retained. Latest readback names withdrawal without returning a passage. A
+withdrawal remains part of the complete inventory hash.
+
+For an adjudicated or explicitly qualified conclusion with open counterevidence,
+the person uses the existing verdict record:
+`ahub task claim <task> <slot> <supported|unsupported|unclear> --manifest <sha256> --disposition <resolved|qualified>`.
+The SHA-256 is `manifestSha256` from the check result. Both flags are required
+together, only on a research task/profile. This is the person's assessment of
+that exact manifest, not an agent's permission to certify truth. Any changed
+manifest binding requires a new disposition. The existing #901 verdict and its
+claim-list revision remain the only judgment record.
 
 # General project example
 

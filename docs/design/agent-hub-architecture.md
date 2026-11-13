@@ -89,6 +89,11 @@ establish entailment or synthesis readiness. The research-only record tool
 returns an ids-only receipt and excludes its arguments/results from capture.
 Its T1 authorization, revision and recovery boundaries are defined in
 [the task-board contract](task-board.md#claim-evidence-records-931-t1).
+Explicit synthesis checks bind the complete evidence inventory and registered
+deliverable hashes through that boundary, rechecking privacy and immutable
+provenance after asynchronous reads. Their separate readiness statuses certify
+structural provenance only; #901 retains person judgment. See
+[explicit synthesis readiness](task-board.md#explicit-synthesis-readiness-931-t3).
 
 ## Bounded visual attachments (#1058)
 

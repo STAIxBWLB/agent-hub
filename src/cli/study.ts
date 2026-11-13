@@ -1,7 +1,10 @@
 // Argument parsing for `ahub study` (#601). Pure: argv in, one request description or a usage line out, so the I/O in main.ts stays a thin dispatcher and every form is testable without a daemon.
-export const STUDY_USAGE = "usage: ahub study draft <parent> <contract.json> | revise <id> <revision> <contract.json> | approve <id> <revision> | approve-protocol <hash> | close <id> <revision> --reason <text> | show [<id> | --after <id>] | experiments (--campaign <id> [--after <n>] | --attempt <ra-id> [--events-after <n>] | --plan <hash> --baseline <ra-id> --variant <ra-id>) [--json] [--color=auto|always|never]";
+export const STUDY_USAGE = "usage: ahub study draft <parent> <contract.json> | revise <id> <revision> <contract.json> | approve <id> <revision> | approve-protocol <hash> | close <id> <revision> --reason <text> | evidence <ev-id> [--revision <n>] | evidence --task <task> | check <task> <manifest.json> | show [<id> | --after <id>] | experiments (--campaign <id> [--after <n>] | --attempt <ra-id> [--events-after <n>] | --plan <hash> --baseline <ra-id> --variant <ra-id>) [--json] [--color=auto|always|never]";
 
 export type StudyRequest =
+  | { op: "evidence"; id: string; revision?: number }
+  | { op: "evidence_inventory"; taskId: number }
+  | { op: "check"; taskId: number; file: string }
   | { op: "draft"; parentTaskId: number; file: string }
   | { op: "revise"; id: string; revision: number; file: string }
   | { op: "approve"; id: string; revision: number }
@@ -18,6 +21,16 @@ export function parseStudyArgs(operands: readonly string[]): StudyRequest | { us
   const [sub, ...rest] = operands;
   const id = (value: string | undefined) => value !== undefined && ID.test(value) ? value : undefined;
   const int = (value: string | undefined) => value !== undefined && INT.test(value) ? Number(value) : undefined;
+  if (sub === "check") {
+    const taskId = int(rest[0]);
+    return rest.length === 2 && taskId !== undefined && !!rest[1] ? { op: "check", taskId, file: rest[1] } : usage("check needs a task id and a bounded synthesis manifest file");
+  }
+  if (sub === "evidence") {
+    if (rest[0] === "--task") { const taskId = int(rest[1]); return rest.length === 2 && taskId !== undefined ? { op: "evidence_inventory", taskId } : usage(); }
+    const evidence = rest[0], revision = rest.length === 3 && rest[1] === "--revision" ? int(rest[2]) : undefined;
+    return evidence !== undefined && /^ev:[a-f0-9]{32}$/.test(evidence) && (rest.length === 1 || rest.length === 3 && revision !== undefined)
+      ? { op: "evidence", id: evidence, ...(revision === undefined ? {} : { revision }) } : usage("evidence needs a recorded ev:<32 hex> id or --task <task>");
+  }
   if (sub === "approve-protocol") {
     if (rest.length !== 1) return usage();
     const hash = rest[0];

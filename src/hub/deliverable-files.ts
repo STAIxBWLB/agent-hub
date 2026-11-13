@@ -102,6 +102,8 @@ export interface GuardedDeliverableRead {
   bytes: number;
   /** Host-only physical identity; never stored as a visual record or used as content proof. */
   identity: { dev: number; ino: number };
+  /** Call-scoped stamps for a later batch fence, not persisted content proof. */
+  stamps?: { size: number; mtimeMs: number; ctimeMs: number };
 }
 
 /** Reuse the deliverable guard and opened-descriptor reader; this export refuses private files before reading any bytes. */
@@ -120,7 +122,9 @@ export async function readGuardedDeliverable(path: string, ports: DeliverablePor
   const current = locate(path, ports); privacy(current.real);
   if (!sameFile(current.stat, result.identity) || current.stat.size !== found.stat.size || current.stat.mtimeMs !== found.stat.mtimeMs || current.stat.ctimeMs !== found.stat.ctimeMs)
     return refuse(path, "the file changed while it was being read; retry with a stable file");
-  return { data: result.data!, sha256: result.sha256, bytes: result.bytes, identity: result.identity };
+  const observed = { data: result.data!, sha256: result.sha256, bytes: result.bytes, identity: result.identity };
+  Object.defineProperty(observed, "stamps", { value: { size: current.stat.size, mtimeMs: current.stat.mtimeMs, ctimeMs: current.stat.ctimeMs }, enumerable: false });
+  return observed;
 }
 
 /** Refuse a bad claim before any effect, without hashing: the path must be inside the project, allowed, and a regular file of a usable size. */
@@ -167,4 +171,16 @@ export async function checkDeliverables(records: readonly DeliverableRecord[], p
     }
   }
   return out;
+}
+
+
+/** Synchronous final batch fence using the same guard/policies as the original descriptor read. */
+export function guardedDeliverableCurrent(path: string, ports: DeliverablePorts, read: GuardedDeliverableRead): boolean {
+  try {
+    if (!read.stamps) return false;
+    const found = locate(path, ports);
+    if (ports.private(path) || ports.private(relative(realPath(ports.cwd), found.real))) return false;
+    return sameFile(found.stat, read.identity) && found.stat.size === read.stamps.size
+      && found.stat.mtimeMs === read.stamps.mtimeMs && found.stat.ctimeMs === read.stamps.ctimeMs;
+  } catch { return false; }
 }

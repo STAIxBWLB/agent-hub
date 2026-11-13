@@ -230,12 +230,64 @@ store. A read does not retrofit a receipt or execute a network fetch. A bounded
 latest-link inventory and current screened metadata collapse overlapping origins
 into opaque connected groups; unknown/private/overflow evidence gives no group
 count. Group counts are provenance, never an independence or truth verdict.
-Study CLI surfaces, complete synthesis inventory bindings and readiness remain
-T3; #901 keeps the sole person-judgment record.
+#901 keeps the sole person-judgment record. The explicit synthesis check below
+consumes it without deriving a verdict from evidence relations.
 Stored evidence adds a conditional `research_evidence` recovery feature and
 `{links, revisions, digest}` integrity section. An absent section is the empty
 store, preserving older recovery records; an empty database requires no new
 feature. Provenance never manufactures a person verdict or readiness result.
+
+### Explicit synthesis readiness (#931 T3)
+
+`ahub study evidence --task <task>` exposes bounded authoring bindings, not
+source or claim prose. `ahub study check <task> <manifest.json>` accepts only a
+version-1 manifest naming the task incarnation, registered Markdown/BibTeX
+deliverable IDs and SHA-256 hashes, current #901 claim identities/revisions,
+complete latest-link inventory revision/hash per claim, and selected evidence
+IDs/revisions with citation keys. The hash includes every latest inventory row,
+including unselected counterevidence and withdrawn links. No second claim or
+judgment identity/store is created.
+The manifest shape permits at most 64 KiB, 50 claims, 128 selected links total
+and 128 ASCII characters per citation key. The existing bounded latest-link
+inventory must be complete. Guarded document/bibliography reads use 256 KiB and
+4 MiB; one check refuses above 64 MiB of active registered raw source inputs.
+
+`EvidenceLinkV1.status` may be `withdrawn` only on a later append-only revision.
+Legacy omission means active and keeps its original canonical bytes/ID;
+explicit active input normalizes to omission. Withdrawn rows remain in complete
+inventory bindings but supply no active locator or contradiction. The owner
+uses the existing writer; its actor, source, claim and privacy admission stay
+unchanged. Historical revisions remain readable through current privacy checks.
+Recovery requires `research_evidence_withdrawal` only while a persisted
+withdrawal revision needs its newer parser. Active-only legacy stores retain
+their existing compatibility requirement.
+
+The existing person-only #901 `ClaimVerdict` may carry optional
+`synthesis: {manifestSha256, disposition: resolved|qualified}`. The console
+`ahub task claim` takes paired `--manifest` and `--disposition` flags. It records
+no claim or qualification prose. A disposition closes an open contradiction
+only when its manifest hash, claim revision, full inventory and artifact/source
+bindings are current. Agent/model relation labels never supply this authority.
+
+Tasks owns both reads. The host obtains current state; callers cannot supply
+screened artifacts, provenance resolutions or person authority. Artifact reads
+use the guarded #509 path/hash boundary. Every active inventory link resolves
+through screened source-read/projection checks. Final raw/projection/converter
+and artifact identity/stat fences run after asynchronous reads. Current task,
+actor, policy, inventory and privacy are checked again. Any concurrent board
+write conservatively stales the batch; a task-scoped evidence generation is the
+later narrowing path. A private upgrade returns only a neutral task/status
+stub. Incomplete inventories and unavailable observations cannot verify
+readiness. The observer latch precedes evidence-derived inputs.
+
+The pure offline checker reports citation resolution, source/locator freshness,
+person-judgment presence, contradiction state and unchanged deliverables
+separately. Every currently declared claim must be covered. A model's relation
+label or matching passage cannot certify semantic support. A configured privacy
+model is never invoked or bypassed by an offline check. No earlier readiness
+binding remains current after a claim, artifact, projection or inventory
+change. The command runs only explicitly and preserves legacy citation-script
+semantics and ordinary dev-profile completion behavior.
 
 ## Execution-reference admission (#1220 T2)
 

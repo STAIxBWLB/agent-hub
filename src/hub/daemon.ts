@@ -258,7 +258,7 @@ import { memoryProjectKey } from "@staix/agent-mem";
 import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory, createIntentBriefSource, createStandalonePolicy } from "@staix/agent-mem";
 import { SourceRegistry, SOURCE_UTF8_PROJECTION_VERSION, type SourceMeta } from "./sources.ts";
-import { readEvidenceSource } from "./source-read.ts";
+import { evidenceSnapshotKey, readEvidenceSource } from "./source-read.ts";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead, sourceRead, validateSourceRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
@@ -3146,11 +3146,14 @@ export async function startDaemon(opts: DaemonOptions) {
       partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
     studySource: id => sourceRegistry.get(id),
     evidenceSourceMeta: id => sourceRegistry.get(id),
-    evidenceSourceRead: (by, link, current) => {
+    evidenceSourceSnapshotKey: link => evidenceSnapshotKey(sourceRegistry, link.sourceId, receipt => receipt.converter
+      ? projections.fingerprint(join(opts.cwd, `source${receipt.converter.extension}`)) : SOURCE_UTF8_PROJECTION_VERSION),
+    evidenceSourceRead: (by, link, current, mode) => {
       const hostCurrent = sourceReadCurrent(by, false, false);
+      if (mode?.offline && tasks.screenOn()) return Promise.resolve({ resolution: { status: "unavailable" as const, cause: "source_unavailable" as const } });
       return readEvidenceSource(sourceRegistry, link, {
         valid: () => hostCurrent() && current(), canReadPrivate: async () => false,
-        screen: screenSourceText,
+        screen: (text, meta) => screenSourceText(text, meta, mode?.offline === true),
         projectionVersion: receipt => receipt.converter
           ? projections.fingerprint(join(opts.cwd, `source${receipt.converter.extension}`)) : SOURCE_UTF8_PROJECTION_VERSION,
       });
@@ -5205,11 +5208,12 @@ export async function startDaemon(opts: DaemonOptions) {
       && policyKey === JSON.stringify({ signals: activeRouting().signals, constraints: activeRouting().constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: activeRouting().local.fixed_model });
   }
   const sourceRegistry = new SourceRegistry(opts.stateDir);
-  async function screenSourceText(text: string, meta: SourceMeta): Promise<boolean> {
+  async function screenSourceText(text: string, meta: SourceMeta, offline = false): Promise<boolean> {
     if (meta.origins.some(origin => origin.kind === "file" && matchesPolicy(opts.cwd, origin.origin, config.pii?.paths ?? []))) return false;
     try { if (looksSecret(text) || activeRouting().signals.pii_patterns.some(pattern => new RegExp(pattern).test(text))) return false; }
     catch { return false; }
     if (!tasks.screenOn()) return true;
+    if (offline) return false; // The caller's current-policy fence prevents a skipped screen from upgrading source privacy.
     // Reuse the bounded host screen. Oversized/unknown is private, never an unscreened excerpt.
     const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text).catch(() => undefined);
     return verdict?.label === "clear";
@@ -5878,6 +5882,10 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ handoffs: handoffListView(), synced: false, syncing: true, pending });
       }
       // #601: the person's own forms (a read is hub_study_show, which every connection may use). `by` is USER only on the console path; approval and close are never a tool.
+      case "study_evidence":
+        return JSON.stringify(await tasks.synthesisEvidence(by, a));
+      case "study_check":
+        return JSON.stringify(await tasks.synthesisCheck(by, a));
       case "study_draft":
         return JSON.stringify(await tasks.studyDraft(by, a));
       case "study_revise":
@@ -6033,7 +6041,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "release_new":
         return JSON.stringify(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order }));
       case "claim_verdict": // #901: a person's verdict on one declared claim; the reply names the slot and the verdict only, never a claim
-        return JSON.stringify((({ id, history }) => ({ task: id, recorded: history.at(-1)?.claim }))(tasks.recordClaimVerdict(by, a.id, { slot: a.slot, verdict: a.verdict, ...(a.model === undefined ? {} : { model: a.model }), ...(a.modelVerdict === undefined ? {} : { modelVerdict: a.modelVerdict }) })));
+        return JSON.stringify((({ id, history }) => ({ task: id, recorded: history.at(-1)?.claim }))(tasks.recordClaimVerdict(by, a.id, { slot: a.slot, verdict: a.verdict, ...(a.model === undefined ? {} : { model: a.model }), ...(a.modelVerdict === undefined ? {} : { modelVerdict: a.modelVerdict }), ...(a.synthesis === undefined ? {} : { synthesis: a.synthesis }) })));
       case "github_import":
         return JSON.stringify(await tasks.importGitHub(by, { repo: a.repo, label: a.label, milestone: a.milestone }));
       case "release_show": {
@@ -10662,6 +10670,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_comparisons; persisted comparison plans, approvals or protocol context require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_evidence")) && board.hasResearchEvidenceState())
         return "target lacks research_evidence; choose a daemon advertising research_evidence to preserve persisted links and revisions";
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_evidence_withdrawal")) && board.hasWithdrawnEvidenceState())
+        return "target lacks research_evidence_withdrawal; choose a supporting daemon to preserve withdrawal revisions";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {
