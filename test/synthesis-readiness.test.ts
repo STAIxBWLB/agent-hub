@@ -45,6 +45,22 @@ test("#931 inert parser rejects getters, proxies, toJSON, sparse lists and unkno
   expect(invoked).toBe(0);
 });
 
+test("#931 custom array prototypes cannot execute inherited map or species during validation", () => {
+  for (const field of ["claims", "evidence"] as const) {
+    const f = fixture(); let invoked = 0;
+    const values = field === "claims" ? [...f.manifest.claims] : [...f.manifest.claims[0]!.evidence];
+    Object.setPrototypeOf(values, Object.create(Array.prototype, { map: { get() { invoked++; return Array.prototype.map; } } }));
+    const input = field === "claims" ? { ...f.manifest, claims: values } : { ...f.manifest, claims: [{ ...f.manifest.claims[0]!, evidence: values }] };
+    expect(() => parseSynthesisManifest(input)).toThrow("invalid synthesis manifest");
+    expect(invoked).toBe(0);
+  }
+  const f = fixture(); let species = 0;
+  class CallerArray extends Array { static get [Symbol.species]() { species++; return Array; } }
+  const claims = [...f.manifest.claims]; Object.setPrototypeOf(claims, CallerArray.prototype);
+  expect(() => parseSynthesisManifest({ ...f.manifest, claims })).toThrow("invalid synthesis manifest");
+  expect(species).toBe(0);
+});
+
 test("#931 manifest count, identity, citation-key and selected-link bounds are enforced whole", () => {
   const f = fixture(), claim = f.manifest.claims[0]!;
   const bad = [
