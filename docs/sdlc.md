@@ -133,8 +133,8 @@ are the ones printed by `ahub help`; placeholders name values to choose.
 2. Record the long-term goal with
    `ahub goal new <title> [--milestone <text>]... [--depends <id>]... [--shared]`.
 3. Create its release line with `ahub release new <name> <goal> <order>`.
-   The goal is the ID returned in the preceding step. Creating a release line
-   records planning intent only; it does not ship anything.
+   The goal argument describes what this release aims to deliver. Creating a
+   release line records planning intent only; it does not ship anything.
 4. Have the planner file the spec issues and board tasks, retaining the old
    decision IDs and acceptance evidence. Inspect `ahub sdlc status`; the person
    accepts each spec with `ahub sdlc accept <task> --issue <n>`.
