@@ -672,6 +672,7 @@ function blocker(code: RecoveryBlocker["code"], message: string, peer?: Terminal
     code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
     code === "terminal-orphaned" ? `reattach the pane with orca terminal switch --terminal ${shellQuote(handle!)}; then refresh in ahub upgrade ([r] on the plan, [s] on an open operation), or rerun it` :
     code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
+    code === "launch-failed" ? "fix the launch refusal, then resume this recovery operation" :
     code === "launcher-exited" ? "the session was not restored; the coordinator's error names the choices" :
     code === "terminal-gone" ? "the terminal was closed; inspect the project's terminals in Orca before resuming recovery" :
     "inspect the named terminal and resume recovery after the identity is verified";
@@ -1002,6 +1003,7 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     };
     const deadline = Date.now() + Math.min(timeoutMs, MAX_WAIT_MS);
     const slice = () => Math.max(1, Math.min(EXIT_SLICE_MS, deadline - Date.now())); // Orca refuses --timeout-ms 0
+    const earlyFailure = failed(); if (earlyFailure) return earlyFailure;
     let idle = await waitForIdle(replacement, slice(), config);
     for (;;) {
       const failure = failed(); if (failure) return failure;

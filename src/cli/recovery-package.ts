@@ -21,7 +21,7 @@ export const runCommand: RunCommand = (args, options = {}) => new Promise((resol
   child.stderr!.on("data", (v) => { stderr = append(stderr, v); });
   let timedOut = false, incomplete = false;
   let exitGrace: ReturnType<typeof setTimeout> | undefined;
-  // Version probes may fork a process retaining a pipe after their own exit. Bound that read without signaling an unproven descendant.
+  // ponytail: a probe descendant may retain a pipe after exit; close bounded readers without signaling an unproven descendant. Upgrade: owned process-group proof, as for native probes.
   if (options.pipeExitGraceMs !== undefined) child.once("exit", () => {
     exitGrace = setTimeout(() => { incomplete = true; child.stdout?.destroy(); child.stderr?.destroy(); }, options.pipeExitGraceMs);
   });
