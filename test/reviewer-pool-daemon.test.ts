@@ -29,6 +29,7 @@ for (const kind of ["claude", "codex"] as const) test(`daemon ${kind} review var
   const connect = async (hello: Parameters<typeof ControlClient.connect>[1]) => { const client = await ControlClient.connect(stateDir, hello); cleanup.push(() => client.close()); return client; };
   const console_ = await connect({ role: "console" });
   expect(await console_.request({ t: "start", peer })).toMatchObject({ ok: true });
+  expect(await console_.request({ t: "budget", set: { peer, used: 0.1, resetsInMs: 600_000 } })).toMatchObject({ ok: true });
   if (kind === "claude") {
     const model = (await console_.request({ t: "model", op: "list" })).models.find((row: { peer: string }) => row.peer === peer);
     expect(model).toMatchObject({ desiredModel: null, source: "native default", unsupported: { reasonCode: "unverified_setter" } });
@@ -104,6 +105,7 @@ test("per-review isolation failure excludes the reviewer until a verified restar
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
   expect(await console_.request({ t: "start", peer: "codex-review" })).toMatchObject({ ok: true });
+  expect(await console_.request({ t: "budget", set: { peer: "codex-review", used: 0.1, resetsInMs: 600_000 } })).toMatchObject({ ok: true });
   const builder = await ControlClient.connect(stateDir, { role: "peer", peer: "builder", channel: true }); cleanup.push(() => builder.close());
   await until(() => daemon.bus.stateOf("builder") === "idle");
   const db = new Database(join(stateDir, "hub.db"), { readonly: true }); cleanup.push(() => db.close());

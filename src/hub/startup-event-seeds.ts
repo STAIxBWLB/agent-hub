@@ -5,6 +5,8 @@ import { parseEventLine, type StampedEvent } from "./events.ts";
 const STARTUP_EVENT_BUFFER_BYTES = 64 * 1024;
 export interface StartupEventSeeds {
   events: StampedEvent[];
+  /** False if any nonblank record was malformed or the journal ended in a partial row. */
+  complete: boolean;
   nativeStopsSeen: Set<string>;
   claudeNativeUsageSeen: Set<string>;
   readPasses: number;
@@ -13,7 +15,7 @@ export interface StartupEventSeeds {
 
 /** One streaming pass, retaining every accepted row and every historical dedupe key. */
 export function readStartupEventSeeds(file: string, options: { bufferBytes?: number } = {}): StartupEventSeeds {
-  const seeds: StartupEventSeeds = { events: [], nativeStopsSeen: new Set(), claudeNativeUsageSeen: new Set(), readPasses: 0, readBytes: 0 };
+  const seeds: StartupEventSeeds = { events: [], complete: true, nativeStopsSeen: new Set(), claudeNativeUsageSeen: new Set(), readPasses: 0, readBytes: 0 };
   if (!existsSync(file)) return seeds;
   // Host-only chunk-boundary test seam, never a line, history or total-byte ceiling.
   const bufferBytes = options.bufferBytes ?? STARTUP_EVENT_BUFFER_BYTES;
@@ -22,7 +24,7 @@ export function readStartupEventSeeds(file: string, options: { bufferBytes?: num
   let parts: string[] = [];
   const accept = (line: string) => {
     const event = parseEventLine(line);
-    if (event === undefined) return;
+    if (event === undefined) { if (line.trim()) seeds.complete = false; return; }
     seeds.events.push(event);
     // Keep the same predicates as the former three readEvents consumers, including legacy malformed IDs.
     if (event.type === "native_turn_end" && event.id) seeds.nativeStopsSeen.add(event.id);
@@ -45,7 +47,7 @@ export function readStartupEventSeeds(file: string, options: { bufferBytes?: num
     }
     consume(decoder.end());
     // readEvents also accepts a complete final JSON record without a newline.
-    if (parts.length) accept(parts.join(""));
+    if (parts.length) { seeds.complete = false; accept(parts.join("")); }
     return seeds;
   } finally { closeSync(fd); }
 }

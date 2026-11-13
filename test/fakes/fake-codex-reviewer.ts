@@ -19,6 +19,11 @@ else if (argv[0] === "exec") {
   const prompt = await new Response(Bun.stdin.stream()).text();
   const log = process.env.FAKE_CODEX_REVIEW_LOG;
   if (log) appendFileSync(log, JSON.stringify({ argv, prompt, peer: process.env.AGENTHUB_PEER_ID }) + "\n");
+  if (process.env.FAKE_CODEX_REVIEW_QUOTA === "1") {
+    // Opt-in actual review only. Metadata/proof commands above keep their original behavior.
+    console.log(JSON.stringify({ type: "turn.failed", error: { message: "You’ve hit your usage limit. Fixture quota refusal; RAW-QUOTA-MARKER" } }));
+    process.exit(1);
+  }
   const server = servers["agent-hub"]!, env = server.env as Record<string, string>;
   const task = Number(/Review task #(\d+)/.exec(prompt)?.[1]);
   const hub = await ControlClient.connect(env.AGENTHUB_STATE_DIR!, { role: "tools", peer: env.AGENTHUB_PEER_ID! });

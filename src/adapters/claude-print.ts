@@ -3,6 +3,7 @@ import { hubGitSync } from "../hub/git.ts";
 import { changedPathGroups } from "../hub/review-brief.ts";
 import { type Envelope } from "../hub/envelope.ts";
 import { resultModel } from "./print-result-model.ts";
+import { claudeReviewerQuota } from "./definitions/native-quota.ts";
 import { ReviewerPrintPeer, type ReviewerBackend, type ReviewerPrintOptions } from "./reviewer-print.ts";
 
 export interface ClaudePrintUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
@@ -76,6 +77,7 @@ export function reviewDiff(cwd: string, commit: unknown, policy: { privatePath(p
 
 export const claudeReviewerBackend: ReviewerBackend = {
   id: "claude",
+  failure: claudeReviewerQuota,
   prepare: async context => ({ command: context.command ?? ["claude"],
     args: claudePrintArgs(context.sessionId, context.mcpConfig, context.systemPrompt, context.privatePaths),
     isolation: { backend: "claude", version: "existing-223-contract", binary: (context.command ?? ["claude"])[0]!, profile: "strict-mcp-read-grep-glob",

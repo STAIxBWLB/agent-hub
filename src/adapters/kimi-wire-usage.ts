@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, lstatSync, openSync, readSync as fsReadSync, readdirSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync as fsReadSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, sep } from "node:path";
 import { realPath } from "../hub/project.ts";
@@ -84,6 +84,43 @@ class Unknown extends Error { constructor(readonly reason: KimiWireReason) { sup
 
 const count = (value: unknown): number | undefined => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 const inside = (root: string, path: string): boolean => path.startsWith(root + sep);
+
+type IndexRead = (fd: number, buffer: Buffer, offset: number, length: number, position: number) => number;
+function readIndex(home: string, read: IndexRead = fsReadSync, owned = false): string {
+  let fd: number;
+  try { fd = openSync(join(home, "session_index.jsonl"), owned ? constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK : "r"); } catch { throw new Unknown("no-index"); }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > INDEX_CAP) throw new Unknown("io-error");
+    const buffer = Buffer.allocUnsafe(stat.size); let got = 0;
+    while (got < stat.size) { const n = read(fd, buffer, got, stat.size - got, got); if (n <= 0) break; got += n; }
+    if (owned && (got !== stat.size || fstatSync(fd).size !== stat.size)) throw new Unknown("partial-line");
+    return buffer.toString("utf8", 0, got);
+  } catch (error) { throw error instanceof Unknown ? error : new Unknown("io-error"); }
+  finally { closeSync(fd); }
+}
+
+/** The fresh owned reviewer profile may contain exactly one native session. This is not a hub observer UUID. */
+export function ownedKimiSession(home: string): string | undefined {
+  try {
+    const root = realPath(home), sessions = realPath(join(home, "sessions"));
+    if (!inside(root, sessions)) return;
+    const text = readIndex(home, fsReadSync, true);
+    if (!text.endsWith("\n")) return;
+    const entries = new Map<string, string>();
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      if (Buffer.byteLength(line) > LINE_CAP) return;
+      const row = JSON.parse(line) as { sessionId?: unknown; sessionDir?: unknown };
+      if (typeof row.sessionId !== "string" || !SESSION_ID.test(row.sessionId) || typeof row.sessionDir !== "string") return;
+      const directory = realPath(row.sessionDir);
+      if (!inside(sessions, directory) || entries.has(row.sessionId) && entries.get(row.sessionId) !== directory) return;
+      entries.set(row.sessionId, directory);
+      if (entries.size > 1) return;
+    }
+    return entries.size === 1 ? [...entries.keys()][0] : undefined;
+  } catch { return; }
+}
 
 export class KimiWireReader {
   private readonly home: string;
@@ -178,21 +215,7 @@ export class KimiWireReader {
 
   /** The index, opened once and sized from that descriptor, so a link swapped in between a check and the read cannot lift the bound. */
   private index(): string {
-    let fd: number;
-    try { fd = openSync(join(this.home, "session_index.jsonl"), "r"); } catch { throw new Unknown("no-index"); }
-    try {
-      const stat = fstatSync(fd);
-      if (!stat.isFile() || stat.size > INDEX_CAP) throw new Unknown("io-error");
-      const buffer = Buffer.allocUnsafe(stat.size);
-      let got = 0;
-      while (got < stat.size) {
-        const n = this.readBytes(fd, buffer, got, stat.size - got, got);
-        if (n <= 0) break;
-        got += n;
-      }
-      return buffer.toString("utf8", 0, got);
-    } catch (error) { throw error instanceof Unknown ? error : new Unknown("io-error"); }
-    finally { closeSync(fd); }
+    return readIndex(this.home, (fd, buffer, offset, length, position) => this.readBytes(fd, buffer, offset, length, position));
   }
 
   /** `agents/<name>/wire.jsonl` of every agent that has one: the main agent and its sub-agents. */

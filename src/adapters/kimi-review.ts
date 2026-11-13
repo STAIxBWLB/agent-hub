@@ -5,6 +5,9 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { realPath } from "../hub/project.ts";
+import { kimiReviewerQuotaOnExit } from "./definitions/native-quota.ts";
+import { ownedKimiSession, type KimiWireRow } from "./kimi-wire-usage.ts";
+import { KimiUsage } from "../hub/kimi-usage.ts";
 import type { ReviewerBackend, ReviewerLaunch, ReviewerPrepareContext } from "./reviewer-print.ts";
 import { assertCleanCwdAncestors, checkKimiReviewPolicy, kimiReviewFingerprint as hash, projectKimiReviewPolicyBinding, readKimiReviewFile as read } from "./kimi-review-policy.ts";
 import { startKimiReviewPolicyWatch, type KimiReviewPolicyFactory } from "./kimi-review-policy-worker.ts";
@@ -86,6 +89,19 @@ export async function stopKimiReview(child: ChildProcess, locks: readonly string
   await stopOwnedProcess(child, { group: true });
 }
 
+/** Usage only: the error diagnostic exception never reads wire or log error content. */
+export function readKimiReviewerUsage(home: string, startedAt: number): readonly KimiWireRow[] | undefined {
+  const session = ownedKimiSession(home);
+  if (!session) return;
+  const rows: KimiWireRow[] = []; let now = startedAt;
+  const usage = new KimiUsage({ home, now: () => now, ceiling: () => 0, session: () => session,
+    record: (_peer, row) => { rows.push(row); }, report: () => {}, forget: () => {}, notice: () => {} });
+  try {
+    usage.turnStarted("owned-review"); now = Date.now(); usage.collect("owned-review", false, true);
+    return usage.complete("owned-review") && rows.length ? rows : undefined;
+  } finally { usage.stop(); }
+}
+
 export async function prepareKimiReviewer(context: ReviewerPrepareContext, policyFactory: KimiReviewPolicyFactory = startKimiReviewPolicyWatch): Promise<ReviewerLaunch | { unavailable: string }> {
     let own: string | undefined;
     try {
@@ -131,6 +147,12 @@ export async function prepareKimiReviewer(context: ReviewerPrepareContext, polic
       };
       return { command, args: ["-p", "Review the supplied task facts and record the evidence-based verdict with hub_review.", "--output-format", "stream-json", "--agent-file", agentFile, "--skills-dir", skills],
         cwd, env, envMode: "replace", cleanup, watchCurrent: true,
+        readUsage: (startedAt, receive) => {
+          const rows = readKimiReviewerUsage(tool, startedAt);
+          if (!rows) return false;
+          for (const row of rows) receive({ input_tokens: row.inputOther, output_tokens: row.output, cache_creation_input_tokens: row.inputCacheCreation, cache_read_input_tokens: row.inputCacheRead }, { id: row.id, at: row.at, ...(row.model ? { model: row.model } : {}) });
+          return true;
+        },
         stop: child => stopKimiReview(child, [join(sources[1]!, "kimi-code.lock"), join(sources[1]!, `${selected.lock}.lock`)]),
         current: () => !cleaned && !context.signal.aborted && checkKimiReviewPolicy(binding),
         startPolicyWatch: () => {
@@ -161,4 +183,5 @@ export async function prepareKimiReviewer(context: ReviewerPrepareContext, polic
 
 export const kimiReviewerBackend: ReviewerBackend = {
   id: "kimi", taskMcp: true, nativePolicy: true, prepare: context => prepareKimiReviewer(context),
+  failureOnExit: kimiReviewerQuotaOnExit,
 };

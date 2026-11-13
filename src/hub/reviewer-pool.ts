@@ -1,3 +1,4 @@
+import { reviewBudgetAdmission, type ReviewBudgetSnapshot } from "./review-budget.ts";
 export type ReviewerPoolReason = "rotation" | "implementer skip" | "unavailable skip" | "same-family fallback";
 export interface ReviewerPoolCandidate { id: string; kind: string; family: string; blocked?: string }
 export interface ReviewerPoolInput {
@@ -10,6 +11,8 @@ export interface ReviewerPoolInput {
   failed?: readonly string[];
   /** `never` (#820): an implementer-family candidate is never selected, not even as the last resort. */
   sameFamily?: "fallback" | "never";
+  budget?: ReviewBudgetSnapshot;
+  waitForReset?: boolean;
 }
 export interface ReviewerPoolSelection {
   reviewer: string | null;
@@ -17,6 +20,7 @@ export interface ReviewerPoolSelection {
   reason?: ReviewerPoolReason;
   walk: readonly { id: string; kind: string; family: string; reason: string }[];
   blocked?: "no reviewer can run";
+  quotaWait?: { resetsAt: number; candidates: readonly { id: string; state: "paused" | "floor"; resetsAt: number }[] };
 }
 
 /** Pure selection: caller supplies declared candidates and current availability, never inferred authority. */
@@ -28,7 +32,21 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
   // Blocked declarations still own their slot: current availability never changes the denominator.
   const declaredKinds = kinds.filter(kind => input.candidates.some(candidate => candidate.kind === kind));
   const undeclared = kinds.filter(kind => !declaredKinds.includes(kind)).map(kind => ({ id: "", kind, family: "", reason: "no declared reviewer" }));
-  const finish = (selection: Omit<ReviewerPoolSelection, "walk">): ReviewerPoolSelection => ({ ...selection, walk: [...walk, ...undeclared] });
+  const finish = (selection: Omit<ReviewerPoolSelection, "walk">): ReviewerPoolSelection => {
+    let quotaWait: ReviewerPoolSelection["quotaWait"];
+    if (selection.reviewer === null && input.budget && input.waitForReset !== false) {
+      const candidates = input.candidates.filter(candidate => kinds.includes(candidate.kind)), failed = new Set(input.failed ?? []);
+      const waiting = candidates.map(candidate => ({ candidate, reading: reviewBudgetAdmission(candidate.id, input.budget!) }));
+      if (waiting.length && waiting.every(({ candidate, reading }) => !failed.has(candidate.id)
+        && !(input.sameFamily === "never" && candidate.family === input.implementerFamily)
+        && (candidate.blocked === undefined || candidate.blocked === "paused" && reading.state === "paused" || candidate.blocked === "quota exhausted" && (reading.state === "paused" || reading.state === "floor"))
+        && (reading.state === "paused" || reading.state === "floor") && reading.resetsAt !== undefined)) {
+        const rows = waiting.map(({ candidate, reading }) => ({ id: candidate.id, state: reading.state as "paused" | "floor", resetsAt: reading.resetsAt! }));
+        quotaWait = { resetsAt: Math.min(...rows.map(row => row.resetsAt)), candidates: rows };
+      }
+    }
+    return { ...selection, walk: [...walk, ...undeclared], ...(quotaWait ? { quotaWait } : {}) };
+  };
   if (!declaredKinds.length) return finish({ reviewer: null, blocked: "no reviewer can run" });
   const seed = Number.isSafeInteger(input.seed) ? input.seed : 0;
   const start = ((seed % declaredKinds.length) + declaredKinds.length) % declaredKinds.length;
@@ -43,7 +61,13 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
   if (continuity) ordered = [...ordered.filter(candidate => candidate.family === input.continuityFamily), ...ordered.filter(candidate => candidate.family !== input.continuityFamily)];
   const failed = new Set(input.failed ?? []);
   let skippedOwner = false, skippedUnavailable = false;
-  const unavailable = (candidate: ReviewerPoolCandidate) => failed.has(candidate.id) ? "start failed for this review" : candidate.blocked;
+  const unavailable = (candidate: ReviewerPoolCandidate) => {
+    if (failed.has(candidate.id)) return "start failed for this review";
+    const quota = input.budget ? reviewBudgetAdmission(candidate.id, input.budget) : undefined;
+    if (candidate.blocked !== undefined && !(candidate.blocked === "paused" && quota?.state === "paused")
+      && !(candidate.blocked === "quota exhausted" && (quota?.state === "paused" || quota?.state === "floor"))) return candidate.blocked;
+    return quota && quota.state !== "available" ? quota.reason : candidate.blocked;
+  };
   const record = (candidate: ReviewerPoolCandidate, reason: string) => { walk.push({ id: candidate.id, kind: candidate.kind, family: candidate.family, reason }); };
   for (const candidate of ordered) {
     if (!candidate.id) {

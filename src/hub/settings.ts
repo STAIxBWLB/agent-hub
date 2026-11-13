@@ -9,6 +9,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameS
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { CLASSES, type TaskClass } from "./board.ts";
+import { MAX_REVIEW_MINUTES } from "./review-budget.ts";
 import { configTracked, configRepositoryPresent } from "./config-trust.ts";
 import { PERMISSION_MODES, permissionBoundary } from "./permission-mode.ts";
 import { START_MODES } from "./start-mode.ts";
@@ -86,6 +87,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "research.enabled", group: "Switches", label: "Research records", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["research", "enabled"] },
   // #1292: the quota share at which a peer checkpoints and pauses (resume is below gate - 0.1); default 0.99 in DEFAULT_BUDGET. Raising it is guarded.
   { key: "budget.gate", group: "Routing", label: "Budget gate: pause a peer when a fresh quota window reaches this share (0..1)", type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["budget", "gate"] },
+  { key: "review.gate", group: "Routing", label: "Reviewer quota floor (0..1)", type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["review", "gate"] },
+  { key: "review.max_minutes", group: "Routing", label: "Reviewer wall-clock cap (minutes)", type: "number", min: Number.MIN_VALUE, max: MAX_REVIEW_MINUTES, store: "config", applies: "next use", risk: "raises", path: ["review", "max_minutes"] },
   { key: "specs.enabled", group: "Switches", label: "Design specs and freshness", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["specs", "enabled"] },
   { key: "specs.review", group: "Switches", label: "Covering spec review", type: "enum", values: ["off", "report", "require"], store: "config", applies: "live", risk: "safe", path: ["specs", "review"] },
   { key: "approvals.notify", group: "Switches", label: "Desktop notice for a waiting approval", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["approvals", "notify"] },

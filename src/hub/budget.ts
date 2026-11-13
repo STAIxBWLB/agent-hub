@@ -528,6 +528,24 @@ export class Budget {
     }));
   }
 
+  private readonly reviewerResetProof = new Map<string, { since: number; resetsAt: number }>();
+  /** Actual pause, with reset only when every currently blocking window proves the saved timestamp. Fallbacks are not reset evidence. */
+  reviewerPause(peer: PeerId): { resetsAt?: number } | undefined {
+    const paused = this.record(peer);
+    if (!paused) return;
+    const key = this.account(peer), blocking = this.gating(peer).filter(row => row.used >= this.cfg.gate);
+    if (blocking.length) {
+      const known = blocking.every(row => row.resetsAt !== undefined && row.resetsAt > this.now())
+        && Math.max(...blocking.map(row => row.resetsAt!)) === paused.resetsAt;
+      if (known) this.reviewerResetProof.set(key, { since: paused.since, resetsAt: paused.resetsAt });
+      else this.reviewerResetProof.delete(key);
+    }
+    const proof = this.reviewerResetProof.get(key);
+    // Keep the same pause's proven reset until Budget acts, including a phase-late expiry tick; never resume authority.
+    return proof?.since === paused.since && proof.resetsAt === paused.resetsAt
+      ? { resetsAt: proof.resetsAt } : {};
+  }
+
   status(): Record<PeerId, { windows: (Reading & { stale: boolean; superseded: boolean })[]; paused?: { reason: string; resetsAt: number; since: number }; accountUsage?: QuotaAccountReading }> {
     const staleMs = this.cfg.stale_min * 60_000;
     const peers = new Set([...this.readings.keys(), ...this.records().map((r) => r.peer)]);

@@ -43,6 +43,7 @@ import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampa
 import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit, HandoffOutboundRow } from "./board.ts";
 import { HANDOFF_EVENTS, HANDOFF_KEY, HandoffRefusal, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, type HandoffEvent } from "./handoff.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
+import type { ReviewBudgetSnapshot } from "./review-budget.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
@@ -300,7 +301,8 @@ export interface TasksDeps {
   /** Fresh trusted machine-local runner registrations. A source-trust failure refuses new receipts. */
   researchRunners?: () => unknown;
   /** Reviewer choice from recorded review outcomes (issue #35); off unless the project config turns it on. */
-  review?: { adaptive: boolean; min_reviews: number; pool?: readonly string[]; rerotate?: boolean; same_family?: "fallback" | "never" };
+  review?: { adaptive: boolean; min_reviews: number; pool?: readonly string[]; rerotate?: boolean; same_family?: "fallback" | "never"; gate?: number; max_minutes?: number };
+  reviewBudget?: () => Pick<ReviewBudgetSnapshot, "paused" | "manualPaused">;
   /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
   capabilities?: () => Record<PeerId, PeerCapabilities>;
   /** #1115: the hub makes, commits and clears the task worktree of a hub-sandboxed peer. Absent: such a peer keeps the #1081 refusal. */
@@ -1368,7 +1370,8 @@ export class Tasks {
       ...(h.deliverables?.length ? { deliverables: publicDeliverables(h.deliverables, this.nameable) } : {}),
       ...(h.reviewBlocked ? { reviewBlocked: true } : {}),
       ...(h.queueReviewHeld ? { queueReviewHeld: true } : {}),
-      ...(h.reviewerFailure ? { reviewerFailure: { peer: screenHistoryText(h.reviewerFailure.peer, "reviewer"), cause: h.reviewerFailure.cause, ...(h.reviewerFailure.head ? { head: screenHistoryText(h.reviewerFailure.head, "review head") } : {}) } } : {}),
+      ...(h.reviewerQuotaWait ? { reviewerQuotaWait: { since: h.reviewerQuotaWait.since, deadline: h.reviewerQuotaWait.deadline, resetAt: h.reviewerQuotaWait.resetAt } } : {}),
+      ...(h.reviewerFailure ? { reviewerFailure: { peer: screenHistoryText(h.reviewerFailure.peer, "reviewer"), cause: h.reviewerFailure.cause, ...(h.reviewerFailure.reason === "review time cap" ? { reason: "review time cap" as const } : {}), ...(h.reviewerFailure.head ? { head: screenHistoryText(h.reviewerFailure.head, "review head") } : {}) } } : {}),
       ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields, ...(h.planning.split ? { children: h.planning.split.children.map(child => child.id) } : {}) } } : {}),
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
@@ -1396,6 +1399,8 @@ export class Tasks {
     const held = task.owner ? peerEntry(this.d.held?.(), task.owner) : undefined;
     const holdText = held ? `${task.owner}'s queue is held (${held}); it receives the task once the hold is resolved` : undefined;
     const request = task.history.findLast(entry => ["done", "reviewer changed", "reviewer unavailable"].includes(entry.event));
+    const quotaWait = this.activeReviewerQuotaWait(task);
+    if (quotaWait) return `${base}; waiting for reviewer quota reset until ${new Date(quotaWait.deadline).toISOString()}`;
     const poolBlocked = task.state === "in_review" && task.reviewer === USER && request?.reviewBlocked ? "blocked: no reviewer can run" : undefined;
     const specText = this.specReportText(task, by) || undefined;
     return [base, noReview, poolBlocked, holdText, specText].filter(Boolean).join("; ");
@@ -1788,8 +1793,11 @@ export class Tasks {
   private reviewPoolOptions(task: Task) {
     const head = this.reviewHead(task);
     const round = task.state === "in_review" ? task.history.slice(task.history.findLastIndex(entry => entry.event === "done") + 1) : [];
-    const failed = [...new Set(round.flatMap(entry => entry.reviewerFailure?.head === head && entry.reviewerFailure ? [entry.reviewerFailure.peer] : []))];
-    return { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, failed, required: this.d.review?.pool !== undefined, ...(this.d.review?.same_family === "never" ? { sameFamily: "never" as const } : {}) };
+    const failed = [...new Set(round.flatMap(entry => entry.reviewerFailure?.head === head && entry.reviewerFailure && entry.reviewerFailure.cause !== "quota" ? [entry.reviewerFailure.peer] : []))];
+    const gate = this.d.review?.gate;
+    const budget: ReviewBudgetSnapshot | undefined = gate === undefined ? undefined : { gate, now: this.d.now?.() ?? Date.now(), readings: this.d.quota?.() ?? {}, paused: {}, ...this.d.reviewBudget?.() };
+    const wait = this.priorReviewerQuotaWait(task), now = this.d.now?.() ?? Date.now();
+    return { waitForReset: !wait || now < wait.deadline, pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, failed, required: this.d.review?.pool !== undefined, ...(budget ? { budget } : {}), ...(this.d.review?.same_family === "never" ? { sameFamily: "never" as const } : {}) };
   }
 
   private manuallyNamedReviewer(task: Task): boolean {
@@ -1818,7 +1826,12 @@ export class Tasks {
     const queueReviewHeld = task !== undefined && !this.isPii(task) && assignment?.reviewer === USER && assignment.reviewBlocked === true
       && assignment.refusals?.some(row => row.role === "reviewer" && isQueuePressureCode(row.code));
     const queueReviewBinding = task ? this.queueReviewBinding(task) : undefined;
-    return { ...(family ? { reviewerFamily: family } : {}), ...(reason ? { reviewerReason: reason } : {}), ...(assignment?.reviewBlocked ? { reviewBlocked: true } : {}), ...(queueReviewHeld ? { queueReviewHeld: true as const, ...(queueReviewBinding !== undefined ? { queueReviewBinding } : {}) } : {}) };
+    const quota = choice?.quotaWait;
+    const now = this.d.now?.() ?? Date.now(), prior = task ? this.priorReviewerQuotaWait(task) : undefined;
+    const reviewerQuotaWait = quota && task && !this.isPii(task) && ["in_progress", "in_review"].includes(task.state)
+      ? { created: task.created, binding: this.queueReviewBinding(task), since: prior?.since ?? now,
+        deadline: prior?.deadline ?? Math.floor(now + this.sweepConfig.review_min * 60_000), resetAt: quota.resetsAt } : undefined;
+    return { ...(reviewerQuotaWait ? { reviewerQuotaWait } : {}), ...(family ? { reviewerFamily: family } : {}), ...(reason ? { reviewerReason: reason } : {}), ...(assignment?.reviewBlocked ? { reviewBlocked: true } : {}), ...(queueReviewHeld ? { queueReviewHeld: true as const, ...(queueReviewBinding !== undefined ? { queueReviewBinding } : {}) } : {}) };
   }
 
   /**
@@ -4445,7 +4458,8 @@ export class Tasks {
       return `${row.id || row.kind}: ${reason}`;
     }).join("; ") + (pool.walk.length > 16 ? `; +${pool.walk.length - 16} walk entries` : "") : "";
     const recorded = pool ? `${tagged}; reviewerFamily=${metadata.reviewerFamily ?? "none"}; reviewerReason=${metadata.reviewerReason ?? pool.blocked}${pool.blocked ? `; pool=${pool.blocked}; walk: ${walk}` : ""}` : tagged;
-    return assignment.plannerFallback ? `${recorded}; reviewer=planner (fallback)` : recorded;
+    const quota = pool?.quotaWait ? `; quota wait: ${pool.quotaWait.candidates.map(row => `${row.id} ${row.state}, reset ${new Date(row.resetsAt).toISOString()}`).join("; ")}` : "";
+    return assignment.plannerFallback ? `${recorded}; reviewer=planner (fallback)${quota}` : recorded + quota;
   }
 
   /** A later move to another owner means the caller's assignment was superseded, so its success tail is not authoritative. */
@@ -4848,6 +4862,7 @@ export class Tasks {
     this.scheduleQueuePressureRecheck();
   }
   private queueReviewWritten(task: Task): void {
+    this.reviewQuotaTaskChanged(task);
     if (task.state === "in_review" && task.reviewer === USER && task.history.at(-1)?.queueReviewHeld) this.markQueuePressureCandidate();
   }
   private queuePressureAdmitted(): boolean {
@@ -8486,7 +8501,8 @@ export class Tasks {
     const noWrites = this.noWritesRecorded({ ...task, refs: storedRefs });
     const capacity = this.capacityBefore(task);
     reviewObserverExcluded ||= this.reviewObserverTurn(by, task.id);
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const quotaWaiting = selection?.reviewSelection?.quotaWait !== undefined;
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: quotaWaiting ? null : reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
@@ -8500,9 +8516,10 @@ export class Tasks {
       this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
       await this.releaseDependents(next);
     }
+    else if (quotaWaiting) this.releaseNotice(`task ${this.publicTitle(next)}: waiting for reviewer quota reset`);
     else if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}: review it in the ahub console (Tasks, select #${next.id}, press r) or with ahub review ${next.id} approved|changes_requested [note]`);
     else this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer, "", admission));
-    if (reviewer && !(admission?.ready && admission.head === this.reviewHead(next))) this.watchCi(next);
+    if (reviewer && !quotaWaiting && !(admission?.ready && admission.head === this.reviewHead(next))) this.watchCi(next);
     return next;
   }
 
@@ -8860,7 +8877,83 @@ export class Tasks {
   }
 
   /** Daemon shutdown: no watcher outlives the hub. */
-  stopCiWatchers(): void { this.ciWatchers.stopAll(); this.heldReviews.clear(); }
+  private readonly reviewerQuotaTimers = new Map<number, { key: string; timer: ReturnType<typeof setTimeout> }>();
+  private readonly reviewerQuotaRunning = new Set<number>();
+  private reviewerQuotaStopped = false;
+  private priorReviewerQuotaWait(task: Task): NonNullable<ReviewerHistory["reviewerQuotaWait"]> | undefined {
+    const binding = this.queueReviewBinding(task);
+    return task.history.findLast(row => row.reviewerQuotaWait?.created === task.created && row.reviewerQuotaWait.binding === binding)?.reviewerQuotaWait;
+  }
+  private activeReviewerQuotaWait(task: Task): NonNullable<ReviewerHistory["reviewerQuotaWait"]> | undefined {
+    const role = task.history[this.reviewRequestRevision(task) - 1];
+    return task.state === "in_review" && task.reviewer === null && !this.isPii(task) && !this.manuallyNamedReviewer(task)
+      && role?.reviewerQuotaWait?.created === task.created && role.reviewerQuotaWait.binding === this.queueReviewBinding(task)
+      ? role.reviewerQuotaWait : undefined;
+  }
+  /** Host board-change hook: a changed head/incarnation/privacy/role cancels the old deadline immediately. */
+  reviewQuotaTaskChanged(task: Task): void {
+    const wait = this.activeReviewerQuotaWait(task), prior = this.reviewerQuotaTimers.get(task.id);
+    const key = wait ? JSON.stringify([task.created, wait.binding, wait.since, wait.deadline, wait.resetAt, this.reviewRequestRevision(task)]) : undefined;
+    if (prior?.key === key) return;
+    if (prior) clearTimeout(prior.timer);
+    this.reviewerQuotaTimers.delete(task.id);
+    if (!wait || this.reviewerQuotaStopped || this.studyHold()) return;
+    const now = this.d.now?.() ?? Date.now();
+    const wake = wait.resetAt > now ? wait.resetAt : wait.resetAt + 60_000 > now ? wait.resetAt + 60_000 : wait.deadline;
+    const timer = setTimeout(() => {
+      if (this.reviewerQuotaTimers.get(task.id)?.key !== key) return;
+      this.reviewerQuotaTimers.delete(task.id);
+      void this.refreshReviewerQuotaWait(task.id).catch(() => {});
+    }, Math.min(2_147_483_647, Math.max(0, Math.min(wait.deadline, wake) - now)));
+    timer.unref?.(); this.reviewerQuotaTimers.set(task.id, { key: key!, timer });
+  }
+  /** Reading/reset signals and recovery release call this; no quota polling or native transport is added. */
+  refreshReviewerQuotaWaits(): void {
+    if (this.reviewerQuotaStopped || this.studyHold()) return;
+    for (const task of this.d.board.list("in_review")) {
+      this.reviewQuotaTaskChanged(task);
+      if (this.activeReviewerQuotaWait(task)) void this.refreshReviewerQuotaWait(task.id).catch(() => {});
+    }
+  }
+  private async refreshReviewerQuotaWait(id: number): Promise<void> {
+    if (this.reviewerQuotaStopped || this.reviewerQuotaRunning.has(id) || this.studyHold()) return;
+    this.reviewerQuotaRunning.add(id);
+    try { await this.studyWrite(async () => {
+      const before = this.d.board.get(id), wait = before && this.activeReviewerQuotaWait(before);
+      if (!before || !wait) return;
+      const revision = this.reviewRequestRevision(before), identity = JSON.stringify([before.created, wait.binding, wait.since, wait.deadline]);
+      const valid = () => {
+        const task = this.d.board.get(id), live = task && this.activeReviewerQuotaWait(task);
+        return !this.reviewerQuotaStopped && !this.studyHold() && task && live && this.reviewRequestRevision(task) === revision
+          && JSON.stringify([task.created, live.binding, live.since, live.deadline]) === identity ? task : undefined;
+      };
+      const choose = (task: Task) => assign(task, this.states(), this.d.routing(), { ...this.weights(task.class, task), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}) });
+      let selection = choose(before);
+      if (selection.reviewSelection?.quotaWait) {
+        if (selection.reviewSelection.quotaWait.resetsAt !== wait.resetAt) {
+          const next = this.d.board.update(before.id, HUB, "reviewer changed", { reviewer: null }, this.assignmentNote("reviewer quota reset observation changed", selection), this.reviewMetadata(selection, before), before.history.length);
+          this.queueReviewWritten(next);
+        } else this.reviewQuotaTaskChanged(before);
+        return;
+      }
+      let admission: ReviewReadiness | undefined, admissionFailed = false;
+      // Ending an account wait is not permission to send native review input. A person fallback needs no native admission.
+      if (selection.reviewer && selection.reviewer !== USER) {
+        try { admission = await this.reviewRequestAdmission(before, undefined, true, before.owner ?? USER, undefined, () => !!valid()); }
+        catch { admissionFailed = true; }
+      }
+      const task = valid(); if (!task) return;
+      selection = choose(task);
+      if (selection.reviewSelection?.quotaWait) { this.reviewQuotaTaskChanged(task); return; }
+      // Failed readiness/authority never sends native facts, but cannot extend the original quota deadline.
+      const reviewer = admissionFailed ? USER : selection.reviewer ?? USER;
+      const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, this.assignmentNote("reviewer quota wait ended", selection), this.reviewMetadata(selection, task), task.history.length);
+      this.queueReviewWritten(next);
+      if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)}: reviewer quota wait ended; the person must review`);
+      else this.releaseNotice(`task ${this.publicTitle(next)}: review request unavailable after quota wait`, () => this.sendReview(next, reviewer, "", admission));
+    }); } finally { this.reviewerQuotaRunning.delete(id); }
+  }
+  stopCiWatchers(): void { this.ciWatchers.stopAll(); this.heldReviews.clear(); this.reviewerQuotaStopped = true; for (const row of this.reviewerQuotaTimers.values()) clearTimeout(row.timer); this.reviewerQuotaTimers.clear(); }
 
   private reviewRequestRevision(task: Task): number {
     // Role changes fence older requests; bookkeeping appended after the request does not.
@@ -8876,7 +8969,7 @@ export class Tasks {
   }
 
   /** Host-only failure report, bound to the exact review request and its still-current child generation. */
-  async retryReviewer(id: number, failedPeer: PeerId, failure: { head?: string; flowRevision?: number; cause: "start_failed" | "quota" | "no_verdict" }, current: () => boolean, onReoffered?: () => void): Promise<Task> {
+  async retryReviewer(id: number, failedPeer: PeerId, failure: { head?: string; flowRevision?: number; cause: "start_failed" | "quota" | "no_verdict"; reason?: "review time cap" }, current: () => boolean, onReoffered?: () => void): Promise<Task> {
     requireLocalTaskPeer(failedPeer);
     if (!failure || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || !/^[a-z][a-z0-9-]{0,63}$/.test(failedPeer) || !Number.isSafeInteger(failure.flowRevision) || failure.flowRevision! < 1 || failure.head !== undefined && (typeof failure.head !== "string" || text(failure.head) !== failure.head || Buffer.byteLength(failure.head) > 1200 || /\p{Cc}/u.test(failure.head))) throw new PreEffectToolRefusal("invalid reviewer failure binding");
     const valid = () => {
@@ -8890,17 +8983,19 @@ export class Tasks {
     const options = this.reviewPoolOptions(task);
     // A person-selected reviewer never falls through to an agent the person did not select.
     const manual = this.manuallyNamedReviewer(task);
-    const selection = manual ? undefined : assign(task, this.states(), this.d.routing(), { ...this.weights(task.class, task), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), reviewPool: { ...options, failed: [...options.failed, failedPeer] } });
+    const selection = manual ? undefined : assign(task, this.states(), this.d.routing(), { ...this.weights(task.class, task), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), reviewPool: { ...options, failed: failure.cause === "quota" ? options.failed : [...options.failed, failedPeer] } });
     if (!selection?.reviewSelection && failure.cause !== "no_verdict") throw new PreEffectToolRefusal("no declared reviewer pool can receive the fallback");
+    const quotaWaiting = selection?.reviewSelection?.quotaWait !== undefined;
     const reviewer = selection?.reviewSelection ? selection.reviewer ?? USER : USER;
     valid();
     const note = manual ? "named reviewer recorded no verdict; the person must review"
-      : selection?.reviewSelection ? this.assignmentNote(`reviewer unavailable: ${failure.cause}`, selection) : "no declared reviewer pool can receive the fallback; the person must review";
-    const next = this.d.board.update(task.id, HUB, "reviewer unavailable", { reviewer }, note, { ...this.reviewMetadata(selection, task), ...(reviewer === USER ? { reviewBlocked: true } : {}), reviewerFailure: { peer: failedPeer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } }, task.history.length);
+      : selection?.reviewSelection ? this.assignmentNote(`reviewer unavailable: ${failure.reason ?? failure.cause}`, selection) : "no declared reviewer pool can receive the fallback; the person must review";
+    const next = this.d.board.update(task.id, HUB, "reviewer unavailable", { reviewer: quotaWaiting ? null : reviewer }, note, { ...this.reviewMetadata(selection, task), ...(reviewer === USER ? { reviewBlocked: true } : {}), reviewerFailure: { peer: failedPeer, cause: failure.cause, ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.head ? { head: failure.head } : {}) } }, task.history.length);
     this.queueReviewWritten(next);
     this.releaseNotice(`task ${this.publicTitle(next)}: former review request withdrawal incomplete`, () => this.withdrawRoleRequest(task, next, "reviewer"));
-    let offered = false;
-    if (reviewer === USER) {
+    let offered = quotaWaiting;
+    if (quotaWaiting) { try { onReoffered?.(); } catch { /* The saved wait remains authoritative. */ } }
+    else if (reviewer === USER) {
       const notice = `task ${this.publicTitle(next)}: blocked: the person must review`;
       this.releaseNotice(notice, () => { this.d.notify(notice); offered = true; });
     } else this.releaseNotice(`task ${this.publicTitle(next)}: fallback review request unavailable`, () => { offered = this.sendReview(next, reviewer, "", admission); });
@@ -9494,8 +9589,8 @@ export class Tasks {
         current?.();
         moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
       } else if (task.reviewer === peer && !isClosedTaskState(task.state)) {
-        const a = assign(task, this.states(), routing, { exclude: [peer], candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class, task) });
-        const reviewer = a.reviewer && a.reviewer !== peer && a.reviewer !== task.owner ? a.reviewer : null;
+        const a = assign(task, this.states(), routing, { ...(roster ? { exclude: [peer] } : {}), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class, task) });
+        const reviewer = !a.reviewSelection?.quotaWait && a.reviewer && a.reviewer !== peer && a.reviewer !== task.owner ? a.reviewer : null;
         if (roster && !reviewer) {
           this.releaseNotice(`task ${this.publicTitle(task)}: its reviewer ${peer} is off roster and nobody else can review; the reviewer stays ${peer}; use ahub review ${task.id}`);
           continue;
@@ -9508,7 +9603,7 @@ export class Tasks {
         if (next.state === "in_review" && reviewer && reviewer !== USER) {
           if (roster) this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer, `(${peer} was reviewing this and is off roster.)`));
           else this.sendReview(next, reviewer, `(${peer} was reviewing this and is paused for quota.)`);
-        } else if (next.state === "in_review" && !reviewer) this.d.notify(`task ${this.publicTitle(next)}: its reviewer ${peer} is paused and nobody else can review; use ahub review ${next.id}`);
+        } else if (next.state === "in_review" && !reviewer && !a.reviewSelection?.quotaWait) this.d.notify(`task ${this.publicTitle(next)}: its reviewer ${peer} is paused and nobody else can review; use ahub review ${next.id}`);
       }
     }
     return moved;

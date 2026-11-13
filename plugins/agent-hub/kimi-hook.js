@@ -1334,6 +1334,175 @@ function resultModel(row) {
 }
 var init_print_result_model = () => {};
 
+// src/hub/quota-account.ts
+function quotaAccountUsage(value) {
+  const out = {};
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return out;
+  const row = value;
+  if (typeof row.resetCreditsAvailable === "number" && Number.isSafeInteger(row.resetCreditsAvailable) && row.resetCreditsAvailable >= 0) {
+    out.resetCreditsAvailable = row.resetCreditsAvailable;
+    if (typeof row.resetCreditsExpiryKnown === "boolean")
+      out.resetCreditsExpiryKnown = row.resetCreditsExpiryKnown;
+    if (out.resetCreditsExpiryKnown === true && typeof row.resetCreditsExpireAt === "number" && Number.isSafeInteger(row.resetCreditsExpireAt) && row.resetCreditsExpireAt > 0 && Number.isFinite(new Date(row.resetCreditsExpireAt).getTime()))
+      out.resetCreditsExpireAt = row.resetCreditsExpireAt;
+  }
+  for (const field of ["ordinaryUsageAllowed", "hasCredits", "unlimited"])
+    if (typeof row[field] === "boolean")
+      out[field] = row[field];
+  return out;
+}
+
+// src/adapters/definitions/native-quota.ts
+import { types } from "util";
+function codexWindows(rateLimits) {
+  const out = [];
+  for (const [w, slot] of [[rateLimits?.primary, "5h"], [rateLimits?.secondary, "week"]]) {
+    if (!w || typeof w.usedPercent !== "number")
+      continue;
+    const mins = typeof w.windowDurationMins === "number" ? w.windowDurationMins : undefined;
+    const id = mins === undefined ? slot : mins > 600 ? "week" : "5h";
+    if (out.some((o) => o.id === id))
+      continue;
+    out.push({ id, used: w.usedPercent / 100, ...w.resetsAt ? { resetsAt: w.resetsAt * 1000 } : {}, ...mins ? { windowMins: mins } : {}, source: "codex rateLimits" });
+  }
+  if (rateLimits?.rateLimitReachedType && !out.some((w) => w.used >= 1))
+    out.push({ id: "5h", used: 1, source: `codex ${rateLimits.rateLimitReachedType}` });
+  return out;
+}
+function claudeWindows(rateLimits) {
+  const out = [];
+  for (const [key, id, mins] of [["five_hour", "5h", 300], ["seven_day", "week", 10080]]) {
+    const w = rateLimits?.[key];
+    if (!w || typeof w.used_percentage !== "number")
+      continue;
+    const resets = Number(w.resets_at);
+    out.push({ id, used: w.used_percentage / 100, ...resets ? { resetsAt: resets < 1000000000000 ? resets * 1000 : resets } : {}, windowMins: mins, source: "claude status line" });
+  }
+  return out;
+}
+function codexAccountUsage(snapshot) {
+  const value = record(snapshot), limits = record(value.rateLimits), credits = record(limits.credits), reset = record(value.rateLimitResetCredits);
+  const out = {};
+  if (typeof value.ordinaryUsageAllowed === "boolean")
+    out.ordinaryUsageAllowed = value.ordinaryUsageAllowed;
+  if (typeof credits.hasCredits === "boolean")
+    out.hasCredits = credits.hasCredits;
+  if (typeof credits.unlimited === "boolean")
+    out.unlimited = credits.unlimited;
+  const count = reset.availableCount;
+  if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
+    out.resetCreditsAvailable = count;
+    out.resetCreditsExpiryKnown = count === 0;
+    const rows = reset.credits;
+    if (count > 0 && Array.isArray(rows) && rows.length === count && rows.length <= MAX_RESET_CREDIT_DETAILS) {
+      let complete = true, earliest;
+      for (const item of rows) {
+        const row = record(item);
+        if (row.status !== "available" || row.resetType !== "codexRateLimits") {
+          complete = false;
+          break;
+        }
+        if (row.expiresAt === null)
+          continue;
+        const expires = epochMillis(row.expiresAt);
+        if (expires === undefined) {
+          complete = false;
+          break;
+        }
+        earliest = earliest === undefined ? expires : Math.min(earliest, expires);
+      }
+      out.resetCreditsExpiryKnown = complete;
+      if (complete && earliest !== undefined)
+        out.resetCreditsExpireAt = earliest;
+    }
+  }
+  return quotaAccountUsage(out);
+}
+function codexQuotaWindowInput(value) {
+  const raw = record(value);
+  const window = (value) => {
+    const row = record(value);
+    if (typeof row.usedPercent !== "number" || !Number.isFinite(row.usedPercent))
+      return null;
+    return {
+      usedPercent: row.usedPercent,
+      ...typeof row.windowDurationMins === "number" && Number.isFinite(row.windowDurationMins) ? { windowDurationMins: row.windowDurationMins } : {},
+      ...typeof row.resetsAt === "number" && Number.isFinite(row.resetsAt) ? { resetsAt: row.resetsAt } : {}
+    };
+  };
+  const reached = raw.rateLimitReachedType;
+  const known = ["usageLimitExceeded", "rate_limit_reached", "workspace_owner_credits_depleted", "workspace_member_credits_depleted", "workspace_owner_usage_limit_reached", "workspace_member_usage_limit_reached"];
+  return {
+    primary: window(raw.primary),
+    secondary: window(raw.secondary),
+    ...reached ? { rateLimitReachedType: typeof reached === "string" && known.includes(reached) ? reached : "usageLimitExceeded" } : {}
+  };
+}
+function nativeQuotaObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
+    return {};
+  const fields = Object.getOwnPropertyDescriptors(value);
+  if (Object.values(fields).some((field) => !Object.hasOwn(field, "value") || !field.enumerable))
+    return {};
+  return Object.fromEntries(Object.entries(fields).map(([key, field]) => [key, field.value]));
+}
+function nativeReviewerQuota(value) {
+  const row = nativeQuotaObject(value);
+  if (row.used !== 1 || row.id !== "5h" && row.id !== "week" || !["Claude reviewer quota", "Codex reviewer quota", "Kimi reviewer quota"].includes(row.source))
+    return;
+  const expected = row.id === "week" ? 10080 : 300;
+  if (row.windowMins !== expected)
+    return;
+  const resetsAt = typeof row.resetsAt === "number" && Number.isSafeInteger(row.resetsAt) && row.resetsAt > 0 && Number.isFinite(new Date(row.resetsAt).getTime()) ? row.resetsAt : undefined;
+  return { id: row.id, used: 1, windowMins: expected, source: row.source, ...resetsAt === undefined ? {} : { resetsAt } };
+}
+function claudeReviewerQuota(value) {
+  const row = nativeQuotaObject(value), base = { id: "5h", used: 1, windowMins: 300, source: "Claude reviewer quota" };
+  if (row.type === "assistant" && row.error === "rate_limit")
+    return base;
+  if (row.type !== "rate_limit_event")
+    return;
+  const info = nativeQuotaObject(row.rate_limit_info);
+  if (info.status !== "rejected")
+    return;
+  const kind = info.rateLimitType;
+  const known = kind === "five_hour" || kind === "seven_day" || kind === "seven_day_opus" || kind === "seven_day_sonnet";
+  const id = kind === "five_hour" ? "5h" : "week";
+  const resetsAt = known ? epochMillis(info.resetsAt) : undefined;
+  return known ? { ...base, id, windowMins: id === "week" ? 10080 : 300, ...resetsAt === undefined ? {} : { resetsAt } } : base;
+}
+function codexReviewerQuota(value) {
+  const row = nativeQuotaObject(value);
+  const message = row.type === "error" ? row.message : row.type === "turn.failed" ? nativeQuotaObject(row.error).message : undefined;
+  if (typeof message !== "string" || !(message.startsWith(CODEX_EXEC_QUOTA_PREFIX) || message.startsWith("You\u2019ve hit your usage limit for ") || CODEX_EXEC_QUOTA_MESSAGES.includes(message)))
+    return;
+  return { id: "5h", used: 1, windowMins: 300, source: "Codex reviewer quota" };
+}
+function kimiReviewerQuotaOnExit(value) {
+  if (typeof value.exitCode !== "number" || value.exitCode === 0 || value.stderr.status !== "complete" || !value.stderr.text.endsWith(`
+`))
+    return;
+  const hit = value.stderr.text.split(/\r?\n/).some((line) => line.startsWith("error: failed to run prompt: provider.") && line.includes("usage limit"));
+  if (!hit)
+    return;
+  return { id: "5h", used: 1, windowMins: 300, source: "Kimi reviewer quota" };
+}
+var MAX_RESET_CREDIT_DETAILS = 128, record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {}, epochMillis = (value) => {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)
+    return;
+  const ms = value * 1000;
+  return Number.isSafeInteger(ms) && Number.isFinite(new Date(ms).getTime()) ? ms : undefined;
+}, CODEX_EXEC_QUOTA_PREFIX = "You\u2019ve hit your usage limit.", CODEX_EXEC_QUOTA_MESSAGES;
+var init_native_quota = __esm(() => {
+  CODEX_EXEC_QUOTA_MESSAGES = [
+    "Your workspace is out of credits. Add credits to continue.",
+    "Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+    "You hit your spend cap set in your workspace. Increase your spend cap to continue.",
+    "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue."
+  ];
+});
+
 // src/adapters/model-token.ts
 function isNativeModelToken(value) {
   return typeof value === "string" && NATIVE_WORD.test(value);
@@ -1352,6 +1521,20 @@ class OwnedPrintChild {
   done;
   stopping;
   limited = false;
+  stderrChunks = [];
+  stderrBytes = 0;
+  stderrEnded = false;
+  stderrUnknown = false;
+  settled = false;
+  stderrAfterSettlement() {
+    if (!this.options.captureStderr || !this.settled || !this.stderrEnded || this.stderrUnknown || this.options.current?.() === false)
+      return { status: "unknown" };
+    try {
+      return { status: "complete", text: new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(this.stderrChunks)) };
+    } catch {
+      return { status: "unknown" };
+    }
+  }
   constructor(options) {
     this.options = options;
     const [command, ...prefix] = options.command;
@@ -1361,7 +1544,7 @@ class OwnedPrintChild {
       cwd: options.cwd,
       detached: true,
       env: peerChildEnv(options.peer, options.envMode === "replace" ? options.env : { ...process.env, ...options.env }),
-      stdio: ["pipe", "pipe", "ignore"]
+      stdio: ["pipe", "pipe", options.captureStderr ? "pipe" : "ignore"]
     });
     const frameLimit = options.maxFrameBytes ?? 256 * 1024, outputLimit = options.maxOutputBytes ?? 4 * 1024 * 1024;
     let buffer = "", outputBytes = 0;
@@ -1373,6 +1556,26 @@ class OwnedPrintChild {
         options.onLimit?.();
       }
     };
+    if (options.captureStderr) {
+      child.stderr.on("data", (chunk) => {
+        if (this.stderrUnknown)
+          return;
+        this.stderrBytes += chunk.length;
+        if (options.current?.() === false || this.stderrBytes > 64 * 1024) {
+          this.stderrUnknown = true;
+          this.stderrChunks = [];
+          return;
+        }
+        this.stderrChunks.push(Buffer.from(chunk));
+      });
+      child.stderr.once("end", () => {
+        this.stderrEnded = true;
+      });
+      child.stderr.once("error", () => {
+        this.stderrUnknown = true;
+        this.stderrChunks = [];
+      });
+    }
     this.done = new Promise((resolve, reject) => {
       child.once("error", (error) => {
         options.onError?.(error);
@@ -1429,7 +1632,10 @@ class OwnedPrintChild {
       });
       child.once("exit", (code) => {
         options.onLeaderExit?.();
-        this.stop().then(() => resolve(code), (error) => reject(new PrintChildCleanupError(error.message)));
+        this.stop().then(() => {
+          this.settled = true;
+          resolve(code);
+        }, (error) => reject(new PrintChildCleanupError(error.message)));
       });
     });
   }
@@ -1636,6 +1842,12 @@ function createReviewerPolicyWatch(probe, changed, clock = {}) {
 }
 var POLICY_POLL_MS = 100;
 
+// src/hub/review-budget.ts
+var DEFAULT_REVIEW_MAX_MINUTES = 20, MAX_REVIEW_MINUTES;
+var init_review_budget = __esm(() => {
+  MAX_REVIEW_MINUTES = 2147483647 / 60000;
+});
+
 // src/adapters/reviewer-print.ts
 import { randomUUID as randomUUID2 } from "crypto";
 function reviewerNoVerdictLine(peer, diagnostic, safeRefusal, withheld = false) {
@@ -1646,7 +1858,7 @@ function reviewerNoVerdictLine(peer, diagnostic, safeRefusal, withheld = false) 
   const line = safeRefusal === undefined ? undefined : Array.from(sanitize(safeRefusal).replace(/\s+/g, " ")).filter((char) => !/\p{C}/u.test(char)).slice(0, 240).join("");
   return prefix + detail + (diagnostic.refusal === undefined && diagnostic.hostRefusal === undefined ? "" : `; refusal: ${line ?? "withheld"}`);
 }
-var ReviewerUnavailableError, ReviewerAdmissionError, ReviewerInputAdmissionError, ReviewerPolicyCleanupError, REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ", reviewTarget = (env) => {
+var ReviewerUsageCleanupError, ReviewerUnavailableError, ReviewerAdmissionError, ReviewerInputAdmissionError, ReviewerPolicyCleanupError, REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ", reviewTarget = (env) => {
   const task = reviewTask(env);
   if (task === undefined || env.private)
     return;
@@ -1662,6 +1874,10 @@ var init_reviewer_print = __esm(() => {
   init_model_token();
   init_claude_print_child();
   init_envelope();
+  init_review_budget();
+  init_native_quota();
+  ReviewerUsageCleanupError = class ReviewerUsageCleanupError extends PrintChildCleanupError {
+  };
   ReviewerUnavailableError = class ReviewerUnavailableError extends Error {
     causeClass;
     detail;
@@ -1768,7 +1984,7 @@ var init_reviewer_print = __esm(() => {
     async start() {
       if (this.child)
         throw new Error(`${this.id}: an earlier review's process group is still running; stop it first`);
-      if (this.policyWatch)
+      if (this.policyWatch || this.childCleanup)
         throw new ReviewerPolicyCleanupError;
       if (this.preparation)
         throw new Error(`${this.id}: reviewer preparation is still running`);
@@ -1808,6 +2024,7 @@ var init_reviewer_print = __esm(() => {
       this.abortReview("review watchdog timeout", "timeout");
     }
     abortReview(reason, failureCause) {
+      const cappedTask = this.reviewing;
       const generation = ++this.generation, batch = this.batch, preparation = this.preparation;
       this.reviewing = undefined;
       this.reviewMcpClose?.();
@@ -1824,7 +2041,7 @@ var init_reviewer_print = __esm(() => {
         if (generation !== this.generation)
           return;
         if (batch)
-          await this.reportFailures([...batch.failures, ...remainingFailures(batch, batch.next, "no_verdict")], generation);
+          await this.reportFailures([...batch.failures, ...remainingFailures(batch, batch.next, "no_verdict").map((failure) => reason === "review time cap" && failure.task === cappedTask ? { ...failure, reason: "review time cap" } : failure)], generation);
         if (generation === this.generation && this.state === "busy") {
           this.batch = undefined;
           super.onWatchdog();
@@ -1832,7 +2049,7 @@ var init_reviewer_print = __esm(() => {
       })().catch((error) => this.opts.log?.(`[${this.id}] review cleanup failed, staying busy`));
     }
     async deliver(envs, deliveryId) {
-      if (this.state !== "idle") {
+      if (this.state !== "idle" || this.childCleanup) {
         if (deliveryId)
           this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
         throw new Error(`${this.id} is ${this.state}`);
@@ -1896,6 +2113,8 @@ var init_reviewer_print = __esm(() => {
             continue;
           }
           if (error instanceof PrintChildCleanupError) {
+            if (error instanceof ReviewerUsageCleanupError)
+              await this.reportFailures(batch.failures.filter((row) => row.cause === "quota"), generation);
             this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
             this.settle("needs_review", error instanceof ReviewerPolicyCleanupError ? error.message : `review process group still running: ${error.message}`);
             return;
@@ -1928,10 +2147,11 @@ var init_reviewer_print = __esm(() => {
           } catch {
             this.opts.log?.(reviewerNoVerdictLine(this.id, { task, exitCode: result.code, reviewCalled: false }, undefined, true));
           }
+          const quotaMetadata = result.quotaReadings?.length ? { quota: result.quotaReadings } : {};
           if (target)
-            reroute.push({ ...target, cause: result.quota ? "quota" : "no_verdict" });
+            reroute.push({ ...target, cause: result.quota ? "quota" : "no_verdict", ...quotaMetadata });
           if (result.quota) {
-            reroute.push(...remainingFailures(batch, index + 1, "quota"));
+            reroute.push(...remainingFailures(batch, index + 1, "quota").map((failure) => ({ ...failure, ...quotaMetadata })));
             batch.next = envs.length;
             break;
           }
@@ -2061,7 +2281,21 @@ ${facts}` : ""}`;
       };
       this.reviewMcpClose = closeMcp;
       let ownedChild, releasing;
+      let deadline;
+      const clearDeadline = () => {
+        if (!deadline)
+          return;
+        if (this.opts.reviewTimer)
+          this.opts.reviewTimer.clear(deadline.handle);
+        else
+          clearTimeout(deadline.handle);
+        deadline = undefined;
+      };
       let inputReleased = false, childClosed = false, launchCleanupConfirmed = false;
+      let nativeStartedAt, usageRead = false;
+      const quotaAttempt = randomUUID2().replaceAll("-", "");
+      let quotaSettlementSent = false;
+      let accountingAttempt, accountingOutcome = "unknown";
       let inputFinished = false;
       const finishInput = () => {
         const closedWithoutChild = !ownedChild || ownedChild.process.pid === undefined;
@@ -2073,7 +2307,30 @@ ${facts}` : ""}`;
         }
       };
       let policyOwner;
-      const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
+      const release = () => releasing ??= Promise.resolve().then(() => {
+        if (!quotaSettlementSent) {
+          quotaSettlementSent = true;
+          this.opts.quotaSettled?.(quotaAttempt);
+        }
+        if (accountingAttempt) {
+          if (!usageRead) {
+            usageRead = true;
+            if (ownedChild?.process.pid === undefined)
+              accountingOutcome = "complete";
+            else if (nativeStartedAt !== undefined && launch?.readUsage) {
+              try {
+                if (launch.readUsage(nativeStartedAt, (usage, identity) => this.opts.onUsage?.(usage, task, identity)))
+                  accountingOutcome = "complete";
+              } catch {}
+            }
+          }
+          if (this.opts.usageSettled?.(accountingAttempt, accountingOutcome, task) !== true)
+            throw new ReviewerUsageCleanupError("reviewer accounting settlement was not acknowledged");
+          if (accountingOutcome === "unknown")
+            throw new ReviewerUsageCleanupError("reviewer usage is incomplete; owned profile retained");
+        }
+        return launch?.cleanup?.();
+      }).then(() => {});
       try {
         launch = await this.prepare(sessionId, input, task, mcp?.config, selection?.model);
         if (generation !== this.generation)
@@ -2082,7 +2339,39 @@ ${facts}` : ""}`;
         if (launch.current?.() === false)
           throw new ReviewerUnavailableError("reviewer isolation changed before child spawn", "binary");
         this.receipt = launch.isolation;
+        const maxMinutes = this.opts.maxMinutes?.() ?? DEFAULT_REVIEW_MAX_MINUTES;
+        if (!Number.isFinite(maxMinutes) || maxMinutes <= 0 || maxMinutes > MAX_REVIEW_MINUTES)
+          throw new ReviewerAdmissionError("policy_changed");
         let quota = false;
+        const quotaReadings = new Map;
+        const publishedQuota = new Set;
+        const observeQuota = (reading) => {
+          const key = JSON.stringify(reading);
+          if (publishedQuota.has(key))
+            return;
+          try {
+            if (this.opts.onQuota?.(reading, quotaAttempt, () => generation === this.generation) === true)
+              publishedQuota.add(key);
+          } catch {}
+        };
+        const rememberQuota = () => {
+          const batch = this.batch, target = batch?.targets[batch.next];
+          if (!batch || generation !== this.generation || target?.task !== task)
+            return;
+          const failure = { ...target, cause: "quota", ...quotaReadings.size ? { quota: [...quotaReadings.values()] } : {} };
+          const prior = batch.failures.findIndex((row) => row.task === target.task && row.head === target.head && row.flowRevision === target.flowRevision && row.cause === "quota");
+          if (prior < 0)
+            batch.failures.push(failure);
+          else
+            batch.failures[prior] = failure;
+        };
+        if (launch.readUsage) {
+          const attempt = randomUUID2().replaceAll("-", "");
+          if (this.opts.usageIntent?.(attempt, task) !== true)
+            throw new ReviewerAdmissionError("policy_changed");
+          accountingAttempt = attempt;
+          this.assertAdmission(env, task, binding);
+        }
         const child = new OwnedPrintChild({
           peer: this.id,
           command: launch.command,
@@ -2091,6 +2380,7 @@ ${facts}` : ""}`;
           env: launch.env,
           envMode: launch.envMode,
           input,
+          ...this.opts.backend.failureOnExit ? { captureStderr: true } : {},
           current: () => generation === this.generation,
           stop: launch.stop,
           onInputReleased: () => {
@@ -2102,12 +2392,25 @@ ${facts}` : ""}`;
               this.child = undefined;
           },
           onSpawn: () => {
+            nativeStartedAt = Date.now();
             try {
               selection?.applied();
             } catch {}
             this.runningBinding = { task, binding };
             this.reviewing = task;
             this.reviewSeq++;
+            const reviewSequence = this.reviewSeq;
+            const expire = () => {
+              if (this.child === child && generation === this.generation && this.reviewing === task && this.reviewSeq === reviewSequence)
+                this.abortReview("review time cap", "timeout");
+            };
+            if (this.opts.reviewTimer)
+              deadline = { handle: this.opts.reviewTimer.set(expire, maxMinutes * 60000) };
+            else {
+              const timer = setTimeout(expire, maxMinutes * 60000);
+              timer.unref?.();
+              deadline = { handle: timer };
+            }
             if (launch.watchCurrent) {
               try {
                 const sequence = this.reviewSeq, probe = launch.startPolicyWatch();
@@ -2141,12 +2444,26 @@ ${facts}` : ""}`;
               if (model)
                 this.servedModel = model;
             } catch {}
-            if (this.opts.backend.failure?.(event) === "quota")
-              quota = true;
+            try {
+              const failure = this.opts.backend.failure?.(event);
+              if (failure === "quota") {
+                quota = true;
+                rememberQuota();
+              } else {
+                const reading = nativeReviewerQuota(failure);
+                if (reading) {
+                  quota = true;
+                  quotaReadings.set(reading.id, reading);
+                  observeQuota(reading);
+                  rememberQuota();
+                }
+              }
+            } catch {}
           },
           onActivity: () => this.touch(),
           onLimit: () => this.abortReview("review output limit exceeded"),
           onLeaderExit: () => {
+            clearDeadline();
             if (this.child === child) {
               this.reviewing = undefined;
               this.runningBinding = undefined;
@@ -2158,11 +2475,23 @@ ${facts}` : ""}`;
         this.childCleanup = release;
         this.childCurrent = launch.watchCurrent ? launch.current : undefined;
         const code = await child.done;
+        if (generation === this.generation && this.child === child && this.opts.backend.failureOnExit) {
+          try {
+            const reading = nativeReviewerQuota(this.opts.backend.failureOnExit({ exitCode: code, stderr: child.stderrAfterSettlement() }));
+            if (reading) {
+              quota = true;
+              quotaReadings.set(reading.id, reading);
+              observeQuota(reading);
+              rememberQuota();
+            }
+          } catch {}
+        }
         childClosed = true;
         if (this.child === child)
           this.child = undefined;
-        return { code, quota, trace };
+        return { code, quota, trace, ...quotaReadings.size ? { quotaReadings: [...quotaReadings.values()] } : {} };
       } finally {
+        clearDeadline();
         if (this.activeTrace?.value === trace)
           this.activeTrace = undefined;
         closeMcp();
@@ -2176,8 +2505,10 @@ ${facts}` : ""}`;
             if (this.policyWatch === policyOwner)
               this.policyWatch = undefined;
           }
-        } catch {
+        } catch (error) {
           this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`);
+          if (error instanceof ReviewerUsageCleanupError)
+            throw error;
         }
         finishInput();
       }
@@ -2219,6 +2550,11 @@ ${facts}` : ""}`;
         throw workerError;
       if (childError)
         throw childError;
+      if (!child && cleanup) {
+        await cleanup();
+        if (this.childCleanup === cleanup)
+          this.childCleanup = undefined;
+      }
       if (child) {
         await cleanup?.();
         owner?.closed();
@@ -2277,9 +2613,11 @@ var init_claude_print = __esm(() => {
   init_git();
   init_review_brief();
   init_print_result_model();
+  init_native_quota();
   init_reviewer_print();
   claudeReviewerBackend = {
     id: "claude",
+    failure: claudeReviewerQuota,
     prepare: async (context) => ({
       command: context.command ?? ["claude"],
       args: claudePrintArgs(context.sessionId, context.mcpConfig, context.systemPrompt, context.privatePaths),
@@ -2734,6 +3072,7 @@ var TOOLS, VersionRefusal, CAP, MAX_SERVERS = 64, digest = (value) => createHash
 }, HOST_CREDENTIAL_PATHS, HOST_CREDENTIAL_ENV, CredentialRootError, codexReviewerBackend;
 var init_codex_review_isolation = __esm(() => {
   init_model_token();
+  init_native_quota();
   init_platform();
   init_compat();
   init_child_process();
@@ -2756,6 +3095,7 @@ var init_codex_review_isolation = __esm(() => {
   codexReviewerBackend = {
     id: "codex",
     prepare,
+    failure: codexReviewerQuota,
     toolTrace(event) {
       const row = event;
       const item = row?.item;
@@ -2773,12 +3113,714 @@ var init_codex_review_isolation = __esm(() => {
   };
 });
 
-// src/adapters/kimi-review-policy.ts
+// src/adapters/kimi-wire-usage.ts
+import { closeSync as closeSync3, constants as constants2, fstatSync as fstatSync3, lstatSync as lstatSync5, openSync as openSync3, readSync as fsReadSync, readdirSync, statSync as statSync2 } from "fs";
 import { createHash as createHash3 } from "crypto";
-import { lstatSync as lstatSync5, readFileSync as readFileSync4 } from "fs";
-import { dirname as dirname6, join as join6, resolve as resolve6 } from "path";
+import { join as join6, sep as sep2 } from "path";
+function kimiCountedTokens(row) {
+  return row.inputOther + row.inputCacheCreation + row.output;
+}
+function readIndex(home, read = fsReadSync, owned = false) {
+  let fd;
+  try {
+    fd = openSync3(join6(home, "session_index.jsonl"), owned ? constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK : "r");
+  } catch {
+    throw new Unknown("no-index");
+  }
+  try {
+    const stat = fstatSync3(fd);
+    if (!stat.isFile() || stat.size > INDEX_CAP)
+      throw new Unknown("io-error");
+    const buffer = Buffer.allocUnsafe(stat.size);
+    let got = 0;
+    while (got < stat.size) {
+      const n = read(fd, buffer, got, stat.size - got, got);
+      if (n <= 0)
+        break;
+      got += n;
+    }
+    if (owned && (got !== stat.size || fstatSync3(fd).size !== stat.size))
+      throw new Unknown("partial-line");
+    return buffer.toString("utf8", 0, got);
+  } catch (error) {
+    throw error instanceof Unknown ? error : new Unknown("io-error");
+  } finally {
+    closeSync3(fd);
+  }
+}
+function ownedKimiSession(home) {
+  try {
+    const root = realPath(home), sessions = realPath(join6(home, "sessions"));
+    if (!inside2(root, sessions))
+      return;
+    const text = readIndex(home, fsReadSync, true);
+    if (!text.endsWith(`
+`))
+      return;
+    const entries = new Map;
+    for (const line of text.split(`
+`)) {
+      if (!line.trim())
+        continue;
+      if (Buffer.byteLength(line) > LINE_CAP)
+        return;
+      const row = JSON.parse(line);
+      if (typeof row.sessionId !== "string" || !SESSION_ID.test(row.sessionId) || typeof row.sessionDir !== "string")
+        return;
+      const directory = realPath(row.sessionDir);
+      if (!inside2(sessions, directory) || entries.has(row.sessionId) && entries.get(row.sessionId) !== directory)
+        return;
+      entries.set(row.sessionId, directory);
+      if (entries.size > 1)
+        return;
+    }
+    return entries.size === 1 ? [...entries.keys()][0] : undefined;
+  } catch {
+    return;
+  }
+}
+
+class KimiWireReader {
+  home;
+  sessionId;
+  chunk;
+  dir;
+  files = new Map;
+  broken;
+  bytes = 0;
+  discovery = 0;
+  constructor(options) {
+    this.home = options.home;
+    this.sessionId = options.sessionId;
+    this.chunk = Math.max(LINE_CAP * 2, options.maxBytes ?? DEFAULT_CHUNK);
+  }
+  readBytes(fd, buffer, offset, length, position) {
+    const read = fsReadSync(fd, buffer, offset, length, position);
+    this.bytes += read;
+    return read;
+  }
+  read() {
+    const slice = this.readSlice();
+    if (slice.status === "unknown")
+      return slice;
+    const { commit, ...read } = slice;
+    commit();
+    return read;
+  }
+  stats() {
+    return { bytes: this.bytes, discovery: this.discovery };
+  }
+  readSlice() {
+    if (this.broken)
+      return { status: "unknown", reason: this.broken };
+    this.bytes = 0;
+    this.discovery = 0;
+    try {
+      const dir = this.resolve();
+      this.discovery++;
+      const next = new Map;
+      const rows = [];
+      let more = false, budget = this.chunk;
+      const agents = this.agents(dir);
+      this.discovery++;
+      for (const name of this.files.keys())
+        if (!agents.has(name))
+          throw new Unknown("missing");
+      for (const [name, wire] of agents) {
+        const previous = this.files.get(name);
+        if (budget <= 0) {
+          if (previous)
+            next.set(name, previous);
+          more = true;
+          continue;
+        }
+        const result = this.readFile(name, wire, previous, budget);
+        next.set(name, result.state);
+        rows.push(...result.rows);
+        budget -= result.read;
+        more ||= result.more;
+      }
+      let committed = false;
+      return { status: "ok", rows, more, commit: () => {
+        if (!committed) {
+          this.files = next;
+          committed = true;
+        }
+      } };
+    } catch (error) {
+      const reason = error instanceof Unknown ? error.reason : "io-error";
+      if (!TRANSIENT.has(reason))
+        this.broken = reason;
+      return { status: "unknown", reason };
+    }
+  }
+  resolve() {
+    if (!SESSION_ID.test(this.sessionId))
+      throw new Unknown("no-index");
+    let root;
+    try {
+      root = realPath(join6(this.home, "sessions"));
+    } catch {
+      throw new Unknown("no-index");
+    }
+    if (this.dir) {
+      let again;
+      try {
+        again = realPath(this.dir);
+      } catch {
+        throw new Unknown("moved");
+      }
+      if (again !== this.dir)
+        throw new Unknown("moved");
+      return this.dir;
+    }
+    const text = this.index();
+    let listed;
+    for (const line of text.split(`
+`)) {
+      if (!line.includes(this.sessionId))
+        continue;
+      try {
+        const row = JSON.parse(line);
+        if (row && row.sessionId === this.sessionId && typeof row.sessionDir === "string" && row.sessionDir)
+          listed = row.sessionDir;
+      } catch {}
+    }
+    if (!listed)
+      throw new Unknown("no-index");
+    let dir;
+    try {
+      dir = realPath(listed);
+    } catch {
+      throw new Unknown("no-index");
+    }
+    if (!inside2(root, dir))
+      throw new Unknown("outside-home");
+    this.dir = dir;
+    return dir;
+  }
+  index() {
+    return readIndex(this.home, (fd, buffer, offset, length, position) => this.readBytes(fd, buffer, offset, length, position));
+  }
+  agents(dir) {
+    const out = new Map;
+    const files = new Set;
+    let names;
+    try {
+      names = readdirSync(join6(dir, "agents")).filter((name) => AGENT_NAME.test(name)).sort();
+    } catch (error) {
+      if (error.code === "ENOENT")
+        return out;
+      throw new Unknown("io-error");
+    }
+    if (names.length > MAX_AGENTS)
+      throw new Unknown("io-error");
+    for (const name of names) {
+      const path = join6(dir, "agents", name, "wire.jsonl");
+      try {
+        lstatSync5(path);
+      } catch (error) {
+        if (error.code === "ENOENT")
+          continue;
+        throw new Unknown("io-error");
+      }
+      let real;
+      try {
+        real = realPath(path);
+      } catch {
+        throw new Unknown("io-error");
+      }
+      if (!inside2(dir, real))
+        throw new Unknown("outside-home");
+      let identity;
+      try {
+        const stat = statSync2(real);
+        identity = `${stat.dev}:${stat.ino}`;
+      } catch {
+        throw new Unknown("io-error");
+      }
+      if (files.has(identity))
+        continue;
+      files.add(identity);
+      out.set(name, real);
+    }
+    return out;
+  }
+  fingerprint(fd, offset) {
+    if (offset <= 0)
+      return "";
+    const hash = createHash3("sha256");
+    for (const [start, length] of [[0, Math.min(offset, PRINT_HEAD)], [Math.max(0, offset - PRINT_TAIL), Math.min(offset, PRINT_TAIL)]]) {
+      const buffer = Buffer.allocUnsafe(length);
+      let got = 0;
+      while (got < length) {
+        let n;
+        try {
+          n = this.readBytes(fd, buffer, got, length - got, start + got);
+        } catch {
+          throw new Unknown("io-error");
+        }
+        if (n <= 0)
+          throw new Unknown("shrunk");
+        got += n;
+      }
+      hash.update(buffer);
+    }
+    return hash.digest("hex");
+  }
+  readFile(agent, path, previous, limit) {
+    let fd;
+    try {
+      fd = openSync3(path, "r");
+    } catch {
+      throw new Unknown("io-error");
+    }
+    try {
+      const stat = fstatSync3(fd);
+      if (!stat.isFile())
+        throw new Unknown("io-error");
+      if (previous && (previous.dev !== stat.dev || previous.ino !== stat.ino))
+        throw new Unknown("rotated");
+      if (previous && stat.size < previous.offset)
+        throw new Unknown("shrunk");
+      if (previous && this.fingerprint(fd, previous.offset) !== previous.print)
+        throw new Unknown("rotated");
+      const state = previous ? { ...previous } : { dev: stat.dev, ino: stat.ino, offset: 0, skipping: false, print: "" };
+      const started = state.offset;
+      const seal = (done) => ({ ...done, print: done.offset === started && previous ? done.print : this.fingerprint(fd, done.offset) });
+      const rows = [];
+      const length = Math.min(limit, stat.size - state.offset);
+      if (length <= 0)
+        return { state, rows, more: false, read: 0 };
+      const buffer = Buffer.allocUnsafe(length);
+      let got = 0;
+      while (got < length) {
+        let n;
+        try {
+          n = this.readBytes(fd, buffer, got, length - got, state.offset + got);
+        } catch {
+          throw new Unknown("io-error");
+        }
+        if (n <= 0)
+          break;
+        got += n;
+      }
+      if (got < length)
+        throw new Unknown("shrunk");
+      const base = state.offset;
+      const reachedEnd = base + length >= stat.size;
+      let pos = 0;
+      if (state.skipping) {
+        const end = buffer.indexOf(10, 0);
+        if (end < 0)
+          return { state: seal({ ...state, offset: base + length }), rows, more: !reachedEnd, read: length };
+        pos = end + 1;
+        state.skipping = false;
+      }
+      while (pos < length) {
+        const end = buffer.indexOf(10, pos);
+        if (end < 0) {
+          const tail = length - pos;
+          if (tail >= LINE_CAP) {
+            if (buffer.subarray(pos, pos + 256).includes(MARKER) || base + pos === 0)
+              throw new Unknown(base + pos === 0 ? "no-metadata" : "oversized-row");
+            state.skipping = true;
+            pos = length;
+            break;
+          }
+          if (reachedEnd)
+            throw new Unknown("partial-line");
+          break;
+        }
+        const lineStart = base + pos, size = end - pos;
+        if (size > LINE_CAP) {
+          if (buffer.subarray(pos, pos + 256).includes(MARKER) || lineStart === 0)
+            throw new Unknown(lineStart === 0 ? "no-metadata" : "oversized-row");
+        } else if (lineStart === 0) {
+          this.metadata(buffer.toString("utf8", pos, end));
+        } else if (buffer.subarray(pos, end).includes(MARKER)) {
+          const row = this.row(agent, lineStart, buffer.toString("utf8", pos, end));
+          if (row)
+            rows.push(row);
+        }
+        pos = end + 1;
+      }
+      state.offset = base + pos;
+      return { state: seal(state), rows, more: state.offset < stat.size, read: length };
+    } finally {
+      closeSync3(fd);
+    }
+  }
+  metadata(line) {
+    let value;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Unknown("no-metadata");
+    }
+    if (!value || value.type !== "metadata" || typeof value.protocol_version !== "string")
+      throw new Unknown("no-metadata");
+    if (!KIMI_WIRE_PROTOCOLS.includes(value.protocol_version))
+      throw new Unknown("untested-protocol");
+  }
+  row(agent, offset, line) {
+    let value;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Unknown("malformed-row");
+    }
+    if (!value || typeof value !== "object" || value.type !== "usage.record")
+      return;
+    const usage = value.usage;
+    const inputOther = count(usage?.inputOther), output = count(usage?.output), inputCacheRead = count(usage?.inputCacheRead), inputCacheCreation = count(usage?.inputCacheCreation);
+    const at = value.time;
+    if (inputOther === undefined || output === undefined || inputCacheRead === undefined || inputCacheCreation === undefined || value.usageScope !== "turn" && value.usageScope !== "session" || typeof at !== "number" || !Number.isSafeInteger(at) || at <= 0 || at > 8640000000000000)
+      throw new Unknown("unknown-row-shape");
+    const model = safeModelLabel(value.model);
+    const id = createHash3("sha256").update(this.sessionId).update("\x00").update(agent).update("\x00").update(String(offset)).digest("hex").slice(0, 32);
+    return { id, at, ...model ? { model } : {}, inputOther, inputCacheCreation, inputCacheRead, output };
+  }
+}
+var KIMI_WIRE_PROTOCOLS, SESSION_ID, AGENT_NAME, MAX_AGENTS = 256, LINE_CAP, INDEX_CAP, DEFAULT_CHUNK, MARKER, TRANSIENT, PRINT_HEAD = 64, PRINT_TAIL = 256, Unknown, count = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined, inside2 = (root, path) => path.startsWith(root + sep2);
+var init_kimi_wire_usage = __esm(() => {
+  init_project();
+  KIMI_WIRE_PROTOCOLS = ["1.5"];
+  SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+  AGENT_NAME = /^[A-Za-z0-9._-]{1,64}$/;
+  LINE_CAP = 64 * 1024;
+  INDEX_CAP = 16 * 1024 * 1024;
+  DEFAULT_CHUNK = 1024 * 1024;
+  MARKER = Buffer.from('"usage.record"');
+  TRANSIENT = new Set(["no-index", "io-error", "partial-line"]);
+  Unknown = class Unknown extends Error {
+    reason;
+    constructor(reason) {
+      super(reason);
+      this.reason = reason;
+    }
+  };
+});
+
+// src/hub/token-window.ts
+class TokenWindow {
+  spanMs;
+  rows = [];
+  constructor(spanMs) {
+    this.spanMs = spanMs;
+  }
+  add(at, n) {
+    if (!Number.isFinite(at) || !Number.isSafeInteger(n) || n <= 0)
+      return;
+    let index = this.rows.length;
+    while (index > 0 && this.rows[index - 1].at > at)
+      index--;
+    if (index === this.rows.length)
+      this.rows.push({ at, n });
+    else
+      this.rows.splice(index, 0, { at, n });
+  }
+  seed(rows, now) {
+    const live = [];
+    for (const row of rows)
+      if (Number.isFinite(row.at) && Number.isSafeInteger(row.n) && row.n > 0 && now - row.at <= this.spanMs)
+        live.push({ at: row.at, n: row.n });
+    live.sort((a, b) => a.at - b.at);
+    this.rows = this.rows.length ? [...this.rows, ...live].sort((a, b) => a.at - b.at) : live;
+  }
+  prune(now) {
+    let drop = 0;
+    while (drop < this.rows.length && now - this.rows[drop].at > this.spanMs)
+      drop++;
+    if (drop)
+      this.rows.splice(0, drop);
+  }
+  sum(now) {
+    this.prune(now);
+    return this.rows.reduce((total, row) => total + row.n, 0);
+  }
+  oldest(now) {
+    this.prune(now);
+    return this.rows[0]?.at;
+  }
+  reset() {
+    this.rows = [];
+  }
+}
+
+// src/hub/kimi-usage.ts
+class KimiUsage {
+  ports;
+  bound = new Map;
+  window = new TokenWindow(KIMI_WINDOW_MS);
+  seen = new Set;
+  reviewerReplayUnknown = false;
+  reviewerAttempts = new Set;
+  taintedUntil = new Map;
+  reviewerSources = new Set;
+  stopped = false;
+  constructor(ports) {
+    this.ports = ports;
+  }
+  seed(rows) {
+    for (const row of rows) {
+      this.seen.add(row.id);
+      if (row.counted > 0 && this.ports.now() - row.at <= KIMI_WINDOW_MS)
+        this.window.add(row.at, row.counted);
+    }
+  }
+  status() {
+    if (!this.ports.ceiling())
+      return { state: "off" };
+    for (const state of this.bound.values())
+      if (state.unknown)
+        return { state: "unreadable", reason: state.unknown };
+    const now = this.ports.now();
+    if (this.reviewerReplayUnknown || this.reviewerAttempts.size)
+      return { state: "unreadable", reason: "log changed since it was counted" };
+    for (const until of this.taintedUntil.values())
+      if (now < until)
+        return { state: "unreadable", reason: "log changed since it was counted" };
+    return { state: this.bound.size || this.reviewerSources.size ? "counting" : "waiting" };
+  }
+  drop(peer) {
+    const held = this.bound.get(peer);
+    if (held)
+      this.cancel(held);
+    this.bound.delete(peer);
+  }
+  stop() {
+    this.stopped = true;
+    for (const state of this.bound.values())
+      this.cancel(state);
+  }
+  reset() {
+    this.window.reset();
+    this.taintedUntil.clear();
+  }
+  turnStarted(peer, turn) {
+    const bound = this.bind(peer);
+    if (!bound || !turn || bound.turns.some((interval) => interval.id === turn.id))
+      return;
+    bound.turns.push({ ...turn, attribution: { ...turn.attribution } });
+    if (bound.turns.length > TURN_INTERVAL_LIMIT)
+      bound.turns.splice(0, bound.turns.length - TURN_INTERVAL_LIMIT);
+  }
+  turnEnded(peer, turn, endedAt) {
+    const bound = this.bound.get(peer);
+    const index = bound?.turns.findIndex((interval) => interval.id === turn) ?? -1;
+    if (!bound || index < 0)
+      return;
+    bound.turns[index] = { ...bound.turns[index], endedAt };
+  }
+  cancel(bound) {
+    bound.pending?.();
+    bound.pending = undefined;
+    bound.burst = false;
+    bound.followUp = 0;
+  }
+  bind(peer) {
+    const session = this.ports.session(peer), held = this.bound.get(peer);
+    if (!session) {
+      if (held)
+        this.cancel(held);
+      this.bound.delete(peer);
+      return;
+    }
+    if (held?.session === session)
+      return held;
+    if (held)
+      this.cancel(held);
+    const next = {
+      session,
+      reader: new KimiWireReader({ home: this.ports.home, sessionId: session, ...this.ports.maxBytes ? { maxBytes: this.ports.maxBytes } : {} }),
+      floor: this.ports.now() - FLOOR_SLACK_MS,
+      turns: [],
+      followUp: 0,
+      passes: 0,
+      backlog: false,
+      burst: false,
+      reportPending: false
+    };
+    this.bound.set(peer, next);
+    return next;
+  }
+  collect(peer, scheduled = false, terminal = false) {
+    const bound = this.bind(peer);
+    if (!bound)
+      return;
+    try {
+      if (bound.passes >= PASSES)
+        bound.passes = 0;
+      let added = 0, more = false;
+      for (let pass = 0, slices = terminal || !this.ports.schedule ? PASSES : 1;pass < slices; pass++) {
+        const read = bound.reader.readSlice();
+        if (read.status === "unknown") {
+          bound.backlog = false;
+          bound.passes = 0;
+          this.unknown(peer, bound, read.reason);
+          return;
+        }
+        this.ports.observe?.(bound.reader.stats());
+        try {
+          added += this.record(peer, bound, read.rows);
+        } catch (error) {
+          bound.backlog = false;
+          bound.passes = 0;
+          throw error;
+        }
+        read.commit();
+        more = read.more;
+        bound.backlog = more;
+        bound.passes = more ? bound.passes + 1 : 0;
+        if (!more)
+          break;
+      }
+      const recovered = bound.unknown !== undefined;
+      bound.unknown = undefined;
+      if (!more && (added > 0 || recovered || bound.reportPending)) {
+        this.report(peer);
+        bound.reportPending = false;
+      }
+    } finally {
+      if (this.bound.get(peer) === bound)
+        this.schedule(peer, bound, scheduled);
+    }
+  }
+  complete(peer) {
+    const bound = this.bound.get(peer);
+    return !!bound && !bound.unknown && !bound.backlog;
+  }
+  observeReviewer(peer, row, attributed) {
+    const counters = [row.inputOther, row.inputCacheCreation, row.inputCacheRead, row.output];
+    if (!/^[a-f0-9]{32}$/.test(row.id) || !Number.isFinite(row.at) || row.at <= 0 || counters.some((value) => !Number.isSafeInteger(value) || value < 0) || !Number.isSafeInteger(counters.reduce((sum, value) => sum + value, 0)))
+      throw new Error("invalid reviewer usage observation");
+    if (this.seen.has(row.id))
+      return false;
+    const counted = kimiCountedTokens(row);
+    this.ports.record(peer, row, counted, attributed);
+    this.seen.add(row.id);
+    this.reviewerSources.add(peer);
+    this.window.add(Math.min(row.at, this.ports.now()), counted);
+    this.report(peer);
+    return true;
+  }
+  reviewerReplayIncomplete(peer) {
+    this.reviewerReplayUnknown = true;
+    this.ports.forget(peer);
+  }
+  reviewerAccounting(peer, attempt, outcome) {
+    if (!/^[a-f0-9]{32}$/.test(attempt))
+      throw new Error("invalid reviewer accounting identity");
+    if (outcome === "complete")
+      this.reviewerAttempts.delete(attempt);
+    else
+      this.reviewerAttempts.add(attempt);
+    if (this.reviewerReplayUnknown || this.reviewerAttempts.size)
+      this.ports.forget(peer);
+    else
+      this.report(peer);
+  }
+  schedule(peer, bound, scheduled) {
+    const schedule = this.ports.schedule;
+    if (!schedule || this.stopped)
+      return;
+    const run = () => {
+      bound.pending = undefined;
+      if (this.bound.get(peer) === bound)
+        try {
+          this.collect(peer, true);
+        } catch {}
+    };
+    if (bound.backlog && bound.passes < PASSES) {
+      if (!bound.pending)
+        bound.pending = schedule(0, run);
+      return;
+    }
+    if (bound.pending) {
+      if (!scheduled && bound.followUp >= FOLLOW_UP_DELAYS_MS.length - 1) {
+        bound.burst = true;
+        bound.followUp = 0;
+      }
+      return;
+    }
+    if (!bound.burst) {
+      bound.burst = true;
+      bound.followUp = 0;
+    }
+    if (bound.followUp >= FOLLOW_UP_DELAYS_MS.length) {
+      bound.burst = false;
+      bound.followUp = 0;
+      return;
+    }
+    const delay = FOLLOW_UP_DELAYS_MS[bound.followUp++];
+    bound.pending = schedule(delay, run);
+  }
+  record(peer, bound, rows) {
+    let added = 0;
+    const now = this.ports.now();
+    for (const row of rows) {
+      if (this.seen.has(row.id) || row.at < bound.floor)
+        continue;
+      const counted = kimiCountedTokens(row), attributed = this.attribute(bound, row.at);
+      this.ports.record(peer, row, counted, attributed);
+      this.seen.add(row.id);
+      this.window.add(Math.min(row.at, now), counted);
+      if (counted > 0)
+        bound.reportPending = true;
+      added += counted;
+    }
+    return added;
+  }
+  attribute(bound, at) {
+    const matches = bound.turns.filter((interval) => at >= interval.startedAt && (interval.endedAt === undefined || at <= interval.endedAt));
+    if (matches.length !== 1)
+      return { attribution: { attribution: "unattributed" } };
+    const turn = matches[0];
+    return { attribution: { ...turn.attribution }, turn: turn.id };
+  }
+  unknown(peer, bound, reason) {
+    bound.unknown = reason;
+    try {
+      this.ports.forget(peer);
+    } catch {}
+    if (!TRANSIENT2.has(reason))
+      this.taintedUntil.set(peer, this.ports.now() + KIMI_WINDOW_MS);
+    if (bound.noticed === reason)
+      return;
+    bound.noticed = reason;
+    try {
+      this.ports.notice(`kimi usage unknown (${reason}): the hub counts no Kimi tokens it cannot read cleanly`);
+    } catch {}
+  }
+  report(peer) {
+    const ceiling = this.ports.ceiling(), now = this.ports.now();
+    if (!ceiling || this.reviewerReplayUnknown || this.reviewerAttempts.size)
+      return;
+    for (const state of this.bound.values())
+      if (state.unknown)
+        return;
+    for (const until of this.taintedUntil.values())
+      if (now < until)
+        return;
+    const oldest = this.window.oldest(now);
+    this.ports.report(peer, { used: this.window.sum(now) / ceiling, resetsAt: (oldest ?? now) + KIMI_WINDOW_MS, ceiling });
+  }
+}
+var KIMI_WINDOW_MS, FLOOR_SLACK_MS = 1000, PASSES = 16, FOLLOW_UP_DELAYS_MS, TURN_INTERVAL_LIMIT = 32, TRANSIENT2;
+var init_kimi_usage = __esm(() => {
+  init_kimi_wire_usage();
+  KIMI_WINDOW_MS = 5 * 3600000;
+  FOLLOW_UP_DELAYS_MS = [250, 1000, 2000];
+  TRANSIENT2 = new Set(["no-index", "io-error", "partial-line"]);
+});
+
+// src/adapters/kimi-review-policy.ts
+import { createHash as createHash4 } from "crypto";
+import { lstatSync as lstatSync6, readFileSync as readFileSync4 } from "fs";
+import { dirname as dirname6, join as join7, resolve as resolve6 } from "path";
 function readKimiReviewFile(file, limit = 262144) {
-  const stat = lstatSync5(file);
+  const stat = lstatSync6(file);
   if (!stat.isFile() || stat.size > limit)
     throw new Error("unsupported reviewer file");
   return readFileSync4(file, "utf8");
@@ -2791,7 +3833,7 @@ function assertCleanCwdAncestors(...candidates) {
       if (!seen.has(ancestor)) {
         seen.add(ancestor);
         for (const marker of [".git", ".kimi-code", "AGENTS.md"]) {
-          if (lstatSync5(join6(ancestor, marker), { throwIfNoEntry: false }) !== undefined) {
+          if (lstatSync6(join7(ancestor, marker), { throwIfNoEntry: false }) !== undefined) {
             throw new Error("private cwd ancestor contains ambient configuration");
           }
         }
@@ -2827,13 +3869,13 @@ function projectKimiReviewPolicyBinding(binding) {
 function checkKimiReviewPolicy(binding) {
   try {
     assertCleanCwdAncestors(binding.lexicalCwd, binding.physicalCwd);
-    const now = lstatSync5(binding.executable), expected = binding.executableStat;
-    return realPath(binding.sourcePath) === binding.source && now.dev === expected.dev && now.ino === expected.ino && now.size === expected.size && now.mtimeMs === expected.mtimeMs && now.ctimeMs === expected.ctimeMs && kimiReviewFingerprint(readKimiReviewFile(binding.sourceConfig)) === binding.sourceConfigHash && binding.privateFiles.length === 3 && binding.privateFiles.every((file) => kimiReviewFingerprint(readKimiReviewFile(file.path, 2097152)) === file.hash) && binding.authTargets.length === 3 && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join6(binding.source, name)) === binding.authTargets[index] && realPath(join6(binding.tool, name)) === binding.authTargets[index]);
+    const now = lstatSync6(binding.executable), expected = binding.executableStat;
+    return realPath(binding.sourcePath) === binding.source && now.dev === expected.dev && now.ino === expected.ino && now.size === expected.size && now.mtimeMs === expected.mtimeMs && now.ctimeMs === expected.ctimeMs && kimiReviewFingerprint(readKimiReviewFile(binding.sourceConfig)) === binding.sourceConfigHash && binding.privateFiles.length === 3 && binding.privateFiles.every((file) => kimiReviewFingerprint(readKimiReviewFile(file.path, 2097152)) === file.hash) && binding.authTargets.length === 3 && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join7(binding.source, name)) === binding.authTargets[index] && realPath(join7(binding.tool, name)) === binding.authTargets[index]);
   } catch {
     return false;
   }
 }
-var kimiReviewFingerprint = (text) => createHash3("sha256").update(text).digest("hex");
+var kimiReviewFingerprint = (text) => createHash4("sha256").update(text).digest("hex");
 var init_kimi_review_policy = __esm(() => {
   init_project();
 });
@@ -2967,9 +4009,9 @@ var init_kimi_review_policy_worker = __esm(() => {
 
 // src/adapters/kimi-review.ts
 import { spawn as spawn4 } from "child_process";
-import { existsSync as existsSync4, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync4 } from "fs";
+import { existsSync as existsSync4, lstatSync as lstatSync7, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync4 } from "fs";
 import { homedir as homedir3, tmpdir as tmpdir2 } from "os";
-import { basename as basename3, join as join7, resolve as resolve7 } from "path";
+import { basename as basename3, join as join8, resolve as resolve7 } from "path";
 function managedConfig(raw) {
   const config = Bun.TOML.parse(raw);
   if (!object3(config.providers) || !object3(config.models) || typeof config.default_model !== "string")
@@ -3088,27 +4130,54 @@ async function stopKimiReview(child, locks, graceMs = 1e4) {
   }
   await stopOwnedProcess(child, { group: true });
 }
+function readKimiReviewerUsage(home, startedAt) {
+  const session = ownedKimiSession(home);
+  if (!session)
+    return;
+  const rows = [];
+  let now = startedAt;
+  const usage = new KimiUsage({
+    home,
+    now: () => now,
+    ceiling: () => 0,
+    session: () => session,
+    record: (_peer, row) => {
+      rows.push(row);
+    },
+    report: () => {},
+    forget: () => {},
+    notice: () => {}
+  });
+  try {
+    usage.turnStarted("owned-review");
+    now = Date.now();
+    usage.collect("owned-review", false, true);
+    return usage.complete("owned-review") && rows.length ? rows : undefined;
+  } finally {
+    usage.stop();
+  }
+}
 async function prepareKimiReviewer(context, policyFactory = startKimiReviewPolicyWatch) {
   let own;
   try {
     if (context.signal.aborted)
       throw new Error("cancelled");
-    const sourcePath = process.env.KIMI_CODE_HOME ?? join7(process.env.HOME ?? homedir3(), ".kimi-code"), source = realPath(sourcePath);
-    const sourceConfig = join7(source, "config.toml"), original = readKimiReviewFile(sourceConfig), selected = managedConfig(original);
-    const sources = ["credentials", "oauth", "device_id"].map((name) => realPath(join7(source, name)));
-    if (!sources.every((file, index) => index < 2 ? lstatSync6(file).isDirectory() : lstatSync6(file).isFile()))
+    const sourcePath = process.env.KIMI_CODE_HOME ?? join8(process.env.HOME ?? homedir3(), ".kimi-code"), source = realPath(sourcePath);
+    const sourceConfig = join8(source, "config.toml"), original = readKimiReviewFile(sourceConfig), selected = managedConfig(original);
+    const sources = ["credentials", "oauth", "device_id"].map((name) => realPath(join8(source, name)));
+    if (!sources.every((file, index) => index < 2 ? lstatSync7(file).isDirectory() : lstatSync7(file).isFile()))
       throw new Error("native OAuth directories and device identity required");
     const mcp = mcpConfig(context);
     if (Buffer.byteLength(context.input ?? "") > 1048576)
       throw new Error("review facts exceed limit");
-    const lexicalRoot = mkdtempSync2(join7(process.env.TMPDIR ?? tmpdir2(), "ahub-kimi-review-"));
+    const lexicalRoot = mkdtempSync2(join8(process.env.TMPDIR ?? tmpdir2(), "ahub-kimi-review-"));
     own = realPath(lexicalRoot);
-    assertCleanCwdAncestors(join7(lexicalRoot, "workspace"), join7(own, "workspace"));
-    const root = own, home = join7(root, "home"), tool = join7(root, "tool"), cwd = join7(root, "workspace"), skills = join7(root, "empty-skills"), temporary = join7(root, "tmp");
+    assertCleanCwdAncestors(join8(lexicalRoot, "workspace"), join8(own, "workspace"));
+    const root = own, home = join8(root, "home"), tool = join8(root, "tool"), cwd = join8(root, "workspace"), skills = join8(root, "empty-skills"), temporary = join8(root, "tmp");
     for (const dir of [home, tool, cwd, skills, temporary])
       mkdirSync4(dir, { mode: 448 });
-    ["credentials", "oauth", "device_id"].forEach((name, index) => symlinkSync2(sources[index], join7(tool, name), index < 2 ? "dir" : "file"));
-    const agentFile = join7(cwd, "reviewer.md"), configFile = join7(tool, "config.toml"), mcpFile = join7(tool, "mcp.json");
+    ["credentials", "oauth", "device_id"].forEach((name, index) => symlinkSync2(sources[index], join8(tool, name), index < 2 ? "dir" : "file"));
+    const agentFile = join8(cwd, "reviewer.md"), configFile = join8(tool, "config.toml"), mcpFile = join8(tool, "mcp.json");
     writeFileSync4(configFile, selected.config, { mode: 384 });
     writeFileSync4(mcpFile, mcp, { mode: 384 });
     writeFileSync4(agentFile, `---
@@ -3126,17 +4195,17 @@ Use only the supplied public facts and hub_task_show. Never claim to have read e
 
 ${context.input ?? "No review is active; startup self-check only."}
 `, { mode: 384 });
-    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temporary}/`, XDG_CONFIG_HOME: join7(home, ".config"), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...process.env.USER ? { USER: process.env.USER } : {} };
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temporary}/`, XDG_CONFIG_HOME: join8(home, ".config"), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...process.env.USER ? { USER: process.env.USER } : {} };
     const native = context.command ?? [Bun.which("kimi", { PATH: process.env.PATH }) ?? "kimi"];
     const executable = realPath(Bun.which(native[0], { PATH: process.env.PATH }) ?? resolve7(native[0]));
     const command = [executable, ...native.slice(1)];
-    const executableStat = lstatSync6(executable);
+    const executableStat = lstatSync7(executable);
     const verdict = assessVersion("kimi-review", COMPAT["kimi-review"].parse(await version(command, cwd, env, context.signal)));
     if (!verdict.ok)
       throw new Error(verdict.reason);
     const fingerprints = [configFile, mcpFile, agentFile].map((file) => kimiReviewFingerprint(readKimiReviewFile(file, 2097152)));
     const binding = projectKimiReviewPolicyBinding({
-      lexicalCwd: join7(lexicalRoot, "workspace"),
+      lexicalCwd: join8(lexicalRoot, "workspace"),
       physicalCwd: cwd,
       sourcePath,
       source,
@@ -3176,7 +4245,15 @@ ${context.input ?? "No review is active; startup self-check only."}
       envMode: "replace",
       cleanup,
       watchCurrent: true,
-      stop: (child) => stopKimiReview(child, [join7(sources[1], "kimi-code.lock"), join7(sources[1], `${selected.lock}.lock`)]),
+      readUsage: (startedAt, receive) => {
+        const rows = readKimiReviewerUsage(tool, startedAt);
+        if (!rows)
+          return false;
+        for (const row of rows)
+          receive({ input_tokens: row.inputOther, output_tokens: row.output, cache_creation_input_tokens: row.inputCacheCreation, cache_read_input_tokens: row.inputCacheRead }, { id: row.id, at: row.at, ...row.model ? { model: row.model } : {} });
+        return true;
+      },
+      stop: (child) => stopKimiReview(child, [join8(sources[1], "kimi-code.lock"), join8(sources[1], `${selected.lock}.lock`)]),
       current: () => !cleaned && !context.signal.aborted && checkKimiReviewPolicy(binding),
       startPolicyWatch: () => {
         if (cleaned || context.signal.aborted)
@@ -3231,127 +4308,19 @@ var init_kimi_review = __esm(() => {
   init_compat();
   init_child_process();
   init_project();
+  init_native_quota();
+  init_kimi_wire_usage();
+  init_kimi_usage();
   init_kimi_review_policy();
   init_kimi_review_policy_worker();
   kimiReviewerBackend = {
     id: "kimi",
     taskMcp: true,
     nativePolicy: true,
-    prepare: (context) => prepareKimiReviewer(context)
+    prepare: (context) => prepareKimiReviewer(context),
+    failureOnExit: kimiReviewerQuotaOnExit
   };
 });
-
-// src/hub/quota-account.ts
-function quotaAccountUsage(value) {
-  const out = {};
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return out;
-  const row = value;
-  if (typeof row.resetCreditsAvailable === "number" && Number.isSafeInteger(row.resetCreditsAvailable) && row.resetCreditsAvailable >= 0) {
-    out.resetCreditsAvailable = row.resetCreditsAvailable;
-    if (typeof row.resetCreditsExpiryKnown === "boolean")
-      out.resetCreditsExpiryKnown = row.resetCreditsExpiryKnown;
-    if (out.resetCreditsExpiryKnown === true && typeof row.resetCreditsExpireAt === "number" && Number.isSafeInteger(row.resetCreditsExpireAt) && row.resetCreditsExpireAt > 0 && Number.isFinite(new Date(row.resetCreditsExpireAt).getTime()))
-      out.resetCreditsExpireAt = row.resetCreditsExpireAt;
-  }
-  for (const field of ["ordinaryUsageAllowed", "hasCredits", "unlimited"])
-    if (typeof row[field] === "boolean")
-      out[field] = row[field];
-  return out;
-}
-
-// src/adapters/definitions/native-quota.ts
-function codexWindows(rateLimits) {
-  const out = [];
-  for (const [w, slot] of [[rateLimits?.primary, "5h"], [rateLimits?.secondary, "week"]]) {
-    if (!w || typeof w.usedPercent !== "number")
-      continue;
-    const mins = typeof w.windowDurationMins === "number" ? w.windowDurationMins : undefined;
-    const id = mins === undefined ? slot : mins > 600 ? "week" : "5h";
-    if (out.some((o) => o.id === id))
-      continue;
-    out.push({ id, used: w.usedPercent / 100, ...w.resetsAt ? { resetsAt: w.resetsAt * 1000 } : {}, ...mins ? { windowMins: mins } : {}, source: "codex rateLimits" });
-  }
-  if (rateLimits?.rateLimitReachedType && !out.some((w) => w.used >= 1))
-    out.push({ id: "5h", used: 1, source: `codex ${rateLimits.rateLimitReachedType}` });
-  return out;
-}
-function claudeWindows(rateLimits) {
-  const out = [];
-  for (const [key, id, mins] of [["five_hour", "5h", 300], ["seven_day", "week", 10080]]) {
-    const w = rateLimits?.[key];
-    if (!w || typeof w.used_percentage !== "number")
-      continue;
-    const resets = Number(w.resets_at);
-    out.push({ id, used: w.used_percentage / 100, ...resets ? { resetsAt: resets < 1000000000000 ? resets * 1000 : resets } : {}, windowMins: mins, source: "claude status line" });
-  }
-  return out;
-}
-function codexAccountUsage(snapshot) {
-  const value = record(snapshot), limits = record(value.rateLimits), credits = record(limits.credits), reset = record(value.rateLimitResetCredits);
-  const out = {};
-  if (typeof value.ordinaryUsageAllowed === "boolean")
-    out.ordinaryUsageAllowed = value.ordinaryUsageAllowed;
-  if (typeof credits.hasCredits === "boolean")
-    out.hasCredits = credits.hasCredits;
-  if (typeof credits.unlimited === "boolean")
-    out.unlimited = credits.unlimited;
-  const count = reset.availableCount;
-  if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
-    out.resetCreditsAvailable = count;
-    out.resetCreditsExpiryKnown = count === 0;
-    const rows = reset.credits;
-    if (count > 0 && Array.isArray(rows) && rows.length === count && rows.length <= MAX_RESET_CREDIT_DETAILS) {
-      let complete = true, earliest;
-      for (const item of rows) {
-        const row = record(item);
-        if (row.status !== "available" || row.resetType !== "codexRateLimits") {
-          complete = false;
-          break;
-        }
-        if (row.expiresAt === null)
-          continue;
-        const expires = epochMillis(row.expiresAt);
-        if (expires === undefined) {
-          complete = false;
-          break;
-        }
-        earliest = earliest === undefined ? expires : Math.min(earliest, expires);
-      }
-      out.resetCreditsExpiryKnown = complete;
-      if (complete && earliest !== undefined)
-        out.resetCreditsExpireAt = earliest;
-    }
-  }
-  return quotaAccountUsage(out);
-}
-function codexQuotaWindowInput(value) {
-  const raw = record(value);
-  const window = (value) => {
-    const row = record(value);
-    if (typeof row.usedPercent !== "number" || !Number.isFinite(row.usedPercent))
-      return null;
-    return {
-      usedPercent: row.usedPercent,
-      ...typeof row.windowDurationMins === "number" && Number.isFinite(row.windowDurationMins) ? { windowDurationMins: row.windowDurationMins } : {},
-      ...typeof row.resetsAt === "number" && Number.isFinite(row.resetsAt) ? { resetsAt: row.resetsAt } : {}
-    };
-  };
-  const reached = raw.rateLimitReachedType;
-  const known = ["usageLimitExceeded", "rate_limit_reached", "workspace_owner_credits_depleted", "workspace_member_credits_depleted", "workspace_owner_usage_limit_reached", "workspace_member_usage_limit_reached"];
-  return {
-    primary: window(raw.primary),
-    secondary: window(raw.secondary),
-    ...reached ? { rateLimitReachedType: typeof reached === "string" && known.includes(reached) ? reached : "usageLimitExceeded" } : {}
-  };
-}
-var MAX_RESET_CREDIT_DETAILS = 128, record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {}, epochMillis = (value) => {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)
-    return;
-  const ms = value * 1000;
-  return Number.isSafeInteger(ms) && Number.isFinite(new Date(ms).getTime()) ? ms : undefined;
-};
-var init_native_quota = () => {};
 
 // src/adapters/definitions/native-context.ts
 function claudeContext(value, sessionId, measuredAt) {
@@ -3391,7 +4360,7 @@ var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, 
 var init_context_window = () => {};
 
 // src/hub/capabilities.ts
-import { createHash as createHash4 } from "crypto";
+import { createHash as createHash5 } from "crypto";
 function canonical2(value) {
   if (Array.isArray(value))
     return `[${value.map(canonical2).join(",")}]`;
@@ -3400,7 +4369,7 @@ function canonical2(value) {
   return JSON.stringify(value) ?? "null";
 }
 function capabilityDigest(c) {
-  return `sha256:${createHash4("sha256").update(canonical2({ kind: c.kind, name: c.name, inputSchema: c.inputSchema ?? null, sideEffect: c.sideEffect ?? null, source: c.source, invoke: c.invoke })).digest("hex")}`;
+  return `sha256:${createHash5("sha256").update(canonical2({ kind: c.kind, name: c.name, inputSchema: c.inputSchema ?? null, sideEffect: c.sideEffect ?? null, source: c.source, invoke: c.invoke })).digest("hex")}`;
 }
 function cleanDescription(raw) {
   const text = typeof raw === "string" ? raw : "";
@@ -6000,9 +6969,9 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
 // src/adapters/jcode.ts
 import { spawn as spawn7, spawnSync as spawnSync2 } from "child_process";
 import { createConnection } from "net";
-import { closeSync as closeSync3, constants as constants2, existsSync as existsSync5, fstatSync as fstatSync3, lstatSync as lstatSync7, mkdtempSync as mkdtempSync3, openSync as openSync3, readSync as readSync2, rmSync as rmSync3 } from "fs";
+import { closeSync as closeSync4, constants as constants3, existsSync as existsSync5, fstatSync as fstatSync4, lstatSync as lstatSync8, mkdtempSync as mkdtempSync3, openSync as openSync4, readSync as readSync2, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { isAbsolute as isAbsolute4, join as join8 } from "path";
+import { isAbsolute as isAbsolute4, join as join9 } from "path";
 function jcodeCommand(command, kind, socket, cwd, model, profile, provider, peer = "jcode") {
   if (!command.length || command.some((word) => typeof word !== "string" || !word))
     throw new Error("jcode_cmd must name an executable argv");
@@ -6045,26 +7014,26 @@ function jcodeTuiCommand(command, socket, sessionId, model, profile, provider) {
 function savedSession(home, id) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id))
     throw new Error("invalid native session identity");
-  const directory = join8(home, "sessions"), info = lstatSync7(directory, { throwIfNoEntry: false });
+  const directory = join9(home, "sessions"), info = lstatSync8(directory, { throwIfNoEntry: false });
   if (!info)
     return false;
   if (!info.isDirectory() || info.isSymbolicLink())
     throw new Error("unsafe native session directory");
-  const file = join8(directory, `${id}.json`), entry = lstatSync7(file, { throwIfNoEntry: false });
+  const file = join9(directory, `${id}.json`), entry = lstatSync8(file, { throwIfNoEntry: false });
   if (!entry)
     return false;
   if (!entry.isFile() || entry.isSymbolicLink())
     throw new Error("unsafe native session proof");
   let fd;
   try {
-    fd = openSync3(file, constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK);
+    fd = openSync4(file, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
   } catch (error) {
     if (error.code === "ENOENT")
       return false;
     throw error;
   }
   try {
-    const before = fstatSync3(fd);
+    const before = fstatSync4(fd);
     if (!before.isFile() || before.nlink !== 1 || before.size > 32 * 1024 * 1024)
       throw new Error("unsafe native session proof");
     if (!before.size)
@@ -6077,7 +7046,7 @@ function savedSession(home, id) {
         return false;
       offset += n;
     }
-    const after = fstatSync3(fd);
+    const after = fstatSync4(fd);
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs)
       return false;
     let data;
@@ -6090,7 +7059,7 @@ function savedSession(home, id) {
       throw new Error("native saved session identity is unproven");
     return true;
   } finally {
-    closeSync3(fd);
+    closeSync4(fd);
   }
 }
 function nativeSteer(socket, cwd, sessionId, text, clientId, timeoutMs = STEER_TIMEOUT_MS, canSend = () => {
@@ -6198,7 +7167,7 @@ var init_jcode = __esm(() => {
         throw new Error("jcode_home must be an absolute native data path");
       const peer = jcode.peer ?? "jcode";
       jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
-      const root = mkdtempSync3(join8(tmpdir3(), "ahub-jcode-")), socket = join8(root, "j.sock");
+      const root = mkdtempSync3(join9(tmpdir3(), "ahub-jcode-")), socket = join9(root, "j.sock");
       const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile, jcode.provider, peer);
       const launchId = crypto.randomUUID();
       super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], preamble: jcodePreamble(jcode.preamble), requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
@@ -6225,7 +7194,7 @@ var init_jcode = __esm(() => {
       return typeof this.jcode.resumeSessionId === "string" && this.jcode.resumeSessionId.length > 0;
     }
     async start() {
-      if (!existsSync5(join8(this.jcode.home, "mcp.json")))
+      if (!existsSync5(join9(this.jcode.home, "mcp.json")))
         throw new Error("initialize Jcode's global MCP store with its native client before enabling this peer; the hub never initializes or copies it");
       if (existsSync5(this.socket)) {
         this.preserveRoot = true;
@@ -6249,7 +7218,7 @@ var init_jcode = __esm(() => {
           ready.once("data", () => {
             clearTimeout(timer);
             server.off("exit", fail);
-            if (lstatSync7(this.socket, { throwIfNoEntry: false })?.isSocket())
+            if (lstatSync8(this.socket, { throwIfNoEntry: false })?.isSocket())
               resolve();
             else
               reject(new Error("Jcode readiness has no private socket"));
@@ -6259,7 +7228,7 @@ var init_jcode = __esm(() => {
           if (!this.ending && this.server === server)
             this.stop("Jcode owned daemon disconnected").catch(() => {});
         });
-        const identity = lstatSync7(this.socket);
+        const identity = lstatSync8(this.socket);
         this.socketIdentity = { dev: identity.dev, ino: identity.ino };
         await super.start();
       } catch (error) {
@@ -6333,7 +7302,7 @@ var init_jcode = __esm(() => {
         throw new Error(reason);
       };
       const sessionId = super.recoveryMetadata().sessionId;
-      const socket = lstatSync7(this.socket, { throwIfNoEntry: false });
+      const socket = lstatSync8(this.socket, { throwIfNoEntry: false });
       if (this.state !== "busy")
         refuse(`jcode is ${this.state}`);
       if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string")
@@ -6346,7 +7315,7 @@ var init_jcode = __esm(() => {
           return "owned Jcode server changed before the steer was sent";
         if (super.recoveryMetadata().sessionId !== sessionId)
           return "jcode's session changed before the steer was sent";
-        const now = lstatSync7(this.socket, { throwIfNoEntry: false });
+        const now = lstatSync8(this.socket, { throwIfNoEntry: false });
         if (!now?.isSocket() || now.dev !== identity?.dev || now.ino !== identity.ino)
           return "owned Jcode socket changed before the steer was sent";
         return;
@@ -6371,7 +7340,7 @@ var init_jcode = __esm(() => {
     }
     tuiLaunch(expected, options = {}) {
       const sessionId = super.recoveryMetadata().sessionId;
-      const socket = lstatSync7(this.socket, { throwIfNoEntry: false });
+      const socket = lstatSync8(this.socket, { throwIfNoEntry: false });
       if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || this.state === "offline")
         throw new JcodeTuiRefusal("server_not_running");
       if (!socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino)
@@ -6408,8 +7377,8 @@ var init_process_signature = __esm(() => {
 });
 
 // src/adapters/qwen-dual.ts
-import { closeSync as closeSync4, constants as constants3, fstatSync as fstatSync4, lstatSync as lstatSync8, mkdirSync as mkdirSync5, openSync as openSync4, readSync as readSync3, realpathSync as realpathSync2, renameSync as renameSync3, writeFileSync as writeFileSync5, writeSync } from "fs";
-import { join as join9 } from "path";
+import { closeSync as closeSync5, constants as constants4, fstatSync as fstatSync5, lstatSync as lstatSync9, mkdirSync as mkdirSync5, openSync as openSync5, readSync as readSync3, realpathSync as realpathSync2, renameSync as renameSync3, writeFileSync as writeFileSync5, writeSync } from "fs";
+import { join as join10 } from "path";
 function qwenDualNamesStateDir(input, stateDir) {
   const needles = new Set([".agenthub/state", ".agenthub\\state", "qwen-dual", "input.jsonl", stateDir]);
   try {
@@ -6499,11 +7468,11 @@ var init_qwen_dual = __esm(() => {
     constructor(id, opts) {
       super(id, opts.watchdogMs);
       this.opts = opts;
-      this.dir = join9(opts.stateDir, DIR);
-      this.inputFile = join9(this.dir, "input.jsonl");
-      this.eventFile = join9(this.dir, "events.jsonl");
-      this.stateFile = join9(this.dir, "state.json");
-      this.mcpFile = join9(this.dir, "mcp.json");
+      this.dir = join10(opts.stateDir, DIR);
+      this.inputFile = join10(this.dir, "input.jsonl");
+      this.eventFile = join10(this.dir, "events.jsonl");
+      this.stateFile = join10(this.dir, "state.json");
+      this.mcpFile = join10(this.dir, "mcp.json");
       this.signature = opts.signature ?? processSignature;
     }
     get launch() {
@@ -6545,7 +7514,7 @@ var init_qwen_dual = __esm(() => {
       return { ...this.state_.sessionId ? { sessionId: this.state_.sessionId } : {}, launch: { mode: "tui" } };
     }
     ensureFile(path, create) {
-      const found = lstatSync8(path, { throwIfNoEntry: false });
+      const found = lstatSync9(path, { throwIfNoEntry: false });
       if (!found) {
         if (!create)
           throw new Error("Qwen dual-output file is missing");
@@ -6562,8 +7531,8 @@ var init_qwen_dual = __esm(() => {
     loadState() {
       let fd;
       try {
-        fd = openSync4(this.stateFile, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
-        const info = fstatSync4(fd);
+        fd = openSync5(this.stateFile, constants4.O_RDONLY | constants4.O_NOFOLLOW | constants4.O_NONBLOCK);
+        const info = fstatSync5(fd);
         if (!info.isFile() || info.size > 4096)
           return;
         const buffer = Buffer.alloc(info.size);
@@ -6584,7 +7553,7 @@ var init_qwen_dual = __esm(() => {
       } catch {} finally {
         if (fd !== undefined)
           try {
-            closeSync4(fd);
+            closeSync5(fd);
           } catch {}
       }
     }
@@ -6610,7 +7579,7 @@ var init_qwen_dual = __esm(() => {
     }
     async start() {
       mkdirSync5(this.dir, { recursive: true, mode: 448 });
-      const dir = lstatSync8(this.dir);
+      const dir = lstatSync9(this.dir);
       if (!dir.isDirectory() || dir.isSymbolicLink() || typeof process.getuid === "function" && dir.uid !== process.getuid() || (dir.mode & 63) !== 0)
         throw new Error("Qwen dual-output directory is not private to the person running the hub");
       this._launch = undefined;
@@ -6622,12 +7591,12 @@ var init_qwen_dual = __esm(() => {
       this.exited = false;
       if (this.ownerAlive()) {
         this.adopting = true;
-        const probe = openSync4(this.eventFile, constants3.O_RDONLY | constants3.O_NOFOLLOW);
+        const probe = openSync5(this.eventFile, constants4.O_RDONLY | constants4.O_NOFOLLOW);
         let size = 0;
         try {
-          size = fstatSync4(probe).size;
+          size = fstatSync5(probe).size;
         } finally {
-          closeSync4(probe);
+          closeSync5(probe);
         }
         if (size < this.state_.offset) {
           this.state_.offset = 0;
@@ -6650,7 +7619,7 @@ var init_qwen_dual = __esm(() => {
         if (fenced && !this.freshBaselineAbsent) {
           this.sessionSeen = this.state_.sessionId !== undefined;
           this.primed = true;
-          this.denyCursor = lstatSync8(this.eventFile).size;
+          this.denyCursor = lstatSync9(this.eventFile).size;
           this.setState("offline");
           try {
             this.opts.onNotice?.(`${this.id}: the hub could not verify that the old Qwen terminal is absent; inspect and end that terminal before running ahub qwen --mode tui again`);
@@ -6671,7 +7640,7 @@ var init_qwen_dual = __esm(() => {
               this.opts.onNotice?.(`${this.id}: a fresh empty Qwen event file could not be prepared; inspect the Qwen state directory and events.prev.jsonl before running ahub qwen --mode tui again`);
             } catch {}
           } else {
-            closeSync4(openSync4(this.inputFile, constants3.O_WRONLY | constants3.O_NOFOLLOW | constants3.O_TRUNC));
+            closeSync5(openSync5(this.inputFile, constants4.O_WRONLY | constants4.O_NOFOLLOW | constants4.O_TRUNC));
             this.inputBlocked = false;
             this.state_ = { v: 1, offset: 0, generation: this.state_.generation + 1, ...resumeId ? { sessionId: resumeId } : {}, ...denyPending ? { denyPending } : {} };
             this.sessionSeen = false;
@@ -6703,10 +7672,10 @@ var init_qwen_dual = __esm(() => {
     }
     prepareFreshEvents(fenced) {
       if (!fenced) {
-        const previous = lstatSync8(this.eventFile);
+        const previous = lstatSync9(this.eventFile);
         if (previous.size > 0) {
           try {
-            renameSync3(this.eventFile, join9(this.dir, "events.prev.jsonl"));
+            renameSync3(this.eventFile, join10(this.dir, "events.prev.jsonl"));
           } catch {}
           this.ensureFile(this.eventFile, true);
         }
@@ -6716,19 +7685,19 @@ var init_qwen_dual = __esm(() => {
       let fd;
       let ready = false;
       try {
-        const previous = lstatSync8(this.eventFile);
+        const previous = lstatSync9(this.eventFile);
         if (previous.size > 0)
-          renameSync3(this.eventFile, join9(this.dir, "events.prev.jsonl"));
+          renameSync3(this.eventFile, join10(this.dir, "events.prev.jsonl"));
         this.ensureFile(this.eventFile, true);
-        fd = openSync4(this.eventFile, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
-        const info = fstatSync4(fd);
+        fd = openSync5(this.eventFile, constants4.O_RDONLY | constants4.O_NOFOLLOW | constants4.O_NONBLOCK);
+        const info = fstatSync5(fd);
         ready = info.isFile() && info.size === 0;
         if (ready)
           this.freshEventIdentity = `${info.dev}:${info.ino}`;
       } catch {} finally {
         if (fd !== undefined)
           try {
-            closeSync4(fd);
+            closeSync5(fd);
           } catch {
             ready = false;
           }
@@ -6803,7 +7772,7 @@ var init_qwen_dual = __esm(() => {
       this.opts.onExit?.();
     }
     inputHasCompleteTail(fd) {
-      const info = fstatSync4(fd);
+      const info = fstatSync5(fd);
       if (!info.isFile())
         return false;
       if (info.size === 0)
@@ -6823,7 +7792,7 @@ var init_qwen_dual = __esm(() => {
     checkInputTail() {
       let fd;
       try {
-        fd = openSync4(this.inputFile, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+        fd = openSync5(this.inputFile, constants4.O_RDONLY | constants4.O_NOFOLLOW | constants4.O_NONBLOCK);
         if (!this.inputHasCompleteTail(fd))
           this.blockInput();
       } catch {
@@ -6831,7 +7800,7 @@ var init_qwen_dual = __esm(() => {
       } finally {
         if (fd !== undefined)
           try {
-            closeSync4(fd);
+            closeSync5(fd);
           } catch {
             this.blockInput();
           }
@@ -6855,10 +7824,10 @@ var init_qwen_dual = __esm(() => {
         throw new Error("Qwen submit exceeds its size bound");
       if (this.inputBlocked || this.freshInputPending)
         throw new QwenInputUncertain;
-      const fd = openSync4(this.inputFile, constants3.O_RDWR | constants3.O_APPEND | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+      const fd = openSync5(this.inputFile, constants4.O_RDWR | constants4.O_APPEND | constants4.O_NOFOLLOW | constants4.O_NONBLOCK);
       let writerAttempted = false;
       try {
-        const info = fstatSync4(fd);
+        const info = fstatSync5(fd);
         if (!info.isFile() || (info.mode & 63) !== 0 || typeof process.getuid === "function" && info.uid !== process.getuid())
           throw new Error("Qwen input file is not private");
         if (!this.inputHasCompleteTail(fd))
@@ -6872,7 +7841,7 @@ var init_qwen_dual = __esm(() => {
         }
       } finally {
         try {
-          closeSync4(fd);
+          closeSync5(fd);
         } catch (error) {
           if (writerAttempted)
             throw new QwenInputUncertain;
@@ -6952,8 +7921,8 @@ ${text}`;
       let fd;
       try {
         this.checkInputTail();
-        fd = openSync4(this.eventFile, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
-        const info = fstatSync4(fd);
+        fd = openSync5(this.eventFile, constants4.O_RDONLY | constants4.O_NOFOLLOW | constants4.O_NONBLOCK);
+        const info = fstatSync5(fd);
         if (!info.isFile())
           throw new Error("not a regular file");
         if (this.state_.denyPending || this.freshInputPending) {
@@ -7033,7 +8002,7 @@ ${text}`;
       } finally {
         if (fd !== undefined)
           try {
-            closeSync4(fd);
+            closeSync5(fd);
           } catch {}
         this.polling = false;
       }
@@ -7298,7 +8267,7 @@ ${text}`;
         this.discardReadProof();
         return;
       }
-      const current = fstatSync4(fd), named = lstatSync8(this.eventFile);
+      const current = fstatSync5(fd), named = lstatSync9(this.eventFile);
       if (!current.isFile() || !named.isFile() || named.isSymbolicLink() || current.dev !== named.dev || current.ino !== named.ino || `${current.dev}:${current.ino}` !== candidate.source || this.freshInputPending && candidate.source !== this.freshRead?.source || current.size !== this.state_.offset || named.size !== current.size) {
         this.discardReadProof();
         return;
@@ -7338,8 +8307,8 @@ ${text}`;
     fenceDeny() {
       let fd;
       try {
-        fd = openSync4(this.eventFile, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
-        const info = fstatSync4(fd);
+        fd = openSync5(this.eventFile, constants4.O_RDONLY | constants4.O_NOFOLLOW | constants4.O_NONBLOCK);
+        const info = fstatSync5(fd);
         if (!info.isFile())
           throw new Error("not a regular file");
         this.denyCursor = info.size;
@@ -7360,7 +8329,7 @@ ${text}`;
         return false;
       } finally {
         if (fd !== undefined)
-          closeSync4(fd);
+          closeSync5(fd);
       }
     }
     abortApprovals() {
@@ -7502,11 +8471,11 @@ ${text}`;
 });
 
 // src/pi/launch.ts
-import { join as join10 } from "path";
+import { join as join11 } from "path";
 function buildPiLaunch(opts, inherited, extension, bridgePort, bridgeToken) {
   const adapter = ADAPTERS.find((adapter) => adapter.start.daemonPort === "pi-rpc");
-  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join10(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
-  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join10(opts.stateDir, "pi-sessions")];
+  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join11(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
+  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join11(opts.stateDir, "pi-sessions")];
   if (opts.sessionFile)
     args.push("--session", opts.sessionFile);
   else if (opts.sessionId)
@@ -7536,7 +8505,7 @@ var init_recovery_error = __esm(() => {
 });
 
 // src/hub/recovery-store.ts
-import { chmodSync, existsSync as existsSync6, linkSync, lstatSync as lstatSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
+import { chmodSync, existsSync as existsSync6, linkSync, lstatSync as lstatSync10, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
 import { randomUUID as randomUUID4 } from "crypto";
 function atomicPrivateJSON(file, value) {
   const temporary = `${file}.${randomUUID4()}.tmp`;
@@ -7556,8 +8525,8 @@ var init_recovery_store = __esm(() => {
 });
 
 // src/pi/session.ts
-import { readFileSync as readFileSync6, openSync as openSync5, closeSync as closeSync5, fsyncSync, mkdirSync as mkdirSync7 } from "fs";
-import { join as join11, relative as relative2, resolve as resolve8, dirname as dirname7 } from "path";
+import { readFileSync as readFileSync6, openSync as openSync6, closeSync as closeSync6, fsyncSync, mkdirSync as mkdirSync7 } from "fs";
+import { join as join12, relative as relative2, resolve as resolve8, dirname as dirname7 } from "path";
 function sessionReadFailure(error) {
   if (error.code === "ENOENT")
     throw new PiSessionUnresumable("missing", error.message, { cause: error });
@@ -7567,7 +8536,7 @@ function validatePiSession(stateDir, cwd, sessionFile, sessionId) {
   let file, sessions;
   try {
     file = realPath(sessionFile);
-    sessions = realPath(join11(stateDir, "pi-sessions"));
+    sessions = realPath(join12(stateDir, "pi-sessions"));
   } catch (error) {
     return sessionReadFailure(error);
   }
@@ -7612,10 +8581,10 @@ var init_session = __esm(() => {
 });
 
 // src/hub/permission-mode.ts
-import { lstatSync as lstatSync10 } from "fs";
+import { lstatSync as lstatSync11 } from "fs";
 function hardLinked(path) {
   try {
-    const st = lstatSync10(path);
+    const st = lstatSync11(path);
     return st.isFile() && st.nlink > 1;
   } catch {
     return false;
@@ -7634,11 +8603,11 @@ var init_permission_mode = __esm(() => {
 });
 
 // src/hub/path-policy.ts
-import { accessSync, constants as constants4, lstatSync as lstatSync11, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
-import { dirname as dirname8, isAbsolute as isAbsolute5, join as join12, relative as relative3, resolve as resolve9, sep as sep2 } from "path";
+import { accessSync, constants as constants5, lstatSync as lstatSync12, opendirSync, readlinkSync, statSync as statSync3 } from "fs";
+import { dirname as dirname8, isAbsolute as isAbsolute5, join as join13, relative as relative3, resolve as resolve9, sep as sep3 } from "path";
 function existing(path) {
   try {
-    lstatSync11(path);
+    lstatSync12(path);
     return true;
   } catch (error) {
     if (error.code === "ENOENT")
@@ -7654,7 +8623,7 @@ function policyRealPath(path) {
       throw new Error("path cannot be resolved");
     ancestor = parent;
   }
-  return join12(realPath(ancestor), relative3(ancestor, path));
+  return join13(realPath(ancestor), relative3(ancestor, path));
 }
 function policyTargets(cwd, paths) {
   const root = realPath(cwd);
@@ -7687,14 +8656,14 @@ function directAliasTarget(path) {
         return;
       ancestor = parent;
     }
-    if (!lstatSync11(ancestor).isSymbolicLink())
+    if (!lstatSync12(ancestor).isSymbolicLink())
       return;
     target = resolve9(dirname8(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
   }
   return;
 }
 function aliasScope(dir, lexical, actual, includeParents, budget) {
-  accessSync(dir, constants4.R_OK);
+  accessSync(dir, constants5.R_OK);
   const handle = opendirSync(dir);
   let matched = false;
   try {
@@ -7706,7 +8675,7 @@ function aliasScope(dir, lexical, actual, includeParents, budget) {
       budget.entries++;
       if (!entry.isSymbolicLink())
         continue;
-      const target = directAliasTarget(join12(dir, entry.name));
+      const target = directAliasTarget(join13(dir, entry.name));
       if (target !== undefined && (beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual))))
         matched = true;
     }
@@ -7773,7 +8742,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
     if (states.has(pattern.length)) {
       if (beneath(lexical, real) || beneath(actual, real) || includeParents && (beneath(real, lexical) || beneath(real, actual)))
         return true;
-      if (pattern.at(-1) === "**" && existing(real) && statSync2(real).isDirectory())
+      if (pattern.at(-1) === "**" && existing(real) && statSync3(real).isDirectory())
         roots.add(real);
       states = new Set([...states].filter((i) => i !== pattern.length && !(i === pattern.length - 1 && pattern[i] === "**")));
       if (!states.size)
@@ -7785,7 +8754,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
       return false;
     if (!lowerBeneath(real, root))
       throw new Error("policy glob discovery outside project");
-    const info = statSync2(dir);
+    const info = statSync3(dir);
     if (!info.isDirectory())
       return false;
     if (aliasDiscovery && budget.entries >= 4096)
@@ -7802,7 +8771,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
         if (++budget.entries > 4096)
           throw new Error("policy glob discovery unavailable");
         const next = advance(pattern, states, entry.name);
-        if (next.size && visit(join12(dir, entry.name), next, depth + 1, chain))
+        if (next.size && visit(join13(dir, entry.name), next, depth + 1, chain))
           return true;
       }
     } finally {
@@ -7819,7 +8788,7 @@ function matchesPolicy(cwd, path, paths, includeParents = false, options = {}) {
     if (path.length > 4096)
       return true;
     const root = realPath(cwd), lexical = resolve9(root, path), actual = policyRealPath(lexical);
-    includeParents &&= !existing(lexical) || statSync2(lexical).isDirectory();
+    includeParents &&= !existing(lexical) || statSync3(lexical).isDirectory();
     const budget = { entries: 0, failClosedOnDiscoveryLimit: options.failClosedOnDiscoveryLimit }, roots = new Set, exact = [];
     if (paths.some((entry) => {
       if (/[?*]/.test(entry))
@@ -7828,7 +8797,7 @@ function matchesPolicy(cwd, path, paths, includeParents = false, options = {}) {
       if (targets.some((target) => beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual))))
         return true;
       const real = targets.at(-1);
-      if (existing(real) && statSync2(real).isDirectory())
+      if (existing(real) && statSync3(real).isDirectory())
         roots.add(real);
       exact.push(entry);
       return false;
@@ -7846,7 +8815,7 @@ function matchesPolicy(cwd, path, paths, includeParents = false, options = {}) {
     return true;
   }
 }
-var insideRoot = (rel) => rel !== ".." && !rel.startsWith(`..${sep2}`) && !isAbsolute5(rel), within = (path, root) => path === root || path.startsWith(root.endsWith(sep2) ? root : root + sep2), beneath = (path, root) => within(path.toLowerCase(), root.toLowerCase()) || within(foldSegment(path), foldSegment(root)), lowerBeneath = (path, root) => within(path.toLowerCase(), root.toLowerCase());
+var insideRoot = (rel) => rel !== ".." && !rel.startsWith(`..${sep3}`) && !isAbsolute5(rel), within = (path, root) => path === root || path.startsWith(root.endsWith(sep3) ? root : root + sep3), beneath = (path, root) => within(path.toLowerCase(), root.toLowerCase()) || within(foldSegment(path), foldSegment(root)), lowerBeneath = (path, root) => within(path.toLowerCase(), root.toLowerCase());
 var init_path_policy = __esm(() => {
   init_project();
   init_permission_mode();
@@ -7972,9 +8941,9 @@ var init_deny = __esm(() => {
 
 // src/local/sandbox.ts
 import { spawn as spawn8, spawnSync as spawnSync3 } from "child_process";
-import { existsSync as existsSync7, lstatSync as lstatSync12, mkdtempSync as mkdtempSync4, readdirSync, rmdirSync as rmdirSync2, rmSync as rmSync5 } from "fs";
+import { existsSync as existsSync7, lstatSync as lstatSync13, mkdtempSync as mkdtempSync4, readdirSync as readdirSync2, rmdirSync as rmdirSync2, rmSync as rmSync5 } from "fs";
 import { homedir as homedir4, tmpdir as tmpdir4 } from "os";
-import { dirname as dirname10, join as join13, resolve as resolve10 } from "path";
+import { dirname as dirname10, join as join14, resolve as resolve10 } from "path";
 function developerDir() {
   const out = spawnSync3("xcode-select", ["-p"], { encoding: "utf8" });
   let dir = out.status === 0 ? out.stdout.trim() : "";
@@ -7993,7 +8962,7 @@ function externalGitDirs(root) {
 }
 function worktreesRoot(root) {
   const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
-  return out.status === 0 && out.stdout.trim() ? join13(resolve10(root, out.stdout.trim()), "worktrees") : undefined;
+  return out.status === 0 && out.stdout.trim() ? join14(resolve10(root, out.stdout.trim()), "worktrees") : undefined;
 }
 function moduleGitDirs(root) {
   const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir", "--absolute-git-dir"], { encoding: "utf8" });
@@ -8004,12 +8973,12 @@ function moduleGitDirs(root) {
   if (!commonRaw || !ownRaw)
     return [];
   const common = resolve10(root, commonRaw), own = resolve10(root, ownRaw);
-  const roots = new Set([join13(common, "modules"), join13(own, "modules")]);
+  const roots = new Set([join14(common, "modules"), join14(own, "modules")]);
   try {
-    for (const e of readdirSync(join13(common, "worktrees"), { withFileTypes: true })) {
+    for (const e of readdirSync2(join14(common, "worktrees"), { withFileTypes: true })) {
       if (!e.isDirectory())
         continue;
-      const modules = join13(common, "worktrees", e.name, "modules");
+      const modules = join14(common, "worktrees", e.name, "modules");
       if (existsSync7(modules))
         roots.add(modules);
     }
@@ -8022,7 +8991,7 @@ function moduleGitDirs(root) {
         return;
       let entries;
       try {
-        entries = readdirSync(dir, { withFileTypes: true });
+        entries = readdirSync2(dir, { withFileTypes: true });
       } catch {
         return;
       }
@@ -8033,7 +9002,7 @@ function moduleGitDirs(root) {
       }
       for (const e of entries)
         if (e.isDirectory())
-          walk(join13(dir, e.name), depth + 1);
+          walk(join14(dir, e.name), depth + 1);
     };
     walk(modulesRoot, 0);
     const found = nesting >= MODULE_DEPTH ? [] : dirs;
@@ -8043,11 +9012,11 @@ function moduleGitDirs(root) {
         entries.add(p);
     trees.push({ root: modulesRoot, entries: [...entries], dirs: found });
     for (const d of found) {
-      tree(join13(d, "modules"), nesting + 1);
+      tree(join14(d, "modules"), nesting + 1);
       try {
-        for (const e of readdirSync(join13(d, "worktrees"), { withFileTypes: true })) {
-          if (e.isDirectory() && existsSync7(join13(d, "worktrees", e.name, "modules")))
-            tree(join13(d, "worktrees", e.name, "modules"), nesting + 1);
+        for (const e of readdirSync2(join14(d, "worktrees"), { withFileTypes: true })) {
+          if (e.isDirectory() && existsSync7(join14(d, "worktrees", e.name, "modules")))
+            tree(join14(d, "worktrees", e.name, "modules"), nesting + 1);
         }
       } catch {}
     }
@@ -8058,14 +9027,14 @@ function moduleGitDirs(root) {
 }
 function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
   const home = homedir4();
-  const inHome = (p) => p.startsWith("~/") ? join13(home, p.slice(2)) : p;
+  const inHome = (p) => p.startsWith("~/") ? join14(home, p.slice(2)) : p;
   const root = realPath(cwd);
   const gitDirs = externalGitDirs(root);
   const moduleGit = moduleGitDirs(root);
   const worktrees = worktreesRoot(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
-  const readable = [root, ...HOME_READABLE.map((p) => join13(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
+  const readable = [root, ...HOME_READABLE.map((p) => join14(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
   const subpaths = (paths) => paths.map((p) => `(subpath ${q(p)})`).join(" ");
   const globals = (names) => names.map((n) => `(global-name ${q(n)})`).join(" ");
   const proxy = typeof network === "object" ? `(allow network-outbound (remote ip ${q(`localhost:${network.proxyPort}`)}))` : undefined;
@@ -8083,7 +9052,7 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     '(allow file-ioctl (regex #"^/dev/"))',
     ...proxy ? [proxy] : network ? ["(allow network*)"] : []
   ];
-  const places = `${creds.map((c) => `(subpath ${q(join13(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
+  const places = `${creds.map((c) => `(subpath ${q(join14(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
   return [
     "(version 1)",
     ...start,
@@ -8091,7 +9060,7 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     ...readOnly.length ? ['(allow file-write* (literal "/dev/null"))'] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`],
     `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit, worktrees).join(" ")})`,
     ...worktrees ? objectStoreRules(dirname10(worktrees)) : [],
-    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join13(home, c))})`).join(" ")})`,
+    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join14(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     ...network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []
   ].join(`
@@ -8107,7 +9076,7 @@ function sandboxedExec(argv, opts) {
   if (opts.signal?.aborted)
     return Promise.resolve({ code: null, output: "error: command cancelled before execution" });
   return new Promise((resolve) => {
-    const own = realPath(mkdtempSync4(join13(tmpdir4(), "ahub-cmd-")));
+    const own = realPath(mkdtempSync4(join14(tmpdir4(), "ahub-cmd-")));
     const sandbox = `${opts.profile}
 (allow file-read* ${opts.readOnlyData ? "" : "file-write* "}process-exec (subpath ${q(own)}))`;
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir4(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
@@ -8176,14 +9145,14 @@ async function probeCommand(argv, opts) {
   } catch {
     return { code: null, output: "error: probe command authority or environment unavailable", quiescent: true };
   }
-  const own = realPath(mkdtempSync4(join13(proof.temporaryRoot, "command-")));
-  const created = lstatSync12(own);
+  const own = realPath(mkdtempSync4(join14(proof.temporaryRoot, "command-")));
+  const created = lstatSync13(own);
   let removed = false;
   const dropOwn = () => {
     if (removed)
       return;
     proof.physical();
-    const current = lstatSync12(own);
+    const current = lstatSync13(own);
     if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== created.dev || current.ino !== created.ino || realPath(own) !== own)
       throw new Error("probe command temp ownership changed");
     rmdirSync2(own);
@@ -8295,7 +9264,7 @@ var init_text_projection = __esm(() => {
 });
 
 // src/local/doc-read.ts
-import { lstatSync as lstatSync13 } from "fs";
+import { lstatSync as lstatSync14 } from "fs";
 import { extname } from "path";
 function docRead(file, shown, args, port, cwd) {
   const projections = port.projections();
@@ -8305,7 +9274,7 @@ function docRead(file, shown, args, port, cwd) {
   }
   let st;
   try {
-    st = lstatSync13(file);
+    st = lstatSync14(file);
   } catch {
     return `error: ${shown} cannot be read`;
   }
@@ -8637,8 +9606,8 @@ var init_execution_reference = __esm(() => {
 });
 
 // src/hub/guidance-probes.ts
-import { createHash as createHash5 } from "crypto";
-import { types } from "util";
+import { createHash as createHash6 } from "crypto";
+import { types as types2 } from "util";
 function inert(value, maximum) {
   let remaining = maximum;
   const seen = new Set;
@@ -8658,7 +9627,7 @@ function inert(value, maximum) {
       charge(Buffer.byteLength(JSON.stringify(item)));
       return item;
     }
-    if (!item || typeof item !== "object" || types.isProxy(item) || seen.has(item))
+    if (!item || typeof item !== "object" || types2.isProxy(item) || seen.has(item))
       return invalid();
     const array = Array.isArray(item), proto = Object.getPrototypeOf(item);
     if (array ? proto !== Array.prototype : proto !== Object.prototype && proto !== null)
@@ -8709,7 +9678,7 @@ function canonical3(value) {
 }
 var GUIDANCE_PROBE_LIMITS, registrationScaffoldBytes, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL = "qwen27b/qwen3.8-27b", GuidanceProbeError, invalid = () => {
   throw new GuidanceProbeError("invalid");
-}, probeHash = (text) => createHash5("sha256").update(text, "utf8").digest("hex"), probeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, guidanceProbeCanonical = (value, maximum = GUIDANCE_PROBE_LIMITS.recordBytes) => canonical3(inert(value, maximum)), PROBE_RETENTION_DAYS = 14, PROBE_RETENTION_MS, OUTPUT_NAME_BYTES = 256, OUTPUT_ENTRIES = 64, NAME_JSON_BYTES, ENTRY_JSON_BYTES, EXCLUDED_JSON_BYTES, FIXED_RECEIPT_BYTES = 4096, PROBE_OUTPUT_LIMITS, PROBE_RECEIPT_ROW_BYTES, PROBE_EXPORT_BYTES;
+}, probeHash = (text) => createHash6("sha256").update(text, "utf8").digest("hex"), probeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, guidanceProbeCanonical = (value, maximum = GUIDANCE_PROBE_LIMITS.recordBytes) => canonical3(inert(value, maximum)), PROBE_RETENTION_DAYS = 14, PROBE_RETENTION_MS, OUTPUT_NAME_BYTES = 256, OUTPUT_ENTRIES = 64, NAME_JSON_BYTES, ENTRY_JSON_BYTES, EXCLUDED_JSON_BYTES, FIXED_RECEIPT_BYTES = 4096, PROBE_OUTPUT_LIMITS, PROBE_RECEIPT_ROW_BYTES, PROBE_EXPORT_BYTES;
 var init_guidance_probes = __esm(() => {
   init_execution_reference();
   GUIDANCE_PROBE_LIMITS = Object.freeze({
@@ -8785,13 +9754,13 @@ var init_probe_errors = __esm(() => {
 });
 
 // src/local/probe-workspace.ts
-import { chmodSync as chmodSync2, constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync14, mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync5, openSync as openSync6, opendirSync as opendirSync2, readSync as readSync4, rmSync as rmSync6, rmdirSync as rmdirSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname11, isAbsolute as isAbsolute6, join as join14 } from "path";
+import { chmodSync as chmodSync2, constants as constants6, closeSync as closeSync7, fstatSync as fstatSync6, lstatSync as lstatSync15, mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync5, openSync as openSync7, opendirSync as opendirSync2, readSync as readSync4, rmSync as rmSync6, rmdirSync as rmdirSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname11, isAbsolute as isAbsolute6, join as join15 } from "path";
 function refused() {
   throw new Error("probe workspace source, role, path or resource proof is unavailable");
 }
 function directoryIdentity(file) {
-  const stat = lstatSync14(file);
+  const stat = lstatSync15(file);
   if (!stat.isDirectory() || stat.isSymbolicLink() || realPath(file) !== file)
     refused();
   return { file, dev: stat.dev, ino: stat.ino };
@@ -8818,7 +9787,7 @@ function probeWorkspaceCurrent(workspace) {
   state.current();
   probeWorkspacePhysical(workspace);
   for (const entry of state.identities) {
-    const stat = lstatSync14(entry.file);
+    const stat = lstatSync15(entry.file);
     if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== entry.dev || stat.ino !== entry.ino || stat.size !== entry.size || stat.mtimeMs !== entry.mtimeMs || stat.ctimeMs !== entry.ctimeMs)
       refused();
   }
@@ -8846,8 +9815,8 @@ var init_probe_workspace = __esm(() => {
 });
 
 // src/local/tools.ts
-import { lstatSync as lstatSync15, mkdirSync as mkdirSync9, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync8 } from "fs";
-import { dirname as dirname12, join as join15, relative as relative4, resolve as resolve11 } from "path";
+import { lstatSync as lstatSync16, mkdirSync as mkdirSync9, readFileSync as readFileSync7, statSync as statSync4, writeFileSync as writeFileSync8 } from "fs";
+import { dirname as dirname12, join as join16, relative as relative4, resolve as resolve11 } from "path";
 function probeCurrent(probe) {
   try {
     probe.current();
@@ -8856,7 +9825,7 @@ function probeCurrent(probe) {
   }
 }
 function probeTargetIdentity(target) {
-  const stat = lstatSync15(target, { throwIfNoEntry: false });
+  const stat = lstatSync16(target, { throwIfNoEntry: false });
   if (!stat)
     return;
   if (!stat.isFile())
@@ -8879,7 +9848,7 @@ function planProbeTool(name, rawArgs, ctx) {
       if (name === "write")
         maximum = Buffer.byteLength(String(value.content ?? ""), "utf8");
       else {
-        const stat = lstatSync15(target, { throwIfNoEntry: false });
+        const stat = lstatSync16(target, { throwIfNoEntry: false });
         if (!stat || !stat.isFile())
           throw new ProbeToolRefusal("nonregular_target");
         maximum = Math.min(PROBE_WORKSPACE_LIMITS.fileBytes, stat.size + Buffer.byteLength(String(value.new ?? ""), "utf8"));
@@ -8942,7 +9911,7 @@ function guardPath(ctx, path, mode) {
       throw new ProbeToolRefusal("nonregular_target");
     throw new Error(`${path} goes through a dangling symlink`);
   }
-  const real = join15(realExisting, relative4(existing, abs));
+  const real = join16(realExisting, relative4(existing, abs));
   const rel = relative4(root, real);
   if (rel.startsWith("..") || resolve11(root, rel) !== real) {
     if (ctx.probe)
@@ -8956,7 +9925,7 @@ function guardPath(ctx, path, mode) {
     throw new Error(`${path} is on the secrets denylist`);
   }
   if (ctx.probe) {
-    const stat = lstatSync15(real, { throwIfNoEntry: false });
+    const stat = lstatSync16(real, { throwIfNoEntry: false });
     if (stat && !stat.isFile() && !(mode === "read" && stat.isDirectory()))
       throw new ProbeToolRefusal("nonregular_target");
     if (stat?.isFile() && stat.nlink !== 1)
@@ -8968,7 +9937,7 @@ function guardPath(ctx, path, mode) {
   }
   if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed)))
     throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && ctx.readOnly?.length && (lstatSync15(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync16(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? []))
     throw new Error("target is protected by data.readonly");
@@ -9041,7 +10010,7 @@ async function runTool(name, rawArgs, ctx) {
     switch (name) {
       case "read": {
         const file = guardPath(ctx, String(a.path), "read");
-        if (statSync3(file).size > 5000000)
+        if (statSync4(file).size > 5000000)
           return "error: file is larger than 5 MB; use bash (head, grep, sed -n) to look at parts of it";
         const lines = readFileSync7(file, "utf8").split(`
 `);
@@ -9196,7 +10165,7 @@ note: the sandbox does not let you move a branch, tag or HEAD, or stage inside a
 }
 var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, probeToolPlans, lexists = (p) => {
   try {
-    lstatSync15(p);
+    lstatSync16(p);
     return true;
   } catch {
     return false;
@@ -9278,7 +10247,7 @@ var init_pi_state_model = () => {};
 // src/adapters/pi.ts
 import { randomUUID as randomUUID5 } from "crypto";
 import { existsSync as existsSync8, mkdirSync as mkdirSync10 } from "fs";
-import { join as join16, resolve as resolve12 } from "path";
+import { join as join17, resolve as resolve12 } from "path";
 import { spawn as spawn9 } from "child_process";
 function piVersionAsync(command, cwd, timeoutMs = 1e4) {
   const [bin, ...prefix] = command;
@@ -9868,7 +10837,7 @@ var init_pi = __esm(() => {
       this.approvalStopReason = "";
       this.approvalAbortSent = false;
       mkdirSync10(this.opts.stateDir, { recursive: true });
-      const sessions = join16(this.opts.stateDir, "pi-sessions");
+      const sessions = join17(this.opts.stateDir, "pi-sessions");
       mkdirSync10(sessions, { recursive: true, mode: 448 });
       if (this.opts.sessionFile) {
         try {
@@ -9931,7 +10900,7 @@ var init_pi = __esm(() => {
         return new Response("not found", { status: 404 });
       } });
       this.server = bridge;
-      const extension = resolve12(join16(import.meta.dir, "../pi/extension.ts"));
+      const extension = resolve12(join17(import.meta.dir, "../pi/extension.ts"));
       const inherited = {};
       for (const key of ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"])
         if (process.env[key])
@@ -10859,6 +11828,12 @@ var init_queue_backpressure = __esm(() => {
   QUEUE_BACKPRESSURE_LIMITS = Object.freeze({ max_queued: 1e4, max_oldest_s: 604800 });
   DEFAULT_POLICY = Object.freeze({ max_queued: 0, max_oldest_s: 0 });
 });
+
+// src/hub/reviewer-pool.ts
+var init_reviewer_pool = __esm(() => {
+  init_review_budget();
+});
+
 // src/hub/execution-links.ts
 var EXECUTION_LINK_LIMITS;
 var init_execution_links = __esm(() => {
@@ -11423,9 +12398,9 @@ var init_shipped_roles = __esm(() => {
 });
 
 // src/hub/roles.ts
-import { createHash as createHash6 } from "crypto";
-import { constants as constants6, closeSync as closeSync7, fstatSync as fstatSync6, lstatSync as lstatSync16, openSync as openSync7, readSync as readSync5, readdirSync as readdirSync2 } from "fs";
-import { join as join17 } from "path";
+import { createHash as createHash7 } from "crypto";
+import { constants as constants7, closeSync as closeSync8, fstatSync as fstatSync7, lstatSync as lstatSync17, openSync as openSync8, readSync as readSync5, readdirSync as readdirSync3 } from "fs";
+import { join as join18 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
     throw new Error("invalid role size, encoding or file id");
@@ -11469,12 +12444,12 @@ function parseRole(text, stem, layer) {
   }
   const reviewStart = sections[4].index + sections[4][0].length;
   const review = body.slice(reviewStart, sections[5].index).trim();
-  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES), classes: list("classes", CLASSES), body, review, layer, hash: createHash6("sha256").update(text).digest("hex") };
+  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES), classes: list("classes", CLASSES), body, review, layer, hash: createHash7("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
-  const fd = openSync7(file, constants6.O_RDONLY | constants6.O_NOFOLLOW | constants6.O_NONBLOCK);
+  const fd = openSync8(file, constants7.O_RDONLY | constants7.O_NOFOLLOW | constants7.O_NONBLOCK);
   try {
-    const before = fstatSync6(fd);
+    const before = fstatSync7(fd);
     if (!before.isFile() || before.nlink !== 1 || before.size > 8192)
       throw new Error("role must be a bounded regular file");
     const bytes = Buffer.alloc(8193);
@@ -11484,12 +12459,12 @@ function projectRole(file) {
       if (length > 8192)
         throw new Error("role exceeds file cap");
     }
-    const after = fstatSync6(fd);
+    const after = fstatSync7(fd);
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || length !== after.size)
       throw new Error("role changed during read");
     return bytes.subarray(0, length).toString("utf8");
   } finally {
-    closeSync7(fd);
+    closeSync8(fd);
   }
 }
 function loadRoleCatalog(cwd) {
@@ -11504,19 +12479,19 @@ function loadRoleCatalog(cwd) {
   if (!cwd)
     return { roles, errors };
   try {
-    const config = join17(cwd, ".agenthub"), dir = join17(config, "roles");
+    const config = join18(cwd, ".agenthub"), dir = join18(config, "roles");
     for (const path of [config, dir]) {
-      const stat = lstatSync16(path);
+      const stat = lstatSync17(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error("unsafe role directory");
     }
-    const files = readdirSync2(dir).filter((name) => name.endsWith(".md")).sort();
+    const files = readdirSync3(dir).filter((name) => name.endsWith(".md")).sort();
     if (files.length > 64)
       throw new Error("too many project roles");
     for (const file of files) {
       const id = file.slice(0, -3);
       try {
-        roles.set(id, parseRole(projectRole(join17(dir, file)), id, "project"));
+        roles.set(id, parseRole(projectRole(join18(dir, file)), id, "project"));
       } catch {
         errors.push({ id: ID.test(id) ? id : "invalid-file-id", reason: "invalid or unsafe project role" });
       }
@@ -12758,7 +13733,7 @@ var init_curated_cache_state = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/formats.ts
-import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, openSync as openSync8, readFileSync as readFileSync8, readSync as readSync6 } from "fs";
+import { closeSync as closeSync9, constants as constants8, fstatSync as fstatSync8, openSync as openSync9, readFileSync as readFileSync8, readSync as readSync6 } from "fs";
 var MAX_BYTES4, SEMVER, READER_VERSION;
 var init_formats = __esm(() => {
   MAX_BYTES4 = 64 * 1024;
@@ -14518,7 +15493,7 @@ var init_spec_read = __esm(() => {
 // src/models/route/adec.ts
 import { Agent, request as httpRequest } from "http";
 import { connect } from "net";
-import { types as types2 } from "util";
+import { types as types3 } from "util";
 function isAdecRouteEndpoint(value) {
   if (typeof value !== "string")
     return false;
@@ -14526,7 +15501,7 @@ function isAdecRouteEndpoint(value) {
   return !!match && (match[2] === undefined || Number(match[2]) <= 65535);
 }
 function record4(value, keys) {
-  if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+  if (!value || typeof value !== "object" || types3.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
     return;
   const own = Reflect.ownKeys(value);
   if (own.length > keys.length)
@@ -14543,7 +15518,7 @@ function record4(value, keys) {
   return result;
 }
 function list(value, max) {
-  if (types2.isProxy(value) || !Array.isArray(value) || value.length > max || Reflect.ownKeys(value).length !== value.length + 1)
+  if (types3.isProxy(value) || !Array.isArray(value) || value.length > max || Reflect.ownKeys(value).length !== value.length + 1)
     return;
   const result = [];
   for (let index = 0;index < value.length; index++) {
@@ -14822,7 +15797,7 @@ var init_config2 = __esm(() => {
 });
 
 // src/hub/routing.ts
-import { join as join18, resolve as resolve13 } from "path";
+import { join as join19, resolve as resolve13 } from "path";
 function effectiveLocalRoute(defaultRoute, classRoute, classFixedModel) {
   return classRoute ?? (classFixedModel === undefined ? defaultRoute : undefined);
 }
@@ -14830,12 +15805,13 @@ var TEMPLATE, cache;
 var init_routing = __esm(() => {
   init_context_window();
   init_queue_backpressure();
+  init_reviewer_pool();
   init_registry();
   init_board();
   init_spec_read();
   init_config2();
   init_stage_fallback();
-  TEMPLATE = join18(import.meta.dir, "..", "..", "templates", "routing.toml");
+  TEMPLATE = join19(import.meta.dir, "..", "..", "templates", "routing.toml");
   cache = new Map;
 });
 
@@ -15314,9 +16290,9 @@ var init_turn_state = __esm(() => {
 });
 
 // src/models/route/judge-choice.ts
-import { types as types3 } from "util";
+import { types as types4 } from "util";
 function data(value, key) {
-  if (!value || typeof value !== "object" || types3.isProxy(value) || Array.isArray(value))
+  if (!value || typeof value !== "object" || types4.isProxy(value) || Array.isArray(value))
     return;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null)
@@ -15345,7 +16321,7 @@ function hostChoicePacket(evidence, purpose, phase, sensitive) {
         return;
       const results = data(signals, "results"), failures = data(signals, "failures"), repeatedFailures = data(signals, "repeatedFailures"), reads = data(signals, "reads"), mutations = data(signals, "mutations"), assistantTurns = data(signals, "assistantTurns");
       const tests = data(signals, "tests"), fault = data(signals, "fault"), efficient = data(scores, "efficient"), capable = data(scores, "capable");
-      if (![results, failures, repeatedFailures, reads, mutations, assistantTurns].every(count) || !unit(efficient) || !unit(capable) || tests !== "none" && tests !== "pass" && tests !== "fail" && tests !== "unknown" || fault !== "none" && fault !== "reported" && fault !== "exception" && fault !== "critical")
+      if (![results, failures, repeatedFailures, reads, mutations, assistantTurns].every(count2) || !unit(efficient) || !unit(capable) || tests !== "none" && tests !== "pass" && tests !== "fail" && tests !== "unknown" || fault !== "none" && fault !== "reported" && fault !== "exception" && fault !== "critical")
         return;
       const stage = {
         schemaVersion: 1,
@@ -15504,11 +16480,11 @@ async function runHostJudge(ports) {
     }
   }
 }
-var PACKET_BYTES = 1024, unit = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1, count = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+var PACKET_BYTES = 1024, unit = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1, count2 = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 var init_judge_choice = () => {};
 
 // src/models/route/decision.ts
-import { createHash as createHash7 } from "crypto";
+import { createHash as createHash8 } from "crypto";
 function stagePacket(context, sensitive) {
   const evidence = context.stageEvidence;
   if (!evidence)
@@ -15614,7 +16590,7 @@ class DecisionRouteController {
     }
   }
   turnKey(purpose, context) {
-    return createHash7("sha256").update(JSON.stringify([purpose, context.route, context.scope, context.turn?.context.turn])).digest("hex");
+    return createHash8("sha256").update(JSON.stringify([purpose, context.route, context.scope, context.turn?.context.turn])).digest("hex");
   }
   decisionOptions(config) {
     const pairs = config.candidates?.flatMap((candidate) => candidate.efforts.map((effort) => ({ alias: candidate.alias, effort }))) ?? [];
@@ -16085,7 +17061,7 @@ var init_hub_prompts = __esm(() => {
 });
 
 // src/models/route/conversation-view.ts
-import { types as types4 } from "util";
+import { types as types5 } from "util";
 function captureJudgeConversation(source) {
   try {
     if (!array(source))
@@ -16175,13 +17151,13 @@ function captureJudgeConversation(source) {
   }
 }
 function record5(value) {
-  if (!value || typeof value !== "object" || types4.isProxy(value) || Array.isArray(value))
+  if (!value || typeof value !== "object" || types5.isProxy(value) || Array.isArray(value))
     return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 function array(value) {
-  return !!value && typeof value === "object" && !types4.isProxy(value) && Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
+  return !!value && typeof value === "object" && !types5.isProxy(value) && Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
 }
 function own2(value, key) {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -16190,7 +17166,7 @@ function own2(value, key) {
   if (!("value" in descriptor))
     throw unavailable;
   const result = descriptor.value;
-  if (result && typeof result === "object" && types4.isProxy(result))
+  if (result && typeof result === "object" && types5.isProxy(result))
     throw unavailable;
   return result;
 }
@@ -16383,8 +17359,8 @@ var init_judge_replies = __esm(() => {
 });
 
 // src/models/route/observation-signals.ts
-import { createHash as createHash8 } from "crypto";
-import { types as types5 } from "util";
+import { createHash as createHash9 } from "crypto";
+import { types as types6 } from "util";
 function own3(value, key) {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   if (descriptor && !("value" in descriptor))
@@ -16392,10 +17368,10 @@ function own3(value, key) {
   return descriptor?.value;
 }
 function plain2(value) {
-  return !!value && typeof value === "object" && !types5.isProxy(value) && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+  return !!value && typeof value === "object" && !types6.isProxy(value) && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 function dataArray(value) {
-  return !!value && typeof value === "object" && !types5.isProxy(value) && Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
+  return !!value && typeof value === "object" && !types6.isProxy(value) && Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
 }
 function command(argumentsText) {
   try {
@@ -16540,7 +17516,7 @@ function priorFailureContext(messages) {
   }
   return [...retained.values()];
 }
-var WIRE_BYTES2 = 2000000, OPERATION_BYTES = 256, unavailable2, digest2 = (value) => createHash8("sha256").update(value).digest("hex"), testName, testCommand;
+var WIRE_BYTES2 = 2000000, OPERATION_BYTES = 256, unavailable2, digest2 = (value) => createHash9("sha256").update(value).digest("hex"), testName, testCommand;
 var init_observation_signals = __esm(() => {
   init_conversation_view();
   init_stage_input();
@@ -17481,14 +18457,14 @@ var init_probe_types = __esm(() => {
 });
 
 // src/local/probe-sandbox.ts
-import { createHash as createHash9 } from "crypto";
+import { createHash as createHash10 } from "crypto";
 function requireProbeConfinement(proof, workspace) {
   const state = proofs.get(proof);
   if (!state || state.workspace !== workspace || proof.workspace !== workspace || proof.profile !== state.profile || digest3(JSON.stringify(proof.env)) !== state.digest)
     throw new ProbeConfinementError;
   state.current();
 }
-var ProbeConfinementError, proofs, digest3 = (value) => createHash9("sha256").update(value).digest("hex");
+var ProbeConfinementError, proofs, digest3 = (value) => createHash10("sha256").update(value).digest("hex");
 var init_probe_sandbox = __esm(() => {
   init_project();
   init_deny();
@@ -17508,7 +18484,7 @@ var init_probe_sandbox = __esm(() => {
 });
 
 // src/adapters/local-worker.ts
-import { createHash as createHash10, randomUUID as randomUUID7 } from "crypto";
+import { createHash as createHash11, randomUUID as randomUUID7 } from "crypto";
 function safeParse(json) {
   try {
     return JSON.parse(json) ?? {};
@@ -18489,9 +19465,9 @@ var WITHHELD = "Claude implementer turn failed (details withheld)";
 
 // src/adapters/claude-implementer.ts
 import { randomUUID as randomUUID9 } from "crypto";
-import { lstatSync as lstatSync17, mkdtempSync as mkdtempSync6, rmSync as rmSync7, writeFileSync as writeFileSync9 } from "fs";
+import { lstatSync as lstatSync18, mkdtempSync as mkdtempSync6, rmSync as rmSync7, writeFileSync as writeFileSync9 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 function provenVersion(binding) {
   return provenVersions.get(binding);
 }
@@ -18547,10 +19523,10 @@ function claudeImplementerArgs(turn, mcp, settings, prompt, model) {
 async function proveClaudeImplementer(peer, command) {
   const binary = Bun.which(command[0], { PATH: process.env.PATH }) ?? command[0];
   const fingerprint = () => {
-    const file = realPath(binary), stat = lstatSync17(file);
+    const file = realPath(binary), stat = lstatSync18(file);
     return [file, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
   };
-  const binding = fingerprint(), home = mkdtempSync6(join19(tmpdir5(), "ahub-claude-proof-"));
+  const binding = fingerprint(), home = mkdtempSync6(join20(tmpdir5(), "ahub-claude-proof-"));
   let version = "", timedOut = false;
   const child = new OwnedPrintChild({
     peer,
@@ -18559,7 +19535,7 @@ async function proveClaudeImplementer(peer, command) {
     cwd: home,
     input: "",
     envMode: "replace",
-    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join19(home, ".claude") },
+    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join20(home, ".claude") },
     maxFrameBytes: 4096,
     maxOutputBytes: 4096,
     onLine: (line) => {
@@ -18645,7 +19621,7 @@ var init_claude_implementer = __esm(() => {
       if (options.mode !== undefined && options.mode !== "ask" && options.mode !== "ask-when-needed")
         throw new Error("Claude implementer refuses unsupported permission mode");
       this.mode = options.mode ?? "ask";
-      this.sessions = new ClaudeTaskSessions(join19(options.stateDir, claudeStateFile("claude-task-sessions", id)));
+      this.sessions = new ClaudeTaskSessions(join20(options.stateDir, claudeStateFile("claude-task-sessions", id)));
     }
     get permissionModeState() {
       return this.mode;
@@ -18814,7 +19790,7 @@ var init_claude_implementer = __esm(() => {
           this.observerSessionIdValue = turn.sessionId;
           this.currentInputContext = inputContext;
           this.options.beforeInput?.(inputContext, group.envs);
-          const launchId = randomUUID9(), directory = mkdtempSync6(join19(this.options.stateDir, "claude-child-")), settings = join19(directory, "settings.json");
+          const launchId = randomUUID9(), directory = mkdtempSync6(join20(this.options.stateDir, "claude-child-")), settings = join20(directory, "settings.json");
           let launchFailureTrace;
           this.cleanup = () => rmSync7(directory, { recursive: true, force: true });
           writeFileSync9(settings, sessionSettings(undefined, { script: this.options.factsHook, stateDir: this.options.stateDir, purpose: "permission" }), { mode: 384, flag: "wx" });
@@ -19148,10 +20124,10 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync9, constants as constants8, fstatSync as fstatSync8, lstatSync as lstatSync18, openSync as openSync9, readSync as readSync7 } from "fs";
+import { closeSync as closeSync10, constants as constants9, fstatSync as fstatSync9, lstatSync as lstatSync19, openSync as openSync10, readSync as readSync7 } from "fs";
 import { homedir as homedir5 } from "os";
-import { isAbsolute as isAbsolute7, join as join20, relative as relative5 } from "path";
-import { createHash as createHash11 } from "crypto";
+import { isAbsolute as isAbsolute7, join as join21, relative as relative5 } from "path";
+import { createHash as createHash12 } from "crypto";
 function agyModel(value) {
   const model = safeModelLabel(value);
   return model !== undefined && model.toLowerCase() !== "unknown" ? model : undefined;
@@ -19205,19 +20181,19 @@ function readAgyTranscript(session, transcript, options) {
   if (!UUID2.test(session))
     return empty;
   const home = process.env.HOME ?? homedir5();
-  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join20(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
+  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join21(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
   if (!candidates.includes(transcript))
     return empty;
   let fd;
   try {
     let cursor = home;
     for (const name of relative5(home, transcript).split("/")) {
-      cursor = join20(cursor, name);
-      if (lstatSync18(cursor).isSymbolicLink())
+      cursor = join21(cursor, name);
+      if (lstatSync19(cursor).isSymbolicLink())
         return empty;
     }
-    fd = openSync9(transcript, constants8.O_RDONLY | constants8.O_NOFOLLOW);
-    const stat = fstatSync8(fd);
+    fd = openSync10(transcript, constants9.O_RDONLY | constants9.O_NOFOLLOW);
+    const stat = fstatSync9(fd);
     if (!stat.isFile() || stat.nlink !== 1)
       return empty;
     if (options?.unchanged && stat.size === options.unchanged.size && stat.mtimeMs === options.unchanged.mtimeMs)
@@ -19280,11 +20256,11 @@ function readAgyTranscript(session, transcript, options) {
           const totalTokens = inputTokens + outputTokens + cacheReadTokens;
           if (Number.isSafeInteger(totalTokens)) {
             const at = typeof row.created_at === "string" && Number.isFinite(Date.parse(row.created_at)) ? row.created_at : undefined;
-            (out.usage ??= []).push({ id: createHash11("sha256").update(`${session}:usage:${row.step_index}`).digest("hex"), index: row.step_index, inputTokens, outputTokens, cacheReadTokens, totalTokens, ...at ? { at } : {} });
+            (out.usage ??= []).push({ id: createHash12("sha256").update(`${session}:usage:${row.step_index}`).digest("hex"), index: row.step_index, inputTokens, outputTokens, cacheReadTokens, totalTokens, ...at ? { at } : {} });
           }
         }
         if (options?.completion !== false && row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
-          out.completion = { id: createHash11("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
+          out.completion = { id: createHash12("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
       }
       if (out.completion && (!hasSince || start <= options.sinceOffset) || start === resumeAt || window === cap)
         return out;
@@ -19293,7 +20269,7 @@ function readAgyTranscript(session, transcript, options) {
     return empty;
   } finally {
     if (fd !== undefined)
-      closeSync9(fd);
+      closeSync10(fd);
   }
 }
 var EVENTS2, UUID2, record6 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
@@ -19372,7 +20348,7 @@ function builtinCliEntries(definitions) {
 }
 // src/adapters/definitions/native-cli-entry-claude.ts
 import { readFileSync as readFileSync10 } from "fs";
-import { join as join21 } from "path";
+import { join as join22 } from "path";
 import { randomUUID as randomUUID10 } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
@@ -19423,17 +20399,17 @@ async function runClaudeEntry(ctx) {
     }
   }
   let original;
-  for (const file of [join21(executionCwd, ".claude", "settings.local.json"), join21(executionCwd, ".claude", "settings.json"), join21(process.env.HOME ?? "", ".claude", "settings.json")]) {
+  for (const file of [join22(executionCwd, ".claude", "settings.local.json"), join22(executionCwd, ".claude", "settings.json"), join22(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync10(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(projectConfig(), { script: join21(cliDir, "facts-hook.ts"), stateDir });
+  const facts = claudeObservationHooks(projectConfig(), { script: join22(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync10(join21(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync10(join22(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
-  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join21(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
+  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join22(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
   try {
     let launchRecord;
@@ -19527,10 +20503,10 @@ var init_native_cli_entry_codex = () => {};
 
 // src/cli/kimi-plugin.ts
 import { randomUUID as randomUUID11 } from "crypto";
-import { closeSync as closeSync10, lstatSync as lstatSync19, mkdirSync as mkdirSync12, openSync as openSync10, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync4, unlinkSync as unlinkSync4, writeFileSync as writeFileSync10 } from "fs";
-import { dirname as dirname14, isAbsolute as isAbsolute8, join as join22 } from "path";
+import { closeSync as closeSync11, lstatSync as lstatSync20, mkdirSync as mkdirSync12, openSync as openSync11, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync4, unlinkSync as unlinkSync4, writeFileSync as writeFileSync10 } from "fs";
+import { dirname as dirname14, isAbsolute as isAbsolute8, join as join23 } from "path";
 function file(path, cap) {
-  const stat = lstatSync19(path, { throwIfNoEntry: false });
+  const stat = lstatSync20(path, { throwIfNoEntry: false });
   if (!stat)
     return;
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > cap)
@@ -19550,27 +20526,27 @@ function parse2(value, name) {
   }
 }
 function atomic(path, bytes, before) {
-  const current = lstatSync19(path, { throwIfNoEntry: false });
+  const current = lstatSync20(path, { throwIfNoEntry: false });
   if (before ? !current || current.dev !== before.dev || current.ino !== before.ino : current)
     throw new Error(`${path} changed before its managed write`);
   const temporary = `${path}.${randomUUID11()}.tmp`;
   let fd;
   try {
-    fd = openSync10(temporary, "wx", 384);
+    fd = openSync11(temporary, "wx", 384);
     writeFileSync10(fd, bytes);
-    closeSync10(fd);
+    closeSync11(fd);
     fd = undefined;
     renameSync5(temporary, path);
   } finally {
     if (fd !== undefined)
-      closeSync10(fd);
+      closeSync11(fd);
     try {
       unlinkSync4(temporary);
     } catch {}
   }
 }
 function removeFile(path, expected) {
-  const current = lstatSync19(path, { throwIfNoEntry: false });
+  const current = lstatSync20(path, { throwIfNoEntry: false });
   if (!current || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !readFileSync11(path).equals(expected))
     return;
   unlinkSync4(path);
@@ -19601,7 +20577,7 @@ function plan2(options) {
   const hook = file(options.hookScript, MAX_HOOK);
   if (!hook)
     throw new Error("Kimi hook bundle is missing");
-  const root = join22(options.home, "plugins"), managed = join22(root, "managed", ID2), installed = join22(root, "installed.json");
+  const root = join23(options.home, "plugins"), managed = join23(root, "managed", ID2), installed = join23(root, "installed.json");
   const installedBefore = file(installed, MAX_INSTALLED), document = parse2(installedBefore, installed);
   if (document && (document.version !== 1 || !Array.isArray(document.plugins)))
     throw new Error(`${installed} has an unsupported shape`);
@@ -19614,7 +20590,7 @@ function plan2(options) {
   if (record && (record.root !== managed || record.source !== "local-path" || record.origin !== "custom" || record.enabled !== true || typeof record.originalSource !== "string" || record.agentHubLaunch !== options.launchId && options.replaceStale !== true)) {
     throw new Error("Kimi's agent-hub plugin belongs to another launch or is disabled; it was not changed");
   }
-  const manifestBefore = file(join22(managed, "kimi.plugin.json"), MAX_INSTALLED), hookBefore = file(join22(managed, "kimi-hook.js"), MAX_HOOK);
+  const manifestBefore = file(join23(managed, "kimi.plugin.json"), MAX_INSTALLED), hookBefore = file(join23(managed, "kimi-hook.js"), MAX_HOOK);
   const nextManifest = Buffer.from(`${JSON.stringify(manifest(), null, 2)}
 `);
   const now = new Date(options.now ?? Date.now()).toISOString();
@@ -19639,8 +20615,8 @@ function plan2(options) {
     ...record ? { record } : {},
     changed,
     targets: [
-      { path: join22(managed, "kimi.plugin.json"), next: nextManifest, ...manifestBefore ? { before: manifestBefore } : {} },
-      { path: join22(managed, "kimi-hook.js"), next: hook.bytes, ...hookBefore ? { before: hookBefore } : {} },
+      { path: join23(managed, "kimi.plugin.json"), next: nextManifest, ...manifestBefore ? { before: manifestBefore } : {} },
+      { path: join23(managed, "kimi-hook.js"), next: hook.bytes, ...hookBefore ? { before: hookBefore } : {} },
       { path: installed, next: Buffer.from(`${JSON.stringify(nextDocument, null, 2)}
 `), ...installedBefore ? { before: installedBefore } : {} }
     ]
@@ -19652,23 +20628,23 @@ function kimiPluginPreview(home, hookScript) {
   directory(home, false);
   if (!file(hookScript, MAX_HOOK))
     throw new Error("Kimi hook bundle is missing");
-  return { file: join22(home, "plugins", "managed", ID2), changed: true, action: "only after Kimi 2.5.2 is confirmed, install the launch-scoped completion plugin and remove it on exit; other versions keep the existing TUI with no plugin" };
+  return { file: join23(home, "plugins", "managed", ID2), changed: true, action: "only after Kimi 2.5.2 is confirmed, install the launch-scoped completion plugin and remove it on exit; other versions keep the existing TUI with no plugin" };
 }
 function locked(options, run) {
   if (!isAbsolute8(options.home))
     throw new Error("Kimi home must be an absolute path");
   directory(options.home);
-  const path = join22(options.home, "agent-hub-plugin.lock");
+  const path = join23(options.home, "agent-hub-plugin.lock");
   let fd;
   try {
-    fd = openSync10(path, "wx", 384);
+    fd = openSync11(path, "wx", 384);
   } catch {
     throw new Error(`Another Kimi plugin replacement is active or left a stale lock; retry after it exits or inspect ${path}`);
   }
   try {
     return run();
   } finally {
-    closeSync10(fd);
+    closeSync11(fd);
     unlinkSync4(path);
   }
 }
@@ -19677,7 +20653,7 @@ function ensureKimiPlugin(options) {
     const current = plan2(options);
     if (!current.changed)
       return { changed: false };
-    for (const path of [join22(options.home, "plugins"), join22(options.home, "plugins", "managed"), current.managed]) {
+    for (const path of [join23(options.home, "plugins"), join23(options.home, "plugins", "managed"), current.managed]) {
       if (!directory(path, false))
         mkdirSync12(path, { mode: 448 });
     }
@@ -19702,15 +20678,15 @@ function cleanupKimiPlugin(options) {
     atomic(current.installed, Buffer.from(`${JSON.stringify(next, null, 2)}
 `), installedBefore?.stat);
     const [manifestTarget, hookTarget] = current.targets;
-    removeFile(join22(current.managed, "kimi.plugin.json"), manifestTarget.next);
-    removeFile(join22(current.managed, "kimi-hook.js"), hookTarget.next);
+    removeFile(join23(current.managed, "kimi.plugin.json"), manifestTarget.next);
+    removeFile(join23(current.managed, "kimi-hook.js"), hookTarget.next);
     try {
       rmdirSync4(current.managed);
     } catch {}
   });
 }
 var EVENTS3, ID2 = "agent-hub", MAX_INSTALLED, MAX_HOOK, object8 = (value) => !!value && typeof value === "object" && !Array.isArray(value), directory = (path, required = true) => {
-  const stat = lstatSync19(path, { throwIfNoEntry: false });
+  const stat = lstatSync20(path, { throwIfNoEntry: false });
   if (stat && (!stat.isDirectory() || stat.isSymbolicLink()))
     throw new Error(`${path} must be a plain directory`);
   if (!stat && required)
@@ -19725,7 +20701,7 @@ var init_kimi_plugin = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-entry-kimi.ts
-import { join as join23, resolve as resolve14 } from "path";
+import { join as join24, resolve as resolve14 } from "path";
 import { homedir as homedir6 } from "os";
 import { spawn as spawn10, spawnSync as spawnSync4 } from "child_process";
 import { mkdirSync as mkdirSync13 } from "fs";
@@ -19847,7 +20823,7 @@ async function runKimiEntry(ctx) {
         if (!gate.ok) {
           result = await runKimiTui(launch.cmd, launch.args, cwd, nativeEnv);
         } else {
-          const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join23(nativeEnv.HOME ?? homedir6(), ".kimi-code");
+          const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join24(nativeEnv.HOME ?? homedir6(), ".kimi-code");
           let nativeLaunchId, completionEnv, plugin;
           try {
             mkdirSync13(nativeHome, { recursive: true, mode: 448 });
@@ -19856,7 +20832,7 @@ async function runKimiEntry(ctx) {
               throw new Error(native.error ?? "native hook launch was not admitted");
             nativeLaunchId = native.launchId;
             plugin = { home: nativeHome, hookScript: resolve14(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
-            console.error(`Kimi TUI completion facts: installing a launch-scoped native plugin under ${join23(nativeHome, "plugins", "managed", "agent-hub")}; it will be removed after this TUI exits`);
+            console.error(`Kimi TUI completion facts: installing a launch-scoped native plugin under ${join24(nativeHome, "plugins", "managed", "agent-hub")}; it will be removed after this TUI exits`);
             ensureKimiPlugin(plugin);
             completionEnv = { ...nativeEnv, AGENTHUB_INSTANCE_ID: native.instanceId, AGENTHUB_LAUNCH_ID: native.launchId, AGENTHUB_HOOK_PURPOSE: "facts" };
           } catch (error) {
@@ -19867,7 +20843,7 @@ async function runKimiEntry(ctx) {
               try {
                 cleanupKimiPlugin(plugin);
               } catch {
-                console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join23(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
+                console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join24(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
               }
           }
           if (completionEnv) {
@@ -19880,7 +20856,7 @@ async function runKimiEntry(ctx) {
                 try {
                   cleanupKimiPlugin(plugin);
                 } catch {
-                  console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join23(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
+                  console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join24(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
                 }
             }
           } else {
@@ -20249,7 +21225,7 @@ var init_native_cli_entry_jcode = __esm(() => {
 
 // src/adapters/definitions/native-cli-preview-claude.ts
 import { readFileSync as readFileSync12 } from "fs";
-import { join as join24 } from "path";
+import { join as join25 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
   const { buildLaunch, claudeObservationHooks } = ctx.helpers;
@@ -20257,13 +21233,13 @@ function previewClaude(ctx) {
   let envNames = state.envNames;
   let launch;
   let original;
-  for (const file of [join24(cwd, ".claude/settings.local.json"), join24(cwd, ".claude/settings.json"), join24(process.env.HOME ?? "", ".claude/settings.json")]) {
+  for (const file of [join25(cwd, ".claude/settings.local.json"), join25(cwd, ".claude/settings.json"), join25(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync12(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(config, { script: join24(cliDir, "facts-hook.ts"), stateDir });
-  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join24(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
+  const facts = claudeObservationHooks(config, { script: join25(cliDir, "facts-hook.ts"), stateDir });
+  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join25(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
   const safeArgs = args.map((arg, i) => {
     if (args[i - 1] === "--settings")
       return "{}";
@@ -20274,7 +21250,7 @@ function previewClaude(ctx) {
     return publicArg(arg);
   });
   const publicLaunch = buildLaunch("claude", safeArgs, { preview: true, unattended, statusLine: {
-    script: join24(cliDir, "statusline-tee.ts"),
+    script: join25(cliDir, "statusline-tee.ts"),
     stateDir,
     ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {}
   }, facts });
@@ -20307,7 +21283,7 @@ function previewCodex(ctx) {
 var init_native_cli_preview_codex = () => {};
 
 // src/adapters/definitions/native-cli-preview-kimi.ts
-import { join as join25 } from "path";
+import { join as join26 } from "path";
 import { homedir as homedir7 } from "os";
 function previewKimi(ctx) {
   const { args, cwd, stateDir, cliDir, config } = ctx;
@@ -20333,10 +21309,10 @@ function previewKimi(ctx) {
     const nativeEnv = nativeLaunchEnv("kimi", childEnv());
     envNames = Object.keys(nativeEnv).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_HOOK_PURPOSE"]);
     unresolved.push({ field: "nativeLaunchId", reason: "native completion facts bind to the launch admitted by the running hub" });
-    const home = nativeEnv.KIMI_CODE_HOME ?? join25(nativeEnv.HOME ?? homedir7(), ".kimi-code");
-    completionPlugin = kimiPluginPreview(home, join25(cliDir, "../../plugins/agent-hub/kimi-hook.js"));
+    const home = nativeEnv.KIMI_CODE_HOME ?? join26(nativeEnv.HOME ?? homedir7(), ".kimi-code");
+    completionPlugin = kimiPluginPreview(home, join26(cliDir, "../../plugins/agent-hub/kimi-hook.js"));
   }
-  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join25(cliDir, "../../plugins/agent-hub/server.js"), mode);
+  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join26(cliDir, "../../plugins/agent-hub/server.js"), mode);
   kimiMetadata = { mode, mcp: { file, action, changed, tracked }, ...completionPlugin ? { completionPlugin } : {} };
   return finishPreview(ctx, launch, envNames, unresolved, kimiMetadata);
 }
@@ -20345,7 +21321,7 @@ var init_native_cli_preview_kimi = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-preview-pi.ts
-import { join as join26, resolve as resolve16 } from "path";
+import { join as join27, resolve as resolve16 } from "path";
 function previewPi(ctx) {
   const { args, stateDir, cliDir, config } = ctx;
   const { relayModelIds, buildPiLaunch, startModeOf } = ctx.helpers;
@@ -20380,7 +21356,7 @@ function previewPi(ctx) {
     tools: [],
     preamble: REDACTED,
     maxSteps: config.pi.max_steps
-  }, {}, resolve16(join26(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
+  }, {}, resolve16(join27(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
   launch = pi;
   envNames = Object.keys(pi.env).concat(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"].filter((key) => process.env[key] !== undefined));
   if (mode === "tui")
@@ -20470,8 +21446,8 @@ var init_native_config_policy = __esm(() => {
 });
 
 // src/adapters/definitions/native-policy-aux.ts
-import { closeSync as closeSync11, constants as constants9, fstatSync as fstatSync9, openSync as openSync11, readdirSync as readdirSync3, readFileSync as readFileSync13 } from "fs";
-import { isAbsolute as isAbsolute9, join as join27, normalize } from "path";
+import { closeSync as closeSync12, constants as constants10, fstatSync as fstatSync10, openSync as openSync12, readdirSync as readdirSync4, readFileSync as readFileSync13 } from "fs";
+import { isAbsolute as isAbsolute9, join as join28, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
 }
@@ -20516,13 +21492,13 @@ function localCrashPlan(meta) {
 }
 function claudePlugins(root, cwd) {
   const enabled = new Map;
-  for (const file of [join27(root, "settings.json"), ...cwd ? [join27(cwd, ".claude", "settings.json"), join27(cwd, ".claude", "settings.local.json")] : []]) {
+  for (const file of [join28(root, "settings.json"), ...cwd ? [join28(cwd, ".claude", "settings.json"), join28(cwd, ".claude", "settings.local.json")] : []]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object")
       for (const [key, on] of Object.entries(map))
         enabled.set(key, on === true);
   }
-  const installed = json(join27(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
+  const installed = json(join28(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
   const out = [];
   for (const [key, on] of enabled) {
     if (!on)
@@ -20536,7 +21512,7 @@ function claudePlugins(root, cwd) {
   return out;
 }
 function codexPlugins(root) {
-  const config = text2(join27(root, "config.toml"));
+  const config = text2(join28(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -20555,7 +21531,7 @@ function codexPlugins(root) {
       continue;
     let versions = [];
     try {
-      versions = readdirSync3(join27(root, "plugins", "cache", market, plugin));
+      versions = readdirSync4(join28(root, "plugins", "cache", market, plugin));
     } catch {}
     out.push({ name, version: versions.length === 1 ? version2(versions[0]) : null });
   }
@@ -20575,8 +21551,8 @@ function absoluteContinuityPath(value) {
 var str3 = (value) => typeof value === "string" && value ? value : undefined, PLUGINS, CLAUDE_ONLY, text2 = (file) => {
   let fd;
   try {
-    fd = openSync11(file, constants9.O_RDONLY | constants9.O_NONBLOCK);
-    const st = fstatSync9(fd);
+    fd = openSync12(file, constants10.O_RDONLY | constants10.O_NONBLOCK);
+    const st = fstatSync10(fd);
     if (!st.isFile() || st.size > 1024 * 1024)
       return;
     return readFileSync13(fd, "utf8");
@@ -20584,7 +21560,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
     return;
   } finally {
     if (fd !== undefined)
-      closeSync11(fd);
+      closeSync12(fd);
   }
 }, json = (file) => {
   try {
@@ -20593,7 +21569,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   } catch {
     return;
   }
-}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join27(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join27(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
+}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join28(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join28(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
 var init_native_policy_aux = __esm(() => {
   PLUGINS = new Map([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
   CLAUDE_ONLY = new Map([["codex@openai-codex", "codex-plugin"]]);
@@ -20638,7 +21614,7 @@ var init_native_cli_launch_common = __esm(() => {
 // src/adapters/definitions/native-cli-claude-launch.ts
 import { mkdirSync as mkdirSync14, writeFileSync as writeFileSync11, renameSync as renameSync6, unlinkSync as unlinkSync5, readFileSync as readFileSync14 } from "fs";
 import { randomUUID as randomUUID12 } from "crypto";
-import { resolve as resolve17, join as join28 } from "path";
+import { resolve as resolve17, join as join29 } from "path";
 function claudeChannel(userArgs) {
   const bundle = resolve17(import.meta.dir, "../../../plugins/agent-hub/server.js");
   for (let i = 0;i < userArgs.length; i++) {
@@ -20700,7 +21676,7 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join28(stateDir, `claude-settings-${randomUUID12()}.json`);
+      const file = join29(stateDir, `claude-settings-${randomUUID12()}.json`);
       try {
         mkdirSync14(stateDir, { recursive: true, mode: 448 });
         writeFileSync11(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
@@ -20757,7 +21733,7 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync12, existsSync as existsSync9, fstatSync as fstatSync10, openSync as openSync12, readFileSync as readFileSync15, readSync as readSync8 } from "fs";
+import { appendFileSync, closeSync as closeSync13, existsSync as existsSync9, fstatSync as fstatSync11, openSync as openSync13, readFileSync as readFileSync15, readSync as readSync8 } from "fs";
 function readEvents(file, since = 0) {
   if (!existsSync9(file))
     return [];
@@ -20781,19 +21757,19 @@ function parseEventLine(line, since = 0) {
 var init_events = () => {};
 
 // src/cli/recovery-session-file.ts
-import { statSync as statSync4 } from "fs";
+import { statSync as statSync5 } from "fs";
 import { homedir as homedir8 } from "os";
-import { join as join29 } from "path";
+import { join as join30 } from "path";
 function checkedSessionPath(binding, kind) {
   if (kind === "rollout")
-    return join29(binding.launch.env.CODEX_HOME ?? join29(homedir8(), ".codex"), "sessions");
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join29(homedir8(), ".claude");
+    return join30(binding.launch.env.CODEX_HOME ?? join30(homedir8(), ".codex"), "sessions");
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join30(homedir8(), ".claude");
   const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return join29(config, "projects", slug, `${binding.sessionId}.jsonl`);
+  return join30(config, "projects", slug, `${binding.sessionId}.jsonl`);
 }
 function recordedFileState(file) {
   try {
-    return statSync4(file).isFile() ? "found" : "unknown";
+    return statSync5(file).isFile() ? "found" : "unknown";
   } catch (error) {
     return error.code === "ENOENT" ? "missing" : "unknown";
   }
@@ -20801,11 +21777,11 @@ function recordedFileState(file) {
 var init_recovery_session_file = () => {};
 
 // src/adapters/definitions/native-recovery.ts
-import { readdirSync as readdirSync4 } from "fs";
-import { basename as basename5, join as join30 } from "path";
+import { readdirSync as readdirSync5 } from "fs";
+import { basename as basename5, join as join31 } from "path";
 var rolloutState = (binding) => {
   try {
-    return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
+    return readdirSync5(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
   } catch (error) {
     return error.code === "ENOENT" ? false : "unknown";
   }
@@ -20826,7 +21802,7 @@ var init_native_recovery = __esm(() => {
       if (phase !== "plan")
         return false;
       let current, started = false, turned = false;
-      for (const e of readEvents(join30(stateDir, "events.jsonl"))) {
+      for (const e of readEvents(join31(stateDir, "events.jsonl"))) {
         if (e.type === "native_thread" && e.peer === binding.peer) {
           current = e.thread;
           if (e.thread === binding.sessionId && e.fresh)
@@ -20903,9 +21879,9 @@ var init_native_recovery = __esm(() => {
 });
 
 // src/adapters/kimi-tui-facts.ts
-import { closeSync as closeSync13, constants as constants10, fstatSync as fstatSync11, lstatSync as lstatSync20, openSync as openSync13, readSync as readSync9, readdirSync as readdirSync5 } from "fs";
-import { createHash as createHash12 } from "crypto";
-import { basename as basename6, dirname as dirname15, isAbsolute as isAbsolute10, join as join31, relative as relative6 } from "path";
+import { closeSync as closeSync14, constants as constants11, fstatSync as fstatSync12, lstatSync as lstatSync21, openSync as openSync14, readSync as readSync9, readdirSync as readdirSync6 } from "fs";
+import { createHash as createHash13 } from "crypto";
+import { basename as basename6, dirname as dirname15, isAbsolute as isAbsolute10, join as join32, relative as relative6 } from "path";
 import { homedir as homedir9 } from "os";
 function decodeKimiTuiHook(event, value) {
   if (!EVENTS4.includes(event) || !record7(value) || value.hook_event_name !== event || value.client_type !== "kimi_code_cli" || typeof value.session_id !== "string" || !SESSION.test(value.session_id) || typeof value.cwd !== "string" || !isAbsolute10(value.cwd) || value.cwd.length > 4096)
@@ -20914,8 +21890,8 @@ function decodeKimiTuiHook(event, value) {
     return;
   if (event === "TaskStarted" && (typeof value.task_id !== "string" || !TASK.test(value.task_id)))
     return;
-  const home = process.env.KIMI_CODE_HOME ?? join31(process.env.HOME ?? homedir9(), ".kimi-code");
-  const transcriptPath = value.agentHubTranscriptPath ?? join31(home, "session_index.jsonl");
+  const home = process.env.KIMI_CODE_HOME ?? join32(process.env.HOME ?? homedir9(), ".kimi-code");
+  const transcriptPath = value.agentHubTranscriptPath ?? join32(home, "session_index.jsonl");
   if (typeof transcriptPath !== "string" || !isAbsolute10(transcriptPath) || transcriptPath.length > 4096)
     return;
   const phase = { TurnStarted: "start", Stop: "stop", StopFailure: "stop", Interrupt: "stop", SessionEnd: "session", TaskStarted: "pre", Notification: "post" }[event];
@@ -20925,12 +21901,12 @@ function encodeKimiTuiHook() {
   return;
 }
 function readBytes(path, cap, tail = false) {
-  const link = lstatSync20(path);
+  const link = lstatSync21(path);
   if (!link.isFile() || link.isSymbolicLink() || link.nlink !== 1)
     throw new Error("not a regular file");
-  const fd = openSync13(path, constants10.O_RDONLY | constants10.O_NOFOLLOW);
+  const fd = openSync14(path, constants11.O_RDONLY | constants11.O_NOFOLLOW);
   try {
-    const stat = fstatSync11(fd);
+    const stat = fstatSync12(fd);
     if (!stat.isFile() || stat.nlink !== 1 || !tail && stat.size > cap)
       throw new Error("invalid file");
     const length = Math.min(stat.size, cap), start = tail ? stat.size - length : 0;
@@ -20944,13 +21920,13 @@ function readBytes(path, cap, tail = false) {
     }
     return bytes;
   } finally {
-    closeSync13(fd);
+    closeSync14(fd);
   }
 }
 function sessionDirectory(index, session) {
-  const home = dirname15(index), sessions = realPath(join31(home, "sessions"));
+  const home = dirname15(index), sessions = realPath(join32(home, "sessions"));
   let listed;
-  for (const line of readBytes(index, INDEX_CAP).toString("utf8").split(`
+  for (const line of readBytes(index, INDEX_CAP2).toString("utf8").split(`
 `)) {
     if (!line.includes(session))
       continue;
@@ -20969,33 +21945,33 @@ function sessionDirectory(index, session) {
   if (!listed)
     throw new Error("session not indexed");
   const directory = realPath(listed);
-  if (!inside2(sessions, directory))
+  if (!inside3(sessions, directory))
     throw new Error("session outside home");
   return directory;
 }
 function taskInventory(agents) {
   let active = 0;
-  const names = readdirSync5(agents, { withFileTypes: true });
-  if (names.length > MAX_AGENTS)
+  const names = readdirSync6(agents, { withFileTypes: true });
+  if (names.length > MAX_AGENTS2)
     throw new Error("too many agents");
   for (const entry of names) {
     if (!AGENT.test(entry.name))
       continue;
     if (!entry.isDirectory())
       continue;
-    const tasks = join31(agents, entry.name, "tasks");
-    const dir = lstatSync20(tasks, { throwIfNoEntry: false });
+    const tasks = join32(agents, entry.name, "tasks");
+    const dir = lstatSync21(tasks, { throwIfNoEntry: false });
     if (!dir)
       continue;
     if (!dir.isDirectory() || dir.isSymbolicLink())
       throw new Error("invalid task directory");
-    const files = readdirSync5(tasks).filter((name) => name.endsWith(".json")).sort();
+    const files = readdirSync6(tasks).filter((name) => name.endsWith(".json")).sort();
     if (files.length > MAX_TASKS)
       throw new Error("too many tasks");
     for (const name of files) {
       if (!TASK.test(name.slice(0, -5)))
         throw new Error("invalid task name");
-      const row = JSON.parse(readBytes(join31(tasks, name), TASK_CAP).toString("utf8"));
+      const row = JSON.parse(readBytes(join32(tasks, name), TASK_CAP).toString("utf8"));
       if (!record7(row) || row.taskId !== name.slice(0, -5) || typeof row.status !== "string")
         throw new Error("invalid task");
       if (row.status === "running" && row.endedAt === null) {
@@ -21014,8 +21990,8 @@ function readKimiTuiTranscript(session, index) {
     return empty();
   try {
     const directory = sessionDirectory(index, session);
-    const wire = join31(directory, "agents", "main", "wire.jsonl");
-    if (!inside2(directory, realPath(wire)))
+    const wire = join32(directory, "agents", "main", "wire.jsonl");
+    if (!inside3(directory, realPath(wire)))
       return empty();
     const bytes = readBytes(wire, WIRE_CAP, true);
     if (bytes.length === 0 || bytes[bytes.length - 1] !== 10)
@@ -21064,23 +22040,23 @@ function readKimiTuiTranscript(session, index) {
       const prompt = prompts.get(turn), promptReason = prompt ? promptEnds.get(prompt.id) : undefined, turnPromptId = promptEndTurnIds.get(turn);
       if (!prompt || promptReason !== undefined && promptReason !== end.reason || turnPromptId !== undefined && turnPromptId !== prompt.id)
         continue;
-      completion = { id: createHash12("sha256").update(`${session}:${turn}:${prompt.id}:${end.reason}`).digest("hex"), index: turn, reason: end.reason };
+      completion = { id: createHash13("sha256").update(`${session}:${turn}:${prompt.id}:${end.reason}`).digest("hex"), index: turn, reason: end.reason };
     }
     let background;
     try {
-      background = taskInventory(join31(directory, "agents"));
+      background = taskInventory(join32(directory, "agents"));
     } catch {}
     return {
       factIds: [],
       ...completion ? { completion } : {},
-      ...started ? { started: { id: createHash12("sha256").update(`${session}:${started.turn}:${started.id}`).digest("hex"), index: started.turn, origin: started.origin } } : {},
+      ...started ? { started: { id: createHash13("sha256").update(`${session}:${started.turn}:${started.id}`).digest("hex"), index: started.turn, origin: started.origin } } : {},
       ...background === undefined ? {} : { background }
     };
   } catch {
     return empty();
   }
 }
-var EVENTS4, SESSION, AGENT, TASK, INDEX_CAP, WIRE_CAP, TASK_CAP, MAX_AGENTS = 256, MAX_TASKS = 256, record7 = (value) => !!value && typeof value === "object" && !Array.isArray(value), integer2 = (value) => Number.isSafeInteger(value) && value >= 0, inside2 = (root, path) => {
+var EVENTS4, SESSION, AGENT, TASK, INDEX_CAP2, WIRE_CAP, TASK_CAP, MAX_AGENTS2 = 256, MAX_TASKS = 256, record7 = (value) => !!value && typeof value === "object" && !Array.isArray(value), integer2 = (value) => Number.isSafeInteger(value) && value >= 0, inside3 = (root, path) => {
   const rel = relative6(root, path);
   return rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute10(rel);
 }, empty = () => ({ factIds: [] }), KIMI_TUI_FACTS_HOOK;
@@ -21090,7 +22066,7 @@ var init_kimi_tui_facts = __esm(() => {
   SESSION = /^session_[A-Za-z0-9_-]{1,120}$/;
   AGENT = /^[A-Za-z0-9._-]{1,64}$/;
   TASK = /^[A-Za-z0-9._:-]{1,128}$/;
-  INDEX_CAP = 16 * 1024 * 1024;
+  INDEX_CAP2 = 16 * 1024 * 1024;
   WIRE_CAP = 8 * 1024 * 1024;
   TASK_CAP = 64 * 1024;
   KIMI_TUI_FACTS_HOOK = { decode: decodeKimiTuiHook, encode: encodeKimiTuiHook, read: readKimiTuiTranscript };
@@ -21457,7 +22433,7 @@ var init_native_cli_entry_qwen = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-preview-qwen.ts
-import { join as join32 } from "path";
+import { join as join33 } from "path";
 function previewQwen(ctx) {
   const { tool, args, cwd, stateDir, cliDir, config } = ctx;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
@@ -21487,7 +22463,7 @@ function previewQwen(ctx) {
     form: "headless",
     projectRoot: cwd,
     stateDir,
-    entrypoint: join32(cliDir, "main.js"),
+    entrypoint: join33(cliDir, "main.js"),
     userArgs: [],
     unattended: false,
     env: {},
@@ -21585,9 +22561,9 @@ var init_qwen = __esm(() => {
 
 // src/adapters/configured-acp.ts
 import { basename as basename7 } from "path";
-import { types as types6 } from "util";
+import { types as types7 } from "util";
 function fields(raw, at) {
-  if (!raw || typeof raw !== "object" || types6.isProxy(raw) || Array.isArray(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) || Object.getOwnPropertySymbols(raw).length)
+  if (!raw || typeof raw !== "object" || types7.isProxy(raw) || Array.isArray(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) || Object.getOwnPropertySymbols(raw).length)
     return fail(at, "must be a plain own-data object");
   const result = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(raw));
   if (Object.values(result).some((d) => !Object.hasOwn(d, "value") || !d.enumerable))
@@ -21600,7 +22576,7 @@ function text4(raw, at, max = 4096) {
   return raw;
 }
 function list3(raw, at, max) {
-  if (!Array.isArray(raw) || types6.isProxy(raw) || Object.getPrototypeOf(raw) !== Array.prototype || Object.getOwnPropertySymbols(raw).length)
+  if (!Array.isArray(raw) || types7.isProxy(raw) || Object.getPrototypeOf(raw) !== Array.prototype || Object.getOwnPropertySymbols(raw).length)
     return fail(at, "must be a string array");
   const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(raw));
   const length = descriptors.length?.value;
@@ -21765,7 +22741,7 @@ var init_native_cli_doctor = __esm(() => {
 });
 
 // src/adapters/registry.ts
-import { types as types7 } from "util";
+import { types as types8 } from "util";
 function immutable(value, seen = new WeakSet) {
   if (!value || typeof value !== "object" || seen.has(value))
     return value;
@@ -21799,19 +22775,19 @@ function deriveAdapterLists(definitions) {
   });
 }
 function ownField(value, key) {
-  if (!value || typeof value !== "object" || types7.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+  if (!value || typeof value !== "object" || types8.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
     return;
   const field = Object.getOwnPropertyDescriptor(value, key);
   return field && Object.hasOwn(field, "value") && field.enumerable ? field.value : undefined;
 }
 function declaredKind(id, instances, catalog = definitions) {
-  if (!instances || typeof instances !== "object" || types7.isProxy(instances) || Array.isArray(instances) || ![Object.prototype, null].includes(Object.getPrototypeOf(instances)))
+  if (!instances || typeof instances !== "object" || types8.isProxy(instances) || Array.isArray(instances) || ![Object.prototype, null].includes(Object.getPrototypeOf(instances)))
     return;
   const field = Object.getOwnPropertyDescriptor(instances, id);
   if (!field || !Object.hasOwn(field, "value") || !field.enumerable)
     return;
   const entry = field.value;
-  if (!entry || typeof entry !== "object" || types7.isProxy(entry) || Array.isArray(entry) || ![Object.prototype, null].includes(Object.getPrototypeOf(entry)))
+  if (!entry || typeof entry !== "object" || types8.isProxy(entry) || Array.isArray(entry) || ![Object.prototype, null].includes(Object.getPrototypeOf(entry)))
     return;
   const kind = Object.getOwnPropertyDescriptor(entry, "kind");
   if (!kind || !Object.hasOwn(kind, "value") || !kind.enumerable || typeof kind.value !== "string" || !catalog.has(kind.value))
@@ -21829,13 +22805,13 @@ function definitionOf(id, instances) {
 function resolvedDefinition(id, kind, instances, catalog) {
   const definition = kind === undefined ? undefined : catalog.get(kind);
   const declaration = ownField(instances, id), roles = ownField(declaration, "roles");
-  const reviewerOnly = Array.isArray(roles) && !types7.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
+  const reviewerOnly = Array.isArray(roles) && !types8.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
   const variant = definition?.reviewerVariant;
   const fresh = variant?.reviewer?.declaration === "automatic" || ownField(declaration, "review_mode") === "fresh";
   const headless = kind !== id && ownField(declaration, "start_mode") === "headless";
   if (variant && headless && reviewerOnly && fresh)
     return variant;
-  const roleValues = Array.isArray(roles) && !types7.isProxy(roles) && roles.length <= 4 ? Array.from({ length: roles.length }, (_, index) => Object.getOwnPropertyDescriptor(roles, String(index))?.value) : [];
+  const roleValues = Array.isArray(roles) && !types8.isProxy(roles) && roles.length <= 4 ? Array.from({ length: roles.length }, (_, index) => Object.getOwnPropertyDescriptor(roles, String(index))?.value) : [];
   const writerRoles = roleValues.includes("implementer") && roleValues.every((role) => role === "implementer" || role === "verifier");
   return headless && writerRoles && definition?.headlessVariant ? definition.headlessVariant : definition;
 }
@@ -22056,11 +23032,11 @@ import { relative as relative7, resolve as resolve19, isAbsolute as isAbsolute11
 // src/hub/control-client.ts
 init_project();
 import { readFileSync as readFileSync16 } from "fs";
-import { join as join33, resolve as resolve18 } from "path";
+import { join as join34, resolve as resolve18 } from "path";
 
 // src/hub/tool-request.ts
 init_capabilities();
-import { createHash as createHash13, randomUUID as randomUUID13 } from "crypto";
+import { createHash as createHash14, randomUUID as randomUUID13 } from "crypto";
 var TOOL_WRITE_FEATURE = "tool_write_idempotency";
 var RETENTION_MS = 15 * 60 * 1000;
 var MAX_REPLY_BYTES = 64 * 1024;
@@ -22119,13 +23095,13 @@ function toolWriteRefusedReply(msg, requestId, cause) {
 }
 
 // src/adapters/external-metadata.ts
-import { types as types8 } from "util";
+import { types as types9 } from "util";
 var MAX_MODULES = 16;
 var fail2 = (reason) => {
   throw new Error(`external adapter: ${reason}`);
 };
 function moduleDataObject(value) {
-  if (!value || typeof value !== "object" || types8.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
+  if (!value || typeof value !== "object" || types9.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
     return fail2("plain own-data object required");
   const fields = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   if (Object.values(fields).some((field) => !Object.hasOwn(field, "value") || !field.enumerable))
@@ -22138,7 +23114,7 @@ function moduleText(value, max) {
   return value;
 }
 function moduleArray(value, max) {
-  if (!Array.isArray(value) || types8.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > max || Object.getOwnPropertySymbols(value).length)
+  if (!Array.isArray(value) || types9.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > max || Object.getOwnPropertySymbols(value).length)
     return fail2("bounded array required");
   const fields = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   if (Object.keys(fields).length !== value.length + 1)
@@ -22264,8 +23240,8 @@ function controlProtocolWindow(descriptor) {
 }
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync16(join33(stateDir, "status.json"), "utf8"));
-    const token = readFileSync16(join33(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync16(join34(stateDir, "status.json"), "utf8"));
+    const token = readFileSync16(join34(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;

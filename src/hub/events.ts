@@ -32,6 +32,8 @@ export const EVENTS_SCHEMA = 1;
  * ids, routing and sizes, tasks carry ids and states, so the file can be exported without leaking what agents wrote.
  */
 export type HubEvent =
+  /** Owned reviewer accounting, never a native session/home or model text. Unmatched starts remain unknown after restart. */
+  | { type: "reviewer_accounting"; peer: string; attempt: string; outcome: "started" | "complete" | "unknown" }
   | { type: "model_change"; peer: string; previousModel: string | null; model: string | null; by: "person"; source: "cli" | "dashboard"; appliesFrom: "next_turn"; afterTurn?: string }
   | { type: "release_authorization"; by: PeerId; authorization: string; commit: string; version: string; docsDigest: string; documents: number }
   | { type: "release_authorization"; by: PeerId; authorization: string; commit: string; version: string; docs: "none" }

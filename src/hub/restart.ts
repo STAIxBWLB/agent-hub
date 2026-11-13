@@ -59,6 +59,7 @@ export interface RestartSnapshot {
     researchComparisons?: { plans: number; approvals: number; contexts: number; digest: string };
     researchRunners?: { count: number; digest: string };
     researchEvidence?: { links: number; revisions: number; digest: string };
+    reviewerQuota?: { rows: number; completed: number; pending: number; unknown: number; complete: boolean; waits: number; digest: string };
     reviewComments?: { comments: number; packages: number; digest: string };
     /** Stored visual payloads and image metadata, never external image bytes. */
     visuals?: { count: number; digest: string };
@@ -139,6 +140,12 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     if (!research || typeof research !== "object" || Array.isArray(research)
       || ![research.campaigns, research.units, research.revision].every(value => Number.isSafeInteger(value) && value >= 0)
       || typeof research.digest !== "string" || !/^[a-f0-9]{64}$/.test(research.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "reviewerQuota")) {
+    const value = s.integrity.reviewerQuota;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "complete,completed,digest,pending,rows,unknown,waits"
+      || ![value.rows, value.completed, value.pending, value.unknown, value.waits].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.complete !== "boolean" || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (s.integrity && Object.hasOwn(s.integrity, "researchDispatch")) {
     const value = s.integrity.researchDispatch;
