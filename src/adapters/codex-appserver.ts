@@ -1,3 +1,5 @@
+import { codexAccountUsage, codexQuotaWindowInput } from "./definitions/native-quota.ts";
+import type { QuotaAccountUsage } from "../hub/quota-account.ts";
 import type { ModelOverrideSelection } from "./registry-types.ts";
 import { isNativeModelToken } from "./model-token.ts";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -13,6 +15,9 @@ import type { ContextReader } from "./registry-types.ts";
 import type { CapabilityManifest } from "../hub/capabilities.ts";
 import { codexSkillsManifest, NATIVE_PINS } from "./native-capabilities.ts";
 import { ACTION_BUDGET_OPTION, type ActionGateVerdict, type PermissionRequest } from "./acp.ts";
+
+// ponytail: paused quota reads use a fixed 60s cadence; a validated operational cadence setting is the upgrade path if tuning is needed.
+const PAUSED_USAGE_POLL_MS = 60_000;
 
 const UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery";
 const PLANNER_SANDBOX_REFUSAL = "Codex planner thread requires a confirmed read-only sandbox";
@@ -51,8 +56,10 @@ export interface CodexOptions {
   extraArgs?: string[];
   /** Appended to the standing instruction of the first delivery (role contract). */
   preamble?: string;
-  /** Raw `rateLimits` snapshots from app-server, and `hard = true` when a turn was refused for quota. */
-  onUsage?: (rateLimits: unknown, hard: boolean) => void;
+  /** Window-only native fields plus allowlisted account diagnostics; hard means a turn was refused for quota. */
+  onUsage?: (rateLimits: unknown, hard: boolean, accountUsage?: QuotaAccountUsage) => void;
+  /** Host-only observation of the canonical account pause. It grants no resume authority. */
+  usagePause?: { current(): boolean; subscribe(changed: () => void): () => void };
   /** Tokens the thread used since the previous update (see `tokenTotal` for how they are counted). */
   onTokens?: (added: number) => void;
   /**
@@ -155,7 +162,11 @@ export class CodexPeer extends BasePeer {
   private unboundAccepted = false;
   private nextId = -1;
   private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error, failureCause?: DeliveryFailureCause) => void; deliveryId?: string; kind?: "deliver" | "steer"; modelStart?: ModelStartOrder; expectedTurnId?: string; afterTurn?: () => void; invalidate?: (reason: string, failureCause?: DeliveryFailureCause) => void }>();
-  private usageTimer: ReturnType<typeof setInterval> | undefined;
+  private usageTimer: ReturnType<typeof setTimeout> | undefined;
+  private usageUnsubscribe: (() => void) | undefined;
+  private usageEpoch = 0;
+  private usageStopped = false;
+  private readonly usageRequests = new Map<number, ReturnType<typeof setTimeout>>();
   private injected: Envelope | undefined; // the hub envelope that started the current turn, if any
   private answering: Envelope[] = []; // everything delivered or steered into the current turn: who its answer is for
   private lastAnswer = "";
@@ -207,6 +218,7 @@ export class CodexPeer extends BasePeer {
   }
 
   async start(): Promise<void> {
+    this.usageStopped = false;
     this.nativeModels.clear(); this.threadModels.clear(); this.reroutedModel = undefined; this.modelStartSequence = 0;
     const upstream = this.opts.upstreamUrl ?? (await this.spawnAppServer());
     try {
@@ -253,6 +265,8 @@ export class CodexPeer extends BasePeer {
   }
 
   async stop(): Promise<void> {
+    this.usageStopped = true;
+    this.stopUsagePolling();
     this.abortActionWaits();
     this.server?.stop(true);
     this.claimedTui?.tui.close(1001, "hub shutting down");
@@ -543,7 +557,7 @@ export class CodexPeer extends BasePeer {
     link.up.close();
     if (this.claimedTui === link) this.claimedTui = undefined;
     if (this.link !== link) return;
-    clearInterval(this.usageTimer);
+    this.stopUsagePolling();
     this.link = undefined;
     this.restoringApprovals.clear();
     this.threadId = "";
@@ -885,10 +899,7 @@ export class CodexPeer extends BasePeer {
     this.opts.log?.(`[${this.id}] thread ${threadId}`);
     this.opts.onThread?.(threadId, fresh);
     this.setState("idle");
-    this.readUsage();
-    clearInterval(this.usageTimer);
-    this.usageTimer = setInterval(() => this.readUsage(), this.opts.usagePollMs ?? 600_000);
-    this.usageTimer.unref?.();
+    this.startUsagePolling(link);
   }
 
   /**
@@ -925,19 +936,55 @@ export class CodexPeer extends BasePeer {
     });
   }
 
-  /** account/rateLimits/read through the TUI's connection, with a hub id so the answer never reaches the TUI. */
+  private stopUsagePolling(): void {
+    this.usageEpoch++;
+    clearTimeout(this.usageTimer); this.usageTimer = undefined;
+    const unsubscribe = this.usageUnsubscribe; this.usageUnsubscribe = undefined;
+    try { unsubscribe?.(); } catch { /* observational subscription only */ }
+    for (const [id, timer] of this.usageRequests) { clearTimeout(timer); this.pending.delete(id); }
+    this.usageRequests.clear();
+  }
+
+  private startUsagePolling(link: Link): void {
+    this.stopUsagePolling();
+    if (!this.opts.onUsage || this.usageStopped) return;
+    const epoch = this.usageEpoch;
+    const current = () => !this.usageStopped && this.usageEpoch === epoch && this.link === link && link.up.readyState === WebSocket.OPEN;
+    const schedule = () => {
+      if (!current()) return;
+      clearTimeout(this.usageTimer); this.usageTimer = undefined;
+      let paused: boolean;
+      try { paused = this.opts.usagePause?.current() === true; } catch { return; }
+      this.usageTimer = setTimeout(() => {
+        if (!current()) return;
+        this.readUsage(); schedule();
+      }, paused ? PAUSED_USAGE_POLL_MS : this.opts.usagePollMs ?? 600_000);
+      this.usageTimer.unref?.();
+    };
+    try { this.usageUnsubscribe = this.opts.usagePause?.subscribe(schedule); } catch { return; }
+    this.readUsage(); schedule();
+  }
+
+  /** account/rateLimits/read through the TUI's connection; late replies never escape or update a replacement input. */
   private readUsage(): void {
-    const link = this.link;
-    if (!this.opts.onUsage || !link || link.up.readyState !== WebSocket.OPEN) return;
+    const link = this.link, epoch = this.usageEpoch;
+    if (this.usageStopped || !this.opts.onUsage || !link || link.up.readyState !== WebSocket.OPEN) return;
     const id = this.nextId--;
-    this.pending.set(id, { resolve: (result) => this.opts.onUsage?.(result?.rateLimits, false), reject: () => {} });
-    link.up.send(JSON.stringify({ method: "account/rateLimits/read", id }));
-    setTimeout(() => this.pending.delete(id), 30_000).unref?.(); // an unanswered poll must not pile up until detach
+    const finish = () => { clearTimeout(this.usageRequests.get(id)); this.usageRequests.delete(id); };
+    const timer = setTimeout(() => { this.pending.delete(id); this.usageRequests.delete(id); }, 30_000);
+    timer.unref?.(); this.usageRequests.set(id, timer);
+    this.pending.set(id, { resolve: result => {
+      finish();
+      if (!this.usageStopped && this.link === link && this.usageEpoch === epoch)
+        this.opts.onUsage?.(codexQuotaWindowInput(result?.rateLimits), false, codexAccountUsage(result));
+    }, reject: finish });
+    try { link.up.send(JSON.stringify({ method: "account/rateLimits/read", id })); }
+    catch { finish(); this.pending.delete(id); }
   }
 
   private onNotification(link: Link, method: string, params: any): void {
     // Account-level notifications carry no threadId.
-    if (link === this.link && method === "account/rateLimits/updated") return void this.opts.onUsage?.(params.rateLimits, false);
+    if (link === this.link && method === "account/rateLimits/updated") return void this.opts.onUsage?.(codexQuotaWindowInput(params.rateLimits), false);
     if (link === this.link && method === "error" && params.error?.codexErrorInfo === "usageLimitExceeded") {
       this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
     }

@@ -6,6 +6,7 @@ export function startFakeAppServer(
   usedPercent = 93,
   reportApprovalPolicy = true,
   onRequest?: (msg: any) => void,
+  rateLimitsRead?: () => unknown,
 ) {
   let turnSeq = 0;
   let threadTotal = 0; // the thread's running token total, as Codex keeps it
@@ -36,7 +37,7 @@ export function startFakeAppServer(
           reply({ thread: { id: msg.params.threadId }, model: "fake", ...(reportApprovalPolicy ? { approvalPolicy: msg.params.approvalPolicy ?? "untrusted" } : {}) });
           return note("thread/tokenUsage/updated", { threadId: msg.params.threadId, turnId: "old", tokenUsage: { total: usage(threadTotal), last: usage(800) } });
         }
-        if (msg.method === "account/rateLimits/read") return reply({ rateLimits: { primary: { usedPercent, windowDurationMins: 300, resetsAt: 1_900_000_000 }, secondary: null } });
+        if (msg.method === "account/rateLimits/read") return reply(rateLimitsRead ? rateLimitsRead() : { rateLimits: { primary: { usedPercent, windowDurationMins: 300, resetsAt: 1_900_000_000 }, secondary: null } });
         if (msg.method === "thread/revert") {
           reverted.push(msg.params);
           onRevert?.(msg.params);

@@ -1,3 +1,4 @@
+import { quotaAccountReading } from "../hub/quota-account.ts";
 import { projectModelStatus } from "./model.ts";
 import type { RuntimeModelStatus } from "../hub/model-overrides.ts";
 import type { QueueBackpressureStatus } from "../hub/queue-backpressure.ts";
@@ -506,6 +507,23 @@ export function renderBudget(data: BudgetOutput, columns?: number, now = Date.no
   // A peer with no number says why, in its own line, so a peer without quota is not mistaken for one that has not reported.
   for (const note of data.peers ?? []) out.push(...detail(note.peer, note.note, columns, peerTone(note.peer)));
   for (const [peer, b] of Object.entries(data.budget)) if (b.paused) out.push(...detail(`paused ${peer}`, `${b.paused.reason ?? "budget"}${typeof b.paused.resetsAt === "number" ? `; resumes ${relative(b.paused.resetsAt, now)}` : ""}`, columns, "attention"));
+  for (const [peer, b] of Object.entries(data.budget)) {
+    const info = b.paused ? quotaAccountReading(b.accountUsage) : undefined;
+    if (!info) continue;
+    const parts: string[] = [];
+    if (info.resetCreditsAvailable !== undefined) {
+      const expiry = info.resetCreditsExpireAt !== undefined ? `expires ${new Date(info.resetCreditsExpireAt).toISOString().slice(0, 10)}`
+        : info.resetCreditsExpiryKnown ? "no expiry" : "expiry unknown";
+      parts.push(`${plural(info.resetCreditsAvailable, "reset credit")} available${info.resetCreditsAvailable ? ` (${expiry})` : ""}`);
+    }
+    parts.push(info.ordinaryUsageAllowed === undefined ? "ordinary usage unknown" : info.ordinaryUsageAllowed ? "ordinary usage allowed" : "ordinary usage not allowed");
+    const flag = (value: boolean | undefined) => value === undefined ? "unknown" : value ? "yes" : "no";
+    parts.push(`credits available: ${flag(info.hasCredits)}`, `unlimited credits: ${flag(info.unlimited)}`);
+    if (info.stale) parts.push("stale snapshot");
+    else if (info.ordinaryUsageAllowed === false && (info.hasCredits === true || info.unlimited === true)) parts.push("turns would use paid credits");
+    out.push(...detail(peer, parts.join("; "), columns, "attention"));
+  }
+
   return out;
 }
 function boardColumnContext(tasks: any[], allTasks: any[] | null): any[] {

@@ -1,3 +1,4 @@
+import { quotaAccountReading, type QuotaAccountReading } from "./quota-account.ts";
 import { definitionOf, type KindMap, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
@@ -20,7 +21,7 @@ export function conductorProgressSink(record: (event: HubEvent) => void, feed: P
 }
 
 /** What `Budget.status` returns, with the fields added after it optional so an older shape still projects. */
-type PublicBudgetStatus = Record<string, { windows: (Omit<ReturnType<Budget["status"]>[string]["windows"][number], "kind" | "superseded"> & { kind?: WindowKind; superseded?: boolean })[]; paused?: ReturnType<Budget["status"]>[string]["paused"] }>;
+type PublicBudgetStatus = Record<string, { windows: (Omit<ReturnType<Budget["status"]>[string]["windows"][number], "kind" | "superseded"> & { kind?: WindowKind; superseded?: boolean })[]; paused?: ReturnType<Budget["status"]>[string]["paused"]; accountUsage?: QuotaAccountReading }>;
 export function publicPeerBudget(status: PublicBudgetStatus, nameable: (text: string) => boolean): Record<string, unknown> {
   return Object.fromEntries(Object.entries(status).map(([peer, value]) => [peer, {
     windows: value.windows.map(window => ({ id: window.id, kind: windowKind(window), used: window.used, at: window.at, stale: window.stale, ...(window.superseded ? { superseded: true } : {}),
@@ -29,6 +30,7 @@ export function publicPeerBudget(status: PublicBudgetStatus, nameable: (text: st
       source: nameable(window.source) ? window.source : "[quota source withheld]",
     })),
     ...(value.paused ? { paused: { since: value.paused.since, resetsAt: value.paused.resetsAt, reason: "quota" } } : {}),
+    ...(value.paused && quotaAccountReading(value.accountUsage) ? { accountUsage: quotaAccountReading(value.accountUsage) } : {}),
   }]));
 }
 

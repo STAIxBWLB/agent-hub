@@ -230,6 +230,34 @@ The PII screen is distinct from ordinary optional inference. It may use an on-de
 
 Runtime memory capture and recall use the in-process `@staix/agent-mem` package, screened and invoked by host integration. claude-mem is off by default and import-only; there is no worker HTTP or model-summary path in the runtime. This avoids a parallel capture route with different privacy checks ([#752](https://github.com/STAIxBWLB/agent-hub/issues/752), [agent-mem#13](https://github.com/STAIxBWLB/agent-mem/issues/13)).
 
+## Codex quota observation (#1440)
+
+Codex reads `account/rateLimits/read` through its current authenticated TUI link
+using hidden negative request IDs. Normal cadence remains `usagePollMs` (ten
+minutes by default). While the canonical Budget account has an open pause,
+Budget's observational subscription re-arms the adapter at the fixed 60-second
+cadence. The subscription and all usage timers/requests are revoked on detach,
+stop or input replacement; a late callback cannot poll or retime a new link.
+The adapter never redeems a credit or resumes a peer. Budget.evaluate retains
+its existing native-window/reset-time resume path and manual pause boundaries.
+
+The native-to-host callback contains only window fields and a separate allowlist
+of account diagnostics: reset-credit count, proven earliest expiry, expiry-known
+flag, ordinaryUsageAllowed, hasCredits and unlimited. Native balances, account
+identifiers, credit identifiers, titles and descriptions are discarded at that
+boundary. `availableCount` is authoritative; the detail list can be capped, so a
+partial or unavailable list leaves global earliest expiry unknown. Nullable or
+malformed Boolean fields remain unknown, preserving explicit false values.
+
+Diagnostics are timestamped RAM-only data keyed by the existing canonical hub
+account. Paused-account budget text/JSON shows their freshness and permitted
+fields. A fresh snapshot reporting ordinary usage unavailable and paid credits
+available labels that turns would use paid credits; no financial flag changes
+quota admission, pause or resume. A restart leaves these diagnostics unknown
+until another native read. Older clients may omit the additive accountUsage
+projection. Native/account effectiveness remains separate from fake-clock and
+fake app-server fixtures.
+
 ## Observed turn model (#1402)
 
 An adapter may implement `PeerAdapter.observedModel()`: the model its native surface reported for the turn that just ended, as `{ model, evidence }`. The daemon reads it once, when it writes the peer's `turn_end`, and passes it through `turnModelFields`: the event carries `model` (the id exactly as reported, through `safeModelLabel`) and `modelEvidence` (`served`, `session` or `configured`, strongest first) or neither. A label `safeModelLabel` refuses is dropped whole, never truncated, and an alias (`opus`, `default`) is never expanded. An adapter that reports nothing, or throws, records nothing: unknown stays unknown. Codex and Claude print are wired (#1402 T2); the others (ACP peers, Pi, Antigravity) by the later tasks of #1402. Codex: the model in the `thread/start` or `thread/resume` reply, or the model the hub or the TUI started a turn with once Codex accepted it, is `session`; a `model/rerouted` notification names the model it moved the running turn to, `served` for that turn only. Neither reply nor `turn/start` carries a per-response model, so Codex is never `served` unless it said so (schema of codex-cli 0.167.2). Claude print (reviewer and implementer): the `modelUsage` keys of the `result` row are `served`; several keys name the one with strictly more usage tokens, and a tie or a breakdown with no counts names none (`src/adapters/print-result-model.ts`). Claude channel and TUI sessions are unchanged (their transcript usage already carries `servedModel`). research builds `ownerModels` from the owner's turns only (`docs/research.md`).
