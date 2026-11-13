@@ -370,7 +370,7 @@ export function projectToolList<T extends { name: string }>(tools: T[], readOnly
 /** Role contracts, by role name. Shown to each peer for the roles `.agenthub/config.json` gives it. */
 export const ROLE_TEXT: Record<string, string> = {
   conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
-  planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself. Write plans an implementer can follow without session context, with ordered steps, checks and expected results, and conditions to stop and report.",
+  planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
   implementer: "implementer: accept tasks assigned to you, do them, and finish with hub_task_done (summary: what changed, why, and the check you ran with its result; refs). Decline what you cannot do. Before starting work nobody assigned you, claim it with hub_task_propose naming yourself as owner, with the paths in refs. With a claim or an accept, give a plan: the files, symbols and signatures you will change and where new code goes.",
   verifier: "verifier: run the checks a task names and report what passed and what did not in hub_task_done.",
   reviewer: "reviewer: when asked to review, read the change itself, then hub_review with approved or changes_requested and a note that says what to fix.",
@@ -378,9 +378,12 @@ export const ROLE_TEXT: Record<string, string> = {
 
 export const DEFAULT_ROLES: Record<string, string[]> = defaultPeerRoles(true);
 
-export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES, catalog: CatalogRole[] = [], profile: ProfileSelection = "dev"): string {
+export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES, catalog: CatalogRole[] = [], profile: ProfileSelection = "dev", lifecycle = false): string {
   const data = profileData(profile);
-  const mine = (roles[peer] ?? []).map((r) => data.role_text[r] ?? ROLE_TEXT[r]).filter(Boolean);
+  const mine = (roles[peer] ?? []).map((r) => {
+    const text = data.role_text[r] ?? ROLE_TEXT[r];
+    return text && lifecycle && r === "planner" ? text + " Write a plan executable without session context: full base commit, scope and out_of_scope exclusions, bounded stop_if conditions, and ordered steps with verify commands and expected results." : text;
+  }).filter(Boolean);
   if (!mine.length) return "";
   return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...(data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : []), ...(catalog.length ? [catalogSection(catalog)] : []), "The task board (hub_task_list) is the shared record of who does what."].join("\n");
 }

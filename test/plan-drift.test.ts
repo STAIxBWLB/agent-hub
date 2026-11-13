@@ -7,7 +7,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig, type SdlcMode } from "../src/hub/sdlc.ts";
-import { profileTaskTools, TASK_TOOLS } from "../src/hub/hub-tools.ts";
+import { profileTaskTools, roleContract, TASK_TOOLS } from "../src/hub/hub-tools.ts";
 
 const BASE = "a".repeat(40), HEAD = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
@@ -141,4 +141,10 @@ test("#1403 current privacy state withholds drift names from public readback", (
   r.state.paths = ["src/patient 900101-1234567.ts"];
   expect(r.tasks.planGuardText(row)).toContain("drift: unknown");
   expect(r.tasks.planGuardText(row)).not.toContain("900101");
+});
+
+
+test("#1403 planner cold-readable role guidance is lifecycle-only", () => {
+  expect(roleContract("codex", { codex: ["planner"] })).not.toContain("out_of_scope");
+  expect(roleContract("codex", { codex: ["planner"] }, [], "dev", true)).toContain("steps with verify commands and expected results");
 });
