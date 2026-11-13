@@ -25,7 +25,7 @@
 - Experiment attempts recorded on a study unit are read with `ahub study experiments --campaign <id>` (or `--attempt`, or `--plan` with `--baseline` and `--variant`) and `hub_experiment_show`. Each value shows its source: `declared` is the agent's own word, and only `host-observed`, `runner-attested` or `person-attested` rows are evidence, none of which proves the science. A rerun by a person attaches through an existing check, a hashed output file or a registered runner's signed receipt, as the checklist in `docs/operations.md` ("Experiment readback") says; without one the experiment stays declared and its sealing unverified. The synthetic CPU-only fixture is `test/research-experiments-fixture.test.ts`; no account, GPU or native model has run an experiment here.
 - The deterministic three-source, two-peer example (`test/study-daemon.test.ts`, "three-source, two-peer example"): one contract names sources S0, S1 and S2 and two discovery units, `alpha` (S0 and S1, owned by codex) and `beta` (S2, an independent check, owned by kimi). After `ahub study approve` both units read `none` and `0/2 covered`, `0/1 covered`. A handoff for S0 only moves `alpha` to `incomplete` with `1/2 covered`. A handoff for both S0 and S1, and one for S2, make both `complete` and the discovery round complete. Another peer's handoff for `alpha` is refused. This runs with fake peers: it shows the hub's rules, not that a native model follows the guidance.
 
-# Claim evidence links (#931 T1-T2)
+# Claim evidence links and synthesis readiness (#931 T1-T3)
 
 An active owner of an in-progress research-profile task can record
 `hub_evidence_record`. The task need not belong to a campaign. Researcher role
