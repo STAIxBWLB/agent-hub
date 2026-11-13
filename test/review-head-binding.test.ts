@@ -23,14 +23,14 @@ async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boole
   const dir = mkdtempSync(join(tmpdir(), "ahub-review-head-"));
   const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
   for (const name of ["codex", "claude"]) { const peer = new Peer(name); bus.add(peer); await peer.start(); }
-  let currentHead = A, unavailable = false, limitedMetadata = false;
+  let currentHead = A, unavailable = false, limitedMetadata = false, prState = "OPEN";
   const calls: string[][] = [];
   const gh: SdlcGh = async args => {
     calls.push(args);
     if (unavailable) return { code: 1, stdout: "" };
     if (args[0] === "pr" && args[1] === "view" && limitedMetadata) return args[args.indexOf("--json") + 1] === "headRefOid"
       ? { code: 0, stdout: JSON.stringify({ headRefOid: currentHead }) } : { code: 1, stdout: "" };
-    if (args[0] === "pr" && args[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: currentHead, state: "OPEN", isDraft: false, reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [], files: [], changedFiles: 0, baseRefName: "main", baseRefOid: A, headRefName: "fix/head" }) };
+    if (args[0] === "pr" && args[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: currentHead, state: prState, isDraft: false, reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [], files: [], changedFiles: 0, baseRefName: "main", baseRefOid: A, headRefName: "fix/head" }) };
     const query = args.find(arg => arg.startsWith("query=")) ?? "";
     if (query.includes("reviewThreads")) return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: currentHead, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
     return { code: 1, stdout: "" }; // Every read stays in this fixture; never fall through to gh.
@@ -43,7 +43,7 @@ async function rig(options: { mode?: SdlcMode; state?: TaskState; linked?: boole
   board.update(t.id, "codex", "done", { state: "in_review", ...(options.linked === false ? {} : { sdlc: { stage: "review" as const, repo: "owner/repo", pr: 7, head: A, reviewedHead: A, localHead: A, localResult: "passed" as const } }) });
   if (options.state === "changes_requested" || options.state === "in_progress") board.update(t.id, "claude", "changes_requested", { state: "changes_requested" });
   if (options.state === "in_progress") board.update(t.id, "codex", "accepted", { state: "in_progress" });
-  return { tasks, board, id: t.id, calls, move: (head: string) => { currentHead = head; }, unavailable: () => { unavailable = true; }, limitMetadata: () => { limitedMetadata = true; } };
+  return { tasks, board, id: t.id, calls, move: (head: string) => { currentHead = head; }, unavailable: () => { unavailable = true; }, limitMetadata: () => { limitedMetadata = true; }, merge: () => { prState = "MERGED"; } };
 }
 async function refusal(action: () => Promise<unknown>): Promise<string | undefined> {
   try { await action(); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); }
@@ -196,4 +196,26 @@ test("off: a legacy history-bound head still gets current PR drift protection", 
   const message = await refusal(() => r.tasks.review("claude", r.id, "approved", "synthetic legacy history head"));
   expect(message).toContain(A); expect(message).toContain(B); ownerNextStep(message);
   expect(r.board.get(r.id)).toEqual(before);
+});
+
+for (const mode of ["off", "advise"] as const) test(`${mode}: #1435 an escalated owner's re-file with the PR head its refusal names is accepted`, async () => {
+  const r = await rig({ mode, state: "changes_requested" });
+  r.board.update(r.id, "hub", "escalated", { owner: "claude", reviewer: null, rejections: 0 });
+  r.board.update(r.id, "claude", "accepted", { state: "in_progress" });
+  r.move(B);
+  // The issue's first call named a commit that is not the PR head (the merge commit); its refusal names the PR head.
+  const C = "c".repeat(40);
+  const message = await refusal(() => r.tasks.done("claude", r.id, "synthetic re-file at the merge commit", { repo: "owner/repo", commit: C, paths: ["src/x.ts"] }));
+  if (mode === "advise") { expect(message).toContain(B); ownerNextStep(message); }
+  const submitted = await r.tasks.done("claude", r.id, "synthetic escalated re-file at the new PR head", { repo: "owner/repo", commit: B, paths: ["src/x.ts"] });
+  expect(submitted.refs.commit).toBe(B);
+});
+
+test("advise: #1435 the same re-file is accepted after the PR was merged at that head", async () => {
+  const r = await rig({ mode: "advise", state: "changes_requested" });
+  r.board.update(r.id, "hub", "escalated", { owner: "claude", reviewer: null, rejections: 0 });
+  r.board.update(r.id, "claude", "accepted", { state: "in_progress" });
+  r.move(B); r.merge();
+  const submitted = await r.tasks.done("claude", r.id, "synthetic re-file of merged work", { repo: "owner/repo", commit: B });
+  expect(submitted.refs.commit).toBe(B);
 });

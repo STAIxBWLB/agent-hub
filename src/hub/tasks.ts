@@ -7883,7 +7883,9 @@ export class Tasks {
     let selection = this.poolReview(task, refs);
     let reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined), reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
-      reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
+      // #1435: with no reviewer (an escalated owner's work) this gate is the approval, and what it approves is the full head the owner just filed,
+      // not the head an earlier review recorded: comparing that older head with the PR made every re-file at the named head refuse again.
+      reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval", reviewer ? undefined : draft?.commit);
       requestCheck();
       task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, false, refresh), draft), link, refs);
       if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
