@@ -51,7 +51,7 @@ import { evalAdvice, evalGapBlockers, evalRequiredChecks, readEvalFor } from "./
 import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequestLine, SECURITY_CHECKLIST, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
 import { AUDIT_PROFILES, applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, needsVerification, parseUnitReports, seedLedger, settlementRefusal, SETTLEMENTS, unitId, verificationRefusal, type AuditFinding, type AuditProfile, type AuditSummary, type CarryLookup, type PublicAuditFinding } from "./security-audit.ts";
 import type { AuditSource } from "./audit-source.ts";
-import { SURVEY_FOCUS, parseSurveyFindings, parseSurveyVetDecisions, publicSurveyFinding, surveyBrief, surveyFindingKey, surveyObject, surveyPath,
+import { SURVEY_FOCUS, SURVEY_LIMITS, parseSurveyFindings, parseSurveyVetDecisions, publicSurveyFinding, surveyBrief, surveyFindingKey, surveyObject, surveyPath,
   type SurveyFinding, type SurveyFocus, type SurveyPass } from "./advisor-survey.ts";
 import { consideredFindingMatch, parseConsideredEntry, type ConsideredEntry } from "./considered-findings.ts";
 import type { StoredSurvey, SurveyPreparedCard } from "./board.ts";
@@ -7136,13 +7136,19 @@ export class Tasks {
         if (before.suppressed && !decision.reason) continue;
         if (before.rejectedBefore && decision.reason) reconsiderations.push(entry(decision.reason));
         const key = surveyFindingKey(survey.repo, finding.pass, finding.id), security = finding.pass === "security";
+        const history = this.d.board.surveyCardHistory(key), reopens = history.active ? undefined : history.closed;
+        current();
+        const reopenReason = security ? "explicit current vet; security details remain in the authorized survey"
+          : decision.reason ?? (before.change === "changed" ? "affected paths changed since the recorded rejection" : "explicit current vet; no applicable rejected finding remains");
+        const reopening = reopens === undefined ? {} : { reopens, reopenReason };
         const draft = { title: security ? `Survey security finding ${finding.id}` : `Survey ${finding.confidence}: ${finding.id}`,
-          detail: `${key}\nSource survey task ${task.id} at ${survey.ref}.\n${finding.confidence === "low" ? "Read-only investigation. Do not edit files or execute a fix." : "Prepare a backlog plan. Do not execute a fix."}${security ? "\nSecurity details withheld; read the source survey with authorized task access." : `\nEvidence: ${finding.evidence}\nImpact: ${finding.impact}\nEffort: ${finding.effort}\nRisk: ${finding.risk}\nFix sketch: ${finding.fix_sketch}`}`,
+          detail: `${key}\nSource survey task ${task.id} at ${survey.ref}.\n${finding.confidence === "low" ? "Read-only investigation. Do not edit files or execute a fix." : "Prepare a backlog plan. Do not execute a fix."}${security ? "\nSecurity details withheld; read the source survey with authorized task access." : `\nEvidence: ${finding.evidence}\nImpact: ${finding.impact}\nEffort: ${finding.effort}\nRisk: ${finding.risk}\nFix sketch: ${finding.fix_sketch}`}${reopens === undefined ? "" : `\nReopened from hub task ${reopens}: ${reopenReason}`}`,
           refs: security ? {} : { paths: finding.paths } };
+        if (Buffer.byteLength(draft.detail) > SURVEY_LIMITS.cardBytes) throw new PreEffectToolRefusal("survey card exceeds its detail bound; shorten the finding or reconsideration reason");
         const signals = this.signalsFor(draft);
         if (this.isPii({ signals }) || signals.includes("pii") || signals.includes("pii_path") || !this.publicMetadataText(JSON.stringify(draft))) throw new PreEffectToolRefusal("survey candidate card is not public");
         if (this.screenOn() && (await this.screenCall(JSON.stringify(draft))).label !== "clear") throw new PreEffectToolRefusal("survey card privacy screening was unavailable or refused");
-        current(); cards.push({ id: finding.id, key, ...draft, class: finding.confidence === "low" ? "triage" : "plan", signals });
+        current(); cards.push({ id: finding.id, key, ...draft, class: finding.confidence === "low" ? "triage" : "plan", signals, ...reopening });
       }
       current();
       const result = this.d.board.surveyApply(survey.id, { findings, decisions, by, at: this.d.now?.() ?? Date.now(), cards, rejections, reconsiderations },

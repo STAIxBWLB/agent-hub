@@ -11,7 +11,7 @@ export interface SurveyFinding {
   confidence: "high" | "medium" | "low"; fix_sketch: string;
 }
 export interface SurveyVetDecision { id: string; verdict: "vetted" | "rejected"; reason?: string }
-export const SURVEY_LIMITS = { findings: 64, bytes: 64 * 1024, paths: 64, pathBytes: 512, textBytes: 2048 } as const;
+export const SURVEY_LIMITS = { findings: 64, bytes: 64 * 1024, paths: 64, pathBytes: 512, textBytes: 2048, cardBytes: 8192 } as const;
 const invalid = (): never => { throw new Error("invalid bounded survey data"); };
 
 /** Shared closed own-data decoding. Never call methods or getters on caller data. */

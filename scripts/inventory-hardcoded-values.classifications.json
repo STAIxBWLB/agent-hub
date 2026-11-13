@@ -894,6 +894,7 @@
   "src/hub/activity.ts:updateActivity:inline:u.content.slice=12#0": "operational",
   "src/hub/activity.ts:updateActivity:inline:u.locations.slice=12#0": "operational",
   "src/hub/advisor-survey.ts:bytes:inline:bytes=64 * 1024#0": "contract",
+  "src/hub/advisor-survey.ts:cardBytes:inline:cardBytes=8192#0": "contract",
   "src/hub/advisor-survey.ts:evidence:inline:surveyText=18#0": "contract",
   "src/hub/advisor-survey.ts:evidencePath:inline:surveyPath=1#0": "contract",
   "src/hub/advisor-survey.ts:findings:inline:findings=64#0": "contract",

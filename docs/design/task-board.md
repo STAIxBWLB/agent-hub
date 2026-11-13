@@ -439,11 +439,11 @@ id/positional exclusion convention as review recurrence. Repository identity,
 source commit and literal affected paths scope suppression. A complete diff
 clears only changed paths; unknown evidence never clears rejection. Explicit
 planner vetted reason records reconsideration and permits a new card without
-deleting historical rejection. Unknown path/ref records remain historical,
+deleting historical rejection. Dedupe covers only open host-created cards. A closed approved/cancelled marker permits a new unsuppressed vetted card, whose screened detail names the prior "hub task N" and reopening reason; a closed card never clears an active rejection. Peer-authored marker copies confer no dedupe authority. Unknown path/ref records remain historical,
 never invented unchanged proof. Public projections preserve existing security
 and PII boundaries; internal repository keys are not public markers. Survey
 arguments/results stay out of capture. Off exposes no new tool/task fields,
 and no background scanner, timer or model judge is introduced. Live pilots
 require the person's separate instruction.
 
-Survey reports accept at most 64 candidates and 64 KiB per normalized request. A candidate has at most 64 literal paths (512 bytes each) and 2048-byte narrative fields. Historical readback returns at most 16 reasons per key; a 1000-row history window that cannot be read completely remains unknown and suppressed. The bounded 32-key/3072-byte brief is a summary, not a complete rejection inventory. `advisor_surveys` advertises parser/recovery support independently of lifecycle mode, but survey tools and task metadata are published only when enabled. Persisted survey or considered state requires that feature and its conditional integrity proof on recovery; empty legacy stores keep their existing format floor.
+Survey reports accept at most 64 candidates and 64 KiB per normalized request. A candidate has at most 64 literal paths (512 bytes each) and 2048-byte narrative fields. Generated card detail, including any reopening reason, is at most 8 KiB; oversized combinations refuse with a shortening next step. Historical readback returns at most 16 reasons per key; a 1000-row history window that cannot be read completely remains unknown and suppressed. The bounded 32-key/3072-byte brief is a summary, not a complete rejection inventory. `advisor_surveys` advertises parser/recovery support independently of lifecycle mode, but survey tools and task metadata are published only when enabled. Persisted survey or considered state requires that feature and its conditional integrity proof on recovery; empty legacy stores keep their existing format floor.

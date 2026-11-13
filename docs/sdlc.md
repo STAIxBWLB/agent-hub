@@ -715,7 +715,7 @@ suppression for that path. Unrelated path changes do not clear it. Unknown or
 incomplete change evidence shows rejected before, change unknown, and retains
 suppression. The planner may reconsider only with an explicit vetted reason;
 that creates a reconsideration entry and may create the card while preserving
-the historical rejection. No rejection is deleted or silently rebound.
+the historical rejection. No rejection is deleted or silently rebound. Open host-created cards alone dedupe a matching marker. Approved or cancelled cards remain history: when the rejection no longer suppresses the finding, a new vetted card names the prior closed card as "hub task N" and the reason it reopened. Closing a card never clears an unchanged rejection.
 
 Private turns, child contexts, recovery and ended role authority refuse writes.
 Security finding text and paths remain in authorized private reports, not

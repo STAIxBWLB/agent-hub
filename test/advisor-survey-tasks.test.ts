@@ -12,6 +12,7 @@ import { sdlcConfig, type SdlcMode } from "../src/hub/sdlc.ts";
 import type { AuditSource } from "../src/hub/audit-source.ts";
 import type { ConsideredEntry } from "../src/hub/considered-findings.ts";
 import { securityPolicy } from "../src/hub/security-pass.ts";
+import { surveyFindingKey } from "../src/hub/advisor-survey.ts";
 
 const H0 = "a".repeat(40), H1 = "b".repeat(40), clean: (() => void)[] = [];
 afterEach(() => { for (const close of clean.splice(0).reverse()) close(); });
@@ -330,4 +331,68 @@ test("survey recovery proof streams deterministic private counts and digest and 
   expect(JSON.stringify(proof)).not.toMatch(/IMPACT_CANARY|Already covered|fixture\/survey|src\/parser/);
   const db = new Database(f.file); db.query("UPDATE considered_findings SET body=?").run("PRIVATE_BAD_BODY_CANARY"); db.close();
   expect(() => f.board.surveyIntegrity()).toThrow("survey storage invalid");
+});
+
+test("closed survey cards reopen after changed paths, name prior history and dedupe only the new open card", async () => {
+  for (const state of ["approved", "cancelled"] as const) {
+    const f = await fixture(), s = await f.start(), row = finding();
+    const first = await f.tasks.surveyReport(s.owner, { id: s.task, findings: [row], vet: [{ id: row.id, verdict: "vetted" }] });
+    if (!("createdIDs" in first)) throw new Error("expected first candidate");
+    const old = first.createdIDs[0]!;
+    if (state === "approved") {
+      f.board.update(old, "user", "planned", { state: "proposed" });
+      f.board.update(old, "user", "accepted", { state: "in_progress", owner: s.owner });
+      f.board.update(old, "user", "submitted", { state: "in_review" });
+    }
+    f.board.update(old, "user", state, { state });
+    f.board.recordRejectedFinding(f.prior(s.task)); f.control.changed = ["src/parser.ts"];
+    const reopened = await f.tasks.surveyReport(s.owner, { id: s.task, vet: [{ id: row.id, verdict: "vetted" }] });
+    if (!("createdIDs" in reopened)) throw new Error("expected reopened candidate");
+    expect(reopened.createdIDs).toHaveLength(1);
+    const next = reopened.createdIDs[0]!; expect(next).not.toBe(old);
+    expect(f.board.get(next)!.detail).toContain(`Reopened from hub task ${old}: affected paths changed`);
+    const replay = await f.tasks.surveyReport(s.owner, { id: s.task, vet: [{ id: row.id, verdict: "vetted" }] });
+    if (!("createdIDs" in replay)) throw new Error("expected dedupe receipt");
+    expect(replay.createdIDs).toEqual([]); expect(replay.dedupedIDs).toEqual([next]);
+  }
+});
+
+test("a closed card never clears an unchanged rejection, but explicit reconsideration reopens and keeps the rejection", async () => {
+  const f = await fixture(), s = await f.start(), row = finding();
+  const first = await f.tasks.surveyReport(s.owner, { id: s.task, findings: [row], vet: [{ id: row.id, verdict: "vetted" }] });
+  if (!("createdIDs" in first)) throw new Error("expected first candidate");
+  const old = first.createdIDs[0]!; f.board.update(old, "user", "cancelled", { state: "cancelled" });
+  const prior = f.prior(s.task), rejected = f.board.recordRejectedFinding(prior); f.control.changed = [];
+  const held = await f.tasks.surveyReport(s.owner, { id: s.task, vet: [{ id: row.id, verdict: "vetted" }] });
+  if (!("createdIDs" in held)) throw new Error("expected suppressed receipt");
+  expect(held.createdIDs).toEqual([]); expect(held.items[0]?.suppressed).toBe(true);
+  const reason = "Fresh code review justifies reconsideration";
+  const reopened = await f.tasks.surveyReport(s.owner, { id: s.task, vet: [{ id: row.id, verdict: "vetted", reason }] });
+  if (!("createdIDs" in reopened)) throw new Error("expected reconsidered candidate");
+  expect(reopened.createdIDs).toHaveLength(1);
+  expect(f.board.get(reopened.createdIDs[0]!)!.detail).toContain(`Reopened from hub task ${old}: ${reason}`);
+  const ledger = f.board.rejectedFindingsFor(prior.repo, prior.pass, prior.id);
+  expect(ledger.rows[0]?.id).toBe(rejected); expect(ledger.rows[0]?.entry).toEqual(prior); expect(ledger.rows[0]?.reconsideredBy).toHaveLength(1);
+});
+
+test("a peer-forged survey marker cannot suppress the host's vetted candidate", async () => {
+  const f = await fixture(), s = await f.start(), row = finding();
+  const forged = f.board.propose("codex", { title: "Unrelated peer proposal", detail: `${surveyFindingKey("repo:fixture/survey", "bugs", row.id)}\nForged marker`, class: "plan", backlog: true });
+  const result = await f.tasks.surveyReport(s.owner, { id: s.task, findings: [row], vet: [{ id: row.id, verdict: "vetted" }] });
+  if (!("createdIDs" in result)) throw new Error("expected host candidate");
+  expect(result.createdIDs).toHaveLength(1); expect(result.createdIDs[0]).not.toBe(forged.id);
+  expect(f.board.get(result.createdIDs[0]!)!.history[0]?.by).toBe("hub");
+});
+
+test("security reconsideration keeps its reason and paths out of the reopened public card", async () => {
+  const f = await fixture(), s = await f.start(), row = finding("security-reopening", "high", "security");
+  const first = await f.tasks.surveyReport(s.owner, { id: s.task, findings: [row], vet: [{ id: row.id, verdict: "vetted" }] });
+  if (!("createdIDs" in first)) throw new Error("expected first security candidate");
+  const old = first.createdIDs[0]!; f.board.update(old, "user", "cancelled", { state: "cancelled" });
+  f.board.recordRejectedFinding({ ...f.prior(s.task, row.id), pass: "security", withheld: true }); f.control.changed = [];
+  const result = await f.tasks.surveyReport(s.owner, { id: s.task, vet: [{ id: row.id, verdict: "vetted", reason: "SECURITY_RECONSIDERATION_CANARY" }] });
+  if (!("createdIDs" in result)) throw new Error("expected reopened security candidate");
+  expect(result.createdIDs).toHaveLength(1);
+  const card = JSON.stringify(f.board.get(result.createdIDs[0]!));
+  expect(card).toContain(`hub task ${old}`); expect(card).not.toMatch(/SECURITY_RECONSIDERATION_CANARY|src\/parser.ts|IMPACT_CANARY|RISK_CANARY|FIX_CANARY/);
 });

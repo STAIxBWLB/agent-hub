@@ -31,12 +31,12 @@ import type { CostPlan, ReviewCost } from "./cost-governance.ts";
 import type { SpecRef, SpecTaskReport } from "./specs-task.ts";
 export type { SpecAck, SpecRef, SpecTaskReport } from "./specs-task.ts";
 import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
-import { parseSurveyFindings, parseSurveyVetDecisions, surveyArray, surveyObject, surveyPath, surveyText, surveyFindingId, surveyPass, type SurveyFinding, type SurveyVetDecision, SURVEY_FOCUS, type SurveyFocus } from "./advisor-survey.ts";
+import { parseSurveyFindings, parseSurveyVetDecisions, surveyArray, surveyObject, surveyPath, surveyText, surveyFindingId, surveyPass, type SurveyFinding, type SurveyVetDecision, SURVEY_FOCUS, SURVEY_LIMITS, type SurveyFocus } from "./advisor-survey.ts";
 import { parseConsideredEntry, type ConsideredEntry } from "./considered-findings.ts";
 
 export interface StoredSurvey { id: number; task: number; taskCreated: number; repo: string; ref: string; focus?: SurveyFocus; by: string; at: number; withheld?: true }
 export interface StoredSurveyFinding { finding: SurveyFinding; foundBy: string; foundAt: number; decision?: SurveyVetDecision; decisionBy?: string; decisionAt?: number }
-export interface SurveyPreparedCard { id: string; key: string; title: string; detail: string; class: "plan" | "triage"; refs?: TaskRefs; signals?: string[] }
+export interface SurveyPreparedCard { id: string; key: string; title: string; detail: string; class: "plan" | "triage"; refs?: TaskRefs; signals?: string[]; reopens?: number; reopenReason?: string }
 export interface SurveyApplyInput { findings: SurveyFinding[]; decisions: SurveyVetDecision[]; by: string; at: number; cards?: SurveyPreparedCard[]; rejections?: ConsideredEntry[]; reconsiderations?: ConsideredEntry[]; withheld?: true }
 export interface SurveyWriteFence { boardRevision: number; taskCreated: number; taskFlowRevision: number; owner: string }
 export interface StoredRejectedFinding { id: number; entry: ConsideredEntry; reconsideredBy: number[] }
@@ -1400,6 +1400,18 @@ export class Board {
   }
   recordRejectedFinding(entry: ConsideredEntry): number { return this.atomic(() => this.consideredWrite(entry, "rejected")); }
   recordReconsideredFinding(entry: ConsideredEntry, priorIDs: readonly number[]): number { return this.atomic(() => this.consideredWrite(entry, "reconsidered", priorIDs)); }
+  /** Closed proposals are history, not dedupe. Caller screens any new reference before the atomic apply. */
+  surveyCardHistory(key: string): { active?: number; closed?: number } {
+    surveyText(key, 512);
+    // ponytail: at most 1000 matching host-created cards; overflow is unknown, not permission to duplicate. Page this proof if a key outgrows the window.
+    const rows = this.db.query("SELECT id,state FROM tasks WHERE substr(detail,1,instr(detail||char(10),char(10))-1)=? AND class IN ('plan','triage') AND json_extract(history,'$[0].by')=? ORDER BY id DESC LIMIT ?")
+      .all(key, HUB, SURVEY_STORE_LIMIT + 1) as { id: number; state: string }[];
+    if (rows.length > SURVEY_STORE_LIMIT) return surveyStorageFailure();
+    const active = rows.filter(row => !isClosedTaskState(row.state));
+    if (active.length > 1) return surveyStorageFailure();
+    const closed = rows.find(row => isClosedTaskState(row.state));
+    return { ...(active[0] ? { active: surveyInteger(active[0].id) } : {}), ...(closed ? { closed: surveyInteger(closed.id) } : {}) };
+  }
   rejectedFindingsFor(repo: string, pass: string, id: string, limit = 100): { rows: StoredRejectedFinding[]; complete: boolean } {
     return this.rejectedFindings(repo, limit, { pass: surveyPass(pass), id: surveyFindingId(id) });
   }
@@ -1432,15 +1444,17 @@ export class Board {
     const findings = parseSurveyFindings(given.findings), decisions = parseSurveyVetDecisions(given.decisions), by = surveyText(given.by, 128), at = surveyInteger(given.at, 0);
     if (given.withheld !== undefined && given.withheld !== true) return surveyInputFailure();
     const cards = surveyArray(given.cards ?? [], 64).map(value => {
-      const row = surveyObject(value, ["id", "key", "title", "detail", "class", "refs", "signals"]), key = surveyText(row.key, 512), title = surveyText(row.title, 512);
-      if (typeof row.detail !== "string" || Buffer.byteLength(row.detail) > 8192 || row.detail.split("\n", 1)[0] !== key || !key.startsWith("Survey finding key: ") || row.class !== "plan" && row.class !== "triage") return surveyInputFailure();
+      const row = surveyObject(value, ["id", "key", "title", "detail", "class", "refs", "signals", "reopens", "reopenReason"]), key = surveyText(row.key, 512), title = surveyText(row.title, 512);
+      if (typeof row.detail !== "string" || Buffer.byteLength(row.detail) > SURVEY_LIMITS.cardBytes || row.detail.split("\n", 1)[0] !== key || !key.startsWith("Survey finding key: ") || row.class !== "plan" && row.class !== "triage") return surveyInputFailure();
       const rawRefs = row.refs === undefined ? undefined : surveyObject(row.refs, ["repo", "branch", "commit", "paths"]), refs: TaskRefs | undefined = rawRefs ? {} : undefined;
       if (rawRefs && refs) {
         for (const key of ["repo", "branch", "commit"] as const) if (rawRefs[key] !== undefined) refs[key] = surveyText(rawRefs[key], 1024);
         if (rawRefs.paths !== undefined) refs.paths = surveyArray(rawRefs.paths, 64).map(surveyPath);
       }
       const signals = row.signals === undefined ? undefined : surveyArray(row.signals, 64).map(value => surveyText(value, 128));
-      return { id: surveyText(row.id, 96), key, title, detail: row.detail, class: row.class, ...(refs ? { refs } : {}), ...(signals ? { signals } : {}) };
+      if ((row.reopens === undefined) !== (row.reopenReason === undefined)) return surveyInputFailure();
+      const reopening = row.reopens === undefined ? {} : { reopens: surveyInteger(row.reopens), reopenReason: surveyText(row.reopenReason) };
+      return { id: surveyText(row.id, 96), key, title, detail: row.detail, class: row.class, ...(refs ? { refs } : {}), ...(signals ? { signals } : {}), ...reopening };
     });
     if (new Set(cards.map(card => card.id)).size !== cards.length || new Set(cards.map(card => card.key)).size !== cards.length) return surveyInputFailure();
     const rejections = surveyArray(given.rejections ?? [], 64).map(parseConsideredEntry), reconsiderations = surveyArray(given.reconsiderations ?? [], 64).map(parseConsideredEntry);
@@ -1490,10 +1504,12 @@ export class Board {
         const row = merged.get(card.id);
         if (!row || row.decision?.verdict !== "vetted" || card.class !== (row.finding.confidence === "low" ? "triage" : "plan")) return surveyInputFailure();
         if (row.finding.pass === "security" && card.refs && Object.keys(card.refs).length) return surveyInputFailure();
-        const matches = this.db.query("SELECT id FROM tasks WHERE substr(detail,1,instr(detail||char(10),char(10))-1)=? ORDER BY id LIMIT 2").all(card.key) as { id: number }[];
-        if (matches.length > 1) return surveyInputFailure();
-        if (matches[0]) dedupedIDs.push(matches[0].id);
-        else createdIDs.push(this.propose(HUB, { title: card.title, detail: card.detail, class: card.class, backlog: true, ...(card.refs ? { refs: card.refs } : {}), ...(card.signals ? { signals: card.signals } : {}) }).id);
+        const history = this.surveyCardHistory(card.key);
+        if (history.active) dedupedIDs.push(history.active);
+        else {
+          if (history.closed !== card.reopens || card.reopens !== undefined && !card.detail.includes(`Reopened from hub task ${card.reopens}: ${card.reopenReason}`)) return surveyInputFailure();
+          createdIDs.push(this.propose(HUB, { title: card.title, detail: card.detail, class: card.class, backlog: true, ...(card.refs ? { refs: card.refs } : {}), ...(card.signals ? { signals: card.signals } : {}) }).id);
+        }
       }
       for (const row of merged.values()) {
         const prior = existing.find(old => old.finding.id === row.finding.id), body = JSON.stringify(row);
