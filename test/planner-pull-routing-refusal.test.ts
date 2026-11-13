@@ -28,7 +28,7 @@ async function rig() {
     roles: { claude: ["planner"], codex: ["implementer"], kimi: ["implementer"] }, wipLimit: () => 1 } as never);
   for (const id of ["codex", "kimi", "claude"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { tasks };
+  return { tasks, board, bus };
 }
 
 test("an unreserved planner pull names each routing refusal and the reserve-then-pull route (#1430)", async () => {
@@ -66,4 +66,24 @@ test("routing reasons remain visible alongside another peer's WIP refusal (#1430
   expect(refused).toContain("codex WIP full (1/1)");
   expect(refused).toContain("kimi: pii: on-prem peers only");
   expect(refused).not.toContain("PRIVATE-919");
+});
+
+
+for (const by of [USER, "claude"]) test(`a ${by === USER ? "person" : "planner"}-reserved routing refusal names an authorized next step (#1430)`, async () => {
+  const r = await rig();
+  const task = await r.tasks.propose(USER, { title: "Reserved routing fixture", class: "implement", backlog: true });
+  const planned = await r.tasks.planBacklog(by, { id: task.id, revision: task.planningRevision ?? 0, fields: { reserved: "codex" }, reason: "reserve fixture peer" });
+  await r.bus.peers.get("codex")!.stop();
+  const before = r.board.get(task.id);
+  const refused = await r.tasks.pullPlanned("claude", { id: task.id, revision: planned.planningRevision ?? 0, reason: "ready" }).then(() => "", (error: Error) => error.message);
+  expect(refused).toContain("reserved peer codex cannot take the planner pull");
+  if (by === USER) {
+    expect(refused).toContain("a person's reservation is retained");
+    expect(refused).toEndWith("ask the person to change the reservation");
+    expect(refused).not.toContain("hub_backlog_plan fields.reserved");
+  } else {
+    expect(refused).toContain("hub_backlog_plan fields.reserved");
+    expect(refused).not.toContain("ask the person");
+  }
+  expect(r.board.get(task.id)).toEqual(before);
 });
