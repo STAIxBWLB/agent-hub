@@ -31,6 +31,33 @@ import type { CostPlan, ReviewCost } from "./cost-governance.ts";
 import type { SpecRef, SpecTaskReport } from "./specs-task.ts";
 export type { SpecAck, SpecRef, SpecTaskReport } from "./specs-task.ts";
 import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
+import { parseSurveyFindings, parseSurveyVetDecisions, surveyArray, surveyObject, surveyPath, surveyText, surveyFindingId, surveyPass, type SurveyFinding, type SurveyVetDecision, SURVEY_FOCUS, type SurveyFocus } from "./advisor-survey.ts";
+import { parseConsideredEntry, type ConsideredEntry } from "./considered-findings.ts";
+
+export interface StoredSurvey { id: number; task: number; taskCreated: number; repo: string; ref: string; focus?: SurveyFocus; by: string; at: number; withheld?: true }
+export interface StoredSurveyFinding { finding: SurveyFinding; foundBy: string; foundAt: number; decision?: SurveyVetDecision; decisionBy?: string; decisionAt?: number }
+export interface SurveyPreparedCard { id: string; key: string; title: string; detail: string; class: "plan" | "triage"; refs?: TaskRefs; signals?: string[] }
+export interface SurveyApplyInput { findings: SurveyFinding[]; decisions: SurveyVetDecision[]; by: string; at: number; cards?: SurveyPreparedCard[]; rejections?: ConsideredEntry[]; reconsiderations?: ConsideredEntry[]; withheld?: true }
+export interface SurveyWriteFence { boardRevision: number; taskCreated: number; taskFlowRevision: number; owner: string }
+export interface StoredRejectedFinding { id: number; entry: ConsideredEntry; reconsideredBy: number[] }
+const SURVEY_STORE_LIMIT = 1000, SURVEY_STORE_BYTES = 64 * 1024;
+const surveyStorageFailure = (): never => { throw new Error("survey storage invalid; stop the hub and restore a trusted hub.db backup before retrying"); };
+const surveyInputFailure = (): never => { throw new Error("invalid survey storage input or changed binding"); };
+const surveyInteger = (value: unknown, min = 1): number => typeof value === "number" && Number.isSafeInteger(value) && value >= min ? value : surveyInputFailure();
+const surveyHash = (body: string) => createHash("sha256").update(body).digest("hex");
+function surveyCreateInput(input: unknown): Omit<StoredSurvey, "id"> {
+  const row = surveyObject(input, ["task", "taskCreated", "repo", "ref", "focus", "by", "at", "withheld"]);
+  if (typeof row.ref !== "string" || !/^[a-f0-9]{40}$/.test(row.ref) || row.withheld !== undefined && row.withheld !== true) return surveyInputFailure();
+  return { task: surveyInteger(row.task), taskCreated: surveyInteger(row.taskCreated, 0), repo: surveyText(row.repo, 1024), ref: row.ref,
+    ...(row.focus === undefined ? {} : { focus: (typeof row.focus === "string" && (SURVEY_FOCUS as readonly string[]).includes(row.focus) ? row.focus as SurveyFocus : surveyInputFailure()) }), by: surveyText(row.by, 128), at: surveyInteger(row.at, 0), ...(row.withheld === true ? { withheld: true } : {}) };
+}
+function surveyStoredFinding(input: unknown): StoredSurveyFinding {
+  const row = surveyObject(input, ["finding", "foundBy", "foundAt", "decision", "decisionBy", "decisionAt"]), finding = parseSurveyFindings([row.finding])[0]!;
+  const decision = row.decision === undefined ? undefined : parseSurveyVetDecisions([row.decision])[0]!;
+  if (decision && decision.id !== finding.id || !decision && (row.decisionBy !== undefined || row.decisionAt !== undefined)) return surveyInputFailure();
+  return { finding, foundBy: surveyText(row.foundBy, 128), foundAt: surveyInteger(row.foundAt, 0),
+    ...(decision ? { decision, decisionBy: surveyText(row.decisionBy, 128), decisionAt: surveyInteger(row.decisionAt, 0) } : {}) };
+}
 
 const GUIDANCE_VARIANT_SELECT = `SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN id END AS id,CASE WHEN typeof(body)='text' AND length(CAST(body AS BLOB))<=? THEN body END AS body,
       CASE WHEN typeof(body_sha256)='text' AND length(CAST(body_sha256 AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN body_sha256 END AS body_sha256,
@@ -645,6 +672,16 @@ export class Board {
       UNIQUE(project_id,task_id,task_created,from_sha256,reference_sha256))`);
     this.db.run("CREATE INDEX IF NOT EXISTS execution_reference_task_scope ON execution_reference_links(project_id,task_id,task_created,id)");
     this.db.run("CREATE INDEX IF NOT EXISTS guidance_variant_task_id ON guidance_variants(project_id,task_id,task_created,id)");
+    // Private additive survey/considered state, never copied into task projections or an unconditional format floor.
+    this.db.run(`CREATE TABLE IF NOT EXISTS advisor_surveys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, task_created INTEGER NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL,
+      withheld INTEGER NOT NULL DEFAULT 0, UNIQUE(task_id,task_created))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS advisor_survey_findings (
+      survey INTEGER NOT NULL, finding_id TEXT NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL, PRIMARY KEY(survey,finding_id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS considered_findings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, finding_id TEXT NOT NULL, pass TEXT NOT NULL, kind TEXT NOT NULL,
+      body TEXT NOT NULL, body_sha256 TEXT NOT NULL, replay_key TEXT NOT NULL UNIQUE, prior_ids TEXT NOT NULL, withheld INTEGER NOT NULL DEFAULT 0)`);
+    this.db.run("CREATE INDEX IF NOT EXISTS considered_finding_identity ON considered_findings(repo,finding_id,pass,id)");
     // #1403 A4: the security audit coverage ledger. Private local state like the guidance tables: only Tasks writes it (through the methods below), and no column is copied into a Task, a history entry or a public view.
     this.db.run(`CREATE TABLE IF NOT EXISTS security_audits (
       id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, task_created INTEGER NOT NULL, ref TEXT NOT NULL, since TEXT, profile TEXT NOT NULL,
@@ -1283,6 +1320,230 @@ export class Board {
       return { record: next, already: false };
     });
   }
+  /** Private survey metadata, linked to the existing task incarnation. */
+  surveyCreate(input: { task: number; taskCreated: number; repo: string; ref: string; focus?: SurveyFocus; by: string; at: number; withheld?: true }): number {
+    const row = surveyCreateInput(input);
+    const write = () => {
+      const task = this.get(row.task);
+      if (!task || task.created !== row.taskCreated || task.class !== "plan" || task.signals.includes("pii") || task.signals.includes("pii_path")) return surveyInputFailure();
+      const known = this.surveyOfTask(row.task, row.taskCreated);
+      if (known) {
+        const { id: _id, withheld: _private, ...prior } = known, { withheld: _nextPrivate, ...next } = row;
+        if (JSON.stringify(prior) !== JSON.stringify(next)) return surveyInputFailure();
+        if (row.withheld && !known.withheld) this.taskWrite(() => this.db.query("UPDATE advisor_surveys SET withheld=1 WHERE id=?").run(known.id));
+        return known.id;
+      }
+      const body = JSON.stringify(row);
+      const saved = this.taskWrite(() => this.db.query("INSERT INTO advisor_surveys(task_id,task_created,body,body_sha256,withheld) VALUES(?,?,?,?,?)")
+        .run(row.task, row.taskCreated, body, surveyHash(body), row.withheld ? 1 : 0));
+      return Number(saved.lastInsertRowid);
+    };
+    // The host-only proposal hook already owns the transaction and deferred notifications.
+    return this.pendingChanges ? write() : this.atomic(write);
+  }
+  surveyOfTask(taskId: number, created: number): StoredSurvey | undefined {
+    surveyInteger(taskId); surveyInteger(created, 0);
+    const row = this.db.query("SELECT id FROM advisor_surveys WHERE task_id=? AND task_created=?").get(taskId, created) as { id: number } | null;
+    return row ? this.survey(row.id) : undefined;
+  }
+  surveyOpen(repo: string): { id: number; task: number; taskCreated: number } | undefined {
+    surveyText(repo, 1024);
+    const rows = this.db.query("SELECT s.id FROM advisor_surveys s JOIN tasks t ON t.id=s.task_id AND t.created=s.task_created WHERE t.state NOT IN ('approved','cancelled') ORDER BY s.id DESC LIMIT 1001").all() as { id: number }[];
+    if (rows.length > SURVEY_STORE_LIMIT) throw new Error("open survey inventory unavailable; reduce open surveys and retry");
+    const found = rows.map(row => this.survey(row.id)!).filter(row => row.repo === repo);
+    if (found.length > 1) throw new Error("multiple surveys are open; finish or cancel them before starting another");
+    const row = found[0]; return row ? { id: row.id, task: row.task, taskCreated: row.taskCreated } : undefined;
+  }
+  survey(id: number): StoredSurvey | undefined {
+    surveyInteger(id);
+    const row = this.db.query(`SELECT id,task_id,task_created,CASE WHEN length(CAST(body AS BLOB))<=${SURVEY_STORE_BYTES} THEN body END AS body,CASE WHEN length(CAST(body_sha256 AS BLOB))=64 THEN body_sha256 END AS body_sha256,withheld FROM advisor_surveys WHERE id=?`).get(id) as { id: number; task_id: number; task_created: number; body: string | null; body_sha256: string; withheld: number } | null;
+    if (!row) return;
+    try {
+      if (!row.body || surveyHash(row.body) !== row.body_sha256 || row.withheld !== 0 && row.withheld !== 1) return surveyStorageFailure();
+      const value = surveyCreateInput(JSON.parse(row.body));
+      if (value.task !== row.task_id || value.taskCreated !== row.task_created) return surveyStorageFailure();
+      return { id: row.id, ...value, ...(row.withheld ? { withheld: true } : {}) };
+    } catch { return surveyStorageFailure(); }
+  }
+  surveyFindings(id: number): StoredSurveyFinding[] {
+    surveyInteger(id);
+    const rows = this.db.query(`SELECT CASE WHEN length(CAST(finding_id AS BLOB))<=96 THEN finding_id END AS finding_id,CASE WHEN length(CAST(body AS BLOB))<=${SURVEY_STORE_BYTES} THEN body END AS body,CASE WHEN length(CAST(body_sha256 AS BLOB))=64 THEN body_sha256 END AS body_sha256 FROM advisor_survey_findings WHERE survey=? ORDER BY finding_id LIMIT 65`).all(id) as { finding_id: string; body: string | null; body_sha256: string }[];
+    try {
+      if (rows.length > 64) return surveyStorageFailure();
+      return rows.map(row => {
+        if (!row.body || surveyHash(row.body) !== row.body_sha256) return surveyStorageFailure();
+        const value = surveyStoredFinding(JSON.parse(row.body));
+        if (value.finding.id !== row.finding_id) return surveyStorageFailure();
+        return value;
+      });
+    } catch { return surveyStorageFailure(); }
+  }
+  private consideredWrite(input: unknown, kind: "rejected" | "reconsidered", priorIDs: readonly number[] = []): number {
+    const entry = parseConsideredEntry(input), task = this.get(entry.source.task);
+    if (!task || task.created !== entry.source.created) return surveyInputFailure();
+    const prior = surveyArray(priorIDs, SURVEY_STORE_LIMIT).map(value => surveyInteger(value)).sort((a, b) => a - b);
+    if (new Set(prior).size !== prior.length || kind === "rejected" && prior.length || kind === "reconsidered" && !prior.length) return surveyInputFailure();
+    for (const id of prior) {
+      const found = this.db.query("SELECT repo,finding_id,pass,kind FROM considered_findings WHERE id=?").get(id) as { repo: string; finding_id: string; pass: string; kind: string } | null;
+      if (!found || found.kind !== "rejected" || found.repo !== entry.repo || found.finding_id !== entry.id || found.pass !== entry.pass) return surveyInputFailure();
+    }
+    const { withheld: _private, ...identity } = entry, body = JSON.stringify(entry), priorBody = JSON.stringify(prior);
+    const replay = surveyHash(JSON.stringify({ kind, entry: identity, prior }));
+    const known = this.db.query("SELECT id FROM considered_findings WHERE replay_key=?").get(replay) as { id: number } | null;
+    if (known) {
+      if (entry.withheld) this.taskWrite(() => this.db.query("UPDATE considered_findings SET withheld=1 WHERE id=? AND withheld=0").run(known.id));
+      return known.id;
+    }
+    const saved = this.taskWrite(() => this.db.query("INSERT INTO considered_findings(repo,finding_id,pass,kind,body,body_sha256,replay_key,prior_ids,withheld) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(entry.repo, entry.id, entry.pass, kind, body, surveyHash(body), replay, priorBody, entry.withheld || entry.pass === "security" ? 1 : 0));
+    return Number(saved.lastInsertRowid);
+  }
+  recordRejectedFinding(entry: ConsideredEntry): number { return this.atomic(() => this.consideredWrite(entry, "rejected")); }
+  recordReconsideredFinding(entry: ConsideredEntry, priorIDs: readonly number[]): number { return this.atomic(() => this.consideredWrite(entry, "reconsidered", priorIDs)); }
+  rejectedFindingsFor(repo: string, pass: string, id: string, limit = 100): { rows: StoredRejectedFinding[]; complete: boolean } {
+    return this.rejectedFindings(repo, limit, { pass: surveyPass(pass), id: surveyFindingId(id) });
+  }
+  rejectedFindings(repo: string, limit = 100, selector?: { pass: string; id: string }): { rows: StoredRejectedFinding[]; complete: boolean } {
+    surveyText(repo, 1024); surveyInteger(limit); if (limit > SURVEY_STORE_LIMIT) return surveyInputFailure();
+    const selected = selector === undefined ? undefined : surveyObject(selector, ["pass", "id"]);
+    const args: (string | number)[] = [repo];
+    if (selected) args.push(surveyFindingId(selected.id), surveyPass(selected.pass)); args.push(limit + 1);
+    const rows = this.db.query(`SELECT id,CASE WHEN length(CAST(repo AS BLOB))<=1024 THEN repo END AS repo,CASE WHEN length(CAST(finding_id AS BLOB))<=96 THEN finding_id END AS finding_id,
+      CASE WHEN length(CAST(pass AS BLOB))<=16 THEN pass END AS pass,CASE WHEN length(CAST(kind AS BLOB))<=16 THEN kind END AS kind,
+      CASE WHEN length(CAST(body AS BLOB))<=${SURVEY_STORE_BYTES} THEN body END AS body,CASE WHEN length(CAST(body_sha256 AS BLOB))=64 THEN body_sha256 END AS body_sha256,
+      CASE WHEN length(CAST(prior_ids AS BLOB))<=${SURVEY_STORE_BYTES} THEN prior_ids END AS prior_ids,CASE WHEN length(CAST(replay_key AS BLOB))=64 THEN replay_key END AS replay_key,withheld FROM considered_findings WHERE repo=?${selected ? " AND finding_id=? AND pass=?" : ""} ORDER BY id LIMIT ?`).all(...args) as { id: number; repo: string; finding_id: string; pass: string; kind: string; body: string | null; body_sha256: string; prior_ids: string; replay_key: string; withheld: number }[];
+    if (rows.length > limit) return { rows: [], complete: false };
+    try {
+      const parsed = rows.map(row => {
+        if (!row.body || surveyHash(row.body) !== row.body_sha256 || row.withheld !== 0 && row.withheld !== 1 || row.kind !== "rejected" && row.kind !== "reconsidered" || typeof row.prior_ids !== "string") return surveyStorageFailure();
+        const entry = parseConsideredEntry(JSON.parse(row.body)), prior = surveyArray(JSON.parse(row.prior_ids), SURVEY_STORE_LIMIT).map(value => surveyInteger(value));
+        if (entry.repo !== row.repo || entry.id !== row.finding_id || entry.pass !== row.pass || new Set(prior).size !== prior.length || row.kind === "rejected" && prior.length || row.kind === "reconsidered" && !prior.length) return surveyStorageFailure();
+        const { withheld: _private, ...identity } = entry;
+        if (surveyHash(JSON.stringify({ kind: row.kind, entry: identity, prior })) !== row.replay_key || prior.some(id => id >= row.id)) return surveyStorageFailure();
+        return { id: row.id, entry: { ...entry, ...(row.withheld ? { withheld: true as const } : {}) }, kind: row.kind, prior };
+      });
+      for (const row of parsed) for (const id of row.prior) if (!parsed.some(prior => prior.id === id && prior.kind === "rejected" && prior.entry.id === row.entry.id && prior.entry.pass === row.entry.pass)) return surveyStorageFailure();
+      return { rows: parsed.filter(row => row.kind === "rejected").map(row => ({ id: row.id, entry: row.entry, reconsideredBy: parsed.filter(next => next.prior.includes(row.id)).map(next => next.id) })), complete: true };
+    } catch { return surveyStorageFailure(); }
+  }
+  surveyApply(id: number, input: SurveyApplyInput, fenceInput: SurveyWriteFence): { createdIDs: number[]; dedupedIDs: number[]; already: boolean } {
+    surveyInteger(id);
+    const given = surveyObject(input, ["findings", "decisions", "by", "at", "cards", "rejections", "reconsiderations", "withheld"]);
+    const findings = parseSurveyFindings(given.findings), decisions = parseSurveyVetDecisions(given.decisions), by = surveyText(given.by, 128), at = surveyInteger(given.at, 0);
+    if (given.withheld !== undefined && given.withheld !== true) return surveyInputFailure();
+    const cards = surveyArray(given.cards ?? [], 64).map(value => {
+      const row = surveyObject(value, ["id", "key", "title", "detail", "class", "refs", "signals"]), key = surveyText(row.key, 512), title = surveyText(row.title, 512);
+      if (typeof row.detail !== "string" || Buffer.byteLength(row.detail) > 8192 || row.detail.split("\n", 1)[0] !== key || !key.startsWith("Survey finding key: ") || row.class !== "plan" && row.class !== "triage") return surveyInputFailure();
+      const rawRefs = row.refs === undefined ? undefined : surveyObject(row.refs, ["repo", "branch", "commit", "paths"]), refs: TaskRefs | undefined = rawRefs ? {} : undefined;
+      if (rawRefs && refs) {
+        for (const key of ["repo", "branch", "commit"] as const) if (rawRefs[key] !== undefined) refs[key] = surveyText(rawRefs[key], 1024);
+        if (rawRefs.paths !== undefined) refs.paths = surveyArray(rawRefs.paths, 64).map(surveyPath);
+      }
+      const signals = row.signals === undefined ? undefined : surveyArray(row.signals, 64).map(value => surveyText(value, 128));
+      return { id: surveyText(row.id, 96), key, title, detail: row.detail, class: row.class, ...(refs ? { refs } : {}), ...(signals ? { signals } : {}) };
+    });
+    if (new Set(cards.map(card => card.id)).size !== cards.length || new Set(cards.map(card => card.key)).size !== cards.length) return surveyInputFailure();
+    const rejections = surveyArray(given.rejections ?? [], 64).map(parseConsideredEntry), reconsiderations = surveyArray(given.reconsiderations ?? [], 64).map(parseConsideredEntry);
+    const fence = surveyObject(fenceInput, ["boardRevision", "taskCreated", "taskFlowRevision", "owner"]);
+    surveyInteger(fence.boardRevision, 0); surveyInteger(fence.taskCreated, 0); surveyInteger(fence.taskFlowRevision, 0); surveyText(fence.owner, 128);
+    return this.atomic(() => {
+      const revision = this.statusRevision(), survey = this.survey(id), task = survey && this.get(survey.task);
+      if (!survey || !task || revision !== fence.boardRevision || task.created !== survey.taskCreated || task.created !== fence.taskCreated
+        || task.history.length !== fence.taskFlowRevision || task.class !== "plan" || task.state !== "in_progress" || task.owner !== fence.owner
+        || by !== task.owner && by !== USER || task.signals.includes("pii") || task.signals.includes("pii_path")) return surveyInputFailure();
+      const existing = this.surveyFindings(id), merged = new Map(existing.map(row => [row.finding.id, { ...row }]));
+      for (const finding of findings) {
+        const prior = merged.get(finding.id);
+        if (prior && JSON.stringify(prior.finding) !== JSON.stringify(finding)) return surveyInputFailure();
+        if (!prior) merged.set(finding.id, { finding, foundBy: by, foundAt: at });
+      }
+      if (merged.size > 64) return surveyInputFailure();
+      parseSurveyFindings([...merged.values()].map(row => row.finding));
+      const prepared = [...rejections, ...reconsiderations];
+      for (const entry of prepared) {
+        const finding = merged.get(entry.id)?.finding;
+        if (!finding || entry.repo !== survey.repo || entry.pass !== finding.pass || entry.ref !== survey.ref || entry.source.kind !== "survey"
+          || entry.source.task !== task.id || entry.source.created !== task.created || JSON.stringify(entry.paths) !== JSON.stringify(finding.paths)) return surveyInputFailure();
+      }
+      for (const decision of decisions) {
+        const row = merged.get(decision.id); if (!row) return surveyInputFailure();
+        const prior = row.decision;
+        if (prior && JSON.stringify(prior) === JSON.stringify(decision)) continue;
+        if (prior && !(prior.verdict === "rejected" && decision.verdict === "vetted" && decision.reason)
+          && !(prior.verdict === "vetted" && decision.verdict === "vetted" && decision.reason && reconsiderations.some(entry => entry.id === decision.id && entry.reason === decision.reason))) return surveyInputFailure();
+        const ledger = decision.verdict === "rejected" ? rejections : prior?.verdict === "rejected" ? reconsiderations : [];
+        if ((decision.verdict === "rejected" || prior?.verdict === "rejected") && !ledger.some(entry => entry.id === decision.id && entry.reason === decision.reason)) return surveyInputFailure();
+        row.decision = decision;
+        row.decisionBy = by; row.decisionAt = at;
+      }
+      parseSurveyVetDecisions([...merged.values()].flatMap(row => row.decision ? [row.decision] : []));
+      for (const entry of rejections) if (!decisions.some(row => row.id === entry.id && row.verdict === "rejected" && row.reason === entry.reason)) return surveyInputFailure();
+      for (const entry of reconsiderations) if (!decisions.some(row => row.id === entry.id && row.verdict === "vetted" && row.reason === entry.reason)) return surveyInputFailure();
+      for (const entry of rejections) this.consideredWrite(entry, "rejected");
+      for (const entry of reconsiderations) {
+        const ledger = this.rejectedFindingsFor(survey.repo, entry.pass, entry.id, SURVEY_STORE_LIMIT); if (!ledger.complete) return surveyInputFailure();
+        const prior = ledger.rows.filter(row => row.entry.id === entry.id && row.entry.pass === entry.pass).map(row => row.id);
+        this.consideredWrite(entry, "reconsidered", prior);
+      }
+      const createdIDs: number[] = [], dedupedIDs: number[] = [];
+      for (const card of cards) {
+        const row = merged.get(card.id);
+        if (!row || row.decision?.verdict !== "vetted" || card.class !== (row.finding.confidence === "low" ? "triage" : "plan")) return surveyInputFailure();
+        if (row.finding.pass === "security" && card.refs && Object.keys(card.refs).length) return surveyInputFailure();
+        const matches = this.db.query("SELECT id FROM tasks WHERE substr(detail,1,instr(detail||char(10),char(10))-1)=? ORDER BY id LIMIT 2").all(card.key) as { id: number }[];
+        if (matches.length > 1) return surveyInputFailure();
+        if (matches[0]) dedupedIDs.push(matches[0].id);
+        else createdIDs.push(this.propose(HUB, { title: card.title, detail: card.detail, class: card.class, backlog: true, ...(card.refs ? { refs: card.refs } : {}), ...(card.signals ? { signals: card.signals } : {}) }).id);
+      }
+      for (const row of merged.values()) {
+        const prior = existing.find(old => old.finding.id === row.finding.id), body = JSON.stringify(row);
+        if (Buffer.byteLength(body) > SURVEY_STORE_BYTES) return surveyInputFailure();
+        if (!prior || JSON.stringify(prior) !== body) this.taskWrite(() => this.db.query("INSERT INTO advisor_survey_findings(survey,finding_id,body,body_sha256) VALUES(?,?,?,?) ON CONFLICT(survey,finding_id) DO UPDATE SET body=excluded.body,body_sha256=excluded.body_sha256").run(id, row.finding.id, body, surveyHash(body)));
+      }
+      if (given.withheld && !survey.withheld) this.taskWrite(() => this.db.query("UPDATE advisor_surveys SET withheld=1 WHERE id=?").run(id));
+      return { createdIDs, dedupedIDs, already: this.statusRevision() === revision };
+    });
+  }
+
+  hasSurveyState(): boolean {
+    return !!(this.db.query("SELECT EXISTS(SELECT 1 FROM advisor_surveys UNION ALL SELECT 1 FROM advisor_survey_findings UNION ALL SELECT 1 FROM considered_findings) AS present").get() as { present: number }).present;
+  }
+  /** Stream bounded validated private rows into recovery proof; output never includes finding or ledger text. */
+  surveyIntegrity(): { surveys: number; findings: number; considered: number; digest: string } {
+    try { return this.db.transaction(() => {
+      const digest = createHash("sha256"); let surveys = 0, findings = 0, considered = 0;
+      for (const key of this.db.query("SELECT id FROM advisor_surveys ORDER BY id").iterate() as Iterable<{ id: number }>) {
+        const row = this.survey(key.id); if (!row) return surveyStorageFailure();
+        const task = this.get(row.task); if (!task || task.created !== row.taskCreated) return surveyStorageFailure();
+        digest.update(JSON.stringify({ survey: row })); surveys++;
+        const candidates = this.surveyFindings(row.id);
+        parseSurveyFindings(candidates.map(candidate => candidate.finding));
+        parseSurveyVetDecisions(candidates.flatMap(candidate => candidate.decision ? [candidate.decision] : []));
+        for (const candidate of candidates) { digest.update(JSON.stringify({ survey: row.id, candidate })); findings++; }
+      }
+      const count = this.db.query("SELECT COUNT(*) AS count FROM advisor_survey_findings").get() as { count: number };
+      if (count.count !== findings) return surveyStorageFailure();
+      const query = `SELECT id,CASE WHEN length(CAST(repo AS BLOB))<=1024 THEN repo END AS repo,CASE WHEN length(CAST(finding_id AS BLOB))<=96 THEN finding_id END AS finding_id,
+        CASE WHEN length(CAST(pass AS BLOB))<=16 THEN pass END AS pass,CASE WHEN length(CAST(kind AS BLOB))<=16 THEN kind END AS kind,
+        CASE WHEN length(CAST(body AS BLOB))<=${SURVEY_STORE_BYTES} THEN body END AS body,CASE WHEN length(CAST(body_sha256 AS BLOB))=64 THEN body_sha256 END AS body_sha256,
+        CASE WHEN length(CAST(prior_ids AS BLOB))<=${SURVEY_STORE_BYTES} THEN prior_ids END AS prior_ids,CASE WHEN length(CAST(replay_key AS BLOB))=64 THEN replay_key END AS replay_key,withheld FROM considered_findings ORDER BY id`;
+      for (const row of this.db.query(query).iterate() as Iterable<{ id: number; repo: string; finding_id: string; pass: string; kind: string; body: string | null; body_sha256: string; prior_ids: string | null; replay_key: string; withheld: number }>) {
+        if (!row.body || surveyHash(row.body) !== row.body_sha256 || typeof row.prior_ids !== "string" || row.withheld !== 0 && row.withheld !== 1 || row.kind !== "rejected" && row.kind !== "reconsidered") return surveyStorageFailure();
+        const entry = parseConsideredEntry(JSON.parse(row.body)), prior = surveyArray(JSON.parse(row.prior_ids), SURVEY_STORE_LIMIT).map(value => surveyInteger(value));
+        const { withheld: _private, ...identity } = entry, task = this.get(entry.source.task);
+        if (!task || task.created !== entry.source.created || entry.repo !== row.repo || entry.id !== row.finding_id || entry.pass !== row.pass
+          || new Set(prior).size !== prior.length || prior.some(id => id >= row.id) || row.kind === "rejected" && prior.length || row.kind === "reconsidered" && !prior.length
+          || surveyHash(JSON.stringify({ kind: row.kind, entry: identity, prior })) !== row.replay_key) return surveyStorageFailure();
+        for (const id of prior) {
+          const parent = this.db.query("SELECT id FROM considered_findings WHERE id=? AND repo=? AND finding_id=? AND pass=? AND kind='rejected'").get(id, row.repo, row.finding_id, row.pass);
+          if (!parent) return surveyStorageFailure();
+        }
+        digest.update(JSON.stringify({ id: row.id, kind: row.kind, entry, prior, withheld: row.withheld })); considered++;
+      }
+      return { surveys, findings, considered, digest: digest.digest("hex") };
+    })(); } catch { return surveyStorageFailure(); }
+  }
+
   /** #1403 A4: a new audit with its seeded ledger, in one transaction. Only `Tasks.auditStart` calls this. */
   auditCreate(row: { task: number; taskCreated: number; ref: string; since?: string; profile: string; scoped: boolean; by: string; at: number; units: readonly AuditUnit[] }): number {
     return this.atomic(() => {
@@ -2128,7 +2389,12 @@ export class Board {
     })();
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; planner?: PeerId | null; plannerReason?: PlannerReason; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; draft?: boolean; external?: GitHubSource }): Task {
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; planner?: PeerId | null; plannerReason?: PlannerReason; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; draft?: boolean; external?: GitHubSource }, createdHook?: (task: Task) => void): Task {
+    // Host-only synchronous DB bookkeeping. Never sourced from task input or called with I/O/screens.
+    if (createdHook !== undefined) {
+      if (typeof createdHook !== "function") throw new Error("invalid host proposal hook");
+      return this.atomic(() => { const task = this.propose(by, t); createdHook(task); return task; });
+    }
     const now = Date.now(), planner = plannerValue(t.planner);
     const chosen = Object.hasOwn(t, "planner") || t.plannerReason !== undefined ? plannerMetadata(planner, t.plannerReason) : {};
     const history: HistoryEntry[] = [{ at: now, by, ...chosen, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];

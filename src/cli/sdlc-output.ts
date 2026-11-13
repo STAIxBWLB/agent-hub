@@ -15,6 +15,34 @@ export function renderSdlcConfiguration(value: unknown, columns?: number): Span[
   if (row?.backup) out.push(...pair("backup", row.backup, columns, 12));
   return out;
 }
+/** Survey fields already passed the host's task and security disclosure policy. */
+export function renderSdlcSurvey(value: unknown, columns?: number): Span[][] {
+  const row = value as any;
+  if (!row) return [[s("no advisor survey", "muted")]];
+  const out: Span[][] = [...heading(`Advisor survey, task ${row.task ?? "unknown"}`, columns)];
+  for (const field of ["survey", "ref", "focus"]) if (row[field] !== undefined) out.push(...pair(field, row[field], columns, 12));
+  if (row.withheld || row.status === "private") return [...out, [s("report withheld by current privacy", "attention")]];
+  for (const item of list(row.items)) {
+    const finding = item.finding ?? item;
+    out.push(...pair("finding", finding.id, columns, 12));
+    if (finding.withheld || item.withheld) { out.push(...pair("details", "withheld", columns, 12)); continue; }
+    for (const field of ["evidence", "impact", "effort", "risk", "confidence", "fix_sketch"]) if (finding[field] !== undefined) out.push(...pair(field, finding[field], columns, 12));
+    if (item.decision) out.push(...pair("decision", item.decision.verdict, columns, 12));
+    else if (item.verdict) out.push(...pair("decision", item.verdict, columns, 12));
+    if (item.rejectedBefore?.rejectedBefore || item.rejectedBefore === true) out.push(...pair("history", "rejected before", columns, 12, "attention"));
+    for (const rejected of list(item.rejected)) {
+      out.push(...pair("rejected before", rejected.id, columns, 16));
+      if (rejected.change === "unknown") out.push(...pair("change", "unknown (suppression retained)", columns, 16, "attention"));
+      if (!rejected.withheld && rejected.reason) out.push(...pair("reason", rejected.reason, columns, 16));
+    }
+  }
+  for (const rejected of list(row.rejected)) {
+    out.push(...pair("rejected before", rejected.id, columns, 16));
+    if (rejected.status === "unknown" || rejected.change === "unknown") out.push(...pair("change", "unknown (suppression retained)", columns, 16, "attention"));
+    if (!rejected.withheld && rejected.reason) out.push(...pair("reason", rejected.reason, columns, 16));
+  }
+  return out;
+}
 export const s = (value: unknown, tone?: Tone): Span => ({ text: terminalText(value).replace(/[\n\t]/g, " "), ...(tone ? { tone } : {}) });
 const room = (columns?: number) => columns ?? Infinity;
 const list = (value: unknown): any[] => Array.isArray(value) ? value : [];

@@ -2383,6 +2383,13 @@ export async function startDaemon(opts: DaemonOptions) {
   } catch {
     guidanceProbeStore.close(); board.close(); throw new Error("guidance probe state or recovery binding is unavailable; restore trusted project state and choose a compatible target before retrying");
   }
+  try {
+    const retained = board.surveyIntegrity(), expected = restored?.integrity?.advisorSurveys;
+    if (restored && (expected ? expected.surveys !== retained.surveys || expected.findings !== retained.findings || expected.considered !== retained.considered || expected.digest !== retained.digest
+      : retained.surveys !== 0 || retained.findings !== 0 || retained.considered !== 0)) throw new Error("changed recovery binding");
+  } catch {
+    guidanceProbeStore.close(); board.close(); throw new Error("advisor survey state or recovery binding is unavailable; restore trusted project state and choose a supporting target before retrying");
+  }
   startupCleanup.push(() => guidanceProbeStore.close());
   // #1226 T3: the one explicit crash reconcile. A fresh process has no probe in flight, so a session still `reserved` or `running` belongs to a previous process
   // and is recorded as unknown with an unknown receipt (never launched, retried or turned into a success). It runs after the integrity comparison above, never
@@ -3408,6 +3415,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!observation) return;
     if (reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) { progress.clearPeer(peer); return; }
     const toolName = observation.name.replace(/^mcp__[^ ]+__/, "");
+    if (toolName === "hub_survey_report") return;
     if (GUIDANCE_TOOL_NAMES.has(toolName) || toolName === "hub_audit_report") return;
     if (observation.name === "hub_set_title" || observation.name === "hub_ask") return; // #1053: a question and its answer are never progress evidence (they may reach an escalation model)
     try {
@@ -5209,13 +5217,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_evidence_read" && op !== "hub_audit_report" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
+      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_evidence_read" && op !== "hub_audit_report" && op !== "hub_survey_report" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
       if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
-      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_evidence_read" && op !== "hub_audit_report" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
+      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_evidence_read" && op !== "hub_audit_report" && op !== "hub_survey_report" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
@@ -5592,6 +5600,11 @@ export async function startDaemon(opts: DaemonOptions) {
     if (op === "hub_visual" || op === "hub_visual_show") return visualTool(by, op, a, piiTurn);
     const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
+    if (op === "hub_survey_report") {
+      if (piiTurn || turns.get(by)?.private || contextPii(by) || reviewTurn || reviewObserverInput(by)) throw new PreEffectToolRefusal("survey reports are unavailable in private or review input; retry in a public current-owner context");
+      if (stopping || recoveryActive() || bus.isRecoveryHeld) throw new PreEffectToolRefusal("recovery or shutdown holds survey writes; wait for release and retry");
+      return JSON.stringify(await tasks.surveyReport(by, a, () => stopping || recoveryActive() || bus.isRecoveryHeld ? "survey write held by recovery or shutdown" : undefined));
+    }
     if (op === "hub_audit_report") {
       // #1403 A4, A5: finding text of an open important security finding is the auditor's and a reviewer's to read, never a PII turn's, a review observer's or memory's.
       if (piiTurn || turns.get(by)?.private || contextPii(by) || reviewTurn || reviewObserverInput(by)) throw new PreEffectToolRefusal("audit reports are unavailable in private or review input; retry in a public current-owner context");
@@ -7084,6 +7097,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchRunners = board.runnerReceiptIntegrity();
     const researchEvidence = board.researchEvidenceIntegrity();
     const reviewerQuota = reviewerQuotaIntegrity();
+    const advisorSurveys = board.surveyIntegrity();
     const guidanceVariants = board.guidanceVariantsIntegrity();
     const guidanceProbes = guidanceProbeStore.integrity();
     const executionReferences = board.executionReferencesIntegrity();
@@ -7092,7 +7106,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const visualIntegrity = visuals.integrity();
     if (!Number.isSafeInteger(visualIntegrity.count) || visualIntegrity.count < 0 || !/^[a-f0-9]{64}$/.test(visualIntegrity.digest))
       throw new Error("visual recovery integrity unavailable; inspect the retained store before recovery");
-    return { ...(reviewerQuota.rows || !reviewerQuota.complete || reviewerQuota.waits ? { reviewerQuota } : {}), queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(guidanceProbes.experiments || guidanceProbes.sessions ? { guidanceProbes } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    return { ...(reviewerQuota.rows || !reviewerQuota.complete || reviewerQuota.waits ? { reviewerQuota } : {}), queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(advisorSurveys.surveys || advisorSurveys.findings || advisorSurveys.considered ? { advisorSurveys } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(guidanceProbes.experiments || guidanceProbes.sessions ? { guidanceProbes } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -7200,6 +7214,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
     ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
     ...(lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined ? { lifecycleAudit: true } : {}),
+    ...(lifecycleConfig.mode !== "off" ? { lifecycleSurvey: true } : {}),
     // Every supported peer's membership, for launchers that run outside the console role (#484).
     roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
     protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL,
@@ -8735,7 +8750,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, peer, unit),
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
-        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...sessionTitleTools([...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off", lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined), ...CONDUCTOR_TOOLS], adapter?.title === "hub").map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
+        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...sessionTitleTools([...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off", lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined, lifecycleConfig.mode !== "off"), ...CONDUCTOR_TOOLS], adapter?.title === "hub").map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
           const reviewToolTurn = reviewObserverHeld(peer) || pi.budgetEnvelopes.some(isReviewObserverExcluded) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded);
           if (MEMORY_READ_TOOLS.has(name)) validateMemoryRead(name, raw as Record<string, unknown>);
@@ -8941,6 +8956,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sdlcStages: lifecycleConfig.stages,
         sdlcCriteria: lifecycleConfig.mode !== "off",
         sdlcAudit: lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined,
+        sdlcSurvey: lifecycleConfig.mode !== "off",
         taskTool: (name, a, turn) => name === "hub_ask" && turn.signal ? invocationRequestSignal.run({ signal: turn.signal, current: () => !turn.signal!.aborted }, () => taskOp(peer, name, a, true, turn.pii)) : taskOp(peer, name, a, true, turn.pii),
         beforeInput: (context, envs) => beforeOwnedObserverInput(peer, local, context, envs),
         inputReleased: (context, envs) => ownedObserverInputReleased(peer, local, context, envs),
@@ -10776,6 +10792,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_evidence; choose a daemon advertising research_evidence to preserve persisted links and revisions";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_evidence_withdrawal")) && board.hasWithdrawnEvidenceState())
         return "target lacks research_evidence_withdrawal; choose a supporting daemon to preserve withdrawal revisions";
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("advisor_surveys")) && board.hasSurveyState())
+        return "target lacks advisor_surveys; persisted survey candidates and considered-finding history require a supporting daemon";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {
@@ -12208,6 +12226,32 @@ export async function startDaemon(opts: DaemonOptions) {
             result => reply({ ok: true, ...result }),
             (error: Error) => reply({ ok: false, error: sanitize(error.message) }),
           ).finally(() => { taskOpsInFlight--; });
+          return;
+        }
+        if (msg.op === "survey-start" || msg.op === "survey-show") {
+          if (Object.keys(msg).some(key => !["t", "rid", "op", "focus", "id"].includes(key))) return void reply({ ok: false, error: "survey accepts only its task id or focus; remove unknown fields" });
+          const asker = c.role === "console" ? USER : c.role === "tools" && c.peer && conductorPeer(config.roles) === c.peer && !c.toolsOwner && !turns.get(c.peer)?.private && !contextPii(c.peer) ? c.peer : undefined;
+          if (!asker) return void reply({ ok: false, error: "only the person or current configured conductor may start or show advisor surveys" });
+          const externalOwner = c.externalOwner;
+          const sessionCurrent = c.role === "console" ? () => { if (sock.data !== c || sock.readyState !== WebSocket.OPEN || c.role !== "console") throw new Error("person session changed"); } : operationalCurrent(sock);
+          const fence = () => {
+            try {
+              sessionCurrent();
+              if (externalOwner && !currentExternalTools(c, true)) return "survey execution root changed; reconnect and retry";
+              sessionCurrent();
+              if (c.peer !== (asker === USER ? undefined : asker) || c.externalOwner !== externalOwner || c.toolsOwner) return "survey actor changed; reconnect and retry";
+              if (c.peer && (turns.get(c.peer)?.private || contextPii(c.peer))) return "survey unavailable during private input";
+              return recoveryActive() || stopping ? "recovery or shutdown holds survey writes; retry after release" : undefined;
+            } catch { return "survey person or conductor session changed; reconnect and retry"; }
+          };
+          const refusal = fence(); if (refusal) return void reply({ ok: false, error: refusal });
+          if (msg.op === "survey-show") {
+            try { return void reply({ ok: true, survey: tasks.surveyShow(asker, msg.id) }); }
+            catch (error) { return void reply({ ok: false, error: sanitize(error instanceof Error ? error.message : "survey read unavailable").slice(0, 300) }); }
+          }
+          taskOpsInFlight++;
+          void tasks.surveyStart(asker, { focus: msg.focus }, fence).then(result => reply({ ok: true, ...result }),
+            (error: Error) => reply({ ok: false, error: sanitize(error.message).slice(0, 300) })).finally(() => { taskOpsInFlight--; });
           return;
         }
         if (msg.op === "audit-start" || msg.op === "audit-show") {

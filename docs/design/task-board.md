@@ -421,3 +421,29 @@ parser and cached evidence schema retain their existing contracts.
 Automatic reviewer selection shares `review.gate` (default 0.8) across routing and explain using canonical-account projected headroom. Unknown/no-source readings skip rather than pass. A quota-only exhausted pool may wait only when every declared candidate is actually paused or at the known floor and each has a known reset; other blockers prevent waiting. Persist task incarnation, opaque head/repo binding, first start and deadline in ordinary role history. The first `task_sweep.review_min` deadline is the sole hard cap; reset timestamps only wake a recheck (including Budget's existing reset plus 60-second grace), and later signals/restarts cannot extend the cap. Expiry/unknown returns to existing fallback. Head/private/close/stop changes cancel timers. Quota does not join the permanent per-head failure set. `review.max_minutes` defaults to 20; a child-specific generation fence and existing owned teardown produce a typed timeout without closing the task.
 
 Quota deadline fallback and native input admission are separate: a person fallback needs no native readiness read, and a failed agent readiness read falls to the person under the same incarnation/head/privacy/recovery fence. `reviewer_quota` is required for a controlled recovery target when new wait/accounting history or explicit new policy exists; it is not a blanket version floor.
+
+## Advisor survey and rejection ledger (#1403 T7)
+
+Only Tasks starts a survey or changes its private ledger. The person or current
+configured conductor starts one read-only planner task at a pinned repository
+commit. Assigned in-progress planner reports contain closed bounded findings
+and explicit code-vetting decisions. High/medium vetted confidence yields one
+backlog plan card per semantic repository/pass/id key; low yields a read-only
+investigation. Candidates do not produce cards. Dedupe lookup, generation/flow
+fences, ledger decisions and card creation share one Board transaction after
+privacy screens; no source I/O or await occurs inside it.
+
+False-positive review dispositions, rejected audit candidates and survey
+rejections retain immutable considered entries. Matching uses the same semantic
+id/positional exclusion convention as review recurrence. Repository identity,
+source commit and literal affected paths scope suppression. A complete diff
+clears only changed paths; unknown evidence never clears rejection. Explicit
+planner vetted reason records reconsideration and permits a new card without
+deleting historical rejection. Unknown path/ref records remain historical,
+never invented unchanged proof. Public projections preserve existing security
+and PII boundaries; internal repository keys are not public markers. Survey
+arguments/results stay out of capture. Off exposes no new tool/task fields,
+and no background scanner, timer or model judge is introduced. Live pilots
+require the person's separate instruction.
+
+Survey reports accept at most 64 candidates and 64 KiB per normalized request. A candidate has at most 64 literal paths (512 bytes each) and 2048-byte narrative fields. Historical readback returns at most 16 reasons per key; a 1000-row history window that cannot be read completely remains unknown and suppressed. The bounded 32-key/3072-byte brief is a summary, not a complete rejection inventory. `advisor_surveys` advertises parser/recovery support independently of lifecycle mode, but survey tools and task metadata are published only when enabled. Persisted survey or considered state requires that feature and its conditional integrity proof on recovery; empty legacy stores keep their existing format floor.
