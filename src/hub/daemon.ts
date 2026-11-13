@@ -2975,7 +2975,7 @@ export async function startDaemon(opts: DaemonOptions) {
     reviewContext: (by, task) => !!definitionOf(by)?.reviewer && (bus.peers.get(by) as ReviewerPrintPeer | undefined)?.reviewing === task ? "fresh" : "continuing",
     reviewObserverInput,
     onReviewObserverInput: latchReviewObserverInput,
-    observerExcludedTurn: reviewObserverHeld,
+    observerExcludedTurn: peer => resolvedProfile.name === "research" && reviewObserverHeld(peer),
     // Proof belongs to the adapter generation actually started in the validated root. A role-only
     // reload cannot turn a canonical reviewer process into an isolated implementation owner.
     ownerIsolation: () => Object.fromEntries(extraIds.map(id => {
