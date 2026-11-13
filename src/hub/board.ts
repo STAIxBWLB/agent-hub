@@ -19,6 +19,8 @@ import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
+import type { AuditFinding, AuditProfile, AuditUnit } from "./security-audit.ts";
+import type { ReviewFinding } from "./review-findings.ts";
 import type { SweepRecord } from "./task-sweep.ts";
 import type { SpecAcceptance, SdlcReceipt } from "./sdlc.ts";
 import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
@@ -161,6 +163,8 @@ const experimentPage = (after: number, limit: number): void => {
 
 export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] as const;
 export type TaskClass = (typeof CLASSES)[number];
+/** #1403 A4: one security audit as stored. `units` is the ledger; it changes only through `Board.auditReport`. */
+export interface StoredAudit { id: number; task: number; taskCreated: number; ref: string; since?: string; profile: AuditProfile; scoped: boolean; at: number; by: string; units: AuditUnit[] }
 export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "approved" | "changes_requested" | "cancelled";
 
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
@@ -615,6 +619,13 @@ export class Board {
       UNIQUE(project_id,task_id,task_created,from_sha256,reference_sha256))`);
     this.db.run("CREATE INDEX IF NOT EXISTS execution_reference_task_scope ON execution_reference_links(project_id,task_id,task_created,id)");
     this.db.run("CREATE INDEX IF NOT EXISTS guidance_variant_task_id ON guidance_variants(project_id,task_id,task_created,id)");
+    // #1403 A4: the security audit coverage ledger. Private local state like the guidance tables: only Tasks writes it (through the methods below), and no column is copied into a Task, a history entry or a public view.
+    this.db.run(`CREATE TABLE IF NOT EXISTS security_audits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, task_created INTEGER NOT NULL, ref TEXT NOT NULL, since TEXT, profile TEXT NOT NULL,
+      scoped INTEGER NOT NULL, at INTEGER NOT NULL, by_peer TEXT NOT NULL, units TEXT NOT NULL, UNIQUE(task_id,task_created))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS security_audit_findings (
+      audit INTEGER NOT NULL, seq INTEGER NOT NULL, finding_id TEXT NOT NULL, body TEXT NOT NULL, found_by TEXT NOT NULL, at INTEGER NOT NULL,
+      verified_by TEXT, rejected_by TEXT, PRIMARY KEY(audit,seq), UNIQUE(audit,finding_id))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS review_comments (
       task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,lifecycle TEXT NOT NULL,revision INTEGER NOT NULL,
       PRIMARY KEY(task_id,task_created,id))`);
@@ -1191,6 +1202,54 @@ export class Board {
       if (result.changes !== 1) throw new Error("guidance withdrawal binding changed");
       return { record: next, already: false };
     });
+  }
+  /** #1403 A4: a new audit with its seeded ledger, in one transaction. Only `Tasks.auditStart` calls this. */
+  auditCreate(row: { task: number; taskCreated: number; ref: string; since?: string; profile: string; scoped: boolean; by: string; at: number; units: readonly AuditUnit[] }): number {
+    return this.atomic(() => {
+      const result = this.db.query("INSERT INTO security_audits(task_id,task_created,ref,since,profile,scoped,at,by_peer,units) VALUES(?,?,?,?,?,?,?,?,?)")
+        .run(row.task, row.taskCreated, row.ref, row.since ?? null, row.profile, row.scoped ? 1 : 0, row.at, row.by, JSON.stringify(row.units));
+      return Number(result.lastInsertRowid);
+    });
+  }
+  private auditRow(row: { id: number; task_id: number; task_created: number; ref: string; since: string | null; profile: string; scoped: number; at: number; by_peer: string; units: string } | null): StoredAudit | undefined {
+    if (!row) return undefined;
+    const units = JSON.parse(row.units) as AuditUnit[];
+    if (!Array.isArray(units)) throw new Error("security audit storage is invalid");
+    return { id: row.id, task: row.task_id, taskCreated: row.task_created, ref: row.ref, ...(row.since ? { since: row.since } : {}), profile: row.profile as AuditProfile, scoped: row.scoped === 1, at: row.at, by: row.by_peer, units };
+  }
+  audit(id: number): StoredAudit | undefined {
+    return this.auditRow(this.db.query("SELECT * FROM security_audits WHERE id=?").get(id) as never);
+  }
+  auditOfTask(task: number, taskCreated: number): StoredAudit | undefined {
+    return this.auditRow(this.db.query("SELECT * FROM security_audits WHERE task_id=? AND task_created=?").get(task, taskCreated) as never);
+  }
+  /** Newest first. `recorded` keeps only audits whose ledger holds at least one unit the auditor reported (the baseline carry-over and the default scope read these). */
+  audits(limit = 32, recorded = false): StoredAudit[] {
+    const rows = this.db.query("SELECT * FROM security_audits ORDER BY id DESC LIMIT ?").all(limit) as never[];
+    const all = rows.map(row => this.auditRow(row)!);
+    return recorded ? all.filter(row => row.units.some(unit => unit.reportedBy)) : all;
+  }
+  /** The ledger and the findings change together: one transaction, so a report is never half applied. */
+  auditReport(id: number, units: readonly AuditUnit[], findings: readonly { finding: ReviewFinding; foundBy: string; at: number }[]): void {
+    this.atomic(() => {
+      this.db.query("UPDATE security_audits SET units=? WHERE id=?").run(JSON.stringify(units), id);
+      const next = (this.db.query("SELECT COALESCE(MAX(seq),0) AS seq FROM security_audit_findings WHERE audit=?").get(id) as { seq: number }).seq;
+      let seq = next;
+      for (const item of findings) {
+        const existing = this.db.query("SELECT seq FROM security_audit_findings WHERE audit=? AND finding_id=?").get(id, item.finding.id) as { seq: number } | null;
+        if (existing) this.db.query("UPDATE security_audit_findings SET body=?,found_by=?,at=? WHERE audit=? AND seq=? AND verified_by IS NULL AND rejected_by IS NULL").run(JSON.stringify(item.finding), item.foundBy, item.at, id, existing.seq);
+        else this.db.query("INSERT INTO security_audit_findings(audit,seq,finding_id,body,found_by,at) VALUES(?,?,?,?,?,?)").run(id, ++seq, item.finding.id, JSON.stringify(item.finding), item.foundBy, item.at);
+      }
+    });
+  }
+  auditFindings(id: number): AuditFinding[] {
+    const rows = this.db.query("SELECT body,found_by,at,verified_by,rejected_by FROM security_audit_findings WHERE audit=? ORDER BY seq").all(id) as { body: string; found_by: string; at: number; verified_by: string | null; rejected_by: string | null }[];
+    return rows.map(row => ({ finding: JSON.parse(row.body) as ReviewFinding, foundBy: row.found_by, at: row.at, ...(row.verified_by ? { verifiedBy: row.verified_by } : {}), ...(row.rejected_by ? { rejectedBy: row.rejected_by } : {}) }));
+  }
+  /** Marks a candidate verified or rejected. The caller already applied `verificationRefusal`; the `IS NULL` guards make a lost race a no-op that reports false. */
+  auditVerify(id: number, findingId: string, by: string, verdict: "verified" | "rejected"): boolean {
+    const column = verdict === "verified" ? "verified_by" : "rejected_by";
+    return this.db.query(`UPDATE security_audit_findings SET ${column}=? WHERE audit=? AND finding_id=? AND verified_by IS NULL AND rejected_by IS NULL AND found_by<>?`).run(by, id, findingId, by).changes === 1;
   }
   hasGuidanceVariants(): boolean {
     return (this.db.query("SELECT EXISTS(SELECT 1 FROM guidance_experiments) OR EXISTS(SELECT 1 FROM guidance_variants) AS present").get() as { present: number }).present === 1;

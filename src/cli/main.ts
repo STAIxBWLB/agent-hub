@@ -135,7 +135,7 @@ import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp, guidanceProbeUsage } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
-import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
+import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
@@ -383,7 +383,7 @@ function showToolText(render: (data: any, columns?: number, now?: number) => Spa
   if (present.json) return console.log(text);
   printOutput(render(data, present.columns, Date.now()), present.color);
 }
-const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release"];
+const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release", "audit"];
 function sdlcOperands(): string[] { return SDLC_READ.includes(args[0] ?? "") ? outputArguments() : args; }
 function printOutput(lines: Span[][], color: boolean): void {
   for (const line of lines) console.log(paint(line, color));
@@ -1947,6 +1947,34 @@ const commands: Record<string, () => Promise<void> | void> = {
       } catch { fail("release authorization unavailable; the daemon must be reachable with a matching person approval"); }
       finally { hub?.close(); }
       return;
+    }
+    if (sub === "audit") {
+      // #1403 A4: `audit start [--profile quick|standard] [--since <ref>]` files the read-only audit task and seeds its ledger; `audit show [<audit>]` reads the newest or the named one.
+      const action = args[1];
+      if (action === "start") {
+        const flags = takeFlags(args.slice(2), ["--profile", "--since"], []);
+        if (flags.rest.length || (flags.one["--profile"] !== undefined && !["quick", "standard"].includes(flags.one["--profile"]))) fail("usage: ahub sdlc audit start [--profile quick|standard] [--since <ref>]");
+        const hub = await connect();
+        try {
+          const reply = await hub.request({ t: "sdlc", op: "audit-start", ...(flags.one["--profile"] !== undefined ? { profile: flags.one["--profile"] } : {}), ...(flags.one["--since"] !== undefined ? { since: flags.one["--since"] } : {}) }, 60_000);
+          if (!reply.ok) fail(/unknown SDLC operation|does not know/.test(String(reply.error)) ? `${reply.error}; the running hub does not support security audits; upgrade agent-hub and run ahub restart before retrying` : reply.error);
+          if (present!.json) console.log(JSON.stringify({ task: reply.task, audit: reply.audit, units: reply.units, planned: reply.planned, carried: reply.carried, partial: reply.partial, ref: reply.ref }, null, 2));
+          else console.log(`task #${reply.task}: security audit ${reply.audit} started at ${String(reply.ref).slice(0, 12)}, ${reply.units} units (${reply.planned} planned, ${reply.carried} carried over)${reply.partial ? ", partial" : ""}`);
+        } finally { hub.close(); }
+        return;
+      }
+      if (action === "show") {
+        const given = args[2] === undefined ? undefined : Number(args[2]);
+        if (args.length > 3 || given !== undefined && (!Number.isSafeInteger(given) || given <= 0)) fail("usage: ahub sdlc audit show [<audit>]");
+        const hub = await connect();
+        try {
+          const reply = await hub.request({ t: "sdlc", op: "audit-show", ...(given !== undefined ? { id: given } : {}) }, 30_000);
+          if (!reply.ok) fail(reply.error);
+          if (present!.json) console.log(JSON.stringify(reply.audit ?? null, null, 2)); else human(renderSdlcAudit, reply);
+        } finally { hub.close(); }
+        return;
+      }
+      fail("usage: ahub sdlc audit start [--profile quick|standard] [--since <ref>] | ahub sdlc audit show [<audit>]");
     }
     if (sub === "queue" || sub === "release") {
       const repo = args[1], liveIssues = args.slice(2).map(Number);

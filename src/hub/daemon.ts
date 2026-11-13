@@ -71,6 +71,7 @@ import { loadPetConfig, PET_WINDOW_RETIRED_NOTICE, stripLegacyPetWindow } from "
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, policyRealPath, matchesPolicy } from "./path-policy.ts";
 import { CodeFacts, type CodeFactResult, type CodeSymbol } from "./code-facts.ts";
+import { gitAuditSource } from "./audit-source.ts";
 import { buildReviewBrief, withCodeSymbols } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
@@ -3039,6 +3040,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return report;
     },
     specsRead: (action, paths) => projectSpecs.read(action, paths),
+    auditSource: gitAuditSource(opts.cwd), // #1403 A4
     sdlc: {
       config: () => lifecycleConfig,
       gh: (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound),
@@ -3350,7 +3352,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!observation) return;
     if (reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) { progress.clearPeer(peer); return; }
     const toolName = observation.name.replace(/^mcp__[^ ]+__/, "");
-    if (GUIDANCE_TOOL_NAMES.has(toolName)) return;
+    if (GUIDANCE_TOOL_NAMES.has(toolName) || toolName === "hub_audit_report") return;
     if (observation.name === "hub_set_title" || observation.name === "hub_ask") return; // #1053: a question and its answer are never progress evidence (they may reach an escalation model)
     try {
       const candidates = board.list().filter(task => task.owner === peer && ["in_progress", "changes_requested"].includes(task.state));
@@ -5127,13 +5129,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
+      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_audit_report" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
       if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
-      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
+      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_audit_report" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
@@ -5501,6 +5503,12 @@ export async function startDaemon(opts: DaemonOptions) {
     if (op === "hub_visual" || op === "hub_visual_show") return visualTool(by, op, a, piiTurn);
     const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
+    if (op === "hub_audit_report") {
+      // #1403 A4, A5: finding text of an open important security finding is the auditor's and a reviewer's to read, never a PII turn's, a review observer's or memory's.
+      if (piiTurn || turns.get(by)?.private || contextPii(by) || reviewTurn || reviewObserverInput(by)) throw new PreEffectToolRefusal("audit reports are unavailable in private or review input; retry in a public current-owner context");
+      if (stopping || recoveryActive() || bus.isRecoveryHeld) throw new PreEffectToolRefusal("recovery or shutdown is holding audit writes; wait for release and read the audit before retrying");
+      return JSON.stringify(await tasks.auditReport(by, a));
+    }
     if (GUIDANCE_TOOL_NAMES.has(op)) {
       if (op === "hub_guidance_list" || op === "hub_guidance_show") return JSON.stringify(guidanceRead(by, op === "hub_guidance_list" ? "list" : "show", a, piiTurn));
       const excluded = piiTurn || !!turns.get(by)?.private || contextPii(by) || reviewTurn || reviewObserverInput(by);
@@ -7098,6 +7106,7 @@ export async function startDaemon(opts: DaemonOptions) {
     lifecycleStages: [...lifecycleConfig.stages],
     // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
     ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
+    ...(lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined ? { lifecycleAudit: true } : {}),
     // Every supported peer's membership, for launchers that run outside the console role (#484).
     roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
     protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL,
@@ -8631,7 +8640,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, peer, unit),
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
-        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...sessionTitleTools([...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off"), ...CONDUCTOR_TOOLS], adapter?.title === "hub").map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
+        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...sessionTitleTools([...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off", lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined), ...CONDUCTOR_TOOLS], adapter?.title === "hub").map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
           const reviewToolTurn = reviewObserverHeld(peer) || pi.budgetEnvelopes.some(isReviewObserverExcluded) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded);
           if (MEMORY_READ_TOOLS.has(name)) validateMemoryRead(name, raw as Record<string, unknown>);
@@ -8836,6 +8845,7 @@ export async function startDaemon(opts: DaemonOptions) {
         profile: resolvedProfile,
         sdlcStages: lifecycleConfig.stages,
         sdlcCriteria: lifecycleConfig.mode !== "off",
+        sdlcAudit: lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined,
         taskTool: (name, a, turn) => name === "hub_ask" && turn.signal ? invocationRequestSignal.run({ signal: turn.signal, current: () => !turn.signal!.aborted }, () => taskOp(peer, name, a, true, turn.pii)) : taskOp(peer, name, a, true, turn.pii),
         beforeInput: (context, envs) => beforeOwnedObserverInput(peer, local, context, envs),
         inputReleased: (context, envs) => ownedObserverInputReleased(peer, local, context, envs),
@@ -12035,6 +12045,22 @@ export async function startDaemon(opts: DaemonOptions) {
           void tasks.adoptMerge(asker, msg.id, msg.pr, fence).then(
             result => reply({ ok: true, ...result }),
             (error: Error) => reply({ ok: false, error: sanitize(error.message) }),
+          ).finally(() => { taskOpsInFlight--; });
+          return;
+        }
+        if (msg.op === "audit-start" || msg.op === "audit-show") {
+          // #1403 A4: the person or the one configured conductor starts and reads a security audit. Every request gets a reply, a refusal included.
+          const asker = c.role === "console" ? USER : c.role === "tools" && c.peer && conductorPeer(config.roles) === c.peer && !c.toolsOwner && !turns.get(c.peer)?.private && !contextPii(c.peer) ? c.peer : undefined;
+          if (!asker) return void reply({ ok: false, error: "only the console user or the configured conductor may use security audits; ask the person to run ahub sdlc audit" });
+          if (msg.op === "audit-show") {
+            try { return void reply({ ok: true, audit: tasks.auditShow(asker, msg.id) ?? null }); }
+            catch (error) { return void reply({ ok: false, error: sanitize(error instanceof Error ? error.message : "audit readback unavailable").slice(0, 300) }); }
+          }
+          if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding task writes; retry ahub sdlc audit start after it ends" });
+          taskOpsInFlight++;
+          void tasks.auditStart(asker, { profile: msg.profile, since: msg.since }, () => recoveryActive() || stopping ? "recovery or shutdown is holding task writes; retry ahub sdlc audit start after it ends" : undefined).then(
+            result => reply({ ok: true, ...result }),
+            (error: Error) => reply({ ok: false, error: sanitize(error.message).slice(0, 300) }),
           ).finally(() => { taskOpsInFlight--; });
           return;
         }

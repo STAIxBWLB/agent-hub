@@ -40,4 +40,13 @@ Scope: the security pass of a review (`REVIEW.md`), and any change under `src/lo
 - Runtime dependencies stay at zero third-party packages; `@staix/agent-mem` stays exact-pinned.
 - Publishing happens only in the tag workflow through trusted publishing; the guarded tag (`scripts/release-tag.ts`) needs the person's consent. A change that adds a token, a second publish path or a way around the consent check is Important.
 
+## A security audit turn
+
+An audit task (`ahub sdlc audit start`, `docs/sdlc.md`) is a review-class task that reads the surfaces in its ledger and writes nothing to the repository.
+
+- Report every unit you read with `hub_audit_report`: `covered`, `deferred` (say why) or `out_of_scope`. A unit you did not read is `deferred`, never `covered`. Units marked `covered (prior)` are the hub's: do not report them.
+- File findings in the review shape (`pass: security`, a boundary, `confirmed` or `needs_validation`). A `confirmed` important finding is only a candidate until a different reviewer verifies it, so state the evidence a second reader can check at `path:line`, and verify another reviewer's candidate by reading the cited code yourself.
+- This repository is public: put the boundary and the path of an open important finding in the tool only. Never in a message, a note, a commit or an issue. The person decides what is published.
+- Run target code only inside the hub's sandboxed runners; otherwise the finding is `needs_validation` and names the missing fact.
+
 The entries under "Things the agent gets wrong" in `AGENTS.md` (PII, real paths, rendered bodies, loopback servers, lock files, remote dependency volume) hold the incidents behind these lines.
