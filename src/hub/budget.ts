@@ -1,3 +1,4 @@
+import { quotaAccountUsage, type QuotaAccountUsage, type QuotaAccountReading } from "./quota-account.ts";
 import { definitionOf, type AdapterDefinition } from "../adapters/registry.ts";
 import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
@@ -116,6 +117,8 @@ export class Budget {
   private readonly db: Database;
   private readonly readings = new Map<PeerId, Map<string, Reading>>();
   private readonly pausing = new Map<PeerId, object>();
+  private readonly accountUsage = new Map<PeerId, QuotaAccountUsage & { at: number }>();
+  private readonly pauseObservers = new Map<PeerId, Set<() => void>>();
   private readonly handingOff = new Set<PeerId>();
   /** The last reading of each window of an account, for the derived `quota_reset` (see `deriveResets`). */
   private readonly lastSeen = new Map<PeerId, Map<string, { used: number; resetsAt?: number; at: number }>>();
@@ -199,6 +202,25 @@ export class Budget {
     return this.readRecord(this.account(peer));
   }
 
+  /** Observe only the canonical account's existing pause state; observers grant no resume authority. */
+  watchPause(peer: PeerId, changed: () => void): () => void {
+    if (this.closed) return () => {};
+    const key = this.account(peer), observers = this.pauseObservers.get(key) ?? new Set<() => void>();
+    observers.add(changed); this.pauseObservers.set(key, observers);
+    let watching = true;
+    return () => {
+      if (!watching) return; watching = false;
+      observers.delete(changed);
+      if (!observers.size && this.pauseObservers.get(key) === observers) this.pauseObservers.delete(key);
+    };
+  }
+
+  private pauseChanged(peer: PeerId): void {
+    for (const changed of [...this.pauseObservers.get(this.account(peer)) ?? []]) {
+      try { changed(); } catch { /* observational: polling cannot cost a saved pause/resume */ }
+    }
+  }
+
   private readRecord(peer: PeerId): PauseRecord | undefined {
     const r = this.db.query("SELECT * FROM budget_pauses WHERE peer = ?").get(peer) as Record<string, any> | null;
     return r ? { peer: r.peer, since: r.since, resetsAt: r.resets_at, reason: r.reason, summary: r.summary, handedOff: !!r.handed_off, moved: JSON.parse(r.moved) } : undefined;
@@ -227,13 +249,14 @@ export class Budget {
         continue;
       }
       this.hooks.pause(r.peer);
+      this.pauseChanged(r.peer);
       this.hooks.notify(`budget: ${r.peer} is still paused (${r.reason}), resumes ${new Date(r.resetsAt).toLocaleTimeString()}`);
     }
   }
 
   /** `hard`: the peer cannot run another turn (its provider refused one), so there is nobody to ask for a checkpoint. */
   /** `at`: when the numbers were measured, for sources that arrive through a file (a leftover file is not a fresh reading). */
-  report(peer: PeerId, windows: UsageWindow[], hard = false, at = this.now()): void {
+  report(peer: PeerId, windows: UsageWindow[], hard = false, at = this.now(), accountUsage?: QuotaAccountUsage): void {
     // Execution-budget instrumentation is independent of native quota accounting.
     // Explicit quota exemption or absent budget metadata exempts registered kinds; external ids keep accounting.
     const reporter = peer;
@@ -241,6 +264,10 @@ export class Budget {
     const resolve = this.hooks.definitionOf ?? definitionOf;
     const adapter = resolve(reporter) ?? resolve(peer);
     if (reporter === "user" || reporter === "hub" || peer === "user" || peer === "hub" || adapter && (!adapter.budget || adapter.budget.quotaExempt === true) || this.closed) return;
+    if (accountUsage !== undefined && Number.isFinite(at)) {
+      const prior = this.accountUsage.get(peer);
+      if (!prior || at >= prior.at) this.accountUsage.set(peer, { ...quotaAccountUsage(accountUsage), at });
+    }
     // An override ignores soft readings, not a provider that has actually refused another turn.
     if (hard && this.ignoreUntil.delete(peer)) {
       try { this.hooks.notify(`budget: ${peer} provider refused again; budget override ended`); } catch { /* a notice cannot prevent the hard pause */ }
@@ -397,6 +424,7 @@ export class Budget {
       if (open) this.writeLedger({ type: "budget_resume", peer, reason: "replaced by a new pause after its window reset", window: reasonWindow(open.reason), resetsAt: open.resetsAt, by: "hub" });
       this.writeLedger({ type: "budget_pause", peer, reason, window: worst.id, resetsAt, by: "hub" });
       this.hooks.pause(peer);
+      this.pauseChanged(peer);
       this.hooks.notify(`budget: ${peer} paused, ${reason}; resumes ${new Date(resetsAt).toLocaleTimeString()}${summary ? "; checkpoint received" : hard ? "; hard limit, no checkpoint" : "; no checkpoint"}`);
       await this.finishHandoff(peer, summary);
     } finally {
@@ -481,6 +509,7 @@ export class Budget {
     // before it touches anything that was waiting for it.
     this.hooks.resumed(record);
     this.hooks.resume(peer);
+    this.pauseChanged(peer);
     this.hooks.notify(`budget: ${peer} resumed (${why})`);
   }
 
@@ -499,25 +528,28 @@ export class Budget {
     }));
   }
 
-  status(): Record<PeerId, { windows: (Reading & { stale: boolean; superseded: boolean })[]; paused?: { reason: string; resetsAt: number; since: number } }> {
+  status(): Record<PeerId, { windows: (Reading & { stale: boolean; superseded: boolean })[]; paused?: { reason: string; resetsAt: number; since: number }; accountUsage?: QuotaAccountReading }> {
     const staleMs = this.cfg.stale_min * 60_000;
     const peers = new Set([...this.readings.keys(), ...this.records().map((r) => r.peer)]);
     return Object.fromEntries(
       [...peers].map((peer) => {
-        const open = this.record(peer);
+        const open = this.record(peer), accountUsage = this.accountUsage.get(peer);
         const fresh = new Set(this.fresh(peer)), used = new Set(this.gating(peer));
         // `superseded`: fresh, but information only: a measurement of the same account outranks it (the hub count under a native or manual reading).
         // The reading the gate acts on is listed first (then the information-only ones, then the stale), so a client that looks a window up by id, as every
         // client did before kinds existed, lands on the effective number and not on the one it replaced.
         const rank = (r: Reading) => (used.has(r) ? 0 : fresh.has(r) ? 1 : 2);
         const ordered = [...(this.readings.get(peer)?.values() ?? [])].sort((a, b) => rank(a) - rank(b));
-        return [peer, { windows: ordered.map((r) => ({ ...r, stale: this.now() - r.at > staleMs, superseded: fresh.has(r) && !used.has(r) })), ...(open ? { paused: { reason: open.reason, resetsAt: open.resetsAt, since: open.since } } : {}) }];
+        return [peer, { windows: ordered.map((r) => ({ ...r, stale: this.now() - r.at > staleMs, superseded: fresh.has(r) && !used.has(r) })), ...(open ? { paused: { reason: open.reason, resetsAt: open.resetsAt, since: open.since } } : {}),
+          ...(open && accountUsage ? { accountUsage: { ...quotaAccountUsage(accountUsage), at: accountUsage.at, stale: this.now() - accountUsage.at > staleMs } } : {}) }];
       }),
     );
   }
 
   close(): void {
     this.closed = true;
+    this.pauseObservers.clear();
+    this.accountUsage.clear();
     this.db.close();
   }
 }

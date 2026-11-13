@@ -7,6 +7,8 @@ Scope: quota and native context readings, checkpoints, pause, handoff and resume
 - A reading has its own timestamp. Numbers that arrive through a file (`claude-usage.json`) carry the file's `at`; a window whose `resetsAt` has passed says nothing any more.
 - On resume the notice is published before the peer is released, so it leads the first delivery.
 - The coordinator only lifts its own pauses: `manualPaused` in the daemon keeps a `ahub pause` in place, and `ahub resume` refuses while a budget record is open.
+- Codex quota reads (#1440): use the canonical account's open Budget pause to select the fixed 60 s poll, return to usagePollMs on resume, and unsubscribe/cancel polling plus pending-read timers on detach/stop. Keep resume exclusively in Budget.evaluate. Keep only reset-credit count/proven-complete earliest expiry and ordinaryUsageAllowed/hasCredits/unlimited flags with measurement time; never retain balance, account id, credit ids or descriptions. A capped/missing detail list leaves expiry unknown. Credit flags never lift or prevent a pause.
+
 - `Bus.pause` and `Bus.resume` are transient and write no bus snapshot (#1204): the bus's `paused` set is not in `BusSnapshot`. Each owner persists and re-applies its own pause (`budget_pauses` for a budget record, `setManualPaused` for `ahub pause`, `conductorHolds` for a conductor hold); never restore a pause from the bus snapshot or add a `persist()` back for one.
 - The status line tee must never fail or slow the render: no throw, original command run with the same stdin, 5 s cap.
 

@@ -166,3 +166,8 @@ adapter, Bus or automatic receipt-admission behavior changed.
 The task 859 deny-readiness correction separates known delivery disposition from native quiescence. Task 850 measured no post-deny completion ACK; normal-Bus assistant/Stop evidence cannot be reused for the denied turn. The durable fence keeps a synchronous Bus drain from submitting queued work and allows recovery through a new personal turn or a verified fresh generation. The 30 s deadline is an operational waiting bound, not evidence that native work stopped.
 
 The same review found that a single append can write a prefix without throwing. The byte-count check and actual tail guard prevent a second append from completing that prefix. This intentionally adds no per-write persisted intent: a crash leaving a torn prefix that already ends with newline remains the explicit ceiling.
+
+
+## 2026-11-13: Codex paused quota visibility (#1440)
+
+The normal ten-minute native usage poll could delay observing an external reset while the hub held a budget pause. The #1440 contract kept resume in Budget.evaluate, added a one-minute paused observation cadence, and limited credit diagnostics to counts, times and flags. The Codex 0.167.2 generated schema defined availableCount separately from a possibly capped detail list, so incomplete detail coverage did not establish a global earliest expiry. Paid-credit availability supplied no pause/resume authority.

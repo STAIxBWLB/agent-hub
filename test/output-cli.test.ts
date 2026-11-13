@@ -1,3 +1,4 @@
+import { codexAccountUsage } from "../src/adapters/definitions/native-quota.ts";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
@@ -19,7 +20,7 @@ const STUDY_PROJECTION = { id: "rc-0123456789ab", revision: 1, held: true, reaso
     handoff: { present: true, complete: false, insufficientEvidence: false, coveredSourceIds: ["src:0000000000000001"] }, budget: { tool_calls: { support: "enforceable", used: 3, limit: 10 }, tokens: { support: "unavailable", used: null, limit: null }, model_calls: { support: "advisory", used: null, limit: null } } },
   { unitId: "beta", round: 0, taskId: 3, state: "approved", purpose: "discovery", intentionalIndependentCheck: true, sourceIds: [], duplicateSourceIds: [],
     handoff: { present: true, complete: true, insufficientEvidence: false, coveredSourceIds: [] }, budget: {} }] };
-function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; kimiSource?: unknown } = {}) {
+function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; kimiSource?: unknown; budget?: Record<string, unknown> } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-output-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
@@ -28,7 +29,7 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; ki
   const now = Date.now();
   const status = { projectId: project.id, pid: process.pid, cwd: root, controlPort: 12345, instanceId: "output-fixture", peers: { claude: { state: "idle", queued: 0, attached: true, context: { used: 0.5, freshness: "fresh", source: "claude_statusline", measuredAt: Date.now() } } }, tasks: { proposed: 1 } };
   const tasks: any[] = [{ id: 1, state: "proposed", class: "implement", owner: "claude", reviewer: "codex", title: "검증할 긴 제목 ".repeat(40), signals: [], created: Date.now() }];
-  const budget = { claude: { windows: [{ id: "week", used: 0.25, source: "fixture", at: Date.now(), resetsAt: Date.now() + 60_000 }] } };
+  const budget = options.budget ?? { claude: { windows: [{ id: "week", used: 0.25, source: "fixture", at: Date.now(), resetsAt: Date.now() + 60_000 }] } };
   const envelopeId = "12345678-1111-2222-3333-444444444444";
   const deliveries = [{ id: "abcdef12-1111-2222-3333-444444444444", peer: "codex", state: "needs_review", revision: 2, createdAt: now - 60_000, updatedAt: now - 30_000, envelopeIds: [envelopeId], important: true }];
   const delivery = { ...deliveries[0], messages: [{ id: envelopeId, from: "claude", priority: "important", kind: "task", body: "[private: inspect the associated task with ahub task show]" }] };
@@ -387,4 +388,19 @@ test("ahub study: parse before connecting, read the contract file, send the righ
   expect(classifyPeerCommand("study", ["show", "rc-0123456789ab", "--json"])).toBe("allowed");
   expect(classifyPeerCommand("study", ["show"])).toBe("allowed");
   for (const argv of [["approve", "rc-0123456789ab", "1"], ["close", "rc-0123456789ab", "1", "--reason", "x"], ["draft", "7", "c.json"], ["revise", "rc-0123456789ab", "1", "c.json"], ["show", "rc-0123456789ab", "--as-user"], []]) expect(classifyPeerCommand("study", argv), argv.join(" ")).toBe("console");
+});
+
+
+test("#1440 ahub budget text and JSON show safe paused-account diagnostics without balance or identifiers", async () => {
+  const expires = Date.parse("2026-12-13T00:00:00Z");
+  const accountUsage = { ...codexAccountUsage({ accountId: "ACCOUNT_ID_CANARY", ordinaryUsageAllowed: false,
+    rateLimitResetCredits: { availableCount: 1, credits: [{ id: "CREDIT_ID_CANARY", resetType: "codexRateLimits", status: "available", expiresAt: expires / 1000 }] },
+    rateLimits: { credits: { hasCredits: true, unlimited: false, balance: "BALANCE_CANARY" } } }), at: Date.now(), stale: false };
+  const budget = { codex: { windows: [{ id: "5h", used: 1, source: "codex rateLimits", at: Date.now() }], paused: { reason: "quota", since: Date.now(), resetsAt: Date.now() + 60_000 }, accountUsage } };
+  const f = fixture({ budget });
+  const text = await f.run(["budget", "--color=never"]), json = await f.run(["budget", "--json"]);
+  expect(text.code).toBe(0); expect(json.code).toBe(0);
+  for (const part of ["1 reset credit available", "expires 2026-12-13", "ordinary usage not allowed", "credits available: yes", "unlimited credits: no", "turns would use paid credits"]) expect(text.stdout.replace(/\s+/g, " ")).toContain(part);
+  expect(JSON.parse(json.stdout).budget.codex.accountUsage).toEqual(accountUsage);
+  expect(text.stdout + json.stdout).not.toMatch(/CANARY|balance|accountId|creditId/);
 });
