@@ -10,7 +10,7 @@ import { loadRouting } from "../src/hub/routing.ts";
 import { SourceRegistry, sourceProjectionReceipt } from "../src/hub/sources.ts";
 import { evidenceSnapshotKey, readEvidenceSource } from "../src/hub/source-read.ts";
 import { hashDeliverables } from "../src/hub/deliverable-files.ts";
-import type { EvidenceRecordInput } from "../src/hub/research-evidence.ts";
+import { evidenceLinkId, parseEvidenceLink, type EvidenceRecordInput } from "../src/hub/research-evidence.ts";
 import { synthesisManifestHash, type SynthesisManifestV1 } from "../src/hub/synthesis-readiness.ts";
 
 const cleanup: (() => void)[] = [];
@@ -37,9 +37,9 @@ async function fixture(personVerdict = true) {
     evidenceSourceMeta: id => registry.get(id),
     evidenceSourceSnapshotKey: link => evidenceSnapshotKey(registry, link.sourceId, version),
     evidenceSourceRead: async (_by, link, current, mode) => {
-      control.reads.push(link.sourceId); control.offline.push(mode?.offline === true);
-      return readEvidenceSource(registry, link, { valid: current, projectionVersion: version, canReadPrivate: async () => false,
-        screen: async (_text, source) => { await control.screen?.(source.id); return true; } });
+      control.reads.push(link.sourceId); control.offline.push(mode?.privacyReadOnly === true);
+      return readEvidenceSource(registry, link, { valid: current, projectionVersion: version, canReadPrivate: async () => false, privacyReadOnly: mode?.privacyReadOnly,
+        screen: async (text, source) => { await control.screen?.(source.id); return control.privacyModel ? (await deps.piiScreen?.(text))?.label === "clear" : true; } });
     },
   };
   const tasks = new Tasks(deps);
@@ -73,14 +73,17 @@ async function fixture(personVerdict = true) {
   return { cwd, board, bus, registry, tasks, deps, control, sources, task, support, artifacts, input, manifest, check };
 }
 
-test("#931 an offline check requiring a privacy model stays unavailable without invoking it", async () => {
+test("#931 offline checks reuse configured privacy screening without source fetch or unknown-state mutation", async () => {
   const f = await fixture(), manifest = await f.manifest();
   f.control.privacyModel = true;
   let calls = 0;
-  f.deps.piiScreen = async () => { calls++; throw new Error("MODEL_CALL_FORBIDDEN"); };
+  f.deps.piiScreen = async () => { calls++; return { label: "clear", ms: 0 }; };
   const before = f.board.statusRevision();
-  expect(await f.check(manifest)).toEqual({ taskId: f.task.id, status: "unavailable", cause: "offline_privacy_screen_required" });
-  expect(calls).toBe(0); expect(f.control.reads).toEqual([]); expect(f.board.statusRevision()).toBe(before);
+  expect((await f.check(manifest)).status).toBe("ready");
+  expect(calls).toBe(1); expect(f.registry.get(f.sources[0]!.id)?.private).toBe(false);
+  f.deps.piiScreen = async () => { calls++; throw new Error("SCREEN_UNAVAILABLE"); };
+  expect((await f.check(manifest)).status).toBe("unknown");
+  expect(calls).toBe(2); expect(f.registry.get(f.sources[0]!.id)?.private).toBe(false); expect(f.board.statusRevision()).toBe(before);
 });
 
 test("#931 an earlier source changed while a later source resolves cannot retain ready", async () => {
@@ -157,15 +160,21 @@ test("#931 only an existing person verdict bound to this manifest qualifies an o
   const f = await fixture(); await f.tasks.evidenceRecord("codex", f.input(1, "contradicts"));
   const manifest = await f.manifest(), synthesis = { manifestSha256: synthesisManifestHash(manifest), disposition: "qualified" as const };
   const before = f.board.statusRevision();
-  expect(() => f.tasks.recordClaimVerdict("codex", f.task.id, { slot: 1, verdict: "supported", synthesis })).toThrow("only the console user");
+  await expect(f.tasks.recordSynthesisClaimVerdict("codex", f.task.id, { slot: 1, verdict: "supported", synthesis }, manifest)).rejects.toThrow("only the console user");
   expect(f.board.statusRevision()).toBe(before);
   expect((await f.check(manifest)).status).toBe("not_ready");
-  f.tasks.recordClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis });
+  expect(() => f.tasks.recordClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis })).toThrow("current manifest validation");
+  await expect(f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis: { ...synthesis, manifestSha256: "f".repeat(64) } }, manifest)).rejects.toThrow(synthesis.manifestSha256);
+  expect(f.board.statusRevision()).toBe(before);
+  await f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis }, manifest);
   const ready = await f.check(manifest);
   expect(ready.status).toBe("ready");
   if (!("claims" in ready)) throw new Error("expected separate qualification status");
   expect(ready.claims[0]?.contradiction).toBe("qualified");
   await f.tasks.evidenceRecord("codex", f.input(1, "context", 1));
+  const currentHash = synthesisManifestHash(await f.manifest()), revised = f.board.statusRevision();
+  await expect(f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis }, manifest)).rejects.toThrow(`current manifestSha256 ${currentHash}`);
+  expect(f.board.statusRevision()).toBe(revised);
   expect((await f.check(manifest)).status).toBe("stale");
   const refreshed = await f.check(await f.manifest());
   expect(refreshed.status).toBe("not_ready");
@@ -173,13 +182,38 @@ test("#931 only an existing person verdict bound to this manifest qualifies an o
   expect(refreshed.claims[0]?.contradiction).toBe("open");
 });
 
+test("#931 person qualification cannot commit across a privacy upgrade during its snapshot", async () => {
+  const f = await fixture(), manifest = await f.manifest(), before = f.board.statusRevision();
+  const synthesis = { manifestSha256: synthesisManifestHash(manifest), disposition: "qualified" };
+  f.control.screen = async () => { f.registry.markPrivate(f.sources[0]!.id); };
+  await expect(f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis }, manifest)).rejects.toThrow(/private|unavailable|changed/);
+  expect(f.board.statusRevision()).toBe(before);
+  expect(f.board.get(f.task.id)!.history.at(-1)?.claim).not.toHaveProperty("synthesis");
+});
+
+test("#931 an inventory write after the snapshot is refused atomically before person history", async () => {
+  const f = await fixture(), manifest = await f.manifest(), history = f.board.get(f.task.id)!.history.length;
+  const synthesis = { manifestSha256: synthesisManifestHash(manifest), disposition: "qualified" };
+  const record = f.board.recordSynthesisClaimVerdict.bind(f.board), input = f.input(1, "contradicts");
+  f.board.recordSynthesisClaimVerdict = (id, claim, fence) => {
+    const task = f.board.get(id)!, link = parseEvidenceLink({ ...input, id: evidenceLinkId(input, "codex"), recordedBy: "codex" });
+    f.board.recordEvidenceLink("synthesis-fixture", link, { taskFlowRevision: task.history.length, taskCreated: task.created, owner: "codex" });
+    return record(id, claim, fence);
+  };
+  await expect(f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis }, manifest)).rejects.toThrow("synthesis context changed");
+  expect(f.board.get(f.task.id)!.history).toHaveLength(history);
+  expect(f.board.get(f.task.id)!.history.at(-1)?.claim).not.toHaveProperty("synthesis");
+  expect((await f.check(manifest)).status).toBe("stale");
+});
+
 test("#931 withdrawal appends a revision, stales prior inventory and preserves historical public readback", async () => {
   const f = await fixture(), counter = await f.tasks.evidenceRecord("codex", f.input(1, "contradicts"));
   const manifest = await f.manifest();
-  const withdrawn = await f.tasks.evidenceRecord("codex", { ...f.input(1, "contradicts"), id: counter.id, revision: 2, status: "withdrawn" });
+  const withdrawn = await f.tasks.evidenceRecord("user", { ...f.input(1, "contradicts"), id: counter.id, revision: 2, status: "withdrawn" });
   expect(withdrawn.revision).toBe(2);
   expect(f.board.evidenceLink("synthesis-fixture", counter.id, 1)?.status).toBeUndefined();
   expect(f.board.evidenceLink("synthesis-fixture", counter.id)?.status).toBe("withdrawn");
+  expect(f.board.evidenceLink("synthesis-fixture", counter.id)?.recordedBy).toBe("user");
   expect(await f.tasks.evidenceRead("codex", { id: counter.id })).toEqual({ ...withdrawn, status: "withdrawn" });
   expect((await f.tasks.evidenceRead("codex", { id: counter.id, revision: 1 })).status).toBe("resolved");
   expect((await f.check(manifest)).status).toBe("stale");
@@ -187,6 +221,15 @@ test("#931 withdrawal appends a revision, stales prior inventory and preserves h
   expect(refreshed.status).toBe("ready");
   if (!("claims" in refreshed)) throw new Error("expected current withdrawal inventory");
   expect(refreshed.claims[0]?.contradiction).toBe("none");
+});
+
+test("#931 owner and person withdrawal on a closed task name the follow-up-task next step", async () => {
+  const f = await fixture();
+  f.board.update(f.task.id, "codex", "done", { state: "in_review" });
+  f.board.update(f.task.id, "user", "approved", { state: "approved" });
+  const before = f.board.statusRevision(), integrity = f.board.researchEvidenceIntegrity();
+  for (const by of ["codex", "user"]) await expect(f.tasks.evidenceRecord(by, { ...f.input(), id: f.support.id, revision: 2, status: "withdrawn" })).rejects.toThrow("open a follow-up research task");
+  expect(f.board.statusRevision()).toBe(before); expect(f.board.researchEvidenceIntegrity()).toEqual(integrity);
 });
 
 test("#931 valid guarded citations and provenance do not manufacture a missing person verdict", async () => {

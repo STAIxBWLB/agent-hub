@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { Board, taskClaimIdentity } from "../src/hub/board.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
-import { inventoryBinding } from "../src/hub/synthesis-readiness.ts";
+import { inventoryBinding, synthesisManifestHash } from "../src/hub/synthesis-readiness.ts";
+import { hashDeliverables } from "../src/hub/deliverable-files.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { realPath } from "../src/hub/project.ts";
 import { SourceRegistry, sourceProjectionReceipt } from "../src/hub/sources.ts";
@@ -66,8 +67,7 @@ test("#931 daemon keeps explicit synthesis reads console-only, current and close
     expect((await call(person, "claim_verdict", { id: task.id, slot: 1, verdict: "supported", synthesis: { ...synthesis, text: "NARRATIVE_CANARY" } })).ok).toBe(false);
     expect(board.statusRevision()).toBe(before);
     const judgment = await call(person, "claim_verdict", { id: task.id, slot: 1, verdict: "supported", synthesis });
-    expect(Boolean(judgment.ok), judgment.error).toBe(true);
-    expect(JSON.parse(judgment.text).recorded.synthesis).toEqual(synthesis);
+    expect(judgment.ok).toBe(false); expect(board.statusRevision()).toBe(before);
     expect(board.hasWithdrawnEvidenceState()).toBe(false);
     const payload = { taskId: task.id, claimId: identity.claimId, claimRevision: identity.claimRevision,
       sourceId: source.id, rawSha256: sources.get(source.id)!.sha256, projectionSha256: projection.projectionSha256,
@@ -75,6 +75,22 @@ test("#931 daemon keeps explicit synthesis reads console-only, current and close
     const recorded = await call(owner, "hub_evidence_record", payload);
     expect(Boolean(recorded.ok), recorded.error).toBe(true);
     const link = JSON.parse(recorded.text);
+    const counter = await call(owner, "hub_evidence_record", { ...payload, relation: "contradicts" });
+    expect(Boolean(counter.ok), counter.error).toBe(true);
+    writeFileSync(join(root, "report.md"), "Fixture conclusion [@fixture]\n");
+    writeFileSync(join(root, "references.bib"), "@article{fixture, title={Fixture}}\n");
+    const artifacts = await hashDeliverables([{ path: "report.md", format: "md" }, { path: "references.bib", format: "bib" }], { cwd: root, deny: [], private: () => false });
+    board.update(task.id, "codex", "lifecycle", {}, undefined, { deliverables: artifacts });
+    const inventory = JSON.parse((await call(person, "study_evidence", { taskId: task.id })).text);
+    const currentManifest = { ...manifest, deliverable: { id: artifacts[0]!.id, sha256: artifacts[0]!.sha256 }, bibliography: { id: artifacts[1]!.id, sha256: artifacts[1]!.sha256 },
+      claims: [{ ...manifest.claims[0]!, inventory: inventory.claims[0].inventory, evidence: [{ id: link.id, revision: 1, citationKey: "fixture" }] }] };
+    const currentHash = synthesisManifestHash(currentManifest), revision = board.statusRevision();
+    const mismatch = await call(person, "claim_verdict", { id: task.id, slot: 1, verdict: "supported", synthesis, manifest: currentManifest });
+    expect(mismatch.ok).toBe(false); expect(mismatch.error).toContain(currentHash); expect(board.statusRevision()).toBe(revision);
+    writeFileSync(join(root, "current-manifest.json"), JSON.stringify(currentManifest));
+    const entered = await ahub("task", "claim", String(task.id), "1", "supported", "--manifest", "current-manifest.json", "--disposition", "qualified");
+    expect(entered.code, entered.stderr).toBe(0); expect(entered.stdout).toContain(`qualified @ ${currentHash}`);
+    expect(board.get(task.id)!.history.at(-1)?.claim?.synthesis).toEqual({ manifestSha256: currentHash, disposition: "qualified" });
     const withdrawn = await call(owner, "hub_evidence_record", { ...payload, id: link.id, revision: 2, status: "withdrawn" });
     expect(Boolean(withdrawn.ok), withdrawn.error).toBe(true);
     expect(board.hasWithdrawnEvidenceState()).toBe(true);

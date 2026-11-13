@@ -15,7 +15,7 @@ import { readExecutionLineage, type LineageResult } from "./execution-lineage.ts
 import { parseExecutionLinkInput, taskExecutionReference, executionLinkActor, executionReferenceDigest, type ExecutionLinkInput } from "./execution-links.ts";
 import { executionReferenceKey, executionText, EXECUTION_REFERENCE_LIMITS, type ExecutionReferenceV1 } from "./execution-reference.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
-import { checkSynthesis, inventoryBinding, parseSynthesisManifest, type SynthesisCurrent, type SynthesisCurrentClaim, type SynthesisArtifactSnapshot, type SynthesisReadiness } from "./synthesis-readiness.ts";
+import { checkSynthesis, inventoryBinding, parseSynthesisManifest, synthesisManifestHash, type SynthesisManifestV1, type SynthesisCurrent, type SynthesisCurrentClaim, type SynthesisArtifactSnapshot, type SynthesisReadiness } from "./synthesis-readiness.ts";
 import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt, type EvidenceLinkV1 } from "./research-evidence.ts";
 import type { ActionMeta, ReviewAnchor } from "@staix/agent-console/contract";
 import { parseReviewAnchor, reviewAnchorErrorMessage, anchorStatus, type ReviewAnchorStatus } from "./review-anchor.ts";
@@ -290,7 +290,7 @@ export interface TasksDeps {
   /** Host-owned screened snapshot read, never a public source-read excerpt reconstructed as a projection. */
   /** Opaque host-only current raw/projection/converter token, never client evidence. */
   evidenceSourceSnapshotKey?: (link: EvidenceLinkV1) => string | undefined;
-  evidenceSourceRead?: (by: PeerId, link: EvidenceLinkV1, current: () => boolean, mode?: { offline: true }) => Promise<EvidenceSourceRead>;
+  evidenceSourceRead?: (by: PeerId, link: EvidenceLinkV1, current: () => boolean, mode?: { privacyReadOnly: true }) => Promise<EvidenceSourceRead>;
   /** Fresh registered metadata for bounded, ephemeral origin grouping; no converter or model call. */
   evidenceSourceMeta?: (id: string) => SourceMeta | undefined;
   /** Host-only fixture clock; never read from model input or project configuration. */
@@ -5071,14 +5071,18 @@ export class Tasks {
 
   /** Deterministic, explicit and offline: no caller-supplied current state and no semantic/model judge. */
   async synthesisCheck(by: PeerId, input: unknown): Promise<SynthesisReadiness | { taskId: number; status: "unavailable" | "stale"; cause: string }> {
+    return this.synthesisInspect(by, input);
+  }
+
+  private synthesisInspect(by: PeerId, input: unknown): Promise<SynthesisReadiness | { taskId: number; status: "unavailable" | "stale"; cause: string }>;
+  private synthesisInspect(by: PeerId, input: unknown, onSnapshot: (manifest: SynthesisManifestV1, current: SynthesisCurrent, report: SynthesisReadiness, valid: () => boolean) => Task): Promise<Task | SynthesisReadiness | { taskId: number; status: "unavailable" | "stale"; cause: string }>;
+  private async synthesisInspect(by: PeerId, input: unknown, onSnapshot?: (manifest: SynthesisManifestV1, current: SynthesisCurrent, report: SynthesisReadiness, valid: () => boolean) => Task): Promise<Task | SynthesisReadiness | { taskId: number; status: "unavailable" | "stale"; cause: string }> {
     const fields = this.studyFields(input, ["taskId", "manifest"]), manifest = parseSynthesisManifest(fields.manifest);
     if (fields.taskId !== manifest.taskId) throw new PreEffectToolRefusal("synthesis manifest names another task; refresh its task binding and retry");
     const check = this.requestCheck(by, () => this.studyHold());
     return this.studyWrite(async () => {
       check(); const boardRevision = this.d.board.statusRevision(), task = this.synthesisTask(by, fields.taskId), taskId = task.id;
       if (this.synthesisPrivate(task, by)) return { taskId, status: "private" };
-      // An offline check cannot replace a required privacy model with an assumed clear verdict.
-      if (this.screenOn()) return { taskId, status: "unavailable", cause: "offline_privacy_screen_required" };
       const before = this.synthesisInventories(task), allLinks = before.flatMap(claim => claim.inventory.links);
       const sources = this.synthesisSources(allLinks);
       if (sources.private) return { taskId, status: "private" };
@@ -5111,13 +5115,12 @@ export class Tasks {
         const record = delivered.find(record => record.id === reference.id);
         if (!record) return { id: reference.id, state: "missing" };
         if (record.private || !record.path || this.experimentOutputPrivate(task, record.path)) return "private";
-        if (record.sha256 !== reference.sha256) return { id: record.id, sha256: record.sha256, state: "changed" };
         try {
           const read = await readGuardedDeliverable(record.path, this.deliverablePorts(task, { failClosedOnDiscoveryLimit: true }), limit);
           const text = new TextDecoder("utf-8", { fatal: true }).decode(read.data);
           if (!this.publicMetadataText(text)) return "private";
           reads.push({ path: record.path, read });
-          return { id: record.id, sha256: read.sha256, state: read.sha256 === reference.sha256 ? "unchanged" : "changed", text };
+          return { id: record.id, sha256: read.sha256, state: read.sha256 === reference.sha256 && record.sha256 === reference.sha256 ? "unchanged" : "changed", text };
         } catch { return { id: record.id, state: "unknown" }; }
       };
       const doc = await artifact(manifest.deliverable, 256 * 1024); if (doc === "private") return { taskId, status: "private" };
@@ -5133,7 +5136,7 @@ export class Tasks {
           if (withdrawn) { resolutions.push({ id: link.id, revision: link.revision, status: "withdrawn" }); continue; }
           if (!this.d.evidenceSourceRead || !sourceKeys.get(link.sourceId)) { resolutions.push({ id: link.id, revision: link.revision, status: "unavailable" }); continue; }
           let resolution: EvidenceSourceRead["resolution"];
-          try { resolution = (await this.d.evidenceSourceRead(by, link, current, { offline: true })).resolution; }
+          try { resolution = (await this.d.evidenceSourceRead(by, link, current, { privacyReadOnly: true })).resolution; }
           catch { resolution = { status: "unavailable", cause: "source_unavailable" }; }
           if (resolution.status === "unavailable" && resolution.cause === "private") return { taskId, status: "private" };
           if (!current()) return changed();
@@ -5145,17 +5148,22 @@ export class Tasks {
           inventory: { ...claim.inventory, links: this.synthesisRows(claim.inventory.links) },
           resolutions, judgment: { present: !!entry, ...(synthesis ? synthesis : {}) } });
       }
-      if (!current()) return changed();
-      if (this.synthesisSources(allLinks).key !== sources.key) return changed();
-      const fencedSources = new Set<string>();
-      for (const link of activeLinks) if (!fencedSources.has(link.sourceId)) {
-        fencedSources.add(link.sourceId);
-        try { if (sourceKeys.get(link.sourceId) && this.d.evidenceSourceSnapshotKey?.(link) !== sourceKeys.get(link.sourceId)) return changed(); } catch { return changed(); }
-      }
-      if (reads.some(value => !guardedDeliverableCurrent(value.path, this.deliverablePorts(task, { failClosedOnDiscoveryLimit: true }), value.read))) return changed();
-      if (this.synthesisSources(allLinks).key !== sources.key) return changed();
-      if (!current()) return changed();
-      return checkSynthesis(manifest, { taskId, taskCreated: task.created, deliverable: doc, bibliography: bib, claims: observed });
+      const finalCurrent = () => {
+        try {
+          if (!current() || this.synthesisSources(allLinks).key !== sources.key) return false;
+          const fencedSources = new Set<string>();
+          for (const link of activeLinks) if (!fencedSources.has(link.sourceId)) {
+            fencedSources.add(link.sourceId);
+            if (sourceKeys.get(link.sourceId) && this.d.evidenceSourceSnapshotKey?.(link) !== sourceKeys.get(link.sourceId)) return false;
+          }
+          if (reads.some(value => !guardedDeliverableCurrent(value.path, this.deliverablePorts(task, { failClosedOnDiscoveryLimit: true }), value.read))) return false;
+          return this.synthesisSources(allLinks).key === sources.key && current();
+        } catch { return false; }
+      };
+      if (!finalCurrent()) return changed();
+      const snapshot: SynthesisCurrent = { taskId, taskCreated: task.created, deliverable: doc, bibliography: bib, claims: observed };
+      const report = checkSynthesis(manifest, snapshot);
+      return onSnapshot ? onSnapshot(manifest, snapshot, report, finalCurrent) : report;
     });
   }
 
@@ -5908,7 +5916,10 @@ export class Tasks {
         let task: Task;
         try { task = this.studyParent(proposed.taskId); }
         catch { throw new PreEffectToolRefusal("evidence task is unavailable or outside this project; refresh ahub task show and select an active research task in this project"); }
-        if (task.profile !== "research" || task.state !== "in_progress" || task.owner !== by) throw new PreEffectToolRefusal("evidence recording requires the current in-progress research task owner; accept an assigned research task before recording evidence");
+        const personWithdrawal = by === USER && proposed.status === "withdrawn";
+        if (task.profile === "research" && (task.owner === by || personWithdrawal) && isClosedTaskState(task.state))
+          throw new PreEffectToolRefusal("a closed research task's evidence records are final; open a follow-up research task to correct evidence and create a new manifest binding");
+        if (task.profile !== "research" || task.state !== "in_progress" || !task.owner || task.owner !== by && !personWithdrawal) throw new PreEffectToolRefusal("evidence recording requires the current in-progress research task owner; accept an assigned research task before recording evidence");
         if (this.d.privateTurn?.(by) || this.isPii(task) || task.signals.includes("pii") || task.signals.includes("pii_path")) throw new PreEffectToolRefusal("private evidence recording is unavailable in T1; use a public research task outside a private turn");
         let identity;
         try { identity = taskClaimIdentity(task, Number(proposed.claimId.split(":").at(-1))); }
@@ -5948,7 +5959,7 @@ export class Tasks {
       if (current.key !== before.key) throw new PreEffectToolRefusal("evidence task, claim or source changed during admission; refresh hub_task_show or ahub task show --json and registered source metadata before retrying");
       requirePublicMetadata();
       requireRevision();
-      const saved = this.d.board.recordEvidenceLink(this.d.project, link, { taskFlowRevision: current.task.history.length, taskCreated: current.task.created, owner: by });
+      const saved = this.d.board.recordEvidenceLink(this.d.project, link, { taskFlowRevision: current.task.history.length, taskCreated: current.task.created, owner: current.task.owner!, ...(by === USER ? { personWithdrawal: true as const } : {}) });
       return { id: saved.id, revision: saved.revision, taskId: saved.taskId };
     });
   }
@@ -5959,15 +5970,66 @@ export class Tasks {
    * its history entry stays a stub. The entry is not a transition and moves nothing; a later verdict for the same slot supersedes the earlier one (the scorecard reads the last).
    */
   recordClaimVerdict(by: PeerId, id: unknown, input: unknown): Task {
+    return this.writeClaimVerdict(by, id, input);
+  }
+
+  /** Refresh host bindings without changing the person's selected citation mappings or keeping a second manifest store. */
+  private currentSynthesisManifest(manifest: SynthesisManifestV1, current: SynthesisCurrent): SynthesisManifestV1 | undefined {
+    try {
+      if (!current.deliverable?.sha256 || !current.bibliography?.sha256 || !current.claims) return;
+      const claims = current.claims.map(claim => {
+        if (!claim.inventory) throw new Error("incomplete inventory");
+        const inventory = inventoryBinding(claim.inventory.links, claim.inventory.complete);
+        if (!inventory) throw new Error("incomplete inventory");
+        const links = claim.inventory.links.map(row => "link" in row ? row.link : row);
+        const evidence = (manifest.claims.find(row => row.claimId === claim.claimId)?.evidence ?? []).map(ref => {
+          const latest = links.find(link => link.id === ref.id);
+          if (!latest) throw new Error("selected link unavailable");
+          return { ...ref, revision: latest.revision };
+        });
+        return { claimId: claim.claimId, claimRevision: claim.claimRevision, inventory, evidence };
+      });
+      return parseSynthesisManifest({ schemaVersion: 1, taskId: current.taskId, taskCreated: current.taskCreated,
+        deliverable: { id: current.deliverable.id, sha256: current.deliverable.sha256 },
+        bibliography: { id: current.bibliography.id, sha256: current.bibliography.sha256 }, claims });
+    } catch { return; }
+  }
+
+  /** Same console claim authority/store; the descriptor is transient and the write stays inside the final snapshot fence. */
+  async recordSynthesisClaimVerdict(by: PeerId, id: unknown, input: unknown, manifest: unknown): Promise<Task> {
+    if (by !== USER) throw new PreEffectToolRefusal("only the console user may record a claim verdict");
+    const task = this.need(id), claim = parseClaimVerdict(input, task.plan?.claims?.length ?? 0), boardRevision = this.d.board.statusRevision();
+    if (!claim.synthesis) throw new PreEffectToolRefusal("a synthesis verdict requires a manifest file and resolved or qualified disposition through ahub task claim");
+    const result = await this.synthesisInspect(by, { taskId: task.id, manifest }, (supplied, current, report, valid) => {
+      const refreshed = this.currentSynthesisManifest(supplied, current);
+      if (!refreshed) throw new PreEffectToolRefusal("current synthesis manifest unavailable; refresh complete inventory, selected evidence and registered artifacts before recording a disposition");
+      const hash = synthesisManifestHash(refreshed);
+      if (!valid()) throw new PreEffectToolRefusal("synthesis context changed before the claim verdict write; refresh current public inputs and retry");
+      if (claim.synthesis!.manifestSha256 !== hash || synthesisManifestHash(supplied) !== hash)
+        throw new PreEffectToolRefusal(`synthesis manifest changed; current manifestSha256 ${hash}; refresh the manifest file and explicitly record the disposition again`);
+      if (!("scope" in report) || report.binding !== "current" || report.claimCoverage !== "complete"
+        || report.deliverable !== "unchanged" || report.bibliography !== "unchanged"
+        || report.claims.some(row => row.claim !== "current" || row.inventory !== "current" || row.evidenceLink !== "present" || row.locator !== "resolved" || row.provenance !== "resolved"))
+        throw new PreEffectToolRefusal("current synthesis provenance is unavailable or stale; resolve current source/locator and artifact statuses before recording a disposition");
+      return this.writeClaimVerdict(by, task.id, claim, { boardRevision, taskCreated: task.created, taskFlowRevision: task.history.length,
+        claimRevision: taskClaimIdentity(task, claim.slot).claimRevision });
+    });
+    if (!("history" in result)) throw new PreEffectToolRefusal("current synthesis is private, unavailable or changed; refresh public inputs before recording a disposition");
+    return result;
+  }
+
+  private writeClaimVerdict(by: PeerId, id: unknown, input: unknown, verifiedSynthesis?: { boardRevision: number; taskCreated: number; taskFlowRevision: number; claimRevision: string }): Task {
     if (by !== USER) throw new Error("only the console user may record a claim verdict");
     if (this.d.cancellationHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) throw new Error("recovery or shutdown is holding task writes");
     const task = this.need(id);
     const claims = task.plan?.claims?.length ?? 0;
     if (!claims) throw new Error(`task #${task.id} declares no plan claims: add them to its plan first`);
     const claim = parseClaimVerdict(input, claims);
+    if (claim.synthesis && !verifiedSynthesis) throw new PreEffectToolRefusal("a synthesis disposition needs current manifest validation; use ahub task claim with --manifest <manifest.json> and --disposition");
     if (claim.synthesis && (this.d.profile !== "research" || task.profile !== "research")) throw new Error("synthesis dispositions require a research task and profile");
     // Bound to the claim list it evaluated: a hash of the plan's claims (never their text), so a later replacement or reorder of the list leaves this verdict naming no claim of the new list.
     const identity = taskClaimIdentity(task, claim.slot);
+    if (verifiedSynthesis) return this.d.board.recordSynthesisClaimVerdict(task.id, { ...claim, list: identity.claimRevision }, verifiedSynthesis);
     return this.d.board.update(task.id, USER, "claim verdict", {}, undefined, { claim: { ...claim, list: identity.claimRevision } });  // no note: nothing a person typed beyond the closed fields is kept
   }
 

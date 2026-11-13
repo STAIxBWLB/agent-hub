@@ -30,7 +30,7 @@ import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "./s
 import { renderIntake, renderIntakeChange } from "./intake-output.ts";
 import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { renderCapabilities } from "./capabilities-output.ts";
-import { parseSynthesisManifest } from "../hub/synthesis-readiness.ts";
+import { parseSynthesisManifest, synthesisManifestHash } from "../hub/synthesis-readiness.ts";
 import { parseStudyArgs } from "./study.ts";
 import { parseBacklogReturn } from "./backlog-return-args.ts";
 import { parseResultsArgs } from "./results-args.ts";
@@ -879,6 +879,25 @@ const LOCAL_OPERATION_ARGS: Record<string, () => void> = {
   "bench run": () => { benchRunArgs(args.filter(arg => arg !== "--json").slice(1)); },
   "research backfill": researchArgs,
   "source add": () => { const operands = args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")); if (operands[0] !== "add" || operands.length !== 2 || !operands[1]) fail(SOURCE_USAGE); },
+};
+
+const contract = (file: string): unknown => {
+  // One descriptor decides everything: opened non-blocking and without following a final symlink (a FIFO would otherwise block the open), checked to be a regular file with fstat, and
+  // read for at most the cap plus one byte, so a file that grows or is replaced after the check, or a device that reports size zero, cannot exhaust memory or hang this process.
+  const cap = 64 * 1024;
+  let text: string;
+  try {
+    const fd = openSync(resolve(invokedFrom, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      if (!fstatSync(fd).isFile()) return fail("the contract file is not a regular file");
+      const bytes = Buffer.alloc(cap + 1); let got = 0;
+      while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, null); if (!n) break; got += n; }
+      if (got > cap) return fail("the contract file is over 64 KiB");
+      text = bytes.subarray(0, got).toString("utf8");
+    } finally { closeSync(fd); }
+  }
+  catch { return fail("cannot read the contract file"); }
+  try { return JSON.parse(text); } catch { return fail("the contract file is not valid JSON"); }
 };
 
 // Outside the command bodies: test/lifecycle-starting-1232.test.ts runs the `up` body as a plain function, where import.meta does not parse.
@@ -1765,24 +1784,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
     const parsed = parseStudyArgs(split.operands);
     if ("usage" in parsed) return fail(parsed.usage);
-    const contract = (file: string): unknown => {
-      // One descriptor decides everything: opened non-blocking and without following a final symlink (a FIFO would otherwise block the open), checked to be a regular file with fstat, and
-      // read for at most the cap plus one byte, so a file that grows or is replaced after the check, or a device that reports size zero, cannot exhaust memory or hang this process.
-      const cap = 64 * 1024;
-      let text: string;
-      try {
-        const fd = openSync(resolve(invokedFrom, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        try {
-          if (!fstatSync(fd).isFile()) return fail("the contract file is not a regular file");
-          const bytes = Buffer.alloc(cap + 1); let got = 0;
-          while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, null); if (!n) break; got += n; }
-          if (got > cap) return fail("the contract file is over 64 KiB");
-          text = bytes.subarray(0, got).toString("utf8");
-        } finally { closeSync(fd); }
-      }
-      catch { return fail("cannot read the contract file"); }
-      try { return JSON.parse(text); } catch { return fail("the contract file is not valid JSON"); }
-    };
+
     if (parsed.op === "evidence") return showToolText(data => renderStudyEvidence(data, present.columns), await taskOp("hub_evidence_read", { id: parsed.id, ...(parsed.revision === undefined ? {} : { revision: parsed.revision }) }), present);
     if (parsed.op === "evidence_inventory") return showToolText(data => renderStudyEvidence(data, present.columns), await taskOp("study_evidence", { taskId: parsed.taskId }), present);
     if (parsed.op === "check") {
@@ -2140,9 +2142,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       const { one, rest: positional } = takeFlags(rest, ["--model", "--model-said", "--manifest", "--disposition"], []);
       if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[0]!) || !/^[1-9]\d*$/.test(positional[1]!) || !["supported", "unsupported", "unclear"].includes(positional[2]!)
         || (one["--manifest"] === undefined) !== (one["--disposition"] === undefined)
-        || one["--manifest"] !== undefined && (!/^[a-f0-9]{64}$/.test(one["--manifest"]!) || !["resolved", "qualified"].includes(one["--disposition"]!))) fail("usage: ahub task claim <id> <slot> <supported|unsupported|unclear> [--model <label>] [--model-said <supported|unsupported|unclear>] [--manifest <sha256> --disposition <resolved|qualified>]");
-      const reply = JSON.parse(await taskOp("claim_verdict", { id: Number(positional[0]), slot: Number(positional[1]), verdict: positional[2], ...(one["--model"] === undefined ? {} : { model: one["--model"] }), ...(one["--model-said"] === undefined ? {} : { modelVerdict: one["--model-said"] }), ...(one["--manifest"] === undefined ? {} : { synthesis: { manifestSha256: one["--manifest"], disposition: one["--disposition"] } }) })) as { task: number; recorded?: { slot: number; verdict: string; model?: string; modelVerdict?: string } };
-      return console.log(`task #${reply.task}: claim ${reply.recorded?.slot} recorded as ${reply.recorded?.verdict}${reply.recorded?.model ? ` (model ${reply.recorded.model}` : ""}${reply.recorded?.modelVerdict ? `${reply.recorded?.model ? ", " : " ("}model said ${reply.recorded.modelVerdict}` : ""}${reply.recorded?.model || reply.recorded?.modelVerdict ? ")" : ""}`);
+        || one["--manifest"] !== undefined && !["resolved", "qualified"].includes(one["--disposition"]!)) fail("usage: ahub task claim <id> <slot> <supported|unsupported|unclear> [--model <label>] [--model-said <supported|unsupported|unclear>] [--manifest <manifest.json> --disposition <resolved|qualified>]");
+      const manifest = one["--manifest"] === undefined ? undefined : parseSynthesisManifest(contract(one["--manifest"]));
+      if (manifest && manifest.taskId !== Number(positional[0])) return fail("synthesis manifest names another task; refresh its task binding and retry");
+      const reply = JSON.parse(await taskOp("claim_verdict", { id: Number(positional[0]), slot: Number(positional[1]), verdict: positional[2], ...(one["--model"] === undefined ? {} : { model: one["--model"] }), ...(one["--model-said"] === undefined ? {} : { modelVerdict: one["--model-said"] }), ...(manifest === undefined ? {} : { manifest, synthesis: { manifestSha256: synthesisManifestHash(manifest), disposition: one["--disposition"] } }) })) as { task: number; recorded?: { slot: number; verdict: string; model?: string; modelVerdict?: string; synthesis?: { manifestSha256: string; disposition: string } } };
+      return console.log(`task #${reply.task}: claim ${reply.recorded?.slot} recorded as ${reply.recorded?.verdict}${reply.recorded?.model ? ` (model ${reply.recorded.model}` : ""}${reply.recorded?.modelVerdict ? `${reply.recorded?.model ? ", " : " ("}model said ${reply.recorded.modelVerdict}` : ""}${reply.recorded?.model || reply.recorded?.modelVerdict ? ")" : ""}${reply.recorded?.synthesis ? `; synthesis ${reply.recorded.synthesis.disposition} @ ${reply.recorded.synthesis.manifestSha256}` : ""}`);
     }
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") {

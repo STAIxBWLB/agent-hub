@@ -18,6 +18,8 @@ export interface SourceReadRegistry {
 }
 
 export interface SourceReadPolicy {
+  /** Host-only observational check: a failed/unknown screen refuses without upgrading registry privacy. */
+  privacyReadOnly?: true;
   /** Screen the complete stored text. True means clear; false means private or unknown. */
   screen(text: string, meta: SourceMeta): Promise<boolean>;
   /** A synchronous, fresh authorization check. */
@@ -88,7 +90,7 @@ export async function sourceRead(registry: SourceReadRegistry, value: unknown, p
     let fullText = registry.readText(args.id);
     if (fullText === undefined) refuse();
     let clear = false;
-    try { clear = await policy.screen(fullText, meta); }
+    try { clear = (await policy.screen(fullText, meta)) === true; }
     catch { clear = false; }
     if (!policy.valid()) refuse();
     const afterScreen = registry.get(args.id), afterScreenText = registry.readText(args.id);
@@ -102,6 +104,7 @@ export async function sourceRead(registry: SourceReadRegistry, value: unknown, p
     meta = afterScreen;
     if (!clear) {
       if (!policy.valid()) refuse();
+      if (policy.privacyReadOnly === true) refuse();
       meta = registry.markPrivate(args.id) ?? registry.get(args.id);
       if (!meta?.private) refuse();
       const result = await privateResult(registry, args.id, meta, args.range, policy);
@@ -182,7 +185,8 @@ export async function readEvidenceSource(registry: SourceEvidenceRegistry, link:
     if (!receipt) return unavailable("projection_missing");
     const fullText = registry.readText(link.sourceId), raw = registry.readRaw(link.sourceId);
     if (fullText === undefined || !raw || receipt.rawSha256 !== before.sha256 || sha256Of(raw) !== before.sha256) return unavailable("source_unavailable");
-    const selected = await sourceRead(registry, { id: link.sourceId, range: { offset: link.locator.start, length: link.locator.end - link.locator.start } }, { valid: () => policy.valid(), screen: (text, meta) => policy.screen(text, meta), canReadPrivate: async () => false });
+    const selected = await sourceRead(registry, { id: link.sourceId, range: { offset: link.locator.start, length: link.locator.end - link.locator.start } }, { valid: () => policy.valid(), screen: (text, meta) => policy.screen(text, meta), canReadPrivate: async () => false,
+      ...(policy.privacyReadOnly === true ? { privacyReadOnly: true as const } : {}) });
     if (!policy.valid()) return unavailable("source_unavailable");
     const current = registry.get(link.sourceId);
     if (selected.private || current?.private) return unavailable("private");

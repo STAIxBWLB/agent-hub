@@ -255,17 +255,27 @@ inventory must be complete. Guarded document/bibliography reads use 256 KiB and
 `EvidenceLinkV1.status` may be `withdrawn` only on a later append-only revision.
 Legacy omission means active and keeps its original canonical bytes/ID;
 explicit active input normalizes to omission. Withdrawn rows remain in complete
-inventory bindings but supply no active locator or contradiction. The owner
-uses the existing writer; its actor, source, claim and privacy admission stay
-unchanged. Historical revisions remain readable through current privacy checks.
+inventory bindings but supply no active locator or contradiction. The owner or
+console person uses the existing writer for withdrawal; the active task's owner
+is fenced separately from the actual recorded actor. Source, claim and privacy
+admission stay unchanged. The person exception permits withdrawal, not initial
+active-link creation. Historical revisions retain current privacy checks.
+Person withdrawal also requires an in-progress public research task. Closed
+task evidence stays final: corrections require a follow-up research task and
+its own manifest binding, and a refusal names that next step. The earlier task's
+manifest cannot be applied to the new task incarnation.
 Recovery requires `research_evidence_withdrawal` only while a persisted
 withdrawal revision needs its newer parser. Active-only legacy stores retain
 their existing compatibility requirement.
 
 The existing person-only #901 `ClaimVerdict` may carry optional
 `synthesis: {manifestSha256, disposition: resolved|qualified}`. The console
-`ahub task claim` takes paired `--manifest` and `--disposition` flags. It records
-no claim or qualification prose. A disposition closes an open contradiction
+`ahub task claim` takes paired `--manifest <manifest.json>` and `--disposition`
+flags. The descriptor is transient. At entry, the hub independently refreshes
+current bindings and recomputes its canonical manifest hash; a mismatch names
+the current hash and refuses before the existing history write, inside the
+final snapshot fence. No changed inventory silently re-binds an earlier
+disposition. It records no claim or qualification prose. A disposition closes an open contradiction
 only when its manifest hash, claim revision, full inventory and artifact/source
 bindings are current. Agent/model relation labels never supply this authority.
 
@@ -283,8 +293,11 @@ readiness. The observer latch precedes evidence-derived inputs.
 The pure offline checker reports citation resolution, source/locator freshness,
 person-judgment presence, contradiction state and unchanged deliverables
 separately. Every currently declared claim must be covered. A model's relation
-label or matching passage cannot certify semantic support. A configured privacy
-model is never invoked or bypassed by an offline check. No earlier readiness
+label or matching passage cannot certify semantic support. Offline forbids
+document fetching and network source reads, while the existing configured
+privacy screen may run. An unavailable or unknown screen is never clear; the
+observational read cannot change source privacy because screening did not clear.
+Actual source privacy upgrades still suppress the result. No earlier readiness
 binding remains current after a claim, artifact, projection or inventory
 change. The command runs only explicitly and preserves legacy citation-script
 semantics and ordinary dev-profile completion behavior.

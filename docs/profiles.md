@@ -96,8 +96,11 @@ manifest naming the task incarnation, registered Markdown and BibTeX
 deliverable IDs/hashes, each current claim's revision and complete latest-link
 inventory revision/hash, and selected evidence IDs/revisions with citation
 keys. It reads local snapshots and guarded artifacts without fetching documents
-or running a semantic judge. A configured privacy screen needing a model makes
-the offline check unavailable; unknown privacy is never clear.
+or running a semantic judge. It may invoke the existing configured privacy
+screen, including its model: that is privacy policy, not source retrieval.
+Unavailable or unknown screening makes provenance unavailable and never ready;
+the observational check does not upgrade or downgrade source privacy because
+screening did not clear.
 
 The result separately reports citation resolution, source/locator provenance,
 person judgment, open contradictions and unchanged artifacts. `ready` means
@@ -114,17 +117,24 @@ The manifest is capped at 64 KiB, 50 claims, 128 selected links total and
 Guarded Markdown/BibTeX reads retain 256 KiB/4 MiB caps. Active registered raw
 inputs have a 64 MiB aggregate ceiling for one check.
 
-To withdraw a link, its owner records the next revision with the same link ID
+To withdraw a link, its owner or the console person records the next revision with the same link ID
 and `status: "withdrawn"` through `hub_evidence_record`. Omitting status means
 active; an explicit `active` normalizes to omission. Prior revisions remain
 retained. Latest readback names withdrawal without returning a passage. A
 withdrawal remains part of the complete inventory hash.
+The task must still be in progress and public, including for a person. A closed
+task's evidence stays final; open a follow-up research task for corrections and
+create its own manifest instead of reusing the earlier task's binding.
 
 For an adjudicated or explicitly qualified conclusion with open counterevidence,
 the person uses the existing verdict record:
-`ahub task claim <task> <slot> <supported|unsupported|unclear> --manifest <sha256> --disposition <resolved|qualified>`.
-The SHA-256 is `manifestSha256` from the check result. Both flags are required
-together, only on a research task/profile. This is the person's assessment of
+`ahub task claim <task> <slot> <supported|unsupported|unclear> --manifest <manifest.json> --disposition <resolved|qualified>`.
+The CLI computes the file's canonical SHA-256; the hub independently refreshes
+current claim, link/inventory and guarded artifact bindings before recording
+the verdict. A mismatch refuses before writing and names the current
+`manifestSha256`. The descriptor is never stored, and a later inventory change
+never silently re-binds the person's earlier disposition. Both flags are
+required together, only on a research task/profile. This is the person's assessment of
 that exact manifest, not an agent's permission to certify truth. Any changed
 manifest binding requires a new disposition. The existing #901 verdict and its
 claim-list revision remain the only judgment record.

@@ -1105,9 +1105,10 @@ export class Board {
     return { links, complete: rows.length <= limit };
   }
 
-  recordEvidenceLink(project: string, input: EvidenceLinkV1, fence: { taskFlowRevision: number; taskCreated: number; owner: PeerId }): EvidenceLinkV1 {
+  recordEvidenceLink(project: string, input: EvidenceLinkV1, fence: { taskFlowRevision: number; taskCreated: number; owner: PeerId; personWithdrawal?: true }): EvidenceLinkV1 {
     const link = parseEvidenceLink(input), canonical = evidenceLinkCanonical(link);
-    if (!researchText(project) || !researchInteger(fence.taskFlowRevision, 0) || !researchInteger(fence.taskCreated, 0) || fence.owner !== link.recordedBy) throw new Error("evidence write binding is invalid; refresh the task before retrying");
+    const personWithdrawal = fence.personWithdrawal === true && link.recordedBy === USER && link.status === "withdrawn";
+    if (!researchText(project) || !researchInteger(fence.taskFlowRevision, 0) || !researchInteger(fence.taskCreated, 0) || fence.owner !== link.recordedBy && !personWithdrawal) throw new Error("evidence write binding is invalid; refresh the task before retrying");
     return this.atomic(() => {
       const task = this.get(link.taskId);
       if (!task || task.created !== fence.taskCreated || task.history.length !== fence.taskFlowRevision || task.owner !== fence.owner || task.state !== "in_progress" || task.profile !== "research"
@@ -1406,6 +1407,17 @@ export class Board {
   /** Older evidence readers reject the new optional stored withdrawal field. Keep that downgrade fence conditional. */
   hasWithdrawnEvidenceState(): boolean {
     return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_evidence_links WHERE json_extract(body,'$.status')='withdrawn') AS present").get() as { present: number }).present === 1;
+  }
+
+  /** Same #901 history record, with the host's completed observation fenced against intervening database writes. No source I/O in this transaction. */
+  recordSynthesisClaimVerdict(id: number, claim: ClaimVerdict, fence: { boardRevision: number; taskCreated: number; taskFlowRevision: number; claimRevision: string }): Task {
+    return this.atomic(() => {
+      const task = this.get(id);
+      if (!task || this.statusRevision() !== fence.boardRevision || task.created !== fence.taskCreated || task.history.length !== fence.taskFlowRevision
+        || !claim.synthesis || claim.list !== fence.claimRevision || taskClaimIdentity(task, claim.slot).claimRevision !== fence.claimRevision)
+        throw new Error("synthesis context changed before the claim verdict write; refresh the manifest and explicitly record the disposition again");
+      return this.update(id, USER, "claim verdict", {}, undefined, { claim }, fence.taskFlowRevision);
+    });
   }
 
   researchEvidenceIntegrity(): { links: number; revisions: number; digest: string } {

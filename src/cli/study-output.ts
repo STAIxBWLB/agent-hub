@@ -165,8 +165,7 @@ export function renderSynthesisReadiness(value: unknown, columns?: number): Span
   const v = value as any, out: Span[][] = [...heading(`Synthesis ${v?.status ?? "unavailable"}`, columns)];
   if (v?.status === "private") return [...out, [s("Readiness withheld by current task/source/artifact privacy; no research content is disclosed.", "attention")]];
   if (!v?.scope) {
-    const reason = v?.cause === "offline_privacy_screen_required" ? "Current privacy policy requires a model screen, which an offline check does not run; inspect privacy policy through the normal screened read path."
-      : v?.cause === "source_input_limit" ? "Source input exceeds this bounded check; split the synthesis into smaller tasks."
+    const reason = v?.cause === "source_input_limit" ? "Source input exceeds this bounded check; split the synthesis into smaller tasks."
       : "Inputs or policy changed/unavailable; refresh current public bindings and run ahub study check again.";
     return [...out, [s(reason, "attention")]];
   }

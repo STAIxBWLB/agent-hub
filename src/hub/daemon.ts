@@ -3150,10 +3150,9 @@ export async function startDaemon(opts: DaemonOptions) {
       ? projections.fingerprint(join(opts.cwd, `source${receipt.converter.extension}`)) : SOURCE_UTF8_PROJECTION_VERSION),
     evidenceSourceRead: (by, link, current, mode) => {
       const hostCurrent = sourceReadCurrent(by, false, false);
-      if (mode?.offline && tasks.screenOn()) return Promise.resolve({ resolution: { status: "unavailable" as const, cause: "source_unavailable" as const } });
       return readEvidenceSource(sourceRegistry, link, {
         valid: () => hostCurrent() && current(), canReadPrivate: async () => false,
-        screen: (text, meta) => screenSourceText(text, meta, mode?.offline === true),
+        screen: screenSourceText, privacyReadOnly: mode?.privacyReadOnly,
         projectionVersion: receipt => receipt.converter
           ? projections.fingerprint(join(opts.cwd, `source${receipt.converter.extension}`)) : SOURCE_UTF8_PROJECTION_VERSION,
       });
@@ -5208,12 +5207,11 @@ export async function startDaemon(opts: DaemonOptions) {
       && policyKey === JSON.stringify({ signals: activeRouting().signals, constraints: activeRouting().constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: activeRouting().local.fixed_model });
   }
   const sourceRegistry = new SourceRegistry(opts.stateDir);
-  async function screenSourceText(text: string, meta: SourceMeta, offline = false): Promise<boolean> {
+  async function screenSourceText(text: string, meta: SourceMeta): Promise<boolean> {
     if (meta.origins.some(origin => origin.kind === "file" && matchesPolicy(opts.cwd, origin.origin, config.pii?.paths ?? []))) return false;
     try { if (looksSecret(text) || activeRouting().signals.pii_patterns.some(pattern => new RegExp(pattern).test(text))) return false; }
     catch { return false; }
     if (!tasks.screenOn()) return true;
-    if (offline) return false; // The caller's current-policy fence prevents a skipped screen from upgrading source privacy.
     // Reuse the bounded host screen. Oversized/unknown is private, never an unscreened excerpt.
     const verdict = await (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text).catch(() => undefined);
     return verdict?.label === "clear";
@@ -6040,8 +6038,11 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "release_new":
         return JSON.stringify(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order }));
-      case "claim_verdict": // #901: a person's verdict on one declared claim; the reply names the slot and the verdict only, never a claim
-        return JSON.stringify((({ id, history }) => ({ task: id, recorded: history.at(-1)?.claim }))(tasks.recordClaimVerdict(by, a.id, { slot: a.slot, verdict: a.verdict, ...(a.model === undefined ? {} : { model: a.model }), ...(a.modelVerdict === undefined ? {} : { modelVerdict: a.modelVerdict }), ...(a.synthesis === undefined ? {} : { synthesis: a.synthesis }) })));
+      case "claim_verdict": { // #901: same person-only record; a synthesis descriptor is validated transiently, never retained.
+        const claim = { slot: a.slot, verdict: a.verdict, ...(a.model === undefined ? {} : { model: a.model }), ...(a.modelVerdict === undefined ? {} : { modelVerdict: a.modelVerdict }), ...(a.synthesis === undefined ? {} : { synthesis: a.synthesis }) };
+        const task = a.synthesis === undefined ? tasks.recordClaimVerdict(by, a.id, claim) : await tasks.recordSynthesisClaimVerdict(by, a.id, claim, a.manifest);
+        return JSON.stringify({ task: task.id, recorded: task.history.at(-1)?.claim });
+      }
       case "github_import":
         return JSON.stringify(await tasks.importGitHub(by, { repo: a.repo, label: a.label, milestone: a.milestone }));
       case "release_show": {
