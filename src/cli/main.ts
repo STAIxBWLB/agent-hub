@@ -15,7 +15,7 @@ import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
 import { readInstanceRoleConfig, readInstanceConfig, readInstanceConfigLayers, type InstanceRoleConfig } from "../hub/instance-config.ts";
-import { staleInstanceKey } from "../hub/roster.ts";
+import { staleInstanceKey, rosterAllows } from "../hub/roster.ts";
 import { parseConfiguredAcpArguments, runConfiguredAcpEntry, requireActiveConfiguredAcp } from "./configured-acp-entry.ts";
 import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
 import { BUILTIN_CLI_ENTRIES, createProjectAdapterCatalog, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeMemoryCaptureRow, type MemorySetupReading, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
@@ -61,7 +61,6 @@ import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, undoableDef, type SettingRow } from "../hub/settings.ts";
 import { startModeOf } from "../hub/start-mode.ts";
 import { rolesRow } from "./role-doctor.ts";
-import { rosterAllows } from "../hub/roster.ts";
 import { currentRouting, OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -3171,9 +3170,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       // #1408 R2: who holds conductor, planner and reviewer as the loader settled them, and a conductor the loader ignored. A warning, never a failure, like the rows above.
       try {
         const settled = loadConfig(cwd), scope = readInstanceRoleConfig(cwd), layers = readInstanceConfigLayers(cwd);
-        const declared: Record<string, string[]> = {};
+        const declared: Record<string, string[]> = {}, modes: Record<string, "tui" | "headless"> = {};
+        // The start mode the loader reads: the raw peers.<peer>.start_mode, a later layer winning, so doctor and the loader cannot disagree for an instance peer.
+        for (const layer of layers) { const peers = layer.raw.peers; if (peers && typeof peers === "object" && !Array.isArray(peers)) for (const [peer, block] of Object.entries(peers as Record<string, unknown>)) { const mode = block && typeof block === "object" ? (block as { start_mode?: unknown }).start_mode : undefined; if (mode === "tui" || mode === "headless") modes[peer] = mode; } }
         for (const layer of layers) if (layer.raw.roles && typeof layer.raw.roles === "object" && !Array.isArray(layer.raw.roles)) for (const [peer, list] of Object.entries(layer.raw.roles as Record<string, unknown>)) if (Array.isArray(list)) declared[peer] = list.filter((role): role is string => typeof role === "string");
-        const result = rolesRow({ roles: settled.roles, declared: Object.keys(declared).length ? declared : undefined, startMode: peer => startModeOf(settled.peers, peer, scope.instances, scope.catalog),
+        const result = rolesRow({ roles: settled.roles, declared: Object.keys(declared).length ? declared : undefined, startMode: peer => modes[peer],
           rostered: peer => rosterAllows(settled.roster, peer, settled.pi.enabled, scope.instances, scope.catalog) });
         row(result.ok, "roles", result.detail);
       } catch (error) { row(undefined, "roles", `could not be checked: ${error instanceof Error ? error.message : "unknown error"}`); }

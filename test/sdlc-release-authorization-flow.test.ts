@@ -254,13 +254,12 @@ test("#1063 conductor authority still cannot consent to the wrong candidate/vers
 test("#1063 an ambiguous conductor reload is refused without granting the proposed second peer authority", async () => {
   const f = await conductorReleaseRig();
   try {
-    // #1408: the proposed second conductor is claude, a kind that can conduct; a second conductor on `local` would be ignored by the loader instead of refused.
-    const codexBefore = await f.liveRoles("codex"), claudeBefore = await f.liveRoles("claude");
-    const ambiguous = structuredClone(f.roles); ambiguous.claude!.push("conductor");
+    const codexBefore = await f.liveRoles("codex"), localBefore = await f.liveRoles("local");
+    const ambiguous = structuredClone(f.roles); ambiguous.local!.push("conductor");
     const rejected = await f.reloadRoles(ambiguous); expect(rejected.ok).toBe(false);
-    expect(await f.liveRoles("codex")).toEqual(codexBefore); expect(await f.liveRoles("claude")).toEqual(claudeBefore);
+    expect(await f.liveRoles("codex")).toEqual(codexBefore); expect(await f.liveRoles("local")).toEqual(localBefore);
     expect((await f.liveRoles("codex")).includes("conductor")).toBe(true);
-    expect((await f.liveRoles("claude")).includes("conductor")).toBe(false);
+    expect((await f.liveRoles("local")).includes("conductor")).toBe(false);
     const refused = await f.authorize(f.other); expect(refused.ok).toBe(false);
     expect(f.docsCalls).toBe(0); expect(f.audit()).toEqual([]); expect((await f.guard()).ok).toBe(false);
     // Invalid raw policy never replaces the accepted map. This is not an invented mid-call authority revocation.

@@ -170,3 +170,19 @@ test("a project-configured ACP kind keeps the roles it is given: the ceiling rea
   expect(loadConductorPolicy(dir).roles.fixture).toEqual(["planner", "conductor"]);
   expect(freshRoles(readInstanceConfigLayers(dir), readInstanceConfig(dir)).fixture).toEqual(["planner", "conductor"]);
 });
+
+test("#1063: a declared second conductor on an ineligible peer is still refused by the loader and by recovery, which agree", () => {
+  const dir = project({ roles: { codex: ["conductor"], local: ["conductor"] } });
+  expect(() => loadConductorPolicy(dir)).toThrow(/at most one conductor/);
+  expect(() => freshRolesForTest(dir)).toThrow(/at most one conductor/);
+  // Across layers as merged: the shared file names one holder, config.local.json names another peer that cannot conduct.
+  const layered = project({ roles: { codex: ["conductor"] } }, { roles: { kimi: ["conductor"] } });
+  expect(() => loadConductorPolicy(layered)).toThrow(/at most one conductor/);
+  expect(() => freshRolesForTest(layered)).toThrow(/at most one conductor/);
+  // One declared conductor on an ineligible peer is still ignored with a notice, and nobody gains it.
+  const single = project({ roles: { local: ["conductor"] } });
+  const policy = loadConductorPolicy(single);
+  expect(policy.roles.local).not.toContain("conductor");
+  expect(Object.values(policy.roles).some(list => list.includes("conductor"))).toBe(false);
+  expect(policy.notices?.some(line => /conductor ignored/.test(line))).toBe(true);
+});
