@@ -10,7 +10,7 @@ import { relayModelIds } from "../models/relay.ts";
 import { buildPiLaunch } from "../pi/launch.ts";
 
 /** Read-only builtin preview. Native redaction uses the same launch builders as actual startup. */
-export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen" | "jcode", raw: string[], cwd: string, stateDir: string, unattended: boolean, requestedInstance?: string) {
+export function launcherPreview(tool: string, raw: string[], cwd: string, stateDir: string, unattended: boolean, requestedInstance?: string) {
   const config = loadConfig(cwd);
   const selected = instanceLaunchArguments(tool, requestedInstance ? ["--as", requestedInstance, ...raw] : raw, config.instances);
   const args = selected.args.filter(arg => !["--print-command", "--dry-run", "--json"].includes(arg));

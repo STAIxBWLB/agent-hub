@@ -1,5 +1,5 @@
 import { quotaAccountReading, type QuotaAccountReading } from "./quota-account.ts";
-import { definitionOf, type KindMap, type ProjectAdapterCatalog } from "../adapters/registry.ts";
+import { conductorStartText, definitionOf, type KindMap, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import type { Task } from "./board.ts";
@@ -110,23 +110,24 @@ export class ConductorHolds {
   close(): void { this.db.close(); }
 }
 
-export type ConductorStart = { peer: string; mode: "headless" } | { peer: "claude" | "codex" | "pi"; mode: "tui"; command: string };
+/** A start the conductor asked for: the peer's own start mode decides, and a terminal start carries the command the hub itself previews (#1408 R5: any kind whose definition starts in a terminal, not a fixed three). */
+export type ConductorStart = { peer: string; mode: "headless" } | { peer: string; mode: "tui"; command: string };
 /**
  * What a conductor's start of `peer` is (#269): the peer's own start mode, which a person sets. A `mode` argument may
  * only repeat it. Preview commands come from the same launch planner the CLI uses, never caller-supplied shell text.
  */
-export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect: boolean, startMode: (peer: string) => StartMode, instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): ConductorStart {
+export function conductorStart(peer: unknown, mode: unknown, preview: (peer: string) => string, preEffect: boolean, startMode: (peer: string) => StartMode, instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): ConductorStart {
   const refuse = (text: string) => new (preEffect ? PreEffectToolRefusal : Error)(text);
   if (mode !== undefined && mode !== "headless" && mode !== "tui") throw refuse("mode must be headless or tui");
   const adapter = typeof peer === "string" ? (adapterCatalog?.definitionOf ?? definitionOf)(peer, instances) : undefined;
-  if (typeof peer !== "string" || !adapter?.start.conductorStartable) throw refuse("only claude, codex, kimi, pi and local, plus opt-in qwen/jcode, may be started by the conductor");
+  if (typeof peer !== "string" || !adapter?.start.conductorStartable) throw refuse(conductorStartText().refusal);
   const selected = peer;
   const extra = adapter.kind !== selected;
   if (extra && !supportsHeadlessInstances(adapter)) throw refuse(`${peer}: this native transport does not support extra headless instances`);
   const own = startMode(selected);
   if (extra && own !== "headless") throw refuse(`${peer}: extra instances require headless mode in I2`);
   if (mode !== undefined && mode !== own) throw refuse(`${peer} starts ${own} here; a person sets a start mode (ahub settings), the conductor cannot choose one`);
-  return own === "tui" ? { peer: peer as "claude" | "codex" | "pi", mode: "tui", command: preview(peer as "claude" | "codex" | "pi") } : { peer: selected, mode: "headless" };
+  return own === "tui" ? { peer: selected, mode: "tui", command: preview(selected) } : { peer: selected, mode: "headless" };
 }
 
 const numberOrNull = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
@@ -179,7 +180,7 @@ export interface ConductorHooks {
   /** These callbacks must call Tasks, never Board.update. */
   assign(actor: string, id: number, peer: string, role?: TaskAssignmentRole): Promise<unknown>;
   escalate(actor: string, id: number): Promise<unknown>;
-  preview(peer: "claude" | "codex" | "pi"): string;
+  preview(peer: string): string;
   /** The mode a start of this peer takes: a person's setting. */
   startMode(peer: string): StartMode;
   /** Starts the peer in that mode: headless at once, or its fixed command in a terminal; throws with the command to run by hand when no terminal can be opened. */

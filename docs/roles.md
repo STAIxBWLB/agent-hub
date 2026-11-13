@@ -14,7 +14,7 @@
 
 # Choosing who conducts, plans and reviews
 
-Hub task 901 (#1408 R4). Three roles are chosen separately, at `ahub init` (`--conductor`, `--planner`, `--reviewer`, see [operations](operations.md)) or in the `roles` block of `.agenthub/config.json`. A project with no conductor is valid: you conduct from `ahub console`. `ahub doctor` shows who holds each role as the hub settled them. The shipped default is `claude` as planner and reviewer, written by `templates/config.json`; `ahub init --planner <peer>` changes it and nothing else does.
+Hub task 901 (#1408 R4). Three roles are chosen separately, at `ahub init` (`--conductor`, `--planner`, `--reviewer`, see [operations](operations.md)) or in the `roles` block of `.agenthub/config.json`. A project with no conductor is valid: you conduct from `ahub console`. `ahub doctor` shows who holds each role as the hub settled them. The shipped default is `claude` as planner and reviewer: it comes from the `roles` block of `templates/config.json`, which `ahub init` copies into `.agenthub/config.json` for a new project. Change it for a new project with `ahub init --planner <peer>` (and `--reviewer`), or for any project by editing `roles` in `.agenthub/config.json` (or `config.local.json`, which wins per peer), or pin the planner with `ahub settings set planner <peer>`, which outranks `roles`.
 
 ## Who may hold what
 
