@@ -646,7 +646,9 @@ export class Board {
       scoped INTEGER NOT NULL, at INTEGER NOT NULL, by_peer TEXT NOT NULL, units TEXT NOT NULL, UNIQUE(task_id,task_created))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS security_audit_findings (
       audit INTEGER NOT NULL, seq INTEGER NOT NULL, finding_id TEXT NOT NULL, body TEXT NOT NULL, found_by TEXT NOT NULL, at INTEGER NOT NULL,
-      verified_by TEXT, rejected_by TEXT, PRIMARY KEY(audit,seq), UNIQUE(audit,finding_id))`);
+      verified_by TEXT, rejected_by TEXT, settled_by TEXT, settled_as TEXT, PRIMARY KEY(audit,seq), UNIQUE(audit,finding_id))`);
+    // #1403 A4 follow-up: a verified finding is settled as fixed or false_positive. A database from before has the table without the two columns.
+    for (const column of ["settled_by", "settled_as"]) if (!(this.db.query("PRAGMA table_info(security_audit_findings)").all() as { name: string }[]).some(row => row.name === column)) this.db.run(`ALTER TABLE security_audit_findings ADD COLUMN ${column} TEXT`);
     this.db.run(`CREATE TABLE IF NOT EXISTS review_comments (
       task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,lifecycle TEXT NOT NULL,revision INTEGER NOT NULL,
       PRIMARY KEY(task_id,task_created,id))`);
@@ -1303,10 +1305,11 @@ export class Board {
     return recorded ? all.filter(row => row.units.some(unit => unit.reportedBy)) : all;
   }
   /**
-   * One report in one transaction: the ledger, the filed findings and the verifications land together or not at all. A finding id already verified or rejected is left as decided and returned
-   * in the skipped list (the caller says so); a verification whose guard fails (decided meanwhile, or by its own finder) rolls everything back and returns undefined.
+   * One report in one transaction: the ledger, the filed findings, the verifications and the settlements land together or not at all. A finding id already verified or rejected is left as decided and returned
+   * in the skipped list (the caller says so); a verification or settlement whose guard fails (decided or settled meanwhile, or by its own finder) rolls everything back and returns undefined. A settlement
+   * needs the finding verified, not rejected and not yet settled.
    */
-  auditApply(id: number, change: { units?: readonly AuditUnit[]; findings: readonly { finding: ReviewFinding; foundBy: string; at: number }[]; decisions: readonly { finding: string; verdict: "verified" | "rejected" }[]; by: string }): string[] | undefined {
+  auditApply(id: number, change: { units?: readonly AuditUnit[]; findings: readonly { finding: ReviewFinding; foundBy: string; at: number }[]; decisions: readonly { finding: string; verdict: "verified" | "rejected" }[]; settlements?: readonly { finding: string; disposition: "fixed" | "false_positive" }[]; by: string }): string[] | undefined {
     const skipped: string[] = [];
     try {
       this.atomic(() => {
@@ -1323,6 +1326,10 @@ export class Board {
           const done = this.db.query(`UPDATE security_audit_findings SET ${column}=? WHERE audit=? AND finding_id=? AND verified_by IS NULL AND rejected_by IS NULL AND found_by<>?`).run(change.by, id, decision.finding, change.by).changes;
           if (done !== 1) throw new Error("audit decision lost");
         }
+        for (const settlement of change.settlements ?? []) {
+          const done = this.db.query("UPDATE security_audit_findings SET settled_by=?,settled_as=? WHERE audit=? AND finding_id=? AND verified_by IS NOT NULL AND rejected_by IS NULL AND settled_by IS NULL AND found_by<>?").run(change.by, settlement.disposition, id, settlement.finding, change.by).changes;
+          if (done !== 1) throw new Error("audit decision lost");
+        }
       });
     } catch (error) {
       if (error instanceof Error && error.message === "audit decision lost") return undefined;
@@ -1331,13 +1338,13 @@ export class Board {
     return skipped;
   }
   auditFindings(id: number): AuditFinding[] {
-    const rows = this.db.query("SELECT body,found_by,at,verified_by,rejected_by FROM security_audit_findings WHERE audit=? ORDER BY seq").all(id) as { body: string; found_by: string; at: number; verified_by: string | null; rejected_by: string | null }[];
-    return rows.map(row => ({ finding: JSON.parse(row.body) as ReviewFinding, foundBy: row.found_by, at: row.at, ...(row.verified_by ? { verifiedBy: row.verified_by } : {}), ...(row.rejected_by ? { rejectedBy: row.rejected_by } : {}) }));
-  }
-  /** Marks a candidate verified or rejected. The caller already applied `verificationRefusal`; the `IS NULL` guards make a lost race a no-op that reports false. */
-  auditVerify(id: number, findingId: string, by: string, verdict: "verified" | "rejected"): boolean {
-    const column = verdict === "verified" ? "verified_by" : "rejected_by";
-    return this.db.query(`UPDATE security_audit_findings SET ${column}=? WHERE audit=? AND finding_id=? AND verified_by IS NULL AND rejected_by IS NULL AND found_by<>?`).run(by, id, findingId, by).changes === 1;
+    const rows = this.db.query("SELECT body,found_by,at,verified_by,rejected_by,settled_by,settled_as FROM security_audit_findings WHERE audit=? ORDER BY seq").all(id) as { body: string; found_by: string; at: number; verified_by: string | null; rejected_by: string | null; settled_by: string | null; settled_as: string | null }[];
+    // A settled finding reads with its settled disposition, so every reader that already shows a `fixed` or `false_positive` finding treats it as one.
+    return rows.map(row => {
+      const settled = row.settled_by && (row.settled_as === "fixed" || row.settled_as === "false_positive") ? row.settled_as : undefined;
+      const body = JSON.parse(row.body) as ReviewFinding;
+      return { finding: settled ? { ...body, disposition: settled } : body, foundBy: row.found_by, at: row.at, ...(row.verified_by ? { verifiedBy: row.verified_by } : {}), ...(row.rejected_by ? { rejectedBy: row.rejected_by } : {}), ...(settled ? { settledBy: row.settled_by!, settledAs: settled } : {}) };
+    });
   }
   hasGuidanceVariants(): boolean {
     return (this.db.query("SELECT EXISTS(SELECT 1 FROM guidance_experiments) OR EXISTS(SELECT 1 FROM guidance_variants) AS present").get() as { present: number }).present === 1;

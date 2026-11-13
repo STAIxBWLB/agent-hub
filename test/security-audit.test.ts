@@ -12,7 +12,7 @@ import type { Envelope } from "../src/hub/envelope.ts";
 import type { AuditSource } from "../src/hub/audit-source.ts";
 import { securityPolicy } from "../src/hub/security-pass.ts";
 import { AUDIT_REPORT_TOOL, profileTaskTools, TASK_TOOLS } from "../src/hub/hub-tools.ts";
-import { applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, findingStatus, parseUnitReports, seedLedger, verificationRefusal, type AuditFinding } from "../src/hub/security-audit.ts";
+import { applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, findingStatus, parseUnitReports, seedLedger, settlementRefusal, verificationRefusal, type AuditFinding } from "../src/hub/security-audit.ts";
 import { renderSdlcAudit } from "../src/cli/sdlc-output.ts";
 
 const H1 = "1".repeat(40), H2 = "2".repeat(40), H3 = "3".repeat(40), cleanups: (() => void)[] = [];
@@ -334,13 +334,14 @@ test("render: audit show prints the counts, partial label and withheld notice wi
   expect(renderSdlcAudit({ ok: true, audit: null }, 100).map(line => line.map(s => s.text).join("")).join("\n")).toMatch(/none started/);
 });
 
-test("store: Board.auditVerify itself refuses the finder, a repeat and a decided finding, so a lost race changes nothing", async () => {
+test("store: Board.auditApply itself refuses the finder, a repeat and a decided finding, so a lost race changes nothing (the guards of the removed auditVerify, kept in the one transaction)", async () => {
   const r = await rig("advise"), a = await started(r);
   await r.tasks.auditReport(a.auditor, { id: a.task, findings: [finding("origin-check")] });
-  expect(r.board.auditVerify(a.audit, "origin-check", a.auditor, "verified")).toBe(false);
-  expect(r.board.auditVerify(a.audit, "origin-check", a.others[0]!, "verified")).toBe(true);
-  expect(r.board.auditVerify(a.audit, "origin-check", a.others[1]!, "rejected")).toBe(false);
-  expect(r.board.auditVerify(a.audit, "origin-check", a.others[1]!, "verified")).toBe(false);
+  const decide = (by: string, verdict: "verified" | "rejected") => r.board.auditApply(a.audit, { findings: [], decisions: [{ finding: "origin-check", verdict }], by });
+  expect(decide(a.auditor, "verified")).toBeUndefined();
+  expect(decide(a.others[0]!, "verified")).toEqual([]);
+  expect(decide(a.others[1]!, "rejected")).toBeUndefined();
+  expect(decide(a.others[1]!, "verified")).toBeUndefined();
   expect(r.board.auditFindings(a.audit)[0]).toMatchObject({ verifiedBy: a.others[0] });
   expect(r.board.auditFindings(a.audit)[0]!.rejectedBy).toBeUndefined();
 });
@@ -405,4 +406,143 @@ test("start: without a git source the refusal names the next step", async () => 
   const r = await rig("advise");
   (r.tasks as unknown as { d: { auditSource?: unknown } }).d.auditSource = undefined;
   await expect(r.tasks.auditStart("user", {})).rejects.toThrow(/start the hub from a git checkout/);
+});
+
+// ---- settle: a verified open important finding becomes fixed or false_positive (#1403 A4 follow-up) ----------------------------------------------------------
+
+/** A started audit with one finding filed by the auditor and verified by the first other reviewer. */
+async function verified(id = "origin-check") {
+  const r = await rig("advise"), a = await started(r);
+  await r.tasks.auditReport(a.auditor, { id: a.task, findings: [finding(id)] });
+  await r.tasks.auditReport(a.others[0]!, { id: a.task, verify: [{ finding: id, verdict: "verified" }] });
+  return { r, a, id };
+}
+
+test("settle: a different reviewer settles a verified finding as fixed; it then reads as settled and shows its details like any fixed finding", async () => {
+  const { r, a, id } = await verified();
+  expect(r.tasks.auditShow("user")!.findings).toMatchObject({ verified: 1, settled: 0 });
+  const after = await r.tasks.auditReport(a.others[1]!, { id: a.task, settle: [{ finding: id, disposition: "fixed" }] });
+  expect(after.findings).toMatchObject({ verified: 0, settled: 1, candidate: 0 });
+  expect(r.board.auditFindings(a.audit)[0]).toMatchObject({ settledBy: a.others[1], settledAs: "fixed", verifiedBy: a.others[0], foundBy: a.auditor });
+  expect(r.board.auditFindings(a.audit)[0]!.finding.disposition).toBe("fixed");
+  // a settled finding is no longer withheld from the conductor's view (the repository holds a fixed finding's details like any fixed one)
+  const view = r.tasks.auditShow("claude")!.items.find(item => item.id === id)!;
+  expect(view).toMatchObject({ status: "settled", disposition: "fixed" });
+  expect(view.withheld).toBeUndefined();
+  expect(r.tasks.auditLine()).toMatchObject({ findings: { settled: 1, verified: 0 } });
+});
+
+test("settle: false_positive, and the person, may settle too; a verified finding the person settles reads the same", async () => {
+  const a1 = await verified("one");
+  await a1.r.tasks.auditReport("user", { id: a1.a.task, settle: [{ finding: "one", disposition: "false_positive" }] });
+  expect(a1.r.board.auditFindings(a1.a.audit)[0]).toMatchObject({ settledBy: "user", settledAs: "false_positive" });
+  expect(a1.r.board.auditFindings(a1.a.audit)[0]!.finding.disposition).toBe("false_positive");
+  expect(a1.r.tasks.auditShow("claude")!.items[0]).toMatchObject({ status: "settled", disposition: "false_positive" });
+});
+
+test("settle: refusals name the next step and write nothing: the finder, a non-reviewer, a candidate, a rejected finding, a repeat, an unknown id and a bad shape", async () => {
+  const r = await rig("advise"), a = await started(r);
+  await r.tasks.auditReport(a.auditor, { id: a.task, findings: [finding("a"), finding("b"), { id: "c", pass: "security", severity: "important", disposition: "open", path: "src/local/server.ts", state: "needs_validation", boundary, blocker: "needs the gateway log" }, { id: "n", pass: "security", severity: "nit", disposition: "open", path: "src/local/server.ts" }] });
+  await r.tasks.auditReport(a.others[0]!, { id: a.task, verify: [{ finding: "a", verdict: "verified" }, { finding: "b", verdict: "rejected" }] });
+  const before = JSON.stringify(r.board.auditFindings(a.audit));
+  const settle = (by: string, entries: unknown) => r.tasks.auditReport(by, { id: a.task, settle: entries as never });
+  // the finder: it may not settle its own verified finding (it is not a reviewer-role peer unless it was one; the rule is the finder's either way)
+  await expect(settle(a.auditor, [{ finding: "a", disposition: "fixed" }])).rejects.toThrow(/only a reviewer-role peer other than the finder, or the person|different reviewer than the one who found it/);
+  await expect(settle(a.others[1]!, [{ finding: "no-such", disposition: "fixed" }])).rejects.toThrow(/no such finding in this audit.*show: true/);
+  await expect(settle(a.others[1]!, [{ finding: "b", disposition: "fixed" }])).rejects.toThrow(/rejected, so there is nothing to settle/);
+  await expect(settle(a.others[1]!, [{ finding: "c", disposition: "fixed" }])).rejects.toThrow(/only a verified confirmed open important security finding is settled/);
+  await expect(settle(a.others[1]!, [{ finding: "n", disposition: "fixed" }])).rejects.toThrow(/only a verified confirmed open important security finding is settled/);
+  await expect(settle(a.others[1]!, [{ finding: "a", disposition: "accepted" }])).rejects.toThrow(/each settle entry is \{finding: <id>, disposition: fixed\|false_positive\}/);
+  await expect(settle(a.others[1]!, [{ finding: "a", disposition: "fixed", extra: 1 }])).rejects.toThrow(/each settle entry/);
+  await expect(settle(a.others[1]!, [])).rejects.toThrow(/1 to 32/);
+  await expect(settle(a.others[1]!, "fixed")).rejects.toThrow(/1 to 32/);
+  await expect(settle(a.others[1]!, [{ finding: "a", disposition: "fixed" }, { finding: "a", disposition: "false_positive" }])).rejects.toThrow(/settled once per call/);
+  expect(JSON.stringify(r.board.auditFindings(a.audit))).toBe(before);
+  // a candidate names the verifying step first
+  const candidate = await rig("advise"), c = await started(candidate);
+  await candidate.tasks.auditReport(c.auditor, { id: c.task, findings: [finding("cand")] });
+  await expect(candidate.tasks.auditReport(c.others[0]!, { id: c.task, settle: [{ finding: "cand", disposition: "fixed" }] })).rejects.toThrow(/still a candidate: a different reviewer verifies it first/);
+  // a repeat
+  await settle(a.others[1]!, [{ finding: "a", disposition: "fixed" }]);
+  await expect(settle(a.others[0]!, [{ finding: "a", disposition: "false_positive" }])).rejects.toThrow(/already settled as fixed/);
+  expect(r.board.auditFindings(a.audit)[0]).toMatchObject({ settledAs: "fixed" });
+});
+
+test("settle: the finder is refused even when it holds the reviewer role, and verification and settlement are separate calls", async () => {
+  const r = await rig("advise"), a = await started(r);
+  await r.tasks.auditReport(a.auditor, { id: a.task, findings: [finding("x")] });
+  await r.tasks.auditReport(a.others[0]!, { id: a.task, verify: [{ finding: "x", verdict: "verified" }] });
+  // the auditor is the finder: the store's guard stops it whatever role the caller holds
+  expect(r.board.auditApply(a.audit, { findings: [], decisions: [], settlements: [{ finding: "x", disposition: "fixed" }], by: a.auditor })).toBeUndefined();
+  expect(r.board.auditFindings(a.audit)[0]!.settledAs).toBeUndefined();
+  // verify and settle in one call is refused, so the verifier's decision is read before it is acted on
+  await r.tasks.auditReport(a.auditor, { id: a.task, findings: [finding("y")] });
+  await expect(r.tasks.auditReport(a.others[1]!, { id: a.task, verify: [{ finding: "y", verdict: "verified" }], settle: [{ finding: "y", disposition: "fixed" }] })).rejects.toThrow(/separate calls|still a candidate/);
+  expect(r.board.auditFindings(a.audit).find(f => f.finding.id === "y")!.verifiedBy).toBeUndefined();
+});
+
+test("settle: it is one transaction with the rest of the report, and a lost settlement rolls the whole call back", async () => {
+  const { r, a, id } = await verified("one");
+  await r.tasks.auditReport(a.auditor, { id: a.task, findings: [finding("two")] });
+  const before = JSON.stringify(r.board.auditFindings(a.audit));
+  // two settlements where the second cannot apply (not verified): nothing lands, including the first
+  expect(r.board.auditApply(a.audit, { findings: [], decisions: [], settlements: [{ finding: id, disposition: "fixed" }, { finding: "two", disposition: "fixed" }], by: a.others[1]! })).toBeUndefined();
+  expect(JSON.stringify(r.board.auditFindings(a.audit))).toBe(before);
+  // the finder's own re-report cannot reopen a settled finding
+  await r.tasks.auditReport(a.others[1]!, { id: a.task, settle: [{ finding: id, disposition: "false_positive" }] });
+  const again = await r.tasks.auditReport(a.auditor, { id: a.task, findings: [finding(id, { rationale: "rewritten after settlement" })] });
+  expect(again.notUpdated).toEqual([id]);
+  expect(r.board.auditFindings(a.audit)[0]).toMatchObject({ settledAs: "false_positive" });
+  expect(r.board.auditFindings(a.audit)[0]!.finding.rationale).not.toBe("rewritten after settlement");
+});
+
+test("settle: only on an open audit task, and a bystander peer cannot settle or read", async () => {
+  const { r, a, id } = await verified();
+  await expect(r.tasks.auditReport("unlisted", { id: a.task, settle: [{ finding: id, disposition: "fixed" }] })).rejects.toThrow(/only a reviewer-role peer other than the finder, or the person, settles/);
+  await r.tasks.cancel(a.task, "user", { reason: "closing the audit" });
+  await expect(r.tasks.auditReport(a.others[1]!, { id: a.task, settle: [{ finding: id, disposition: "fixed" }] })).rejects.toThrow(/the audit task is closed/);
+});
+
+test("settle: the hub_audit_report schema offers settle with exactly fixed and false_positive, and the verify and show forms are unchanged", () => {
+  const props = (AUDIT_REPORT_TOOL.inputSchema as { properties: Record<string, any> }).properties;
+  expect(props.settle.items.properties.disposition.enum).toEqual(["fixed", "false_positive"]);
+  expect(props.settle.items.required).toEqual(["finding", "disposition"]);
+  expect(props.verify.items.properties.verdict.enum).toEqual(["verified", "rejected"]);
+  expect(AUDIT_REPORT_TOOL.inputSchema.required).toEqual(["id"]);
+  expect(AUDIT_REPORT_TOOL.description).toMatch(/settle \[\{finding, disposition: fixed\|false_positive\}\]/);
+});
+
+test("settle: findingStatus and the summary count a settled finding apart, and a pure settlementRefusal reads each case", () => {
+  const row = (extra: Partial<AuditFinding>): AuditFinding => ({ finding: finding("a") as never, foundBy: "codex", at: 1, ...extra });
+  expect(findingStatus(row({ verifiedBy: "kimi", settledAs: "fixed", settledBy: "claude" }))).toBe("settled");
+  expect(auditSummary({ audit: 1, task: 1, ref: H1, profile: "quick", scoped: false, at: 1 }, [], [row({ verifiedBy: "kimi", settledAs: "false_positive", settledBy: "claude" }), row({ verifiedBy: "kimi" }), row({})]).findings)
+    .toEqual({ verified: 1, candidate: 1, needsValidation: 0, rejected: 0, settled: 1, other: 0 });
+  expect(settlementRefusal(row({ verifiedBy: "kimi" }), "claude")).toBeUndefined();
+  expect(settlementRefusal(row({ verifiedBy: "kimi" }), "codex")).toMatch(/different reviewer than the one who found it/);
+  expect(settlementRefusal(row({ verifiedBy: "kimi", settledAs: "fixed", settledBy: "claude" }), "user")).toMatch(/already settled as fixed/);
+  expect(settlementRefusal(undefined, "user")).toMatch(/no such finding/);
+});
+
+test("settle: a database from before the settle columns gains them on open, and an existing finding row keeps reading as verified", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-audit-migrate-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "hub.db");
+  const first = new Board(file);
+  const audit = first.auditCreate({ task: 1, taskCreated: 1, ref: H1, profile: "quick", scoped: false, by: "user", at: 1, units: [] });
+  first.auditApply(audit, { findings: [{ finding: finding("legacy") as never, foundBy: "codex", at: 1 }], decisions: [], by: "codex" });
+  first.auditApply(audit, { findings: [], decisions: [{ finding: "legacy", verdict: "verified" }], by: "kimi" });
+  first.close();
+  // drop the two columns to make the table the shape a pre-settle database has
+  const { Database } = await import("bun:sqlite");
+  const raw = new Database(file);
+  raw.run("ALTER TABLE security_audit_findings DROP COLUMN settled_by");
+  raw.run("ALTER TABLE security_audit_findings DROP COLUMN settled_as");
+  expect((raw.query("PRAGMA table_info(security_audit_findings)").all() as { name: string }[]).some(column => column.name === "settled_as")).toBe(false);
+  raw.close();
+  const reopened = new Board(file);
+  cleanups.push(() => reopened.close());
+  expect(reopened.auditFindings(audit)[0]).toMatchObject({ verifiedBy: "kimi" });
+  expect(reopened.auditFindings(audit)[0]!.settledAs).toBeUndefined();
+  expect(reopened.auditApply(audit, { findings: [], decisions: [], settlements: [{ finding: "legacy", disposition: "fixed" }], by: "claude" })).toEqual([]);
+  expect(reopened.auditFindings(audit)[0]).toMatchObject({ settledAs: "fixed", settledBy: "claude" });
 });

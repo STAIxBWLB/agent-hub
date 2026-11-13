@@ -183,7 +183,7 @@ export function renderSdlcAudit(reply: unknown, columns?: number, _now = Date.no
   const out: Line[] = [...heading(`Security audit ${a.audit} (task #${a.task})`, columns)];
   out.push(...pair("source", `${short(a.ref)}, profile ${a.profile}${a.scoped ? ", scoped" : ""}`, columns, 10), ...pair("coverage", `${a.partial ? "partial: " : ""}${auditStates(a)}`, columns, 10, a.partial || a.counts?.planned ? "attention" : undefined));
   const f = a.findings ?? {};
-  out.push(...pair("findings", `${f.verified ?? 0} verified, ${f.candidate ?? 0} candidate (unverified), ${f.needsValidation ?? 0} needs validation, ${f.rejected ?? 0} rejected, ${f.other ?? 0} other`, columns, 10, f.candidate ? "attention" : undefined));
+  out.push(...pair("findings", `${f.verified ?? 0} verified, ${f.candidate ?? 0} candidate (unverified), ${f.needsValidation ?? 0} needs validation, ${f.rejected ?? 0} rejected, ${f.settled ?? 0} settled, ${f.other ?? 0} other`, columns, 10, f.candidate ? "attention" : undefined));
   for (const u of list(a.units)) out.push(...pair(String(u.state).replace("_", " "), `${u.unit}${u.prior ? ` (prior audit ${u.prior.audit})` : ""}${u.reason ? `: ${u.reason}` : ""}`, columns, 14, u.state === "planned" ? "attention" : undefined, "  "));
   for (const item of list(a.items)) out.push(...pair(String(item.status), `${item.id} (${item.severity}, ${item.disposition})${item.withheld ? ", details withheld" : item.path ? ` ${item.path}` : ""}`, columns, 14, item.status === "candidate" ? "attention" : undefined, "  "));
   if (a.withheld) out.push(...pair("withheld", `${a.withheld} open important finding${a.withheld === 1 ? "" : "s"}: boundary text is shown to the person only`, columns, 10, "muted"));

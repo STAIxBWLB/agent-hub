@@ -48,7 +48,7 @@ import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { evalAdvice, evalGapBlockers, evalRequiredChecks, readEvalFor } from "./eval-gate.ts";
 import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequestLine, SECURITY_CHECKLIST, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
-import { AUDIT_PROFILES, applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, needsVerification, parseUnitReports, seedLedger, unitId, verificationRefusal, type AuditFinding, type AuditProfile, type AuditSummary, type CarryLookup, type PublicAuditFinding } from "./security-audit.ts";
+import { AUDIT_PROFILES, applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, needsVerification, parseUnitReports, seedLedger, settlementRefusal, SETTLEMENTS, unitId, verificationRefusal, type AuditFinding, type AuditProfile, type AuditSummary, type CarryLookup, type PublicAuditFinding } from "./security-audit.ts";
 import type { AuditSource } from "./audit-source.ts";
 import { matchConfigPath } from "./eval-gate.ts";
 import { completePlanInventory, planDrift, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
@@ -6997,7 +6997,7 @@ export class Tasks {
    * not file a `confirmed` important finding verifies or rejects it; until then it stays a `candidate`. Boundary text of an open important finding is read only through this tool by the
    * auditor, a reviewer-role peer or the person, and never rides a message to anyone else.
    */
-  async auditReport(by: PeerId, input: { id?: unknown; units?: unknown; findings?: unknown; verify?: unknown; show?: unknown }, fence?: () => string | undefined): Promise<AuditView> {
+  async auditReport(by: PeerId, input: { id?: unknown; units?: unknown; findings?: unknown; verify?: unknown; settle?: unknown; show?: unknown }, fence?: () => string | undefined): Promise<AuditView> {
     const check = this.requestCheck(by, fence);
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off" || !config.security) throw new PreEffectToolRefusal("audit reports need the lifecycle on and a [security] table in .agenthub/sdlc.toml");
@@ -7008,15 +7008,17 @@ export class Tasks {
     if (this.isPii(task)) throw new PreEffectToolRefusal("that task is private");
     const isOwner = by !== USER && task.owner === by && task.state === "in_progress";
     const reviewerRole = by !== USER && (this.d.roles?.[by] ?? []).includes("reviewer") && this.d.bus.isRostered(by);
-    const writes = input.units !== undefined || input.findings !== undefined, verifies = input.verify !== undefined;
-    if (!writes && !verifies && input.show !== true) throw new PreEffectToolRefusal("give units and findings (the auditor), verify (a second reviewer) or show: true");
+    const writes = input.units !== undefined || input.findings !== undefined, verifies = input.verify !== undefined, settles = input.settle !== undefined;
+    if (!writes && !verifies && !settles && input.show !== true) throw new PreEffectToolRefusal("give units and findings (the auditor), verify or settle (a reviewer other than the finder, or the person) or show: true");
     if (writes && !isOwner) throw new PreEffectToolRefusal("only the assigned auditor reports units and findings, while the audit task is in progress");
     if (verifies && !(reviewerRole || by === USER)) throw new PreEffectToolRefusal("only a reviewer-role peer or the person verifies a finding");
-    if (verifies && (task.state === "cancelled" || task.state === "backlog")) throw new PreEffectToolRefusal("the audit task is closed");
+    if (settles && !(reviewerRole || by === USER)) throw new PreEffectToolRefusal("only a reviewer-role peer other than the finder, or the person, settles a verified finding; ask a reviewer or the person to settle it");
+    if ((verifies || settles) && (task.state === "cancelled" || task.state === "backlog")) throw new PreEffectToolRefusal("the audit task is closed");
     if (!isOwner && !reviewerRole && by !== USER) throw new PreEffectToolRefusal("only the auditor, a reviewer-role peer or the person reads an audit report");
     const when = this.d.now?.() ?? Date.now();
     let units = audit.units, filed: { finding: ReviewFinding; foundBy: string; at: number }[] = [];
     const decisions: { finding: string; verdict: "verified" | "rejected" }[] = [];
+    const settlements: { finding: string; disposition: "fixed" | "false_positive" }[] = [];
     if (input.units !== undefined) {
       try { units = applyUnitReports(audit.units, parseUnitReports(input.units, audit.units), by, when); }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid units"); }
@@ -7043,11 +7045,25 @@ export class Tasks {
       }
       if (new Set(decisions.map(d => d.finding)).size !== decisions.length) throw new PreEffectToolRefusal("a finding is decided once per call");
     }
+    if (input.settle !== undefined) {
+      if (!Array.isArray(input.settle) || !input.settle.length || input.settle.length > 32) throw new PreEffectToolRefusal("settle is a list of 1 to 32 {finding, disposition: fixed|false_positive}");
+      const stored = this.d.board.auditFindings(audit.id);
+      for (const item of input.settle as unknown[]) {
+        const record = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : undefined;
+        if (!record || Object.keys(record).some(key => key !== "finding" && key !== "disposition") || typeof record.finding !== "string" || !(SETTLEMENTS as readonly unknown[]).includes(record.disposition)) throw new PreEffectToolRefusal("each settle entry is {finding: <id>, disposition: fixed|false_positive}");
+        const refusal = settlementRefusal(stored.find(row => row.finding.id === record.finding), by);
+        if (refusal) throw new PreEffectToolRefusal(`${record.finding.slice(0, 80)}: ${refusal}`);
+        settlements.push({ finding: record.finding, disposition: record.disposition as "fixed" | "false_positive" });
+      }
+      if (new Set(settlements.map(item => item.finding)).size !== settlements.length) throw new PreEffectToolRefusal("a finding is settled once per call");
+      // A finding verified in this same call is not settled in it: the verification is a separate reader's decision and its result is read before the settlement.
+      if (settlements.some(item => decisions.some(decision => decision.finding === item.finding))) throw new PreEffectToolRefusal("verify a finding and settle it in separate calls");
+    }
     check();
     const now = this.d.board.audit(audit.id), nowTask = this.d.board.get(task.id);
     if (!now || !nowTask || nowTask.owner !== task.owner || nowTask.state !== task.state || JSON.stringify(now.units) !== JSON.stringify(audit.units)) throw new PreEffectToolRefusal("the audit changed while the report was checked; read it again and retry");
-    // One transaction: a unit report, its findings and the verifications land together or not at all.
-    const skipped = this.d.board.auditApply(audit.id, { units: writes ? units : undefined, findings: filed, decisions, by });
+    // One transaction: a unit report, its findings, the verifications and the settlements land together or not at all.
+    const skipped = this.d.board.auditApply(audit.id, { units: writes ? units : undefined, findings: filed, decisions, ...(settlements.length ? { settlements } : {}), by });
     if (skipped === undefined) throw new PreEffectToolRefusal("a finding was decided meanwhile; read the audit again and retry");
     const full = this.d.board.audit(audit.id)!;
     return { ...this.auditView(full, true), ...(skipped.length ? { notUpdated: skipped } : {}) };
