@@ -16993,7 +16993,7 @@ var init_hub_tools = __esm(() => {
     maxItems: 64,
     description: "Head-bound findings; open Important findings carry across heads until explicitly fixed, false_positive or person-accepted; omission never settles them. Nits stay on their head. accepted is person-only and requires rationale. Nit count is capped by sdlc.max_nits (default 5).",
     items: { type: "object", properties: {
-      id: { type: "string", minLength: 1, maxLength: 96, pattern: "^[A-Za-z0-9._:-]+$" },
+      id: { type: "string", minLength: 1, maxLength: 96, pattern: "^[A-Za-z0-9._:-]+$", description: "Reuse an id only when this review updates its own finding. A positional label (N1, F5, nit-1) is local to this review and never counts toward a recurring-finding card across tasks; use a semantic id (for example compliance:hub-task-id-written-as-github-ref) for a defect that can recur." },
       pass: { type: "string", enum: ["bugs", "security", "compliance"] },
       severity: { type: "string", enum: ["important", "nit"] },
       path: { type: "string", minLength: 1, maxLength: 512 },

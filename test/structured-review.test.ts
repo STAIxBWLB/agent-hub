@@ -8,6 +8,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig, type SdlcMode } from "../src/hub/sdlc.ts";
+import { positionalFindingId } from "../src/hub/review-findings.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
@@ -376,4 +377,30 @@ test("#736 a free-form superseded_by joins the replacement, and repository ident
   await submit(r.tasks, a.id, [finding("same-branch-name")]);
   await submit(r.tasks, b.id, [finding("same-branch-name")]);
   expect(r.board.list("backlog").map(card => card.detail)).toEqual([expect.stringContaining("security:same-branch-name")]);
+});
+
+test("#1436 positional ids (N1, F5, nit-1, bugs:N1) are review-local: unrelated findings that share one on two tasks file no recurrence card", async () => {
+  const r = rig();
+  for (const id of ["N1", "F5", "nit-1", "B2"]) {
+    await submit(r.tasks, r.create().id, [finding(id, { pass: "bugs", path: "src/a.ts" })]);
+    await submit(r.tasks, r.create().id, [finding(id, { pass: "bugs", path: "src/unrelated.ts" })]);
+    await submit(r.tasks, r.create().id, [finding(id, { pass: "compliance", path: "docs/x.md" })]);
+  }
+  expect(r.board.list("backlog")).toHaveLength(0);
+});
+
+test("#1436 the same semantic id on two unrelated tasks still files exactly one recurrence card", async () => {
+  const r = rig();
+  const id = "hub-task-id-written-as-github-ref";
+  await submit(r.tasks, r.create().id, [finding(id, { pass: "compliance" })]);
+  await submit(r.tasks, r.create().id, [finding(id, { pass: "compliance" })]);
+  await submit(r.tasks, r.create().id, [finding(id, { pass: "compliance" })]);
+  const cards = r.board.list("backlog");
+  expect(cards).toHaveLength(1);
+  expect(cards[0]?.detail).toContain(`Review finding key: compliance:${id}`);
+});
+
+test("#1436 positionalFindingId names review-local labels only", () => {
+  for (const id of ["N1", "F5", "B1", "nit-1", "nit1", "3", "T7", "finding-12", "issue_3", "bugs:N1", "compliance:F5"]) expect(positionalFindingId(id), id).toBe(true);
+  for (const id of ["carried", "sha256-pin", "md5", "utf8", "N", "reclassified", "security:carried", "compliance:hub-task-id-written-as-github-ref", "follow-up-fixed", "nit-"]) expect(positionalFindingId(id), id).toBe(false);
 });
