@@ -9,6 +9,7 @@
 import { checkStartAgents, START_AGENTS_ALLOWED } from "../hub/start-agents.ts";
 import { editSdlcText } from "../hub/config-edit.ts";
 import { ADAPTERS } from "../adapters/registry.ts";
+import { ROLE_ALLOWED, ROLE_FLAGS, ROLE_KEYS, parseRoleFlag, planRoles, roleKeyOf, type RoleFlag } from "./init-roles.ts";
 
 export type InitSettingFile = "config.json" | "config.local.json" | "sdlc.toml";
 export const SDLC_MODES = ["off", "advise", "enforce"] as const;
@@ -76,10 +77,10 @@ export interface InitSettingsRequest {
 }
 
 /** The usage line `ahub init` prints for a bad argument; help.ts shows the same flags. */
-export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--required-checks <a,b,...>] [--coordination advisory|turn-free] [--memory|--no-memory] [--research|--no-research] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--track-config|--no-track-config] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
+export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--required-checks <a,b,...>] [--coordination advisory|turn-free] [--memory|--no-memory] [--research|--no-research] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--conductor <peer>|none] [--planner <a,b,...>] [--reviewer <a,b,...>|person] [--track-config|--no-track-config] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
 
 /** Every flag the table and the two non-key choices own, for the caller's own argument loop and for help. */
-export const INIT_SETTING_FLAGS: readonly string[] = [...INIT_SETTINGS.flatMap(row => row.flags.map(flag => flag.flag)), "--track-config", "--no-track-config", "--autonomy"];
+export const INIT_SETTING_FLAGS: readonly string[] = [...INIT_SETTINGS.flatMap(row => row.flags.map(flag => flag.flag)), "--track-config", "--no-track-config", "--autonomy", ...Object.keys(ROLE_FLAGS)];
 /** #1411: the request key of `--track-config` / `--no-track-config` (true / false); absent keeps what git says today. */
 export const TRACK_CONFIG = "track-config";
 
@@ -107,6 +108,13 @@ export function parseInitSettings(args: readonly string[]): { request: InitSetti
     // #1411: whether the repository commits its hub config. Not a config key (init.ts reads it for .gitignore and the block's role sentence), but it rides in `values` so every
     // caller that asks "was a setting given" sees it.
     if (arg === "--track-config" || arg === "--no-track-config") { set(TRACK_CONFIG, arg, arg === "--track-config"); continue; }
+    // #1408 T2: who conducts, plans and reviews. Each is one request key; init-roles.ts judges eligibility against the files when the plan is made.
+    if (Object.hasOwn(ROLE_FLAGS, arg)) {
+      const text = args[++i];
+      if (text === undefined) throw new Error(`${arg} needs a value: ${ROLE_ALLOWED[arg as RoleFlag]}; nothing was written`);
+      set(roleKeyOf(ROLE_FLAGS[arg as RoleFlag]), arg, parseRoleFlag(arg as RoleFlag, text));
+      continue;
+    }
     const row = INIT_SETTINGS.find(def => def.flags.some(flag => flag.flag === arg));
     if (!row) { rest.push(arg); continue; }
     const flag = row.flags.find(entry => entry.flag === arg)!;
@@ -235,6 +243,15 @@ export function planInitSettings(request: InitSettingsRequest, texts: InitSettin
     current[file] = current[file] === null ? editJsonText("{}\n", row.path, to) : editJsonText(current[file]!, row.path, to);
     next[file] = current[file]!;
     rows.push({ key: row.id, file, ...(held === undefined ? {} : { from: held }), to } as InitSettingRow);
+  }
+  // #1408 T2: the role choices, judged against the config.json this plan produces and the local file; each peer whose roles change is written as one explicit list.
+  if (ROLE_KEYS.some(key => Object.hasOwn(request.values, key))) {
+    const changes = planRoles(request.values, parsed("config.json"), parsed("config.local.json"));
+    for (const change of changes) {
+      current["config.json"] = editJsonText(current["config.json"] ?? "{}\n", ["roles", change.peer], change.to);
+      rows.push({ key: `roles.${change.peer}`, file: "config.json", from: change.from, to: change.to });
+    }
+    if (changes.length) next["config.json"] = current["config.json"]!;
   }
   return { rows, next };
 }

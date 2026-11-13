@@ -664,6 +664,8 @@
   "src/cli/init-required-checks.ts:WORKFLOW_BYTES:constant:WORKFLOW_BYTES=256 * 1024#0": "safety floor",
   "src/cli/init-required-checks.ts:WORKFLOW_FILES:constant:WORKFLOW_FILES=32#0": "safety floor",
   "src/cli/init-required-checks.ts:validNames:inline:names.length <= 32=32#0": "contract",
+  "src/cli/init-roles.ts:MAX_PLANNERS:constant:MAX_PLANNERS=8#0": "contract",
+  "src/cli/init-roles.ts:clip:inline:text.slice=48#0": "contract",
   "src/cli/init-settings.ts:<anonymous>:inline:name.length > 120=120#0": "contract",
   "src/cli/init-settings.ts:parse:inline:names.length > 32=32#0": "contract",
   "src/cli/init.ts:timeout:inline:timeout=3000#0": "operational",

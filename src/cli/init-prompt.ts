@@ -17,6 +17,7 @@ import { PROFILE_NAMES } from "../hub/profiles.ts";
 import { DEFAULT_CONFIG } from "../hub/daemon.ts";
 import { DEFAULT_SPECS_CONFIG } from "../hub/specs-config.ts";
 import { START_AGENTS_ALLOWED, START_AGENTS_DEFAULT } from "../hub/start-agents.ts";
+import { NO_CONDUCTOR, PERSON_REVIEWS, ROLE_FLAGS, eligiblePeers, parseRoleFlag, roleKeyOf, type RoleFlag } from "./init-roles.ts";
 
 /** What a prompt needs from its surroundings. `ask` resolves to `null` at the end of input and after Ctrl-C (the caller turns both into `null`); it never throws for either. */
 export interface InitPromptPorts {
@@ -31,7 +32,7 @@ export interface InitAnswers { request: InitSettingsRequest; profile?: string; s
 export type InitPromptResult = { ok: true; answers: InitAnswers } | { ok: false; reason: "declined" | "interrupted" | "refused"; message: string };
 
 /** The four questions that are choices of `ahub init` but not rows of the settings table. */
-const NOT_ROWS: ReadonlySet<string> = new Set(["profile", TRACK_CONFIG, "autonomy", "release-guard", "shadow"]);
+const NOT_ROWS: ReadonlySet<string> = new Set(["profile", TRACK_CONFIG, "autonomy", "release-guard", "shadow", ...Object.values(ROLE_FLAGS).map(roleKeyOf)]);
 const MAX_TRIES = 3;
 const NOTHING = "nothing was written";
 const yes = (text: string) => /^(y|yes)$/i.test(text.trim());
@@ -92,6 +93,8 @@ export interface InitQuestionContext {
   discoverChecks?: () => Promise<readonly string[]>;
   /** Shadow history is offered only for a folder with no Git work tree. */
   shadowAvailable?: boolean;
+  /** The peers whose agent CLI is on this machine, offered first in the role questions (#1408). */
+  installedPeers?: readonly string[];
 }
 
 /**
@@ -109,10 +112,27 @@ export function initQuestions(context: InitQuestionContext = {}): InitQuestion[]
     id: "start.agents", label: "Agents ahub up starts", choices: `${START_AGENTS_ALLOWED.join(",")} as a comma list, or none`, shown: (context.machineAgents ?? START_AGENTS_DEFAULT).join(", ") || "none",
     read: text => INIT_SETTINGS.find(row => row.id === "start.agents")!.parse(text.trim().toLowerCase()),
   };
+  // #1408 T2: one question per role, with only the peers that can hold it (a new project has no start modes yet, so each kind is judged in its own default form). Installed agents come first.
+  const roleQuestion = (flag: RoleFlag): InitQuestion => {
+    const role = ROLE_FLAGS[flag], peers = eligiblePeers(role, () => undefined, context.installedPeers ?? []);
+    const shown = shippedHolders(role);
+    return {
+      id: roleKeyOf(role), label: role === "conductor" ? "Conductor (reports to you, asks for your decisions; needs an interactive peer)" : role === "planner" ? "Planner" : "Reviewer",
+      choices: role === "conductor" ? [...peers, NO_CONDUCTOR].join("|") : role === "reviewer" ? `${peers.join(",")} as a comma list, or ${PERSON_REVIEWS}` : `${peers.join(",")} as a comma list`, shown,
+      read: text => {
+        const choice = parseRoleFlag(flag, text.trim().toLowerCase());
+        const named = choice === NO_CONDUCTOR || choice === PERSON_REVIEWS ? [] : Array.isArray(choice) ? choice : [choice];
+        const refused = named.find(peer => !peers.includes(peer));
+        if (refused !== undefined) throw new Error(`${refused} cannot be ${role} here; answer ${role === "conductor" ? [...peers, NO_CONDUCTOR].join(", ") : peers.join(", ")}`);
+        return choice;
+      },
+    };
+  };
   const switches = INIT_SETTINGS.filter(row => row.id.endsWith(".enabled") && !["specs.enabled", "memory.enabled", "research.enabled", "snapshots.enabled"].includes(row.id));
   const all: InitQuestion[] = [
     profile,
     agents,
+    roleQuestion("--conductor"), roleQuestion("--planner"), roleQuestion("--reviewer"),
     // #1411: Enter leaves the choice out, so .gitignore stays as git has it today and the block follows that.
     { ...onOff(TRACK_CONFIG, "Commit the shared hub config (config.json, routing.toml, sdlc.toml) to git", "off"), shown: "as .gitignore has it" },
     onOff("specs.enabled", "Design specs and their freshness checks", shownDefault("specs.enabled") as "on" | "off"),
@@ -129,6 +149,13 @@ export function initQuestions(context: InitQuestionContext = {}): InitQuestion[]
     ...(context.shadowAvailable ? [onOff("shadow", "Shadow history (a folder with no Git work tree)", "off")] : []),
   ];
   return all.filter(question => NOT_ROWS.has(question.id) || ids.has(question.id));
+}
+
+/** Who holds `role` in the shipped `templates/config.json` (what Enter keeps), or `none` when nobody does: read from the template so the bracket cannot drift from what is written. */
+function shippedHolders(role: "conductor" | "planner" | "reviewer"): string {
+  const roles = at(TEMPLATE, ["roles"]);
+  const holders = roles && typeof roles === "object" ? Object.entries(roles as Record<string, unknown>).filter(([, list]) => Array.isArray(list) && list.includes(role)).map(([peer]) => peer) : [];
+  return holders.join(", ") || (role === "reviewer" ? PERSON_REVIEWS : "none");
 }
 
 /** The question line: `label (a|b|c) [default]: `. */

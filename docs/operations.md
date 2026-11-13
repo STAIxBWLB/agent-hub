@@ -1167,6 +1167,26 @@ value, or a flag given twice with different values, is refused with the allowed
 values, and nothing is written. Executables, secrets, models, providers, instances
 and permissions have no flags; they stay file edits.
 
+Who conducts, plans and reviews is chosen with three independent flags (#1408 T2):
+`--conductor <peer>|none`, `--planner <a,b,...>` and `--reviewer <a,b,...>|person`. Each
+is written to the shared `.agenthub/config.json` `roles` as an explicit list for every
+peer whose roles change, including the peer that loses a role (the per-peer merge would
+otherwise keep its default); implementer and verifier entries, and every other file, stay
+as they are. An existing project is changed only by a flag you give, and a flag whose
+choice already holds writes nothing. A peer that cannot hold the role is refused before
+any write, with the reason, the fix and the eligible peers: a conductor needs an
+interactive session (`conductorEligible` and a non-headless start mode, read the same way
+the loader and `ahub doctor` read them, so `config.local.json` wins over the shared
+file), a planner needs a planner-eligible kind, a reviewer a kind that can receive
+`hub_review`. `--conductor none` leaves the person conducting from `ahub console`;
+`--reviewer person` writes no reviewer peer, and the init summary says reviews go to the
+person. Moving the conductor writes both peers in one change, so the single-holder rule
+is not tripped. A `planner` setting, or a `config.local.json` `roles` entry for a peer
+the choice would change, would outrank the write, so init refuses it and names the key.
+`--dry-run` shows each changed peer as a `roles.<peer>` row. The guided prompt asks the
+three after the agents question, offering only eligible peers with installed agents first
+(Enter keeps the shipped holders).
+
 A person at a terminal who runs `ahub init` on a new project with no flag that
 sets anything and no `--yes` is asked each setting in turn (#1065 T2): profile,
 the agents `ahub up` starts, design specs and their review mode, SDLC mode (with

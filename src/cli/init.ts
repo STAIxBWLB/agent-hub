@@ -17,6 +17,7 @@ import { requiredChecksFor } from "../hub/sdlc-merge.ts";
 import { githubOriginRepository } from "../hub/task-repository.ts";
 import { loadSdlc, sdlcConfig } from "../hub/sdlc.ts";
 import { VERSION } from "../version.ts";
+import { roleSummaryLines } from "./init-roles.ts";
 import { planInitSettings, TRACK_CONFIG, type InitSettingFile, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
 
 const TEMPLATES = join(import.meta.dir, "..", "..", "templates");
@@ -444,6 +445,8 @@ export function initNextSteps(cwd: string, settings?: InitSettingsRequest): stri
     "- Your own settings go in .agenthub/config.local.json; it wins over config.json key by key.",
     "- Start with ahub up or ahub claude; sessions started otherwise miss hub pushes.",
   );
+  // #1408 T2: what each role choice means, for a choice that changed nothing too (AC5: `none` and `person` are described, not only accepted).
+  lines.push(...roleSummaryLines(settings?.values ?? {}));
   if (mode !== "off") lines.push(
     `- SDLC ${mode}: accept the planner-recorded spec with ahub sdlc accept <task> --issue <n>.`,
     "- When a plan departure needs your consent: ahub sdlc accept-departure <task> <head> <reason...>.",

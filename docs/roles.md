@@ -10,6 +10,7 @@
 - The loader ignores a `conductor` entry on a peer whose kind is not `conductorEligible`, or whose effective start mode is headless (`peers.<peer>.start_mode`, `config.local.json` winning over the shared file), with a notice that names the reason and the fix. Nobody else gains the role: the project then has no conductor and the person conducts from `ahub console`. A conductor that is ignored never holds the role after a reload or a recovery either.
 - Setting the conductor's `start_mode` to `headless` is refused: "<peer> holds the conductor role, which needs an interactive session; move the role first". Move the role in `roles` first, then change the mode.
 - `ahub doctor` has a `roles` row: who holds conductor, planner and reviewer as the hub settled them, with a warning when a conductor is ignored, when no rostered planner is eligible, or when no reviewer can run and reviews fall to the person.
+- `ahub init --conductor <peer>|none`, `--planner <a,b,...>` and `--reviewer <a,b,...>|person` (hub task 900, #1408 T2) choose the three roles at init, each on its own, judged by the same `roleEligibility` the loader and doctor use. Only the named role moves: each peer whose roles change is written to the shared `roles` as an explicit list (the one that loses a role too), implementer and verifier stay, and a refused choice names the reason, the fix and the eligible peers before any write. No flag changes nothing. See [operations](operations.md).
 
 # Definitions and layers
 

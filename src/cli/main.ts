@@ -82,6 +82,7 @@ import { OmniRoute } from "../omniroute/client.ts";
 import { autonomyInheritanceChange, init, initNextSteps, initResearchDefault, withInitResearch, initSettingRows, planInit, sharedConfigRow } from "./init.ts";
 import { discoverInitChecks, withInitChecks } from "./init-required-checks.ts";
 import { INIT_USAGE, parseInitSettings } from "./init-settings.ts";
+import { installedPeers } from "./init-roles.ts";
 import { promptGate, runInitPrompt, settingLines, shadowOffered, type InitAnswers } from "./init-prompt.ts";
 import { loadPacks } from "../hub/packs.ts";
 import { launcherPreview } from "./preview.ts";
@@ -1174,7 +1175,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       let result: Awaited<ReturnType<typeof runInitPrompt>>;
       try {
         result = await runInitPrompt({ ask, print: line => console.log(terminalText(line)) },
-          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), machineResearch: initResearchDefault(cwd, initMachine?.researchEnabled), packs: [...loadPacks(cwd).packs.keys()], discoverChecks: async () => (await discoverInitChecks(cwd)).names, shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
+          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), machineResearch: initResearchDefault(cwd, initMachine?.researchEnabled), installedPeers: installedPeers(), packs: [...loadPacks(cwd).packs.keys()], discoverChecks: async () => (await discoverInitChecks(cwd)).names, shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
       } finally { rl.close(); }
       if (!result.ok) { console.error(`ahub init: ${result.reason === "refused" ? result.message : result.reason === "interrupted" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === "refused" ? 1 : 0; return; }
       requestedProfile = result.answers.profile; request = result.answers.request; asked = Object.keys(request.values).length > 0; shadow = result.answers.shadow; releaseGuard = result.answers.releaseGuard;
