@@ -809,10 +809,10 @@ export class Tasks {
     d.board.trackPlanRevisions = () => (d.sdlc?.config().mode ?? "off") !== "off";
     this.repositories = new TaskRepositories(d.cwd, d.repository);
     d.board.proposalPlanner = task => this.proposalPlanner(task);
-    for (const task of d.board.listOpen()) this.warmRepository(task);
+    for (const task of d.board.list()) this.warmRepository(task);
     if (d.coordination) {
       const mode = d.coordination();
-      for (const task of d.board.listOpen()) this.coordinationModes.set(task.id, mode);
+      for (const task of d.board.list()) this.coordinationModes.set(task.id, mode);
     }
     const backlog = d.board.list("backlog");
     for (const [peer, roles] of Object.entries(d.roles ?? {})) {
@@ -7926,7 +7926,7 @@ export class Tasks {
    */
   recoverIntegrations(): void {
     const marks = new Set(["integration requested", "integrated", "integration unresolved", "done", "done (checking)", "reopened", "accepted", "assigned", "reassigned", "escalated"]);
-    for (const t of this.d.board.listOpen()) {
+    for (const t of this.d.board.list()) {
       if (!OPEN.includes(t.state) || [...t.history].reverse().find((h) => marks.has(h.event))?.event !== "integration requested") continue;
       this.d.board.update(t.id, HUB, "integration unresolved", {}, "the hub restarted before the integration was confirmed");
       this.d.notify(`task ${this.publicTitle(t)}: turn-free integration unresolved (the hub restarted); check the overlapping work by hand`);

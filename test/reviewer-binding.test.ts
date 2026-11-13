@@ -8,7 +8,7 @@ function fixture() {
   const task: Task = { id: 71, title: "public fixture", detail: "", class: "implement", owner: "builder", rejections: 0, created: 1, updated: 1, state: "in_review", reviewer: "kimi-review", signals: [], refs: { commit: "fixture-branch" },
     history: ["proposed", "assigned", "accepted", "done"].map(event => ({ event, by: "builder", at: 1 })) };
   // A read-only board view. Changes below simulate fresh snapshots, not a task mutation API.
-  const board = { list: () => [], listOpen: () => [], get: (id: number) => id === task.id ? task : undefined } as unknown as Board;
+  const board = { list: () => [], get: (id: number) => id === task.id ? task : undefined } as unknown as Board;
   const routing = { constraints: { pii: "local_only" } } as Routing;
   const tasks = new Tasks({ board, bus: new Bus({ batchMs: 0 }), routing: () => routing, cwd: "/unused-fixture", project: "fixture", notify: () => {} });
   return { task, tasks };
