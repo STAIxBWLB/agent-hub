@@ -171,6 +171,7 @@ read and present in a `task`-narrowed one.
 | 9 | role-scoped (task 866), hub 0.38.0, pid 92515, same lifetime as readings 5 to 8 | 2026-11-13 08:15 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 6 since that daemon start, 1 of them after reading 8 (unknown which bound, task or rule) | 3 |
 | 10 | role-scoped (task 866), hub 0.38.0, pid 45122 (start 2026-11-13 11:59:44 KST); a new daemon lifetime, so the refusal counter restarts | 2026-11-13 13:25 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 5 | 5 | 0 since this daemon start (unknown before it; the previous lifetime ended at 6) | 5 |
 | 11 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as reading 10 (`etime` 6 h 46 m) | 2026-11-13 18:45 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 8 | 8 | 3 since this daemon start, all three after reading 10 (unknown which bound, task or rule) | 7 |
+| 12 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 and 11 (`etime` 8 h 50 m) | 2026-11-13 20:50 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 9 | 9 | 3 since this daemon start, unchanged since reading 11, so none in the 2 h 05 m between them (unknown which bound, task or rule) | 9 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -359,6 +360,47 @@ and the queue are byte-identical from `0af9fb5a1`, where reading 5 pinned them, 
 (`supervision-rules.ts`, `supervision-proposals.ts` and `settled-roles.ts` all print nothing under
 `git diff --stat`), so the frozen case set still describes the code under measurement.
 
+Reading 12 (2026-11-13 20:50 KST) is the first read where a row that was pending at the previous
+reading has left the ledger, and the first where a pair closed at the partner's filing rather than
+at a verdict. `ps -o lstart= -p 45122` still answers 2026-11-13 11:59:44 KST with `etime` 8 h 50 m,
+so this is the lifetime of readings 10 and 11. The `task: 866` read returned nine rows at four
+revisions: the same three at `8:3`, the same two at `11:4`, the same three at `14:5`, and one at
+`15:6` that no earlier reading could see.
+
+`sup-e8c72e6a6600`, pending at reading 11, expired at 18:49:46 KST, 9 m 05 s after it was written,
+and the row at `15:6` was written at that same second. The revision therefore moved `14:5` to
+`15:6` between the two, and the only change on this task this receipt can name in that window is
+its own plan refresh, recorded by the hub at 18:45:02 KST (`hub_task_accept` with an updated plan).
+The measured part is that the stale-revision row closed at the same second the new-revision row
+opened, which is the dedupe key working as the design states it: the pair carries rule, task,
+revision and trigger, so a task edit re-derives the key and the rule fires again instead of
+inheriting the old row. Whether the plan refresh is what advanced the revision is not visible from
+a role-scoped read and stays in the list at the end.
+
+`sup-9b89abfbd309` is that new row, and it expired at 20:23:59 KST, 1 h 34 m 13 s after its write.
+#917's PR #1456 was created at 20:23:05 KST (`createdAt` 2026-11-13T11:23:05Z), 54 s before the
+expiry, and re-filed at 20:28:01 KST, after the row had already closed. So this pair also left
+supervision before any merge, and this time before any approval: the close tracks the partner's
+review hand-off, not a verdict. The receipt's earlier sentence that a pair expires at the approving
+verdict is narrowed here rather than contradicted — readings 1 to 3 saw closes 1.3 to 1.4 s after a
+review time, reading 11 saw one 16 s after a bot `COMMENTED` review on a PR whose decision was never
+recorded, and reading 12 sees one 54 s after the partner's PR appeared.
+
+`refused` still reads 3, unchanged over the 2 h 05 m since reading 11, during which the queue wrote
+one row and closed two. Refusals therefore do not track rows written: this is the first window in
+the wave with queue activity and no refusal, and the lifetime total stays 3 across 8 h 50 m, so the
+attribution limit in the list below is unchanged rather than lifted.
+
+Provenance at this reading: board head `c78468289` (`fix(review): recurring-finding cards ignore
+review-local positional finding ids`, #1452), one merge since reading 11's `376283a25`. It touches
+neither `docs/dogfood.md` nor `docs/design/supervision.md`, so the `Supervision rules and proposals
+(#1221 T1, T2)` row still reads 135 when found by that text and this task's row is still inserted
+after it, and the design doc still ends at `## Deliberately outside this contract` (119) with no
+`Observed limits` heading. The evaluator and the queue are byte-identical from `0af9fb5a1`, where
+reading 5 pinned them, to `c78468289` (`supervision-rules.ts`, `supervision-proposals.ts` and
+`settled-roles.ts` all print nothing under `git diff --stat`), so the frozen case set still
+describes the code under measurement.
+
 ## Proposal ledger
 
 | proposal | rule | task | revision | trigger | action | outcome | evidence |
@@ -370,11 +412,14 @@ and the queue are byte-identical from `0af9fb5a1`, where reading 5 pinned them, 
 | `sup-bd8af58defb8` | `declared_overlap_without_integration` | 866 | `11:4` | `overlap:866:919` | `request_integration` | expired by the queue 30 m 50 s after it was written (12:15 to 12:46 KST on 2026-11-13); unknown from stored records | #919 (PR #1444, `9648a1b94`) inserts `Planner pull routing diagnostics (#1430)` at the same two neighbours as #915's row and one new `test/planner-pull-routing-refusal.test.ts`; neither file is one this task writes, and the two inserts collide with each other rather than with this task's row |
 | `sup-2b47ddbc1bad` | `declared_overlap_without_integration` | 866 | `14:5` | `overlap:866:918` | `request_integration` | expired by the queue 76 m 31 s after it was written (15:17:49 to 16:34:20 KST on 2026-11-13), 2 h 02 m before #918 merged; unknown from stored records | #918 (PR #1451, `793ac556b`, merged as `376283a25` at 18:37:04 KST) rewrites the existing `Quota budgets and pauses` row in place at `@@ -160 +160 @@` and changes `src/hub/budget.ts`, `src/hub/quota-account.ts`, `src/adapters/codex-appserver.ts`, `src/adapters/definitions/native-quota.ts` and `test/codex-budget-*.test.ts`; this task inserts one row after the supervision row and adds no source file, so the overlap was file-level only |
 | `sup-acc96e5922b7` | `declared_overlap_without_integration` | 866 | `14:5` | `overlap:866:894` | `request_integration` | expired by the queue 50 m 30 s after it was written (17:25:46 to 18:16:16 KST on 2026-11-13), 16 s after a bot `COMMENTED` review on #1453 that is a quota notice and not an approval; the PR is still open with no review decision recorded | #894 (PR #1453, `7ebb77858`, base `adf4f99c0`) rewrites the existing `Plan conformance (#481 S2, #1403 T6)` row in place at `@@ -121 +121 @@` and changes `src/hub/plan-conformance.ts`, `src/hub/tasks.ts`, `src/hub/board.ts`, `src/hub/daemon.ts`, `docs/design/task-board.md`, `docs/sdlc.md`, `scripts/seeds.json` and three plan tests; this task's row and its one new file are untouched, so the overlap was file-level only |
-| `sup-e8c72e6a6600` | `declared_overlap_without_integration` | 866 | `14:5` | `overlap:866:917` | `request_integration` | pending at reading 11, written 18:40:41 KST and five minutes old at the read; classified at the wave close, not now | #917 (codex) has no open pull request at this reading; its plan names `src/cli/terminal-recovery.ts`, `src/cli/recovery-launch.ts` and the `src/cli/upgrade*.ts` slice, and its owner stated the dogfood edit rewrites the existing upgrade/recovery row in place rather than inserting one, so the overlap is file-level and plan-level only |
+| `sup-e8c72e6a6600` | `declared_overlap_without_integration` | 866 | `14:5` | `overlap:866:917` | `request_integration` | pending at reading 11 (written 18:40:41 KST); expired at 18:49:46 KST, 9 m 05 s after the write and at the same second a row at revision `15:6` was written, so the revision moved under it; unknown from stored records whether the queue closed it because the revision moved or on its own schedule | #917 (codex) had no open pull request at reading 11; its plan names `src/cli/terminal-recovery.ts`, `src/cli/recovery-launch.ts` and the `src/cli/upgrade*.ts` slice, and its owner stated the dogfood edit rewrites the existing upgrade/recovery row in place rather than inserting one, so the overlap is file-level and plan-level only |
+| `sup-9b89abfbd309` | `declared_overlap_without_integration` | 866 | `15:6` | `overlap:866:917` | `request_integration` | expired at 20:23:59 KST, 1 h 34 m 13 s after it was written, 54 s after #917's PR #1456 was created (20:23:05 KST); the PR was re-filed at 20:28:01 KST, after the row had closed; unknown from stored records whether that filing is what closed it | #917 (codex) filed PR #1456 for #1426. At head `1a5dc48f8`, and again at the re-filed `3b6307ace`, its only `docs/dogfood.md` change is `@@ -247 +247 @@`: the existing `Upgrade and recovery` row rewritten in place to `Upgrade and recovery (#1426)`, one line out and one in. This task inserts one row after the supervision row at 135, so the overlap is file-level only and the two rows sit 112 apart |
 
 A pending proposal stays pending until the wave closes: classifying one while later revisions are
 already in view would let its outcome be chosen to fit them. No row on this task was pending at
-readings 3 to 10; reading 11 has one (`sup-e8c72e6a6600`). An expiry is the queue's own disposition
+readings 3 to 10, reading 11 had one (`sup-e8c72e6a6600`), and none is pending at reading 12: it
+expired 9 m 05 s after the read that saw it, so twelve readings have carried two pending rows and
+both closed before the next reading. An expiry is the queue's own disposition
 and not a classification: it records that the reading stopped holding, and it counts neither as a
 helpful or false intervention nor as a clean non-trigger.
 
@@ -385,7 +430,7 @@ helpful or false intervention nor as a clean non-trigger.
 | model calls | 0 (no inference path in the rules or the queue) |
 | memory writes | 0 |
 | daemon evaluations | pending (replayed from board revisions) |
-| rows written | 7 at the first conductor read, 3 of them on this task; the task-narrowed read shows 8 at reading 11: the same three, two written and expired before reading 10, and three more written between readings 10 and 11 (two expired, one pending). Written by the daemon on a task change and not by this task |
+| rows written | 7 at the first conductor read, 3 of them on this task; the task-narrowed read shows 9 at reading 12: the same three, two written and expired before reading 10, three more written between readings 10 and 11 (two expired, one still pending at that read), and one at `15:6` written at 18:49:46 KST as that pending row closed. All nine are expired at reading 12. Written by the daemon on a task change and not by this task |
 | wall time | wave open 2026-11-11, cap 2026-11-18 |
 
 ## Person burden
@@ -408,7 +453,10 @@ and is not part of this wave.
   All three of those partners then merged on main (`2d341c298`, `89e69a38a`, `60db687fd`) and no
   row named any of the three merges, though the third had merged before reading 3 returned its
   expired row. Measured four times on 2026-11-11; it is a limit of the reading window, not a
-  defect of any task;
+  defect of any task. Reading 12 measures a second boundary on the same limit: the `15:6` row
+  closed 54 s after #917's PR appeared and before any approval, and the `14:5` row closed at the
+  instant the revision moved under it, so the window that ends a pair is the partner's review
+  hand-off and not only a verdict;
 - every row the read page left out. Reading 5 measured the page bound for the first time: the
   unfiltered read returned two of my three rows because the other 48 slots of the 50-row page went
   to rows on tasks I cannot decide, and the `task`-narrowed read returned all three. The size of
@@ -426,5 +474,10 @@ and is not part of this wave.
   13:25 to 18:45 KST). This is the tightest window the wave can pin and it still names no task,
   rule or bound, so it dates the refusals without attributing them; the lifetime total is 3 and the
   wave total is unknown because two lifetimes preceded it (6 in the lifetime that ended, and an
-  unknown number before it);
+  unknown number before it). Reading 12 added none in the following 2 h 05 m, a window in which the
+  queue wrote a row and closed two, so the lifetime total stays 3 across 8 h 50 m;
+- whether this task's own plan refresh advanced the revision from `14:5` to `15:6`. The hub
+  recorded the update at 18:45:02 KST, the queue wrote a row at `15:6` 4 m 44 s later, and the
+  `14:5` row closed at that same second. A role-scoped read carries the revision pair on each row
+  and not what derived it, so the attribution stays open even though the ordering is measured;
 - every threshold that needs a live sample larger than this pilot can produce.
