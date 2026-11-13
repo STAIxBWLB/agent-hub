@@ -8084,13 +8084,13 @@ var init_sandbox = __esm(() => {
 });
 
 // src/hub/text-projection.ts
-var MAX_PROJECTION_INPUT, MAX_TEXT;
+var MAX_PROJECTION_INPUT, MAX_PROJECTION_TEXT;
 var init_text_projection = __esm(() => {
   init_deny();
   init_project();
   init_sandbox();
   MAX_PROJECTION_INPUT = 16 * 1024 * 1024;
-  MAX_TEXT = 256 * 1024;
+  MAX_PROJECTION_TEXT = 256 * 1024;
 });
 
 // src/local/doc-read.ts
@@ -12347,6 +12347,7 @@ var init_sources = __esm(() => {
 var FIELDS, INPUT_FIELDS;
 var init_research_evidence = __esm(() => {
   init_sources();
+  init_envelope();
   FIELDS = ["id", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation", "recordedBy", "taskId", "revision"];
   INPUT_FIELDS = FIELDS.filter((field) => field !== "recordedBy");
 });
@@ -16816,7 +16817,7 @@ function configuredToolContext(status, peer) {
   return { startPeers, readOnly: readOnlyPeers.includes(peer) };
 }
 function projectToolList(tools, readOnly = false) {
-  return readOnly ? tools.filter((tool) => READ_ONLY_PROJECT_TOOLS.includes(tool.name)) : tools;
+  return readOnly ? tools.filter((tool) => READ_ONLY_PROJECT_TOOLS.includes(tool.name) || tool.name === EVIDENCE_READ_TOOL.name) : tools;
 }
 function roleContract(peer, roles = DEFAULT_ROLES, catalog = [], profile = "dev") {
   const data = profileData(profile);
@@ -16832,7 +16833,7 @@ function profileTaskTools(profile = "dev", stages, criteria = false, audit = fal
   if (!customStages && !customProfile && !criteria && !audit)
     return TASK_TOOLS;
   const data = profileData(profile);
-  const tools = [...data.name === "research" ? [...TASK_TOOLS, EVIDENCE_RECORD_TOOL] : TASK_TOOLS, ...audit ? [AUDIT_REPORT_TOOL] : []];
+  const tools = [...data.name === "research" ? [...TASK_TOOLS, EVIDENCE_RECORD_TOOL, EVIDENCE_READ_TOOL] : TASK_TOOLS, ...audit ? [AUDIT_REPORT_TOOL] : []];
   return tools.map((tool) => {
     const properties = { ...tool.inputSchema.properties };
     if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
@@ -16890,7 +16891,7 @@ var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_
   name,
   description,
   inputSchema: { type: "object", properties: name === "hub_review" || name === "hub_task_propose" ? { ...properties, request_id: toolWriteRequestId } : properties, required, additionalProperties: false }
-}), STUDY_TOOLS, AUDIT_REPORT_TOOL, EVIDENCE_RECORD_TOOL, HANDOFF_TOOLS, LINEAGE_TOOL_NAMES, executionReference, lineageShow, GUIDANCE_TOOL_NAMES, guidanceEpoch, guidanceContentId, guidanceText, guidanceVariant, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, ASK_TOOL, QUESTION_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
+}), STUDY_TOOLS, AUDIT_REPORT_TOOL, EVIDENCE_RECORD_TOOL, EVIDENCE_READ_TOOL, HANDOFF_TOOLS, LINEAGE_TOOL_NAMES, executionReference, lineageShow, GUIDANCE_TOOL_NAMES, guidanceEpoch, guidanceContentId, guidanceText, guidanceVariant, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, ASK_TOOL, QUESTION_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_execution_reference();
   init_execution_links();
@@ -16901,7 +16902,7 @@ var init_hub_tools = __esm(() => {
   init_roles();
   init_registry();
   init_envelope();
-  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_lineage_show", "hub_lineage_link", "hub_guidance_create", "hub_guidance_list", "hub_guidance_show", "hub_guidance_withdraw"]);
+  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_evidence_read", "hub_lineage_show", "hub_lineage_link", "hub_guidance_create", "hub_guidance_list", "hub_guidance_show", "hub_guidance_withdraw"]);
   IMPLEMENTER_PERMISSION_TOOL = {
     name: "hub_permission_request",
     description: "Native permission prompt for this current owned child. The person allows once or denies; failure is deny.",
@@ -17046,7 +17047,7 @@ var init_hub_tools = __esm(() => {
       verdict: { type: "string", enum: ["verified", "rejected"] }
     } } }
   }, ["id"]);
-  EVIDENCE_RECORD_TOOL = tool2("hub_evidence_record", "Record a provenance link for a claim on your current in-progress research task. Read hub_task_show or ahub task show --json and copy claims[].claimId and claims[].claimRevision for the selected slot; do not reconstruct identities or hash claim text. Projection hash/version and scalar locator are declared metadata in T1, not resolved or verified. A relation proposes supports, contradicts or context; it never creates a person verdict. Private turns, tasks and sources refuse. The actor is host-stamped; no fetch, resolver or synthesis check runs.", {
+  EVIDENCE_RECORD_TOOL = tool2("hub_evidence_record", "Record a provenance link for a claim on your current in-progress research task. Read hub_task_show or ahub task show --json and copy claims[].claimId and claims[].claimRevision for the selected slot; do not reconstruct identities or hash claim text. Projection hash/version and scalar locator are declared metadata when recorded; hub_evidence_read re-resolves them against the registered snapshot. A relation proposes supports, contradicts or context; it never creates a person verdict. Private turns, tasks and sources refuse. The actor is host-stamped; no fetch, resolver or synthesis check runs.", {
     id: { type: "string", pattern: "^ev:[0-9a-f]{32}$" },
     taskId: id2,
     claimId: { type: "string", minLength: 1, maxLength: 64, pattern: "^claim:[1-9][0-9]{0,15}:(?:0|[1-9][0-9]{0,15}):[1-9][0-9]?$", description: "Canonical #901 claim:<taskId>:<created>:<slot> identity: safe integer parts, slots 1-50; no claim text." },
@@ -17055,10 +17056,14 @@ var init_hub_tools = __esm(() => {
     rawSha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
     projectionSha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
     projectionVersion: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$" },
-    locator: { type: "object", properties: { start: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, end: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER } }, required: ["start", "end"], additionalProperties: false, description: "Declared zero-based, half-open Unicode scalar-value offsets; nonempty span <=4096. T2 will resolve the immutable projection." },
+    locator: { type: "object", properties: { start: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, end: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER } }, required: ["start", "end"], additionalProperties: false, description: "Declared zero-based, half-open Unicode scalar-value offsets; nonempty span <=4096. hub_evidence_read resolves the immutable projection." },
     relation: { type: "string", enum: ["supports", "contradicts", "context"] },
     revision: { type: "integer", minimum: 1, description: "Default 1; later revisions name the existing link id." }
   }, ["taskId", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation"]);
+  EVIDENCE_READ_TOOL = tool2("hub_evidence_read", "Read one recorded evidence link, latest revision by default, on a research task visible through hub_task_show. Re-resolves the registered snapshot with current privacy on every read. Resolved means bounded locator provenance only, never entailment, source quality, person judgment or synthesis readiness. Private, stale or unavailable links return ids and status only; refresh the current claim and registered snapshot before retrying. Origin groups denote connected registered-origin provenance, never independent corroboration. Excluded from capture.", {
+    id: { type: "string", pattern: "^ev:[0-9a-f]{32}$" },
+    revision: { type: "integer", minimum: 1 }
+  }, ["id"]);
   HANDOFF_TOOLS = new Set(["hub_task_handoff", "hub_task_handoffs"]);
   LINEAGE_TOOL_NAMES = new Set(["hub_lineage_show", "hub_lineage_link"]);
   executionReference = { type: "object", properties: {
@@ -17192,7 +17197,7 @@ var init_hub_tools = __esm(() => {
   QUESTION_TOOLS = new Set([ASK_TOOL.name]);
   TASK_TOOLS.push(ASK_TOOL);
   TASK_TOOLS.push(tool2("hub_supervision_list", "Read the bounded supervision proposals on tasks you hold a role on, pending first. Codes and ids only, plus `refused`, the readings a queue bound refused instead of storing. Shadow mode stores proposals without showing them anywhere else; a decided or expired proposal keeps its receipt.", { task: id2 }), tool2("hub_supervision_accept", "Accept one pending supervision proposal: the existing action it names runs under that action's own authority, and its intent, receipt and the task's own result stay separate records. An escalate proposal is accepted by the conductor or the person only; any other acceptance is refused and the proposal stays pending. Refuses a stale revision or generation, a reading that no longer holds, another actor's task, a private task and an owner's needs_review hold.", { id: str2 }, ["id"]), tool2("hub_supervision_dismiss", "Dismiss one pending supervision proposal. Same fences as accept, and it records the decision; nothing runs.", { id: str2 }, ["id"]));
-  TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name, AUDIT_REPORT_TOOL.name]);
+  TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name, EVIDENCE_READ_TOOL.name, AUDIT_REPORT_TOOL.name]);
   CONDUCTOR_TOOLS = [
     tool2("hub_status", "Inspect public team state, holds, quota windows, task counts and pending approval peer/tool/age. Only the configured conductor may use this tool.", {}),
     tool2("hub_task_show", "Read a task's public view and history, its done summary and check result included. PII tasks remain stubs. Only the conductor, the configured planner and the task's current owner and reviewer may use this tool.", { id: id2 }, ["id"]),
@@ -17700,7 +17705,7 @@ var init_local_worker = __esm(() => {
           progress.answerComplete = concluded.complete;
           return concluded.answer;
         }
-        if (!this.probeConfinement && res.message.tool_calls.some((call) => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments)))
+        if (!this.probeConfinement && res.message.tool_calls.some((call) => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_evidence_read" || call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments)))
           reviewScope.excluded = true;
         const results = [];
         try {
@@ -29804,6 +29809,16 @@ init_review_anchor();
 init_memory_policy();
 init_review_brief();
 init_review_comments();
+
+// src/hub/source-read.ts
+init_envelope();
+init_tool_refusal();
+init_sources();
+init_sources();
+init_research_evidence();
+var MAX_SOURCE_READ_BYTES = 32 * 1024;
+
+// src/hub/tasks.ts
 init_research_runner();
 init_queue_backpressure();
 
