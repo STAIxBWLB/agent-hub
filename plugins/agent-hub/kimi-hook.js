@@ -3241,6 +3241,118 @@ var init_kimi_review = __esm(() => {
   };
 });
 
+// src/hub/quota-account.ts
+function quotaAccountUsage(value) {
+  const out = {};
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return out;
+  const row = value;
+  if (typeof row.resetCreditsAvailable === "number" && Number.isSafeInteger(row.resetCreditsAvailable) && row.resetCreditsAvailable >= 0) {
+    out.resetCreditsAvailable = row.resetCreditsAvailable;
+    if (typeof row.resetCreditsExpiryKnown === "boolean")
+      out.resetCreditsExpiryKnown = row.resetCreditsExpiryKnown;
+    if (out.resetCreditsExpiryKnown === true && typeof row.resetCreditsExpireAt === "number" && Number.isSafeInteger(row.resetCreditsExpireAt) && row.resetCreditsExpireAt > 0 && Number.isFinite(new Date(row.resetCreditsExpireAt).getTime()))
+      out.resetCreditsExpireAt = row.resetCreditsExpireAt;
+  }
+  for (const field of ["ordinaryUsageAllowed", "hasCredits", "unlimited"])
+    if (typeof row[field] === "boolean")
+      out[field] = row[field];
+  return out;
+}
+
+// src/adapters/definitions/native-quota.ts
+function codexWindows(rateLimits) {
+  const out = [];
+  for (const [w, slot] of [[rateLimits?.primary, "5h"], [rateLimits?.secondary, "week"]]) {
+    if (!w || typeof w.usedPercent !== "number")
+      continue;
+    const mins = typeof w.windowDurationMins === "number" ? w.windowDurationMins : undefined;
+    const id = mins === undefined ? slot : mins > 600 ? "week" : "5h";
+    if (out.some((o) => o.id === id))
+      continue;
+    out.push({ id, used: w.usedPercent / 100, ...w.resetsAt ? { resetsAt: w.resetsAt * 1000 } : {}, ...mins ? { windowMins: mins } : {}, source: "codex rateLimits" });
+  }
+  if (rateLimits?.rateLimitReachedType && !out.some((w) => w.used >= 1))
+    out.push({ id: "5h", used: 1, source: `codex ${rateLimits.rateLimitReachedType}` });
+  return out;
+}
+function claudeWindows(rateLimits) {
+  const out = [];
+  for (const [key, id, mins] of [["five_hour", "5h", 300], ["seven_day", "week", 10080]]) {
+    const w = rateLimits?.[key];
+    if (!w || typeof w.used_percentage !== "number")
+      continue;
+    const resets = Number(w.resets_at);
+    out.push({ id, used: w.used_percentage / 100, ...resets ? { resetsAt: resets < 1000000000000 ? resets * 1000 : resets } : {}, windowMins: mins, source: "claude status line" });
+  }
+  return out;
+}
+function codexAccountUsage(snapshot) {
+  const value = record(snapshot), limits = record(value.rateLimits), credits = record(limits.credits), reset = record(value.rateLimitResetCredits);
+  const out = {};
+  if (typeof value.ordinaryUsageAllowed === "boolean")
+    out.ordinaryUsageAllowed = value.ordinaryUsageAllowed;
+  if (typeof credits.hasCredits === "boolean")
+    out.hasCredits = credits.hasCredits;
+  if (typeof credits.unlimited === "boolean")
+    out.unlimited = credits.unlimited;
+  const count = reset.availableCount;
+  if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
+    out.resetCreditsAvailable = count;
+    out.resetCreditsExpiryKnown = count === 0;
+    const rows = reset.credits;
+    if (count > 0 && Array.isArray(rows) && rows.length === count && rows.length <= MAX_RESET_CREDIT_DETAILS) {
+      let complete = true, earliest;
+      for (const item of rows) {
+        const row = record(item);
+        if (row.status !== "available" || row.resetType !== "codexRateLimits") {
+          complete = false;
+          break;
+        }
+        if (row.expiresAt === null)
+          continue;
+        const expires = epochMillis(row.expiresAt);
+        if (expires === undefined) {
+          complete = false;
+          break;
+        }
+        earliest = earliest === undefined ? expires : Math.min(earliest, expires);
+      }
+      out.resetCreditsExpiryKnown = complete;
+      if (complete && earliest !== undefined)
+        out.resetCreditsExpireAt = earliest;
+    }
+  }
+  return quotaAccountUsage(out);
+}
+function codexQuotaWindowInput(value) {
+  const raw = record(value);
+  const window = (value) => {
+    const row = record(value);
+    if (typeof row.usedPercent !== "number" || !Number.isFinite(row.usedPercent))
+      return null;
+    return {
+      usedPercent: row.usedPercent,
+      ...typeof row.windowDurationMins === "number" && Number.isFinite(row.windowDurationMins) ? { windowDurationMins: row.windowDurationMins } : {},
+      ...typeof row.resetsAt === "number" && Number.isFinite(row.resetsAt) ? { resetsAt: row.resetsAt } : {}
+    };
+  };
+  const reached = raw.rateLimitReachedType;
+  const known = ["usageLimitExceeded", "rate_limit_reached", "workspace_owner_credits_depleted", "workspace_member_credits_depleted", "workspace_owner_usage_limit_reached", "workspace_member_usage_limit_reached"];
+  return {
+    primary: window(raw.primary),
+    secondary: window(raw.secondary),
+    ...reached ? { rateLimitReachedType: typeof reached === "string" && known.includes(reached) ? reached : "usageLimitExceeded" } : {}
+  };
+}
+var MAX_RESET_CREDIT_DETAILS = 128, record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {}, epochMillis = (value) => {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)
+    return;
+  const ms = value * 1000;
+  return Number.isSafeInteger(ms) && Number.isFinite(new Date(ms).getTime()) ? ms : undefined;
+};
+var init_native_quota = () => {};
+
 // src/adapters/definitions/native-context.ts
 function claudeContext(value, sessionId, measuredAt) {
   const c = object4(value);
@@ -3249,7 +3361,7 @@ function claudeContext(value, sessionId, measuredAt) {
   const window = positive(c.context_window_size) ? c.context_window_size : null;
   const sum = c.current_usage != null && parts.every(nonnegative) ? parts.reduce((sum, n) => sum + n, 0) : null;
   const tokens = nonnegative(sum) ? sum : null;
-  const used = record(c.current_usage) && tokens !== null && nonnegative(c.used_percentage) && c.used_percentage <= 100 && window !== null ? c.used_percentage / 100 : null;
+  const used = record2(c.current_usage) && tokens !== null && nonnegative(c.used_percentage) && c.used_percentage <= 100 && window !== null ? c.used_percentage / 100 : null;
   return { source: "claude_statusline", sessionId, measuredAt, tokens, window, used };
 }
 function codexContext(value, sessionId, measuredAt) {
@@ -3273,7 +3385,7 @@ function jcodeContextValue(value, sessionId, measuredAt) {
   const tokens = okay ? raw.used : null, window = okay ? raw.size : null;
   return { source: "jcode_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
 }
-var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, positive = (n) => nonnegative(n) && n > 0, record = (v) => v !== null && typeof v === "object" && !Array.isArray(v), object4 = (v) => record(v) ? v : {};
+var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, positive = (n) => nonnegative(n) && n > 0, record2 = (v) => v !== null && typeof v === "object" && !Array.isArray(v), object4 = (v) => record2(v) ? v : {};
 
 // src/hub/context-window.ts
 var init_context_window = () => {};
@@ -3680,10 +3792,10 @@ function label(value, policy) {
   return safe !== undefined && safe.toLowerCase() !== "unknown" ? safe : undefined;
 }
 function sessionModelId(session, policy) {
-  const holder = record2(session);
+  const holder = record3(session);
   if (!holder)
     return;
-  const fromModels = label(record2(holder.models)?.currentModelId, policy);
+  const fromModels = label(record3(holder.models)?.currentModelId, policy);
   if (fromModels !== undefined)
     return fromModels;
   return configModelId(holder.configOptions, policy);
@@ -3691,19 +3803,19 @@ function sessionModelId(session, policy) {
 function configModelId(options, policy) {
   if (!Array.isArray(options) || options.length > ACP_MODEL_OPTIONS_MAX)
     return;
-  const models = options.filter((option) => record2(option)?.id === "model");
+  const models = options.filter((option) => record3(option)?.id === "model");
   if (models.length !== 1)
     return;
-  const option = record2(models[0]);
+  const option = record3(models[0]);
   return option.type === "select" ? label(option.currentValue, policy) : undefined;
 }
 function updatedModelId(update, policy) {
-  const value = record2(update);
+  const value = record3(update);
   if (!value)
     return;
   return value.configOptions !== undefined ? configModelId(value.configOptions, policy) : label(value.currentModelId, policy);
 }
-var record2 = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+var record3 = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 var init_acp_session_model = __esm(() => {
   init_acp_model_policy();
 });
@@ -4765,11 +4877,12 @@ function parse(raw) {
     return;
   }
 }
-var UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery", PLANNER_SANDBOX_REFUSAL = "Codex planner thread requires a confirmed read-only sandbox", counter = (value) => {
+var PAUSED_USAGE_POLL_MS = 60000, UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery", PLANNER_SANDBOX_REFUSAL = "Codex planner thread requires a confirmed read-only sandbox", counter = (value) => {
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }, TRACKED, CodexPeer;
 var init_codex_appserver = __esm(() => {
+  init_native_quota();
   init_model_token();
   init_envelope();
   init_context_window();
@@ -4815,6 +4928,10 @@ var init_codex_appserver = __esm(() => {
     nextId = -1;
     pending = new Map;
     usageTimer;
+    usageUnsubscribe;
+    usageEpoch = 0;
+    usageStopped = false;
+    usageRequests = new Map;
     injected;
     answering = [];
     lastAnswer = "";
@@ -4860,6 +4977,7 @@ var init_codex_appserver = __esm(() => {
       return this.threadId && link && link === this.claimedTui && link.launchId === launchId && link.tui.readyState === WebSocket.OPEN && link.up.readyState === WebSocket.OPEN ? { generation: String(this.sessionGeneration) } : undefined;
     }
     async start() {
+      this.usageStopped = false;
       this.nativeModels.clear();
       this.threadModels.clear();
       this.reroutedModel = undefined;
@@ -4917,6 +5035,8 @@ var init_codex_appserver = __esm(() => {
       });
     }
     async stop() {
+      this.usageStopped = true;
+      this.stopUsagePolling();
       this.abortActionWaits();
       this.server?.stop(true);
       this.claimedTui?.tui.close(1001, "hub shutting down");
@@ -5235,7 +5355,7 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
         this.claimedTui = undefined;
       if (this.link !== link)
         return;
-      clearInterval(this.usageTimer);
+      this.stopUsagePolling();
       this.link = undefined;
       this.restoringApprovals.clear();
       this.threadId = "";
@@ -5645,10 +5765,7 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
       this.opts.log?.(`[${this.id}] thread ${threadId}`);
       this.opts.onThread?.(threadId, fresh);
       this.setState("idle");
-      this.readUsage();
-      clearInterval(this.usageTimer);
-      this.usageTimer = setInterval(() => this.readUsage(), this.opts.usagePollMs ?? 600000);
-      this.usageTimer.unref?.();
+      this.startUsagePolling(link);
     }
     revert(turnId) {
       const link = this.link;
@@ -5679,18 +5796,84 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
         link.up.send(JSON.stringify({ method: "skills/list", id, params: { cwds: [this.opts.cwd], forceReload: false } }));
       });
     }
+    stopUsagePolling() {
+      this.usageEpoch++;
+      clearTimeout(this.usageTimer);
+      this.usageTimer = undefined;
+      const unsubscribe = this.usageUnsubscribe;
+      this.usageUnsubscribe = undefined;
+      try {
+        unsubscribe?.();
+      } catch {}
+      for (const [id, timer] of this.usageRequests) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+      }
+      this.usageRequests.clear();
+    }
+    startUsagePolling(link) {
+      this.stopUsagePolling();
+      if (!this.opts.onUsage || this.usageStopped)
+        return;
+      const epoch = this.usageEpoch;
+      const current = () => !this.usageStopped && this.usageEpoch === epoch && this.link === link && link.up.readyState === WebSocket.OPEN;
+      const schedule = () => {
+        if (!current())
+          return;
+        clearTimeout(this.usageTimer);
+        this.usageTimer = undefined;
+        let paused;
+        try {
+          paused = this.opts.usagePause?.current() === true;
+        } catch {
+          return;
+        }
+        this.usageTimer = setTimeout(() => {
+          if (!current())
+            return;
+          this.readUsage();
+          schedule();
+        }, paused ? PAUSED_USAGE_POLL_MS : this.opts.usagePollMs ?? 600000);
+        this.usageTimer.unref?.();
+      };
+      try {
+        this.usageUnsubscribe = this.opts.usagePause?.subscribe(schedule);
+      } catch {
+        return;
+      }
+      this.readUsage();
+      schedule();
+    }
     readUsage() {
-      const link = this.link;
-      if (!this.opts.onUsage || !link || link.up.readyState !== WebSocket.OPEN)
+      const link = this.link, epoch = this.usageEpoch;
+      if (this.usageStopped || !this.opts.onUsage || !link || link.up.readyState !== WebSocket.OPEN)
         return;
       const id = this.nextId--;
-      this.pending.set(id, { resolve: (result) => this.opts.onUsage?.(result?.rateLimits, false), reject: () => {} });
-      link.up.send(JSON.stringify({ method: "account/rateLimits/read", id }));
-      setTimeout(() => this.pending.delete(id), 30000).unref?.();
+      const finish = () => {
+        clearTimeout(this.usageRequests.get(id));
+        this.usageRequests.delete(id);
+      };
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        this.usageRequests.delete(id);
+      }, 30000);
+      timer.unref?.();
+      this.usageRequests.set(id, timer);
+      this.pending.set(id, { resolve: (result) => {
+        finish();
+        if (!this.usageStopped && this.link === link && this.usageEpoch === epoch)
+          this.opts.onUsage?.(codexQuotaWindowInput(result?.rateLimits), false, codexAccountUsage(result));
+      }, reject: finish });
+      try {
+        link.up.send(JSON.stringify({ method: "account/rateLimits/read", id }));
+      } catch {
+        finish();
+        this.pending.delete(id);
+      }
     }
     onNotification(link, method, params) {
       if (link === this.link && method === "account/rateLimits/updated")
-        return void this.opts.onUsage?.(params.rateLimits, false);
+        return void this.opts.onUsage?.(codexQuotaWindowInput(params.rateLimits), false);
       if (link === this.link && method === "error" && params.error?.codexErrorInfo === "usageLimitExceeded") {
         this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
       }
@@ -14341,7 +14524,7 @@ function isAdecRouteEndpoint(value) {
   const match = /^http:\/\/(127\.0\.0\.1|\[::1\])(?::([1-9][0-9]{0,4}))?\/v1\/route$/.exec(value);
   return !!match && (match[2] === undefined || Number(match[2]) <= 65535);
 }
-function record3(value, keys) {
+function record4(value, keys) {
   if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
     return;
   const own = Reflect.ownKeys(value);
@@ -14371,7 +14554,7 @@ function list(value, max) {
   return result;
 }
 function pair(value) {
-  const p = record3(value, ["alias", "effort"]);
+  const p = record4(value, ["alias", "effort"]);
   return p && token(p.alias, ALIAS) && token(p.effort, EFFORT) ? { alias: p.alias, effort: p.effort } : undefined;
 }
 function prepare2(value, allowed) {
@@ -14385,10 +14568,10 @@ function prepare2(value, allowed) {
       return;
     pairs.push(p);
   }
-  const r = record3(value, ["policyId", "turnId", "evidence", "constraints", "candidates"]);
+  const r = record4(value, ["policyId", "turnId", "evidence", "constraints", "candidates"]);
   if (!r || !token(r.policyId, POLICY) || !token(r.turnId, TURN) || typeof r.evidence !== "string" || r.evidence.length > BODY_BYTES)
     return;
-  const c = record3(r.constraints, ["contextTokens", "pii", "private", "explicit", "current"]);
+  const c = record4(r.constraints, ["contextTokens", "pii", "private", "explicit", "current"]);
   if (!c || typeof c.contextTokens !== "number" || !Number.isSafeInteger(c.contextTokens) || c.contextTokens < 0 || typeof c.pii !== "boolean" || typeof c.private !== "boolean")
     return;
   const constraints = { contextTokens: c.contextTokens, pii: c.pii, private: c.private };
@@ -14418,7 +14601,7 @@ function prepare2(value, allowed) {
   return Buffer.byteLength(body) <= BODY_BYTES ? { request, pairs, body } : undefined;
 }
 function decision(value, request, pairs) {
-  const d = record3(value, ["id", "policyId", "alias", "effort", "margin", "abstain", "reason", "fallbackApplied", "pinned", "rules", "estimatedCost", "decider", "error"]);
+  const d = record4(value, ["id", "policyId", "alias", "effort", "margin", "abstain", "reason", "fallbackApplied", "pinned", "rules", "estimatedCost", "decider", "error"]);
   if (!d || !token(d.id, /^[a-f0-9]{32}$/) || d.policyId !== request.policyId || !finite(d.margin) || d.margin > 1 || typeof d.abstain !== "boolean" || typeof d.fallbackApplied !== "boolean" || typeof d.pinned !== "boolean" || !REASONS.includes(d.reason) || d.error !== undefined && typeof d.error !== "string")
     return failure("malformed");
   const reason = d.reason, rules = list(d.rules, RULES.length);
@@ -14439,7 +14622,7 @@ function decision(value, request, pairs) {
   }
   let decider = null;
   if (d.decider !== null) {
-    const model = record3(d.decider, ["provider", "kind", "model", "version", "latencyMs"]);
+    const model = record4(d.decider, ["provider", "kind", "model", "version", "latencyMs"]);
     if (!model || !token(model.provider, PROVIDER) || !token(model.model, MODEL) || !finite(model.latencyMs) || model.kind !== undefined && model.kind !== "systemone" && model.kind !== "logits" || model.version !== undefined && (!token(model.version, MODEL) || /(^|-)latest$/i.test(model.version)))
       return failure("malformed");
     decider = {
@@ -15922,7 +16105,7 @@ function captureJudgeConversation(source) {
     let assistantTurns = 0, resultCount = 0;
     for (let index = 0;index < source.length; index++) {
       const raw = own2(source, String(index));
-      if (!record4(raw))
+      if (!record5(raw))
         throw unavailable;
       const role = own2(raw, "role"), content = own2(raw, "content");
       if (role !== "system" && role !== "developer" && role !== "user" && role !== "assistant" && role !== "tool")
@@ -15947,10 +16130,10 @@ function captureJudgeConversation(source) {
         message.tool_calls = [];
         for (let at = 0;at < calls.length; at++) {
           const call = own2(calls, String(at));
-          if (!record4(call))
+          if (!record5(call))
             throw unavailable;
           const fn = own2(call, "function");
-          if (!record4(fn))
+          if (!record5(fn))
             throw unavailable;
           charge(32);
           const copied = {
@@ -15990,7 +16173,7 @@ function captureJudgeConversation(source) {
     return;
   }
 }
-function record4(value) {
+function record5(value) {
   if (!value || typeof value !== "object" || types4.isProxy(value) || Array.isArray(value))
     return false;
   const prototype = Object.getPrototypeOf(value);
@@ -16012,7 +16195,7 @@ function own2(value, key) {
 }
 function captureRouteView(source) {
   try {
-    const messages = array(source) ? source : record4(source) ? own2(source, "messages") : undefined;
+    const messages = array(source) ? source : record5(source) ? own2(source, "messages") : undefined;
     if (!array(messages))
       return;
     let calls = 0, parts = 0, turnSeen = false;
@@ -16024,7 +16207,7 @@ function captureRouteView(source) {
         throw unavailable;
       for (let index = 0;index < value.length && parts < PARTS; index++, parts++) {
         const part = own2(value, String(index));
-        if (!record4(part))
+        if (!record5(part))
           throw unavailable;
         own2(part, "type");
         own2(part, "text");
@@ -16032,7 +16215,7 @@ function captureRouteView(source) {
     };
     for (let index = messages.length - 1;index >= Math.max(0, messages.length - MESSAGES); index--) {
       const message = own2(messages, String(index));
-      if (!record4(message))
+      if (!record5(message))
         throw unavailable;
       const role = own2(message, "role");
       if (role === "system" || role === "developer")
@@ -16051,12 +16234,12 @@ function captureRouteView(source) {
         if (array(entries))
           for (let at = entries.length - 1;at >= 0 && calls < CALLS; at--, calls++) {
             const call = own2(entries, String(at));
-            if (!record4(call))
+            if (!record5(call))
               throw unavailable;
             own2(call, "id");
             const fn = own2(call, "function");
             if (fn !== undefined && fn !== null) {
-              if (!record4(fn))
+              if (!record5(fn))
                 throw unavailable;
               own2(fn, "name");
             }
@@ -18950,12 +19133,12 @@ function agyModel(value) {
   return model !== undefined && model.toLowerCase() !== "unknown" ? model : undefined;
 }
 function decodeAgyHook(event, value) {
-  if (!EVENTS2.includes(event) || !record5(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute7(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute7(path)))
+  if (!EVENTS2.includes(event) || !record6(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute7(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute7(path)))
     return;
   if (event === "Stop" && typeof value.fullyIdle !== "boolean")
     return;
-  const call = record5(value.toolCall) ? value.toolCall : undefined;
-  if ((event === "PreToolUse" || event === "PostToolUse") && (!call || typeof call.name !== "string" || call.name.length > 128 || !record5(call.args)))
+  const call = record6(value.toolCall) ? value.toolCall : undefined;
+  if ((event === "PreToolUse" || event === "PostToolUse") && (!call || typeof call.name !== "string" || call.name.length > 128 || !record6(call.args)))
     return;
   const native = call?.args;
   const readPath = call?.name === "view_file" ? native?.AbsolutePath : call?.name === "read_file" ? native?.Path : undefined;
@@ -19061,7 +19244,7 @@ function readAgyTranscript(session, transcript, options) {
         } catch {
           continue;
         }
-        if (!record5(row) || row.status !== "DONE")
+        if (!record6(row) || row.status !== "DONE")
           continue;
         if (row.source === "SYSTEM_SDK" && (row.type === "EPHEMERAL_MESSAGE" || row.type === "SYSTEM_MESSAGE") && typeof row.content === "string") {
           for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g))
@@ -19089,7 +19272,7 @@ function readAgyTranscript(session, transcript, options) {
       closeSync9(fd);
   }
 }
-var EVENTS2, UUID2, record5 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
+var EVENTS2, UUID2, record6 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
 var init_hooks2 = __esm(() => {
   EVENTS2 = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"];
   UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -20692,41 +20875,13 @@ var init_native_recovery = __esm(() => {
   };
 });
 
-// src/adapters/definitions/native-quota.ts
-function codexWindows(rateLimits) {
-  const out = [];
-  for (const [w, slot] of [[rateLimits?.primary, "5h"], [rateLimits?.secondary, "week"]]) {
-    if (!w || typeof w.usedPercent !== "number")
-      continue;
-    const mins = typeof w.windowDurationMins === "number" ? w.windowDurationMins : undefined;
-    const id = mins === undefined ? slot : mins > 600 ? "week" : "5h";
-    if (out.some((o) => o.id === id))
-      continue;
-    out.push({ id, used: w.usedPercent / 100, ...w.resetsAt ? { resetsAt: w.resetsAt * 1000 } : {}, ...mins ? { windowMins: mins } : {}, source: "codex rateLimits" });
-  }
-  if (rateLimits?.rateLimitReachedType && !out.some((w) => w.used >= 1))
-    out.push({ id: "5h", used: 1, source: `codex ${rateLimits.rateLimitReachedType}` });
-  return out;
-}
-function claudeWindows(rateLimits) {
-  const out = [];
-  for (const [key, id, mins] of [["five_hour", "5h", 300], ["seven_day", "week", 10080]]) {
-    const w = rateLimits?.[key];
-    if (!w || typeof w.used_percentage !== "number")
-      continue;
-    const resets = Number(w.resets_at);
-    out.push({ id, used: w.used_percentage / 100, ...resets ? { resetsAt: resets < 1000000000000 ? resets * 1000 : resets } : {}, windowMins: mins, source: "claude status line" });
-  }
-  return out;
-}
-
 // src/adapters/kimi-tui-facts.ts
 import { closeSync as closeSync13, constants as constants10, fstatSync as fstatSync11, lstatSync as lstatSync20, openSync as openSync13, readSync as readSync9, readdirSync as readdirSync5 } from "fs";
 import { createHash as createHash12 } from "crypto";
 import { basename as basename6, dirname as dirname15, isAbsolute as isAbsolute10, join as join31, relative as relative6 } from "path";
 import { homedir as homedir9 } from "os";
 function decodeKimiTuiHook(event, value) {
-  if (!EVENTS4.includes(event) || !record6(value) || value.hook_event_name !== event || value.client_type !== "kimi_code_cli" || typeof value.session_id !== "string" || !SESSION.test(value.session_id) || typeof value.cwd !== "string" || !isAbsolute10(value.cwd) || value.cwd.length > 4096)
+  if (!EVENTS4.includes(event) || !record7(value) || value.hook_event_name !== event || value.client_type !== "kimi_code_cli" || typeof value.session_id !== "string" || !SESSION.test(value.session_id) || typeof value.cwd !== "string" || !isAbsolute10(value.cwd) || value.cwd.length > 4096)
     return;
   if ((event === "TurnStarted" || event === "Interrupt") && !integer2(value.turn_id))
     return;
@@ -20778,7 +20933,7 @@ function sessionDirectory(index, session) {
     } catch {
       continue;
     }
-    if (record6(row) && row.sessionId === session && typeof row.sessionDir === "string") {
+    if (record7(row) && row.sessionId === session && typeof row.sessionDir === "string") {
       if (listed)
         throw new Error("duplicate session");
       listed = row.sessionDir;
@@ -20814,7 +20969,7 @@ function taskInventory(agents) {
       if (!TASK.test(name.slice(0, -5)))
         throw new Error("invalid task name");
       const row = JSON.parse(readBytes(join31(tasks, name), TASK_CAP).toString("utf8"));
-      if (!record6(row) || row.taskId !== name.slice(0, -5) || typeof row.status !== "string")
+      if (!record7(row) || row.taskId !== name.slice(0, -5) || typeof row.status !== "string")
         throw new Error("invalid task");
       if (row.status === "running" && row.endedAt === null) {
         active++;
@@ -20856,9 +21011,9 @@ function readKimiTuiTranscript(session, index) {
       } catch {
         return empty();
       }
-      if (!record6(row))
+      if (!record7(row))
         return empty();
-      if (row.type === "turn.prompt" && integer2(row.turnId) && record6(row.origin) && typeof row.origin.kind === "string") {
+      if (row.type === "turn.prompt" && integer2(row.turnId) && record7(row.origin) && typeof row.origin.kind === "string") {
         const turn = row.turnId, id = typeof row.promptId === "string" ? row.promptId : typeof row.origin.notificationId === "string" ? row.origin.notificationId : `turn-${turn}`;
         const prompt = { turn, id, origin: row.origin.kind };
         prompts.set(turn, prompt);
@@ -20898,7 +21053,7 @@ function readKimiTuiTranscript(session, index) {
     return empty();
   }
 }
-var EVENTS4, SESSION, AGENT, TASK, INDEX_CAP, WIRE_CAP, TASK_CAP, MAX_AGENTS = 256, MAX_TASKS = 256, record6 = (value) => !!value && typeof value === "object" && !Array.isArray(value), integer2 = (value) => Number.isSafeInteger(value) && value >= 0, inside2 = (root, path) => {
+var EVENTS4, SESSION, AGENT, TASK, INDEX_CAP, WIRE_CAP, TASK_CAP, MAX_AGENTS = 256, MAX_TASKS = 256, record7 = (value) => !!value && typeof value === "object" && !Array.isArray(value), integer2 = (value) => Number.isSafeInteger(value) && value >= 0, inside2 = (root, path) => {
   const rel = relative6(root, path);
   return rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute10(rel);
 }, empty = () => ({ factIds: [] }), KIMI_TUI_FACTS_HOOK;
@@ -20942,6 +21097,7 @@ var init_builtin_metadata = __esm(() => {
   init_native_factories();
   init_native_display();
   init_native_recovery();
+  init_native_quota();
   init_kimi_tui_facts();
   switches = Object.freeze(["--unattended", "--safe", "--new"]);
   implementerRoles = Object.freeze(["implementer", "verifier"]);
