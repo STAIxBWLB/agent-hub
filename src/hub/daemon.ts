@@ -10364,6 +10364,11 @@ export async function startDaemon(opts: DaemonOptions) {
       try { return await reloadConfig(authority, key); } finally { structuralScopes.delete(key); }
     },
     event: entry => event(entry),
+    conductor: () => {
+      const peer = conductorPeer(config.roles);
+      return peer && !turns.get(peer)?.private && !contextPii(peer) && !reviewObserverHeld(peer) ? peer : undefined;
+    },
+    recordSdlcInstruction: (by, paths) => event({ type: "sdlc_config_instruction", by, paths, instructionClaim: "person_direct_instruction" }),
     notify: text => notify(text),
     changed: () => writeStatus(),
     pending: () => pendingRestart,
@@ -12138,6 +12143,27 @@ export async function startDaemon(opts: DaemonOptions) {
             result => reply({ ok: true, ...result }),
             (error: Error) => reply({ ok: false, error: sanitize(error.message).slice(0, 200) }),
           );
+          return;
+        }
+        if (msg.op === "configure") {
+          const asker = c.role === "console" ? USER : c.role === "tools" && c.peer && conductorPeer(config.roles) === c.peer && !c.toolsOwner && !turns.get(c.peer)?.private && !contextPii(c.peer) ? c.peer : undefined;
+          if (!asker) return void reply({ ok: false, error: "only the console user or current configured conductor may configure SDLC" });
+          if (Object.keys(msg).some(key => !["t", "rid", "op", "mode", "required_checks", "instructionClaim"].includes(key)))
+            return void reply({ ok: false, error: "sdlc configure accepts only mode and required_checks; protected settings remain person-only" });
+          const externalOwner = c.externalOwner;
+          const session = c.role === "console" ? () => { if (sock.data !== c || sock.readyState !== WebSocket.OPEN || c.role !== "console") throw new Error("person session changed; reconnect before configuring SDLC"); } : operationalCurrent(sock);
+          const current = () => {
+            session();
+            if (c.toolsOwner || c.externalOwner !== externalOwner || externalOwner && !currentExternalTools(c, true)) throw new Error("SDLC caller or execution root changed; reconnect before configuring");
+            session();
+            if (asker !== USER && (c.peer !== asker || conductorPeer(config.roles) !== asker || turns.get(asker)?.private || contextPii(asker) || reviewObserverHeld(asker) || reviewObserverInput(asker)))
+              throw new Error("SDLC configuration unavailable for private, observer or changed conductor input");
+            if (stopping || recoveryActive() || bus.isRecoveryHeld) throw new Error("recovery or shutdown holds SDLC configuration; retry after release");
+          };
+          try { current(); } catch { return void reply({ ok: false, error: "SDLC configuration authority unavailable; reconnect in a public current conductor session" }); }
+          taskOpsInFlight++;
+          void configEditor!.configureSdlc(asker, { ...(Object.hasOwn(msg, "mode") ? { mode: msg.mode } : {}), ...(Object.hasOwn(msg, "required_checks") ? { required_checks: msg.required_checks } : {}), instructionClaim: msg.instructionClaim }, current)
+            .then(reply, () => reply({ ok: false, error: "SDLC configuration could not be completed; inspect the file and event log before retrying" })).finally(() => { taskOpsInFlight--; });
           return;
         }
         if (msg.op === "authorize-release") {

@@ -40,7 +40,8 @@ export type HubEvent =
   /** A settings change (#269): the registry key, the bounded registry values before/after and their source; an optional person reason is sanitized and capped at 400 UTF-8 bytes. */
   | { type: "settings"; key: string; from: import("./settings.ts").SettingValue; to: import("./settings.ts").SettingValue; source: "dashboard" | "terminal" | "conductor"; peer?: string; undo?: boolean; reason?: string }
   /** A structural config edit (#689): the file, key paths with short hashes of their values before and after (never a value), the file revisions and the person who made it. */
-  | { type: "config_edit"; file: "config.local.json" | "sdlc.toml"; paths: { path: string; before: string | null; after: string | null }[]; fileBefore: string; fileAfter: string; tier: 2 | 3; by: "person"; source: "dashboard" | "terminal"; backup?: string; reason?: string }
+  | { type: "config_edit"; file: "config.local.json" | "sdlc.toml"; paths: { path: string; before: string | null; after: string | null }[]; fileBefore: string; fileAfter: string; tier: 2 | 3; by: string; source: "dashboard" | "terminal" | "conductor"; backup?: string; reason?: string; instructionClaim?: "person_direct_instruction" }
+  | { type: "sdlc_config_instruction"; by: string; paths: string[]; instructionClaim: "person_direct_instruction" }
   /** #445 C2: an invocation's ids, class and outcome. Never an argument, a result or a description. */
   | { type: "invocation"; id: string; caller: string; target: string; capability: string; class: string; outcome: string; task?: number; bytes?: number }
   /** `origin` (#604 PR B): the sending connection's role, peer and launch or instance id. Never a path or text; absent for an envelope the hub itself wrote. */

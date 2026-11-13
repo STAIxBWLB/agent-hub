@@ -138,7 +138,7 @@ import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp, guidanceProbeUsage, listsSubcommand, subcommandUsage } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
-import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit } from "./sdlc-output.ts";
+import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit, renderSdlcConfiguration } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
@@ -387,7 +387,7 @@ function showToolText(render: (data: any, columns?: number, now?: number) => Spa
   if (present.json) return console.log(text);
   printOutput(render(data, present.columns, Date.now()), present.color);
 }
-const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release", "audit"];
+const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release", "audit", "configure"];
 function sdlcOperands(): string[] { return SDLC_READ.includes(args[0] ?? "") ? outputArguments() : args; }
 function printOutput(lines: Span[][], color: boolean): void {
   for (const line of lines) console.log(paint(line, color));
@@ -1926,6 +1926,22 @@ const commands: Record<string, () => Promise<void> | void> = {
     /** The human form (#814). Each site keeps its own `if (present.json) console.log(JSON.stringify(...))`, so the JSON branch stays visible to the guard test. */
     const human = (render: (data: any, columns?: number, now?: number) => Span[][], data: unknown) => printOutput(render(data, present!.columns, Date.now()), present!.color);
     const sub = args[0], id = args[1] === undefined ? undefined : Number(args[1]);
+    if (sub === "configure") {
+      const parsed = takeFlags(args.slice(1), ["--mode", "--required-checks"], []);
+      if (parsed.rest.length || !Object.keys(parsed.one).length || ["--mode", "--required-checks"].some(flag => args.filter(arg => arg === flag).length > 1)
+        || parsed.one["--mode"] !== undefined && !["off", "advise"].includes(parsed.one["--mode"]))
+        fail("usage: ahub sdlc configure [--mode off|advise] [--required-checks check,lint]");
+      const hub = await connect();
+      try {
+        const result = await hub.request({ t: "sdlc", op: "configure", instructionClaim: true,
+          ...(parsed.one["--mode"] === undefined ? {} : { mode: parsed.one["--mode"] }),
+          ...(parsed.one["--required-checks"] === undefined ? {} : { required_checks: parsed.one["--required-checks"] === "" ? [] : parsed.one["--required-checks"].split(",").map(name => name.trim()) }) });
+        if (!result.ok) fail(/unknown SDLC operation|does not know/.test(String(result.error)) ? "running hub does not support instructed SDLC configuration; upgrade and restart it first" : result.error);
+        const { rid: _transportId, ...receipt } = result;
+        if (present!.json) console.log(JSON.stringify(receipt, null, 2)); else human(renderSdlcConfiguration, receipt);
+      } finally { hub.close(); }
+      return;
+    }
     if (sub === "authorize-release") {
       if (args.length !== 2 || !validReleaseVersion(args[1])) fail("usage: ahub sdlc authorize-release <version>");
       const result = hubGitSync(["rev-parse", "--verify", "HEAD"], { cwd, env: hubGitEnv(process.env, { repositoryIsolation: true }), encoding: "utf8", timeout: 2000 });

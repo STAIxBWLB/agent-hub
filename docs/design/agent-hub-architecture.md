@@ -52,6 +52,16 @@ id and cannot release observer provenance or establish execution isolation. A
 person takeover detaches ownership without terminating the process, and normal
 delivery uncertainty remains independent ([#1174](https://github.com/STAIxBWLB/agent-hub/issues/1174)).
 
+The cooperative instruction boundary also permits the unique conductor to stage
+only off/advise and required check names through `ahub sdlc configure` after
+initialization. The host rechecks its authenticated session, role, privacy and
+recovery context, requires durable instruction intent before the existing
+validated write and backup, and records the actual actor with value hashes.
+The file takes effect at the next start. Initialization, generic settings editing,
+enforce and protected lifecycle settings remain person-only; no release consent
+follows from the configuration claim. See [the narrow SDLC configuration
+contract](../sdlc.md#instructed-conductor-configuration-1432).
+
 ## Console presentation surfaces
 
 The floating pet belongs to acon Mini (#1012). The compatibility command

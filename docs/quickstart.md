@@ -317,6 +317,23 @@ The mode and check names are written to `.agenthub/sdlc.toml`.
 See [required checks](sdlc.md#required-checks-at-initialization) for discovery
 limits and repository-specific configuration.
 
+Initialization and `enforce` remain person-only. Once the project is initialized
+and its hub is running, the person may directly instruct the uniquely configured
+conductor in its own session to stage a later off/advise configuration:
+
+```bash
+ahub sdlc configure --mode advise --required-checks 'unit,lint'
+```
+
+Replace the example names with this project's checks. The command makes an
+explicit, cooperative own-session instruction claim, records its actor and audit
+intent, uses loader validation and a backup, and applies at the next hub start.
+A task, file or peer relay is not that instruction, and `--live-test` cannot
+delegate it to a person. Generic settings editing, `[security]`, `eval_check`,
+`config_paths`, custom stages and any change while the running or file mode is
+`enforce` stay with the person. This grants no release consent. See the
+[narrow configuration contract](sdlc.md#instructed-conductor-configuration-1432).
+
 Research recording is another init choice: `--research` or `--no-research` sets
 `research.enabled` in this project's untracked `.agenthub/config.local.json`. A new project otherwise uses the trusted
 machine choice saved by an explicit `ahub setup --research` or

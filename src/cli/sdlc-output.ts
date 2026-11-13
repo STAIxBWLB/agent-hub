@@ -5,6 +5,16 @@
 import { duration, plural, relative, table, terminalText, wrap, type Span, type Tone } from "./console-state.ts";
 
 type Line = Span[];
+/** Configuration remains restart-bound; the claim is caller provenance, not inferred release consent. */
+export function renderSdlcConfiguration(value: unknown, columns?: number): Span[][] {
+  const row = value as any;
+  const out = heading(list(row?.restartPending).length ? "SDLC configuration saved; restart pending" : "SDLC configuration saved", columns);
+  out.push(...pair("actor", row?.by ?? "unknown", columns, 12));
+  out.push(...pair("instruction", "person's explicit instruction claimed for this session", columns, 12));
+  for (const line of list(row?.lines)) out.push(...para(String(line), columns));
+  if (row?.backup) out.push(...pair("backup", row.backup, columns, 12));
+  return out;
+}
 export const s = (value: unknown, tone?: Tone): Span => ({ text: terminalText(value).replace(/[\n\t]/g, " "), ...(tone ? { tone } : {}) });
 const room = (columns?: number) => columns ?? Infinity;
 const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
