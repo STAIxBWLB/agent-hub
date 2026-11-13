@@ -1,5 +1,6 @@
 import { constants, closeSync, fstatSync, linkSync, mkdtempSync, openSync, readSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { format } from "node:util";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { looksSecret } from "@staix/agent-mem";
@@ -38,16 +39,19 @@ function publish(capture: Capture, exitCode: number, firstLine: string, complete
 /** Preloaded only in the hub CLI child, not its native child. TTY descriptors/properties stay unchanged. */
 export function captureLaunchExit(capture: Capture): void {
   let first = Buffer.alloc(0), complete = false;
+  const collect = (bytes: Buffer) => {
+    if (complete || first.length >= CAPTURE_BYTES) return;
+    const newline = bytes.indexOf(10), end = newline < 0 ? bytes.length : newline;
+    const remaining = CAPTURE_BYTES - first.length;
+    first = Buffer.concat([first, bytes.subarray(0, Math.min(end, remaining))]);
+    complete = newline >= 0 && end <= remaining;
+  };
+  // Bun's console writes directly to the descriptor, bypassing stderr.write.
+  const error = console.error.bind(console);
+  console.error = (...args: any[]) => { try { collect(Buffer.from(format(...args) + "\n")); } catch { /* original console behavior below */ } error(...args); };
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = function(chunk: any, ...args: any[]) {
-    if (!complete && first.length < CAPTURE_BYTES) {
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk instanceof Uint8Array ? chunk : String(chunk));
-      const newline = bytes.indexOf(10);
-      const end = newline < 0 ? bytes.length : newline;
-      const remaining = CAPTURE_BYTES - first.length;
-      first = Buffer.concat([first, bytes.subarray(0, Math.min(end, remaining))]);
-      complete = newline >= 0 && end <= remaining;
-    }
+    collect(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk instanceof Uint8Array ? chunk : String(chunk)));
     return (write as (...parts: any[]) => boolean)(chunk, ...args);
   } as typeof process.stderr.write;
   process.once("exit", code => publish(capture, code, first.toString("utf8"), complete));
@@ -93,21 +97,17 @@ export function prepareRecoveryLaunch(stateDir: string, peer: string, argv: read
   const module = fileURLToPath(import.meta.url), preload = join(dir, "capture.ts");
   try {
     writeFileSync(preload, `import { captureLaunchExit } from ${JSON.stringify(module)}; captureLaunchExit(${JSON.stringify(capture)});\n`, { flag: "wx", mode: 0o600 });
-    const command = ["env", ...Object.entries(env).map(([key, value]) => `${key}=${value}`), process.execPath, module, JSON.stringify(capture), preload, "--", ...argv].map(shellQuote).join(" ");
+    const prefix = ["env", ...Object.entries(env).map(([key, value]) => `${key}=${value}`)];
+    const launch = [...prefix, argv[0]!, "--preload", preload, ...argv.slice(1)].map(shellQuote).join(" ");
+    const record = [...prefix, process.execPath, module, JSON.stringify(capture), "--exit-code"].map(shellQuote).join(" ");
+    // A shell status observation adds no long-lived proxy or pipe to the native TTY.
+    const command = `${launch}; ahub_restore_exit=$?; if [ "$ahub_restore_exit" -ne 0 ]; then ${record} "$ahub_restore_exit"; fi; (exit "$ahub_restore_exit")`;
     return { command, read: () => readOutcome(capture, cwd), dispose: () => rmSync(dir, { recursive: true, force: true }) };
   } catch (error) { rmSync(dir, { recursive: true, force: true }); throw error; }
 }
 
 if (import.meta.main) {
-  const [raw, preload, separator, executable, ...argv] = process.argv.slice(2);
-  if (!raw || !preload || separator !== "--" || !executable) throw new Error("invalid private restoration launch");
-  const capture = JSON.parse(raw) as Capture;
-  let code = 1;
-  try {
-    // No pipe/tee/PTY substitution: native programs inherit the person's original terminal descriptors.
-    const child = Bun.spawn([executable, "--preload", preload, ...argv], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    code = await child.exited;
-  } catch { /* A spawn refusal still has a positive typed exit observation. */ }
-  publish(capture, code, "", false); // fallback for exec/signal/old CLI failures with no JS refusal line
-  process.exit(code);
+  const [raw, marker, status] = process.argv.slice(2);
+  if (!raw || marker !== "--exit-code" || !status || !/^[0-9]+$/.test(status)) throw new Error("invalid private restoration launch outcome");
+  publish(JSON.parse(raw) as Capture, Number(status), "", false);
 }

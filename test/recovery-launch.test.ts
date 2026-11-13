@@ -23,7 +23,7 @@ test("#1426 AC2 a rejected launch blocks before MAX_WAIT_MS even while the shell
 });
 
 import { prepareRecoveryLaunch } from "../src/cli/recovery-launch.ts";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,7 +34,7 @@ for (const peer of ["pi", "codex"]) test(`#1426 ${peer}: private launcher captur
     writeFileSync(fake, 'console.error("ahub: Version not verified: Pi 1.5.2"); process.exit(1);');
     const first = prepareRecoveryLaunch(state, peer, [process.execPath, fake], {}, state);
     try {
-      const child = Bun.spawn(["/bin/sh", "-c", first.command], { cwd: state, stdout: "pipe", stderr: "pipe" });
+      const child = Bun.spawn(["/bin/sh", "-c", first.command], { cwd: state, env: { ...process.env, HOME: state, AGENTHUB_HOME: state, AMEM_HOME: join(state, "amem"), CODEX_HOME: state, CLAUDE_CONFIG_DIR: state }, stdout: "pipe", stderr: "pipe" });
       const [code, stderr] = await Promise.all([child.exited, child.stderr.text()]);
       expect(code).toBe(1); expect(stderr).toContain("Version not verified:");
       expect(first.read()).toMatchObject({ code: "version_refused", exitCode: 1, firstLine: "ahub: Version not verified: Pi 1.5.2" });
@@ -42,7 +42,7 @@ for (const peer of ["pi", "codex"]) test(`#1426 ${peer}: private launcher captur
     writeFileSync(fake, 'console.log("ready");');
     const second = prepareRecoveryLaunch(state, peer, [process.execPath, fake], {}, state);
     try {
-      const child = Bun.spawn(["/bin/sh", "-c", second.command], { cwd: state, stdout: "pipe", stderr: "pipe" });
+      const child = Bun.spawn(["/bin/sh", "-c", second.command], { cwd: state, env: { ...process.env, HOME: state, AGENTHUB_HOME: state, AMEM_HOME: join(state, "amem"), CODEX_HOME: state, CLAUDE_CONFIG_DIR: state }, stdout: "pipe", stderr: "pipe" });
       expect(await child.exited).toBe(0);
       expect(second.read()).toBeUndefined();
     } finally { second.dispose(); }
@@ -52,6 +52,8 @@ for (const peer of ["pi", "codex"]) test(`#1426 ${peer}: private launcher captur
 
 test("#1426 outcome matching and privacy fail closed without revealing stderr", async () => {
   const state = mkdtempSync(join(tmpdir(), "ahub-launch-private-"));
+  mkdirSync(join(state, ".agenthub"));
+  writeFileSync(join(state, ".agenthub/routing.toml"), '[signals]\npii_patterns = ["900101"]\n');
   try {
     const fake = join(state, "fake.ts");
     writeFileSync(fake, 'console.error("patient 900101-1234567 refused"); process.exit(7);');
@@ -63,7 +65,7 @@ test("#1426 outcome matching and privacy fail closed without revealing stderr", 
       writeFileSync(payload.file, JSON.stringify({ schemaVersion: 1, nonce: "stale-attempt", peer: "pi", exitCode: 7, firstLine: "canary", complete: true }));
       expect(capture.read()).toBeUndefined();
       rmSync(payload.file);
-      const child = Bun.spawn(["/bin/sh", "-c", capture.command], { cwd: state, stdout: "pipe", stderr: "pipe" });
+      const child = Bun.spawn(["/bin/sh", "-c", capture.command], { cwd: state, env: { ...process.env, HOME: state, AGENTHUB_HOME: state, AMEM_HOME: join(state, "amem"), CODEX_HOME: state, CLAUDE_CONFIG_DIR: state }, stdout: "pipe", stderr: "pipe" });
       await Promise.all([child.exited, child.stdout.text(), child.stderr.text()]);
       const outcome = capture.read();
       expect(outcome?.code).toBe("launch_exit"); expect(outcome?.exitCode).toBe(7);

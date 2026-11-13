@@ -767,6 +767,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const committed = op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase));
       if (!committed) {
         for (const planned of op.plan.projects) {
+          if (typeof planned.project?.root !== "string" || !Array.isArray(planned.source?.peers)) continue;
           const gates = recoveryVersionGates(planned, peer => projectDefinition(peer, planned.project.root), configuredCommands(loadConfig(planned.project.root)));
           const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => packageDigest(target.root, { ownDependencies: true }) === target.digest });
           const failures = rows.filter(row => row.state !== "accepted");
