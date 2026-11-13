@@ -127,6 +127,7 @@ test("the daemon runs the headless reviewer: review-only delivery, a fresh verdi
   const console_ = await connect({ role: "console" });
   expect(await console_.request({ t: "start", peer: "claude-review" })).toMatchObject({ ok: true });
   expect(daemon.bus.stateOf("claude-review")).toBe("idle");
+  expect(await console_.request({ t: "budget", set: { peer: "claude-review", used: 0.1, resetsInMs: 600_000 } })).toMatchObject({ ok: true });
   expect((await connect({ role: "peer", peer: "claude-review", channel: true }).catch((e: Error) => e)) instanceof Error).toBe(true);
   const builder = await connect({ role: "peer", peer: "builder", channel: true });
   await until(() => daemon.bus.stateOf("builder") === "idle");

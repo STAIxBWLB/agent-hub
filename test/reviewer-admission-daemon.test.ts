@@ -49,6 +49,7 @@ exec ${quote(process.execPath)} ${quote(fake)} "$@"
   const connect = async (hello: Parameters<typeof ControlClient.connect>[1]) => { const client = await ControlClient.connect(stateDir, hello); cleanup.push(() => client.close()); return client; };
   const person = await connect({ role: "console" });
   expect(await person.request({ t: "start", peer: "codex-review" })).toMatchObject({ ok: true });
+  expect(await person.request({ t: "budget", set: { peer: "codex-review", used: 0.1, resetsInMs: 600_000 } })).toMatchObject({ ok: true });
   const reviewer = daemon.bus.peers.get("codex-review") as ReviewerPrintPeer;
   const builder = await connect({ role: "peer", peer: "builder", channel: true });
   await connect({ role: "peer", peer: "inspector", channel: true });
