@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HELP, helpCommands, renderHelp } from "../src/cli/help.ts";
+import { HELP, helpCommands, listsSubcommand, renderHelp } from "../src/cli/help.ts";
 import { initialConsoleState, paint, PALETTE, renderConsole, wrap } from "../src/cli/console-state.ts";
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
@@ -97,6 +97,27 @@ describe("ahub help (#212)", () => {
     }
     // Inside other arguments it is text: say goes on to send it (here it fails for want of a hub, not with help).
     const said = await cli(["say", "@codex", "try", "ls", "-h", "first"]);
+    expect(said.code).not.toBe(0);
+    expect(said.stdout).toBe("");
+  }, 20_000);
+
+  test("#1433 ahub <command> <sub> -h prints the command's help; a propose title that is an unknown flag is refused before filing", async () => {
+    expect(listsSubcommand("task", "propose")).toBe(true);
+    expect(listsSubcommand("task", "escalate")).toBe(true);
+    expect(listsSubcommand("say", "hello")).toBe(false);
+    expect(listsSubcommand("task", "--help")).toBe(false);
+    for (const flag of ["--help", "-h"]) expect(await cli(["task", "propose", flag])).toEqual({ code: 0, stdout: `${renderHelp(80, false, "task")}\n`, stderr: "" });
+    // No hub runs here, so reaching the board would fail on connect; the refusal comes first and names the flag and the usage.
+    for (const args of [["task", "propose", "--frobnicate", "fix", "it"], ["task", "propose", "fix", "-h", "now"]]) {
+      const refused = await cli(args);
+      expect(refused.code).toBe(1);
+      expect(refused.stdout).toBe("");
+      expect(refused.stderr).toContain("unknown option");
+      expect(refused.stderr).toContain("nothing was filed");
+      expect(refused.stderr).toContain("Usage: ahub task propose");
+    }
+    // A free-text word followed by -h is still text: say goes on to send it (and fails here for want of a hub, not with help).
+    const said = await cli(["say", "hello", "-h"]);
     expect(said.code).not.toBe(0);
     expect(said.stdout).toBe("");
   }, 20_000);

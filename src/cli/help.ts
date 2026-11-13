@@ -251,6 +251,13 @@ export function renderHelp(columns: number, color: boolean, command?: string, de
   return lines.map(line => paint(line, color)).join("\n");
 }
 
+/** #1433: whether the help lists `ahub <command> <sub>`, so `ahub <command> <sub> --help` asks for help instead of running it (a free-text word is never a listed subcommand). */
+export function listsSubcommand(command: string, sub: string): boolean {
+  if (!/^[a-z][a-z0-9-]*$/.test(sub)) return false;
+  return HELP.some(entry => helpCommands(entry).includes(command)
+    && entry.usage.split("|").some(piece => piece.trim().replace(`ahub ${command} `, "").split(" ")[0] === sub));
+}
+
 /** Body-free configured command guidance; no native argv or environment values enter help. */
 export function configuredAcpHelp(kind: string): string {
   return `ahub ${kind} [--mode headless] [--as <instance>] [--session-id <id>] [--print-command | --dry-run]\nConfigured ACP runs headless through the hub, with native permissions and NO hub sandbox.\nDeclare it in untracked .agenthub/config.local.json, restart the hub, then enable roster.${kind}.\nPreview withholds native argv and starts nothing. Native/model overrides and --unattended are refused.`;

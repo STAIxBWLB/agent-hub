@@ -133,7 +133,7 @@ import { installedVersions } from "./console-versions.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
-import { renderHelp, configuredAcpHelp, guidanceProbeUsage } from "./help.ts";
+import { renderHelp, configuredAcpHelp, guidanceProbeUsage, listsSubcommand } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
 import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
@@ -224,10 +224,12 @@ try {
   } else nativeSelection = instanceLaunchArguments(given, rest, declaredInstances);
 } catch (error) { fail(startupDiagnostic(error)); }
 const selectedInstance = nativeSelection.instance;
-// `ahub <command> -h` alone asks for that command's help instead of running it. Elsewhere `-h` may be message text
-// (`ahub say try ls -h`), and claude and codex pass their arguments on to the agent.
+// `ahub <command> -h` alone asks for that command's help instead of running it, and so does `ahub <command> <sub> -h` for a
+// subcommand the help lists (#1433). Elsewhere `-h` may be message text (`ahub say try ls -h`), and claude and codex pass
+// their arguments on to the agent.
 const asksHelp = (a: string | undefined) => a === "--help" || a === "-h";
-const cmd = asksHelp(given) || (definitionOf(given)?.start.passthrough !== true && nativeSelection.args.length === 1 && asksHelp(nativeSelection.args[0])) ? "help" : given;
+const subcommandHelp = nativeSelection.args.length === 2 && asksHelp(nativeSelection.args[1]) && !!given && listsSubcommand(given, nativeSelection.args[0]!);
+const cmd = asksHelp(given) || (definitionOf(given)?.start.passthrough !== true && (nativeSelection.args.length === 1 && asksHelp(nativeSelection.args[0]) || subcommandHelp)) ? "help" : given;
 const args = cmd === "help" && given !== "help" && !asksHelp(given) ? [given] : nativeSelection.args;
 
 /** Resolve a named peer only against this project's current trusted declarations. */
@@ -2145,6 +2147,9 @@ const commands: Record<string, () => Promise<void> | void> = {
     const urgent = rest.includes("--urgent"), backlog = rest.includes("--backlog"), needsNetwork = rest.includes("--needs-network"), needsWorktree = rest.includes("--needs-worktree");
     const flags = takeFlags(rest.filter((a) => a !== "--urgent" && a !== "--backlog" && a !== "--needs-network" && a !== "--needs-worktree"), ["--owner", "--detail", "--class"], ["--path", "--after"]);
     const positional = !flags.one["--class"] && ((CLASSES as readonly string[]).includes(flags.rest[0] ?? "") || Object.hasOwn((() => { const config = projectConfig(); return resolveProfile(config.profile, config.profile_overrides); })().classes, flags.rest[0] ?? "")) && flags.rest.length > 1;
+    // #1433: a title word that is a flag the command does not know (or -h) is refused before anything is filed: `--help` once became a task's title.
+    const unknownFlag = flags.rest.find(word => word.startsWith("--") || word === "-h");
+    if (unknownFlag) fail(`unknown option ${JSON.stringify(unknownFlag)} for ahub task propose; nothing was filed. Usage: ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--detail <text>] [--path <p>]... [--after <id>]... [--urgent] [--backlog] [--needs-network] [--needs-worktree]; run ahub help task for the rest`);
     const cls = flags.one["--class"] ?? (positional ? flags.rest[0] : undefined);
     const title = (positional ? flags.rest.slice(1) : flags.rest).join(" ");
     if (positional) console.error(`note: "${cls}" was taken as the class and left out of the title; use --class <c> when the title itself starts with that word`);
