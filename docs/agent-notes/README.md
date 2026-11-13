@@ -123,6 +123,8 @@ revision preserves both behaviors; capture still uses its stricter turn fence.
 ## Changes
 
 - 2026-11-14: #1432 adds a narrow off/advise and check-name exception to person-only structural editing, following the existing cooperative direct-instruction model for release authorization. Separate intent and hashed-result audits distinguish a caller claim from a saved configuration, while the generic editor and release-consent authority stay separate.
+- 2026-11-14: #1403 T7 preserves considered rejections because a repeated semantic finding id alone does not establish new evidence. Complete path-change evidence and an explicit reconsideration reason distinguish a new case from replay; unknown diffs retain suppression without deleting history.
+- 2026-11-14: #931 T3 binds retained contradiction history across revisions of the same claim identity, so an owner withdrawal or claim-version restoration cannot turn prior counterevidence into an unqualified ready result. The existing person-verdict store supplies the current-manifest disposition; provenance and semantic judgment remain distinct.
 
 - 2026-11-13: #1403 B1 adds cold-readable intent and base-to-task-head drift advice. The existing PR conformance gate remains separate, so a moved or unreadable plan base cannot become a new acceptance gate.
 
