@@ -99,7 +99,7 @@ export function freshRoles(layers: readonly InstanceConfigLayer[], scope: Return
   }
   for (const { raw } of layers) if (raw.roles !== undefined) {
     conductorPeer(raw.roles);
-    for (const [id, list] of Object.entries(raw.roles as Record<string, string[]>)) roles[id] = applyRoleCeiling(id, list, startModes[id], scope.catalog).roles;
+    for (const [id, list] of Object.entries(raw.roles as Record<string, string[]>)) roles[id] = applyRoleCeiling(id, list, startModes[id]).roles;
   }
   const configured = Object.fromEntries(scope.catalog.definitions.filter(d => !definitionOf(d.kind)).map(d => [d.kind, [...d.roles]]));
   const extras = Object.fromEntries(Object.keys(scope.instances ?? {}).map(id => [id, effectiveInstanceRoles(id, scope.instances, roles, scope.catalog)]));

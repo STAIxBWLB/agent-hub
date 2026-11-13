@@ -496,7 +496,8 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
         conductorPeer({ [peer]: assigned });
         const declared = assigned as string[];
         // #525 R1: planner needs a kind that can plan; #1408 R2: conductor needs an eligible kind in an interactive form. Such an entry is dropped with a notice, never thrown, and nobody else gains it.
-        const kept = applyRoleCeiling(peer, declared, startModes[peer], scope.catalog);
+        // The builtin registry only, exactly as before: a project-configured ACP kind keeps the roles it is given (#525, #735).
+        const kept = applyRoleCeiling(peer, declared, startModes[peer]);
         roles[peer] = kept.roles;
         notices.push(...kept.notices);
       }

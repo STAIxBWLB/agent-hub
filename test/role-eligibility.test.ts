@@ -163,3 +163,10 @@ test("R2: setting the conductor's start mode to headless is refused before any w
     expect(String(other.error ?? "")).not.toMatch(/conductor role/);
   } finally { person.close(); await daemon.stop(); }
 }, 60_000);
+
+test("a project-configured ACP kind keeps the roles it is given: the ceiling reads the builtin registry only, exactly as before (#525, #735)", () => {
+  const adapters = { fixture: { transport: "acp", command: "never-execute-planner-fixture", displayName: "Fixture ACP", roles: ["planner", "implementer"], identity: { name: "Fixture ACP", version: "1" } } };
+  const dir = project({ adapters, roles: { fixture: ["planner", "conductor"] } });
+  expect(loadConductorPolicy(dir).roles.fixture).toEqual(["planner", "conductor"]);
+  expect(freshRoles(readInstanceConfigLayers(dir), readInstanceConfig(dir)).fixture).toEqual(["planner", "conductor"]);
+});
