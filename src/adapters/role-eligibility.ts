@@ -33,6 +33,15 @@ export function roleEligibility(peer: string, role: EligibleRole, startMode?: St
 }
 
 /**
+ * The adapter ceiling alone, exactly as it was before #1408: roles outside `routing.allowedRoles` and a planner the kind cannot do are dropped. The at-most-one-conductor count runs on this
+ * result, so a conductor the kind never allowed (agy) does not count, while one the kind allows but eligibility drops (local) still does.
+ */
+export function adapterCeiling(peer: string, declared: readonly string[], catalog?: ProjectAdapterCatalog): string[] {
+  const definition = lookup(peer, catalog), ceiling = definition?.routing?.allowedRoles;
+  return declared.filter(role => (!ceiling || ceiling.includes(role)) && (role !== "planner" || !definition || definition.projection?.plannerEligible === true));
+}
+
+/**
  * The roles a peer keeps after the ceilings. `declared` is what the config named; `allowed` is the kind's `routing.allowedRoles` ceiling when it has one. A role outside the ceiling,
  * a planner the kind cannot do, and a conductor `roleEligibility` refuses are dropped, each with one notice that names the reason and the fix. Nobody else gains a dropped role.
  */

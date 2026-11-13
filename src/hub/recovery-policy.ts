@@ -8,7 +8,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "
 import { isAbsolute, join, resolve } from "node:path";
 import { types } from "node:util";
 import { definitionOf } from "../adapters/registry.ts";
-import { applyRoleCeiling } from "../adapters/role-eligibility.ts";
+import { adapterCeiling, applyRoleCeiling } from "../adapters/role-eligibility.ts";
 import type { HubConfig } from "./daemon.ts";
 import type { ConfigSourceTexts } from "./config-reload.ts";
 import { conductorPeer } from "./conductor.ts";
@@ -97,11 +97,14 @@ export function freshRoles(layers: readonly InstanceConfigLayer[], scope: Return
       if (mode === "tui" || mode === "headless") startModes[id] = mode;
     }
   }
-  // #1063: the loader checks at most one conductor on the declared roles before the ceiling; recovery does the same, merged across layers.
+  // #1063: the loader checks at most one conductor on the declared roles after the adapter ceiling and before the eligibility drop; recovery does the same, merged across layers.
   const declared: Record<string, string[]> = structuredClone(DEFAULT_ROLES);
   for (const { raw } of layers) if (raw.roles !== undefined) {
-    conductorPeer(raw.roles);
-    for (const [id, list] of Object.entries(raw.roles as Record<string, string[]>)) { declared[id] = list; roles[id] = applyRoleCeiling(id, list, startModes[id]).roles; }
+    if (!raw.roles || typeof raw.roles !== "object" || Array.isArray(raw.roles)) throw new Error("roles must be an object of peer role lists");
+    for (const [id, list] of Object.entries(raw.roles as Record<string, string[]>)) {
+      conductorPeer({ [id]: list });
+      declared[id] = adapterCeiling(id, list); roles[id] = applyRoleCeiling(id, list, startModes[id]).roles;
+    }
   }
   conductorPeer(declared);
   const configured = Object.fromEntries(scope.catalog.definitions.filter(d => !definitionOf(d.kind)).map(d => [d.kind, [...d.roles]]));

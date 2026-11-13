@@ -245,7 +245,7 @@ import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate, launcherOf 
 import { TerminalLaunches, terminalOwnerReads } from "./terminal-launch.ts";
 
 import { START_AGENTS_DEFAULT, checkStartAgents } from "./start-agents.ts";
-import { applyRoleCeiling } from "../adapters/role-eligibility.ts";
+import { adapterCeiling, applyRoleCeiling } from "../adapters/role-eligibility.ts";
 import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
@@ -474,7 +474,7 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
   const roles: Record<string, string[]> = { ...DEFAULT_ROLES };
   const conductor = { ...DEFAULT_CONFIG.conductor };
   const notices: string[] = [];
-  // #1063: what the layers declare, before any ceiling. At most one conductor is checked on this map, so an ineligible second conductor is refused, never ignored.
+  // #1063: what the layers declare after the adapter ceiling and before the #1408 eligibility drop. At most one conductor is checked on this map (as on main), so an eligible-ceiling kind that cannot conduct is refused, never ignored, and a conductor the ceiling never allowed does not count.
   const declaredRoles: Record<string, string[]> = { ...DEFAULT_ROLES };
   let planner: string | string[] | undefined;
   // #1408 R2: the conductor role needs an interactive session, so the loader reads each peer's effective start mode (config.local.json wins per peer) before it reads roles.
@@ -497,7 +497,7 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
       for (const [peer, assigned] of Object.entries(file.roles)) {
         conductorPeer({ [peer]: assigned });
         const declared = assigned as string[];
-        declaredRoles[peer] = declared;
+        declaredRoles[peer] = adapterCeiling(peer, declared);
         // #525 R1: planner needs a kind that can plan; #1408 R2: conductor needs an eligible kind in an interactive form. Such an entry is dropped with a notice, never thrown, and nobody else gains it.
         // The builtin registry only, exactly as before: a project-configured ACP kind keeps the roles it is given (#525, #735).
         const kept = applyRoleCeiling(peer, declared, startModes[peer]);

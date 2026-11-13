@@ -186,3 +186,12 @@ test("#1063: a declared second conductor on an ineligible peer is still refused 
   expect(Object.values(policy.roles).some(list => list.includes("conductor"))).toBe(false);
   expect(policy.notices?.some(line => /conductor ignored/.test(line))).toBe(true);
 });
+
+test("#1063: a conductor entry the adapter ceiling never allows (agy) does not count; it is dropped as on main and the loader accepts the config", () => {
+  const dir = project({ roles: { claude: ["conductor"], agy: ["implementer", "conductor"] } });
+  const policy = loadConductorPolicy(dir);
+  expect(policy.roles.claude).toContain("conductor");
+  expect(policy.roles.agy).not.toContain("conductor");
+  expect(policy.notices?.some(line => /roles\.agy: ignored roles outside the adapter ceiling/.test(line))).toBe(true);
+  expect(freshRolesForTest(dir).agy).not.toContain("conductor");
+});
