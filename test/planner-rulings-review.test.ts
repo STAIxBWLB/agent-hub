@@ -38,7 +38,10 @@ async function rig(startReviewer = false) {
   } }); cleanup.push(() => daemon.stop());
   const connect = async (hello: Parameters<typeof ControlClient.connect>[1]) => { const client = await ControlClient.connect(stateDir, { ...hello, projectRoot: root }); cleanup.push(() => client.close()); return client; };
   const person = await connect({ role: "console" }), planner = await connect({ role: "tools", peer: "claude" });
-  if (startReviewer) expect((await person.request({ t: "start", peer: "claude-review" })).ok).toBe(true);
+  if (startReviewer) {
+    expect((await person.request({ t: "start", peer: "claude-review" })).ok).toBe(true);
+    expect(await person.request({ t: "budget", set: { peer: "claude-review", used: 0.1, resetsInMs: 600_000 } })).toMatchObject({ ok: true });
+  }
   const builder = await connect({ role: "peer", peer: "builder", channel: true }); await until(() => daemon.bus.stateOf("builder") === "idle");
   const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
   const request = (actor: ControlClient, op: string, args: Record<string, unknown>) => actor.request({ t: "task", op, args });
