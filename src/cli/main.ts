@@ -14,7 +14,7 @@ import { assessVersion, COMPAT, configuredCommands } from "../adapters/compat.ts
 import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
-import { readInstanceRoleConfig, readInstanceConfig, type InstanceRoleConfig } from "../hub/instance-config.ts";
+import { readInstanceRoleConfig, readInstanceConfig, readInstanceConfigLayers, type InstanceRoleConfig } from "../hub/instance-config.ts";
 import { staleInstanceKey } from "../hub/roster.ts";
 import { parseConfiguredAcpArguments, runConfiguredAcpEntry, requireActiveConfiguredAcp } from "./configured-acp-entry.ts";
 import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
@@ -60,6 +60,8 @@ import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, undoableDef, type SettingRow } from "../hub/settings.ts";
 import { startModeOf } from "../hub/start-mode.ts";
+import { rolesRow } from "./role-doctor.ts";
+import { rosterAllows } from "../hub/roster.ts";
 import { currentRouting, OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -3166,6 +3168,15 @@ const commands: Record<string, () => Promise<void> | void> = {
       // #1411 T2: a warning, never a failure, like the row above.
       try { const shared = sharedConfigRow(cwd); if (shared) row(shared.ok, "shared config", shared.detail); }
       catch (error) { row(undefined, "shared config", `could not be checked: ${error instanceof Error ? error.message : "unknown error"}`); }
+      // #1408 R2: who holds conductor, planner and reviewer as the loader settled them, and a conductor the loader ignored. A warning, never a failure, like the rows above.
+      try {
+        const settled = loadConfig(cwd), scope = readInstanceRoleConfig(cwd), layers = readInstanceConfigLayers(cwd);
+        const declared: Record<string, string[]> = {};
+        for (const layer of layers) if (layer.raw.roles && typeof layer.raw.roles === "object" && !Array.isArray(layer.raw.roles)) for (const [peer, list] of Object.entries(layer.raw.roles as Record<string, unknown>)) if (Array.isArray(list)) declared[peer] = list.filter((role): role is string => typeof role === "string");
+        const result = rolesRow({ roles: settled.roles, declared: Object.keys(declared).length ? declared : undefined, startMode: peer => startModeOf(settled.peers, peer, scope.instances, scope.catalog),
+          rostered: peer => rosterAllows(settled.roster, peer, settled.pi.enabled, scope.instances, scope.catalog) });
+        row(result.ok, "roles", result.detail);
+      } catch (error) { row(undefined, "roles", `could not be checked: ${error instanceof Error ? error.message : "unknown error"}`); }
       const catalog = loadRoleCatalog(cwd);
       for (const error of catalog.errors) row(false, "catalog role", `${error.id}: ${error.reason}`);
       try {

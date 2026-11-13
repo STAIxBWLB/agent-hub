@@ -200,9 +200,9 @@ export function assertDefinitionCoherence(definition: AdapterDefinition): void {
   }
   const projection = definition.projection;
   if (projection !== undefined) {
-    if (!projection || typeof projection !== "object" || Array.isArray(projection) || Object.keys(projection).some(key => !["roleRank", "startRank", "helpRank", "plannerEligible"].includes(key))) fail("projection", "invalid projection metadata");
+    if (!projection || typeof projection !== "object" || Array.isArray(projection) || Object.keys(projection).some(key => !["roleRank", "startRank", "helpRank", "plannerEligible", "conductorEligible", "reviewerEligible"].includes(key))) fail("projection", "invalid projection metadata");
     for (const field of ["roleRank", "startRank", "helpRank"] as const) if (projection[field] !== undefined && (typeof projection[field] !== "number" || !Number.isFinite(projection[field]))) fail(`projection.${field}`, "rank must be finite");
-    if (projection.plannerEligible !== undefined && typeof projection.plannerEligible !== "boolean") fail("projection.plannerEligible", "boolean required");
+    for (const field of ["plannerEligible", "conductorEligible", "reviewerEligible"] as const) if (projection[field] !== undefined && typeof projection[field] !== "boolean") fail(`projection.${field}`, "boolean required");
   }
   const attach = definition.attach, pullOnly = attach?.pullOnlyForms;
   if (pullOnly !== undefined) {
