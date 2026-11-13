@@ -5058,6 +5058,8 @@ export class Tasks {
       // Connected registered origins express provenance grouping only, never independent corroboration or source quality.
       return { state: "known", group: `origin:${createHash("sha256").update(JSON.stringify([...group].sort())).digest("hex").slice(0, 32)}`, groups: groups.length };
     } catch { return unknown; }
+  }
+
   /** Pure read screen: never resolve an address or a path to decide whether to publish it. */
   private lineageMetadata(text: string): boolean {
     try {

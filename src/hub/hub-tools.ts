@@ -311,7 +311,7 @@ TASK_TOOLS.push(
   tool("hub_supervision_accept", "Accept one pending supervision proposal: the existing action it names runs under that action's own authority, and its intent, receipt and the task's own result stay separate records. An escalate proposal is accepted by the conductor or the person only; any other acceptance is refused and the proposal stays pending. Refuses a stale revision or generation, a reading that no longer holds, another actor's task, a private task and an owner's needs_review hold.", { id: str }, ["id"]),
   tool("hub_supervision_dismiss", "Dismiss one pending supervision proposal. Same fences as accept, and it records the decision; nothing runs.", { id: str }, ["id"]),
 );
-export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name, AUDIT_REPORT_TOOL.name]);
+export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name, EVIDENCE_READ_TOOL.name, AUDIT_REPORT_TOOL.name]);
 
 /** Separately published: serving a schema grants no authority, only the daemon's explicit role does. */
 export const CONDUCTOR_TOOLS: HubTool[] = [
