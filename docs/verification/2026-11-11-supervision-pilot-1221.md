@@ -172,6 +172,7 @@ read and present in a `task`-narrowed one.
 | 10 | role-scoped (task 866), hub 0.38.0, pid 45122 (start 2026-11-13 11:59:44 KST); a new daemon lifetime, so the refusal counter restarts | 2026-11-13 13:25 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 5 | 5 | 0 since this daemon start (unknown before it; the previous lifetime ended at 6) | 5 |
 | 11 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as reading 10 (`etime` 6 h 46 m) | 2026-11-13 18:45 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 8 | 8 | 3 since this daemon start, all three after reading 10 (unknown which bound, task or rule) | 7 |
 | 12 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 and 11 (`etime` 8 h 50 m) | 2026-11-13 20:50 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 9 | 9 | 3 since this daemon start, unchanged since reading 11, so none in the 2 h 05 m between them (unknown which bound, task or rule) | 9 |
+| 13 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 to 12 (`etime` 15 h 03 m) | 2026-11-14 03:02 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 15 | 15 | 16 since this daemon start, 13 of them after reading 12 (unknown which bound, task or rule) | 13 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -406,6 +407,62 @@ reading 5 pinned them, to `c78468289` (`supervision-rules.ts`, `supervision-prop
 `settled-roles.ts` all print nothing under `git diff --stat`), so the frozen case set still
 describes the code under measurement.
 
+Reading 13 (2026-11-14 03:02 KST) is the first read that ends with rows still pending, and the
+first whose close a task event the hub recorded explains rather than a nearby timestamp.
+`ps -o lstart= -p 45122` still answers 2026-11-13 11:59:44 KST with `etime` 15 h 03 m, so this is
+the lifetime of readings 10 to 12. The `task: 866` read returned fifteen rows at six revisions: the
+same three at `8:3`, the same two at `11:4`, the same three at `14:5`, the same one at `15:6`,
+three at `19:8` and three at `22:9`. Thirteen are expired and two are pending.
+
+The `19:8` rows closed at 01:50:04 KST, and this task's own history names what happened in that
+second: the hub's idle sweep reassigned it away from its owner (`idle sweep: idle-owner; from
+qwen`), and the rule stopped holding because my side's latest episode was no longer an accepted
+one. pi declined in the same minute (the conductor told it the time-gated pilot and the row's
+reservation are qwen's, and it made no edits), the hub reassigned the task back, and my accept was
+recorded at 01:50:19.669 KST. Three rows were written at `22:9` at 01:50:20.009, 338 ms later. So
+the pair left supervision at a reassignment and not at a verdict, returned at the re-accept, and
+the revision advanced across both: this is the first close in the wave that a stored board event
+explains, and it prices an idle-owner sweep at three closed rows on a task nobody edited.
+
+The same read measures the write latency the Cost table could only call "on a task change". Each
+`19:8` row was written within a fifth of a second of the accept that completed its pair:
+`sup-0aeb441a4c3f` 149 ms after #897's accept (23:55:49.464 to 23:55:49.613 KST),
+`sup-2167e4441732` 175 ms after #921's (01:07:29.692 to 01:07:29.867) and `sup-e16589b19f9d`
+177 ms after #916's (01:12:29.432 to 01:12:29.609). Three partners, three sub-200 ms gaps, so
+`observe()` runs on the accept path and not on a periodic scan.
+
+`sup-913163059a34` (revision `22:9`, `overlap:866:921`) expired at 03:01:15.994 KST, 0.56 s after
+#921's review request was recorded (`actualDates.reviewAt` 03:01:15.436; the task now reads
+`in_review`). That is the first close this wave can tell apart from a verdict: readings 1 to 3 also
+saw closes 1.3 to 1.4 s after a review time, but their partners were approved and merged, so a
+review request and a verdict could not be separated there. #921 has no approval recorded, so the
+condition that stopped holding was the accepted episode itself, which `hub_task_done` ends and the
+row follows half a second later. The two pairs whose partners are still open survive: #897 and #916
+are both `in_progress` with no pull request, so their `22:9` rows are pending and stay pending
+until the wave closes.
+
+`refused` reads 16 against reading 12's 3, thirteen more in 6 h 12 m, while this task wrote six rows
+in the same window. That is the widest refusal window the wave has measured and the first that runs
+while rows hold: the two pending rows keep their slots through it, and revision `22:9` already
+carries this task's whole 3-row budget, so a fourth distinct observation on it would be refused at
+store time. Which bound refused the thirteen stays unknown for the reason the earlier readings
+record, but a queue that keeps rows instead of shedding them is the condition a full 100-pending
+bound produces, and this is the first window that both wrote and held.
+
+Provenance at this reading: board head `9f65b79b1` (`feat(sdlc): settle a verified audit finding as
+fixed or false_positive, and drop the unused Board.auditVerify`, hub task 920, #1403), nine commits
+since reading 12's `c78468289`. Four of them rewrite a `docs/dogfood.md` row in place and none
+inserts one: `@@ -121 +121 @@` (`Plan conformance (#481 S2, #1403 T6)`, #894), `@@ -215 +215 @@`
+(`Claim evidence links and synthesis readiness (#931 T1-T3)`, #699), `@@ -247 +247 @@` (`Upgrade and
+recovery (#1426)`, #917) and `@@ -249 +249 @@` (`acon console plugin (#935)`, this repository's
+#923 merge). The `Supervision rules and proposals (#1221 T1, T2)` row therefore still reads 135 when
+found by that text, and the two in-place rewrites above it are the case the wave predicted: a
+rewrite moves nothing, an insert does. `docs/design/supervision.md` was touched by none of the nine
+and still ends at `## Deliberately outside this contract` (119) with no `Observed limits` heading.
+The evaluator and the queue are byte-identical from `0af9fb5a1`, where reading 5 pinned them, to
+`9f65b79b1` (`supervision-rules.ts`, `supervision-proposals.ts` and `settled-roles.ts` all print
+nothing under `git diff --stat`), so the frozen case set still describes the code under measurement.
+
 ## Proposal ledger
 
 | proposal | rule | task | revision | trigger | action | outcome | evidence |
@@ -419,14 +476,23 @@ describes the code under measurement.
 | `sup-acc96e5922b7` | `declared_overlap_without_integration` | 866 | `14:5` | `overlap:866:894` | `request_integration` | expired by the queue 50 m 30 s after it was written (17:25:46 to 18:16:16 KST on 2026-11-13), 16 s after a bot `COMMENTED` review on #1453 that is a quota notice and not an approval; the PR is still open with no review decision recorded | #894 (PR #1453, `7ebb77858`, base `adf4f99c0`) rewrites the existing `Plan conformance (#481 S2, #1403 T6)` row in place at `@@ -121 +121 @@` and changes `src/hub/plan-conformance.ts`, `src/hub/tasks.ts`, `src/hub/board.ts`, `src/hub/daemon.ts`, `docs/design/task-board.md`, `docs/sdlc.md`, `scripts/seeds.json` and three plan tests; this task's row and its one new file are untouched, so the overlap was file-level only |
 | `sup-e8c72e6a6600` | `declared_overlap_without_integration` | 866 | `14:5` | `overlap:866:917` | `request_integration` | pending at reading 11 (written 18:40:41 KST); expired at 18:49:46 KST, 9 m 05 s after the write and at the same second a row at revision `15:6` was written, so the revision moved under it; unknown from stored records whether the queue closed it because the revision moved or on its own schedule | #917 (codex) had no open pull request at reading 11; its plan names `src/cli/terminal-recovery.ts`, `src/cli/recovery-launch.ts` and the `src/cli/upgrade*.ts` slice, and its owner stated the dogfood edit rewrites the existing upgrade/recovery row in place rather than inserting one, so the overlap is file-level and plan-level only |
 | `sup-9b89abfbd309` | `declared_overlap_without_integration` | 866 | `15:6` | `overlap:866:917` | `request_integration` | expired at 20:23:59 KST, 1 h 34 m 13 s after it was written, 54 s after #917's PR #1456 was created (20:23:05 KST); the PR was re-filed at 20:28:01 KST, after the row had closed; unknown from stored records whether that filing is what closed it | #917 (codex) filed PR #1456 for #1426. At head `1a5dc48f8`, and again at the re-filed `3b6307ace`, its only `docs/dogfood.md` change is `@@ -247 +247 @@`: the existing `Upgrade and recovery` row rewritten in place to `Upgrade and recovery (#1426)`, one line out and one in. This task inserts one row after the supervision row at 135, so the overlap is file-level only and the two rows sit 112 apart |
+| `sup-0aeb441a4c3f` | `declared_overlap_without_integration` | 866 | `19:8` | `overlap:866:897` | `request_integration` | written at 23:55:49.613 KST on 2026-11-13, 149 ms after #897's accept (23:55:49.464); expired at 01:50:04 KST on 2026-11-14, the second the hub's idle sweep reassigned this task away from its owner, so my side's latest episode stopped being an accepted one | #897 (codex) is `agent-hub#1403 T7`, the advisor survey and the considered-and-rejected ledger: `in_progress`, no pull request, blockers `PR identity missing` and `current PR evidence unknown`. Its plan lists `docs/dogfood.md` among its paths and its settled row goes after the security-audit row at 107, 28 rows above this task's insert at 135, so the overlap is file-level only |
+| `sup-2167e4441732` | `declared_overlap_without_integration` | 866 | `19:8` | `overlap:866:921` | `request_integration` | written at 01:07:29.867 KST on 2026-11-14, 175 ms after #921's accept (01:07:29.692); expired in the same sweep second as the row above (01:50:04 KST) | #921 (codex) is the Claude Code 2.1.323 implementer receipt, `in_review` on PR #1462 at `b4d5ee1b9`. Its five paths include a new `docs/verification/2026-11-13-claude-implementer-2.1.323.md` receipt, a different new file in the same directory as this pilot's, so the overlap is directory-level only |
+| `sup-e16589b19f9d` | `declared_overlap_without_integration` | 866 | `19:8` | `overlap:866:916` | `request_integration` | written at 01:12:29.609 KST on 2026-11-14, 177 ms after #916's accept (01:12:29.432); expired in the same sweep second (01:50:04 KST) | #916 (codex) is the configured conductor switching a project between `off` and `advise` (`#1432`): `in_progress`, no pull request, and its `feat/1432-conductor-sdlc` branch is a worktree at main's tip with no commit of its own. Its plan lists `docs/dogfood.md` and a `src/hub/` slice; this task writes no source file, so the overlap is file-level only |
+| `sup-d55cbd37434e` | `declared_overlap_without_integration` | 866 | `22:9` | `overlap:866:897` | `request_integration` | written at 01:50:20.009 KST, 338 ms after this task's re-accept (01:50:19.669); **pending at reading 13**, and pending until the wave closes because #897 is still open | same file-level settlement as `sup-0aeb441a4c3f`; the row is the pair's second incarnation after the revision moved, which is what a revision-keyed proposal looks like when the same condition holds again |
+| `sup-4e799e1e9952` | `declared_overlap_without_integration` | 866 | `22:9` | `overlap:866:916` | `request_integration` | written at the same 01:50:20.009 KST and **pending at reading 13**; #916 is still `in_progress` with no pull request | same file-level settlement as `sup-e16589b19f9d` |
+| `sup-913163059a34` | `declared_overlap_without_integration` | 866 | `22:9` | `overlap:866:921` | `request_integration` | written at 01:50:20.009 KST; expired at 03:01:15.994 KST, 0.56 s after #921's review request was recorded (`reviewAt` 03:01:15.436), so the pair left supervision at `hub_task_done` and not at a verdict: #921 reads `in_review` with no approval | same directory-level settlement as `sup-2167e4441732`; #921's PR #1462 was already open at the row's write, so the write and the close bracket the review request rather than a filing |
 
 A pending proposal stays pending until the wave closes: classifying one while later revisions are
 already in view would let its outcome be chosen to fit them. No row on this task was pending at
 readings 3 to 10, reading 11 had one (`sup-e8c72e6a6600`), and none is pending at reading 12: it
 expired 9 m 05 s after the read that saw it, so twelve readings have carried two pending rows and
-both closed before the next reading. An expiry is the queue's own disposition
-and not a classification: it records that the reading stopped holding, and it counts neither as a
-helpful or false intervention nor as a clean non-trigger.
+both closed before the next reading. Reading 13 is the first read that ends with rows still
+pending: `sup-d55cbd37434e` and `sup-4e799e1e9952` were written at revision `22:9` at
+2026-11-14 01:50:20 KST and were still pending at 03:02 KST, because #897 and #916 are both open,
+so they stay pending into the close unless a partner finishes first. An expiry is the queue's own
+disposition and not a classification: it records that the reading stopped holding, and it counts
+neither as a helpful or false intervention nor as a clean non-trigger.
 
 ## Cost
 
@@ -435,7 +501,7 @@ helpful or false intervention nor as a clean non-trigger.
 | model calls | 0 (no inference path in the rules or the queue) |
 | memory writes | 0 |
 | daemon evaluations | pending (replayed from board revisions) |
-| rows written | 7 at the first conductor read, 3 of them on this task; the task-narrowed read shows 9 at reading 12: the same three, two written and expired before reading 10, three more written between readings 10 and 11 (two expired, one still pending at that read), and one at `15:6` written at 18:49:46 KST as that pending row closed. All nine are expired at reading 12. Written by the daemon on a task change and not by this task |
+| rows written | 7 at the first conductor read, 3 of them on this task; the task-narrowed read shows 9 at reading 12: the same three, two written and expired before reading 10, three more written between readings 10 and 11 (two expired, one still pending at that read), and one at `15:6` written at 18:49:46 KST as that pending row closed. All nine are expired at reading 12. Fifteen at reading 13, six more: three at `19:8` written 149 to 177 ms after their partner's own accept and all closed in one second by the idle sweep's reassignment at 01:50:04 KST, and three at `22:9` written 338 ms after this task's re-accept, one expired 0.56 s after #921's review request and two still pending. The write latency is measured rather than inferred: `observe()` runs on the accept path, not on a scan. Written by the daemon on a task change and not by this task |
 | wall time | wave open 2026-11-11, cap 2026-11-18 |
 
 ## Person burden
@@ -480,9 +546,16 @@ and is not part of this wave.
   rule or bound, so it dates the refusals without attributing them; the lifetime total is 3 and the
   wave total is unknown because two lifetimes preceded it (6 in the lifetime that ended, and an
   unknown number before it). Reading 12 added none in the following 2 h 05 m, a window in which the
-  queue wrote a row and closed two, so the lifetime total stays 3 across 8 h 50 m;
+  queue wrote a row and closed two, so the lifetime total stays 3 across 8 h 50 m; reading 13 then
+  added thirteen in 6 h 12 m (3 to 16) while this task wrote six rows and held two pending, the
+  widest refusal window the wave has measured, and it is still a count without an attribution;
 - whether this task's own plan refresh advanced the revision from `14:5` to `15:6`. The hub
   recorded the update at 18:45:02 KST, the queue wrote a row at `15:6` 4 m 44 s later, and the
   `14:5` row closed at that same second. A role-scoped read carries the revision pair on each row
   and not what derived it, so the attribution stays open even though the ordering is measured;
+- which task event derived revision `19:8`. Between reading 12 at 20:50 KST and the first `19:8` row
+  at 23:55:49 KST this task's history records only the 22:45 KST reassignment, pi's decline and my
+  re-accept, so one of them derived it and the read cannot say which. Revision `22:9` is not in
+  this list: the sweep, the decline, the reassignment back and my accept all sit in the same minute,
+  and the three rows were written 338 ms after the accept that ended that minute;
 - every threshold that needs a live sample larger than this pilot can produce.
