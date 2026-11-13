@@ -334,7 +334,11 @@ export interface AdapterDefinition {
   /** Fixed factory support only; the host still checks the actual native surface and form. */
   modelOverride?: { readonly boundary: "turn"; readonly acp?: import("./acp-model-policy.ts").AcpModelPolicy };
   /** Stable host projection order and planner eligibility, independent of default task roles. */
-  projection?: { roleRank?: number; startRank?: number; helpRank?: number; plannerEligible?: boolean };
+  projection?: { roleRank?: number; startRank?: number; helpRank?: number; plannerEligible?: boolean;
+    /** #1408 R1: true only for a kind with an interactive form that receives hub pushes and holds a writable tools connection. Absent means false: a kind not yet proven is not eligible. */
+    conductorEligible?: boolean;
+    /** #1408 R1: the kind can receive `hub_review`. Absent means false. */
+    reviewerEligible?: boolean };
   cli: {
     command: string;
     /** Fixed builtin CLI ports; project definitions cannot supply these callbacks. */

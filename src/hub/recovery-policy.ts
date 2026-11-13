@@ -8,6 +8,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "
 import { isAbsolute, join, resolve } from "node:path";
 import { types } from "node:util";
 import { definitionOf } from "../adapters/registry.ts";
+import { adapterCeiling, applyRoleCeiling } from "../adapters/role-eligibility.ts";
 import type { HubConfig } from "./daemon.ts";
 import type { ConfigSourceTexts } from "./config-reload.ts";
 import { conductorPeer } from "./conductor.ts";
@@ -84,15 +85,28 @@ function canonical(value: unknown, depth = 0): string {
   return `{${Object.keys(fields).sort().filter(key => fields[key]!.value !== undefined).map(key => `${JSON.stringify(key)}:${canonical(fields[key]!.value, depth + 1)}`).join(",")}}`;
 }
 
-function freshRoles(layers: readonly InstanceConfigLayer[], scope: ReturnType<typeof readInstanceConfig>): Record<string, string[]> {
+/** Exported for the role-eligibility test: the recovery side of the same ceiling the daemon's loader applies. */
+export function freshRoles(layers: readonly InstanceConfigLayer[], scope: ReturnType<typeof readInstanceConfig>): Record<string, string[]> {
   const roles = structuredClone(DEFAULT_ROLES);
-  for (const { raw } of layers) if (raw.roles !== undefined) {
-    conductorPeer(raw.roles);
-    for (const [id, list] of Object.entries(raw.roles as Record<string, string[]>)) {
-      const definition = definitionOf(id), ceiling = definition?.routing?.allowedRoles;
-      roles[id] = (ceiling ? list.filter(role => ceiling.includes(role)) : list).filter(role => role !== "planner" || !definition || definition.projection?.plannerEligible === true);
+  // #1408 R2: the same ceiling as the daemon's loader, with each peer's effective start mode (a later layer wins), so a recovery never re-grants a conductor the running hub ignores.
+  const startModes: Record<string, "tui" | "headless"> = {};
+  for (const { raw } of layers) {
+    const peers = raw.peers;
+    if (peers && typeof peers === "object" && !Array.isArray(peers)) for (const [id, block] of Object.entries(peers as Record<string, unknown>)) {
+      const mode = block && typeof block === "object" ? (block as { start_mode?: unknown }).start_mode : undefined;
+      if (mode === "tui" || mode === "headless") startModes[id] = mode;
     }
   }
+  // #1063: the loader checks at most one conductor on the declared roles after the adapter ceiling and before the eligibility drop; recovery does the same, merged across layers.
+  const declared: Record<string, string[]> = structuredClone(DEFAULT_ROLES);
+  for (const { raw } of layers) if (raw.roles !== undefined) {
+    if (!raw.roles || typeof raw.roles !== "object" || Array.isArray(raw.roles)) throw new Error("roles must be an object of peer role lists");
+    for (const [id, list] of Object.entries(raw.roles as Record<string, string[]>)) {
+      conductorPeer({ [id]: list });
+      declared[id] = adapterCeiling(id, list); roles[id] = applyRoleCeiling(id, list, startModes[id]).roles;
+    }
+  }
+  conductorPeer(declared);
   const configured = Object.fromEntries(scope.catalog.definitions.filter(d => !definitionOf(d.kind)).map(d => [d.kind, [...d.roles]]));
   const extras = Object.fromEntries(Object.keys(scope.instances ?? {}).map(id => [id, effectiveInstanceRoles(id, scope.instances, roles, scope.catalog)]));
   return { ...configured, ...roles, ...extras };

@@ -4,6 +4,13 @@
 - Reviewer completion (#784, this repository): the reviewer that approves a PR at its head merges it once exact-head CI is green, no review thread is unresolved and no change request is pending, then removes the branch and worktree, or names the open gate. A release PR waits for the person's release consent. This is this repository's convention (its `AGENTS.md`, outside the managed block), not a shipped default: the AGENTS block template, the catalog roles and the flow role contracts are unchanged, so another project keeps merge with the person unless its own AGENTS.md delegates it.
 - Default catalog assignments are absent. Existing flow contracts are byte-identical to main d83cb8dd when no catalog role is selected.
 
+# Who may hold a flow role (hub task 899, #1408 R1, R2)
+
+- Eligibility is data on each adapter definition, next to `plannerEligible`: `conductorEligible` is true only for a kind with an interactive form that receives hub pushes and holds a writable tools connection (today claude, codex, jcode and pi), and `reviewerEligible` is true for every kind that can receive `hub_review` (all but agy). A kind not yet proven is listed false. `roleEligibility(peer, role, startMode)` in `src/adapters/role-eligibility.ts` answers yes or no with a reason and a fix, and the loader, `ahub doctor` and the docs all read it.
+- The loader ignores a `conductor` entry on a peer whose kind is not `conductorEligible`, or whose effective start mode is headless (`peers.<peer>.start_mode`, `config.local.json` winning over the shared file), with a notice that names the reason and the fix. Nobody else gains the role: the project then has no conductor and the person conducts from `ahub console`. A conductor that is ignored never holds the role after a reload or a recovery either.
+- Setting the conductor's `start_mode` to `headless` is refused: "<peer> holds the conductor role, which needs an interactive session; move the role first". Move the role in `roles` first, then change the mode.
+- `ahub doctor` has a `roles` row: who holds conductor, planner and reviewer as the hub settled them, with a warning when a conductor is ignored, when no rostered planner is eligible, or when no reviewer can run and reviews fall to the person.
+
 # Definitions and layers
 
 - Shipped definitions live at `templates/roles/<group>/<id>.md`: six dev and five research roles, plus four writing and two ops roles that the domain packs use ([profiles](profiles.md)).

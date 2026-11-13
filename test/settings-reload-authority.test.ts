@@ -16,7 +16,7 @@ async function until(condition: () => boolean | Promise<boolean>, label: string,
   while (!(await condition()) && Date.now() < deadline) await Bun.sleep(15);
   expect(await condition(), label).toBe(true);
 }
-async function fixture(options: { trackedRouting?: boolean; codex?: boolean; kimi?: boolean; kimiTui?: boolean; roles?: Record<string, string[]>; limits?: boolean; embedded?: boolean; malformedInitial?: boolean } = {}) {
+async function fixture(options: { claude?: boolean; trackedRouting?: boolean; codex?: boolean; kimi?: boolean; kimiTui?: boolean; roles?: Record<string, string[]>; limits?: boolean; embedded?: boolean; malformedInitial?: boolean } = {}) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-reload-authority-"))), state = join(dir, ".agenthub/state");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
@@ -26,7 +26,7 @@ async function fixture(options: { trackedRouting?: boolean; codex?: boolean; kim
     expect(result.status, result.stderr).toBe(0);
   };
   const shared = {
-    ...(options.embedded ? {} : { batch_ms: 0 }), roster: { claude: false, codex: !!options.codex, kimi: !!options.kimi, qwen: false, jcode: false, pi: false, local: false },
+    ...(options.embedded ? {} : { batch_ms: 0 }), roster: { claude: !!options.claude, codex: !!options.codex, kimi: !!options.kimi, qwen: false, jcode: false, pi: false, local: false },
     memory: { enabled: false, native: false }, inference: { enabled: false }, mlx: { enabled: false },
     snapshots: { enabled: false }, research: { enabled: false }, approvals: { notify: false },
     tasks: { wip_limits: { codex: 1 } }, task_sweep: { enabled: false }, pi: { enabled: false, auto_start: false },
@@ -77,21 +77,22 @@ test("#439 removing the settled planner is guarded and previews the automatic su
 }, 15_000);
 
 test("#439 removing the conductor remains guarded even when its role list only shrinks", async () => {
-  const f = await fixture({ codex: true, kimi: true, kimiTui: true, roles: { claude: [], codex: ["planner"], kimi: ["conductor", "reviewer"] } });
+  // #1408: the conductor must be an interactive kind, so it is claude (its default tui form), with kimi kept as the bridged reviewer the test observes.
+  const f = await fixture({ codex: true, kimi: true, kimiTui: true, claude: true, roles: { claude: ["conductor", "reviewer"], codex: ["planner"], kimi: ["reviewer"] } });
   // An authenticated in-process bridge makes role status observable; it launches no native CLI or model.
-  const peer = await ControlClient.connect(f.state, { role: "peer", peer: "kimi", channel: false }); cleanup.push(() => peer.close());
-  const roles = async () => (await f.client.request({ t: "status" })).status.roleInfo.kimi.flowRoles as string[];
+  const peer = await ControlClient.connect(f.state, { role: "peer", peer: "claude", channel: false }); cleanup.push(() => peer.close());
+  const roles = async () => (await f.client.request({ t: "status" })).status.roleInfo.claude.flowRoles as string[];
   expect(await roles()).toContain("conductor");
-  f.local({ roles: { kimi: ["reviewer"] } });
-  await until(async () => f.pushes.some(message => message.t === "notice" && String(message.line).includes("roles.kimi")) || !(await roles()).includes("conductor"), "watcher processes conductor withdrawal");
+  f.local({ roles: { claude: ["reviewer"] } });
+  await until(async () => f.pushes.some(message => message.t === "notice" && String(message.line).includes("roles.claude")) || !(await roles()).includes("conductor"), "watcher processes conductor withdrawal");
   expect(await roles()).toContain("conductor");
   const preview = await f.reload();
   expect(preview.ok).toBe(true);
-  expect(preview.confirmation.keys).toContain("roles.kimi");
-  const change = preview.confirmation.changes.find((entry: { key: string }) => entry.key === "roles.kimi");
+  expect(preview.confirmation.keys).toContain("roles.claude");
+  const change = preview.confirmation.changes.find((entry: { key: string }) => entry.key === "roles.claude");
   expect(JSON.parse(change.before)).toEqual(["conductor", "reviewer"]);
   expect(JSON.parse(change.after)).toEqual(["reviewer"]);
-  expect(change.effect).toContain("conductor"); expect(change.effect).toContain("kimi");
+  expect(change.effect).toContain("conductor"); expect(change.effect).toContain("claude");
   expect((await f.reload(preview.confirmation.token)).ok).toBe(true);
   expect(await roles()).toEqual(["reviewer"]);
 }, 15_000);

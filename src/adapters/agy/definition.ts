@@ -16,7 +16,7 @@ function agyLaunch(ctx: LaunchContext): LaunchPlan {
 export const AGY_DEFINITION: AdapterDefinition = {
   api: 1,
   kind: "agy",
-  projection: { roleRank: 7, helpRank: 4, plannerEligible: false },
+  projection: { roleRank: 7, helpRank: 4, plannerEligible: false, conductorEligible: false, reviewerEligible: false },
   displayName: "Antigravity",
   family: "agy",
   transport: "ws-pull",

@@ -75,7 +75,7 @@ const CLAUDE_IMPLEMENTER_VARIANT: AdapterDefinition = {
 // daemon.ts runtime mappings/stop policy, budget.ts exemptions, and ui/peer-palette.ts CSS foregrounds.
 export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Object.freeze([
   {
-    projection: { roleRank: 0, helpRank: 0, plannerEligible: true },
+    projection: { roleRank: 0, helpRank: 0, plannerEligible: true, conductorEligible: true, reviewerEligible: true },
     api: 1, kind: "claude", questionWaitMs: 45000, displayName: "Claude Code", family: "claude", transport: "claude-channel",
     roles: Object.freeze(["planner", "reviewer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
     start: { forms: Object.freeze(["tui"] as const), defaultForm: "tui", launch: claudeNativeLaunch, version: claudeObservedVersion, ...CLAUDE_LAUNCH_POLICY, conductorStartable: true, upStart: { allowed: true, default: true },
@@ -92,7 +92,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   },
   {
     reviewerVariant: CODEX_REVIEWER_VARIANT,
-    projection: { roleRank: 1, startRank: 1, helpRank: 1, plannerEligible: true },
+    projection: { roleRank: 1, startRank: 1, helpRank: 1, plannerEligible: true, conductorEligible: true, reviewerEligible: true },
     api: 1, kind: "codex", questionWaitMs: 45000, displayName: "Codex", family: "codex", transport: "codex-appserver",
     modelOverride: { boundary: "turn" },
     roles: Object.freeze(["implementer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
@@ -106,7 +106,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   },
   {
     reviewerVariant: KIMI_REVIEWER_VARIANT,
-    projection: { roleRank: 2, startRank: 2, helpRank: 2, plannerEligible: true },
+    projection: { roleRank: 2, startRank: 2, helpRank: 2, plannerEligible: true, conductorEligible: false, reviewerEligible: true },
     api: 1, kind: "kimi", questionWaitMs: 45000, displayName: "Kimi Code", family: "kimi", transport: "acp",
     modelOverride: { boundary: "turn", acp: { admission: { nativeIdentity: true }, agentName: "Kimi Code CLI", version: "2.5.2",
       setter: "set_config_option", modelUpdate: "config_option_update", receipt: "docs/verification/2026-11-08-kimi-252-model-setter-1317.md" } },
@@ -123,7 +123,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     cli: { command: "kimi", entry: { lifecycleAdmission: true, execute: runKimiEntry }, preview: previewKimi, usage: [["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"]], launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: form => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: form => ["kimi", "--mode", form] }, display: KIMI_DISPLAY,
   },
   {
-    projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false },
+    projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false, conductorEligible: true, reviewerEligible: true },
     api: 1, kind: "pi", questionWaitMs: 300000, title: "hub", titlePersistence: "native", enabledSwitchStartOnly: true, displayName: "Pi", family: "pi", transport: "hub-native",
     modelOverride: { boundary: "turn" },
     roles: implementerRoles, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: true },
@@ -137,7 +137,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     cli: { command: "pi", entry: { lifecycleAdmission: false, execute: runPiEntry }, preview: previewPi, usage: [["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id>] [--session-file <path>] [--replace-session]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"]], launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: form => ["pi", "--mode", form] }, display: PI_DISPLAY,
   },
   {
-    projection: { roleRank: 3, helpRank: 7, plannerEligible: false },
+    projection: { roleRank: 3, helpRank: 7, plannerEligible: false, conductorEligible: false, reviewerEligible: true },
     api: 1, kind: "local", questionWaitMs: 300000, title: "hub", displayName: "Local worker", family: "local", transport: "hub-native",
     modelOverride: { boundary: "turn" },
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: true, hubSandboxed: true },
@@ -151,7 +151,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     cli: { command: "local", entry: { lifecycleAdmission: false, execute: runLocalEntry }, usage: [["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"]], launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] }, display: LOCAL_DISPLAY,
   },
   {
-    projection: { roleRank: 6, startRank: 3, helpRank: 3, plannerEligible: true },
+    projection: { roleRank: 6, startRank: 3, helpRank: 3, plannerEligible: true, conductorEligible: true, reviewerEligible: true },
     api: 1, kind: "jcode", questionWaitMs: 45000, displayName: "Jcode", family: "jcode", transport: "acp",
     roles: implementerRoles, optional: true, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: false },
     start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", explicitHeadlessMode: true, conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },

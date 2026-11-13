@@ -220,11 +220,12 @@ for (const change of ["head", "origin", "role", "private-context"] as const) {
       if (change === "head") f.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "changed release candidate");
       else if (change === "origin") f.git("remote", "set-url", "--push", "origin", join(f.temp, "other-local-remote.git"));
       else if (change === "role") {
-        const next = structuredClone(f.roles); next.codex = next.codex!.filter(role => role !== "conductor"); next.local!.push("conductor");
+        // #1408: the new holder must be a kind that can conduct, so the role moves to claude (local cannot conduct and the loader would ignore it).
+        const next = structuredClone(f.roles); next.codex = next.codex!.filter(role => role !== "conductor"); next.claude!.push("conductor");
         const changed = await f.reloadRoles(next); expect(changed.ok === true, changed.error).toBe(true);
-        expect(await f.liveRoles("codex")).toEqual(next.codex!); expect(await f.liveRoles("local")).toEqual(next.local!);
+        expect(await f.liveRoles("codex")).toEqual(next.codex!); expect(await f.liveRoles("claude")).toEqual(next.claude!);
         expect((await f.liveRoles("codex")).includes("conductor")).toBe(false);
-        expect((await f.liveRoles("local")).includes("conductor")).toBe(true);
+        expect((await f.liveRoles("claude")).includes("conductor")).toBe(true);
       }
       else await f.privateTask();
       release();

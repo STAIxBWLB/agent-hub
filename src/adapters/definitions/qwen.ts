@@ -13,7 +13,7 @@ import { createQwenDual } from "./native-factories.ts";
 export const QWEN_DEFINITION: AdapterDefinition = {
   api: 1,
   kind: "qwen",
-  projection: { roleRank: 5, helpRank: 5, plannerEligible: true },
+  projection: { roleRank: 5, helpRank: 5, plannerEligible: true, conductorEligible: false, reviewerEligible: true },
   displayName: "Qwen Code",
   family: "qwen",
   transport: "acp",

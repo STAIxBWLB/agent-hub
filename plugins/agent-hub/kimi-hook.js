@@ -19111,7 +19111,7 @@ var init_definition = __esm(() => {
   AGY_DEFINITION = {
     api: 1,
     kind: "agy",
-    projection: { roleRank: 7, helpRank: 4, plannerEligible: false },
+    projection: { roleRank: 7, helpRank: 4, plannerEligible: false, conductorEligible: false, reviewerEligible: false },
     displayName: "Antigravity",
     family: "agy",
     transport: "ws-pull",
@@ -20998,7 +20998,7 @@ var init_builtin_metadata = __esm(() => {
   };
   NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN = Object.freeze([
     {
-      projection: { roleRank: 0, helpRank: 0, plannerEligible: true },
+      projection: { roleRank: 0, helpRank: 0, plannerEligible: true, conductorEligible: true, reviewerEligible: true },
       api: 1,
       kind: "claude",
       questionWaitMs: 45000,
@@ -21040,7 +21040,7 @@ var init_builtin_metadata = __esm(() => {
     },
     {
       reviewerVariant: CODEX_REVIEWER_VARIANT,
-      projection: { roleRank: 1, startRank: 1, helpRank: 1, plannerEligible: true },
+      projection: { roleRank: 1, startRank: 1, helpRank: 1, plannerEligible: true, conductorEligible: true, reviewerEligible: true },
       api: 1,
       kind: "codex",
       questionWaitMs: 45000,
@@ -21078,7 +21078,7 @@ var init_builtin_metadata = __esm(() => {
     },
     {
       reviewerVariant: KIMI_REVIEWER_VARIANT,
-      projection: { roleRank: 2, startRank: 2, helpRank: 2, plannerEligible: true },
+      projection: { roleRank: 2, startRank: 2, helpRank: 2, plannerEligible: true, conductorEligible: false, reviewerEligible: true },
       api: 1,
       kind: "kimi",
       questionWaitMs: 45000,
@@ -21121,7 +21121,7 @@ var init_builtin_metadata = __esm(() => {
       display: KIMI_DISPLAY
     },
     {
-      projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false },
+      projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false, conductorEligible: true, reviewerEligible: true },
       api: 1,
       kind: "pi",
       questionWaitMs: 300000,
@@ -21150,7 +21150,7 @@ var init_builtin_metadata = __esm(() => {
       display: PI_DISPLAY
     },
     {
-      projection: { roleRank: 3, helpRank: 7, plannerEligible: false },
+      projection: { roleRank: 3, helpRank: 7, plannerEligible: false, conductorEligible: false, reviewerEligible: true },
       api: 1,
       kind: "local",
       questionWaitMs: 300000,
@@ -21176,7 +21176,7 @@ var init_builtin_metadata = __esm(() => {
       display: LOCAL_DISPLAY
     },
     {
-      projection: { roleRank: 6, startRank: 3, helpRank: 3, plannerEligible: true },
+      projection: { roleRank: 6, startRank: 3, helpRank: 3, plannerEligible: true, conductorEligible: true, reviewerEligible: true },
       api: 1,
       kind: "jcode",
       questionWaitMs: 45000,
@@ -21333,7 +21333,7 @@ var init_qwen = __esm(() => {
   QWEN_DEFINITION = {
     api: 1,
     kind: "qwen",
-    projection: { roleRank: 5, helpRank: 5, plannerEligible: true },
+    projection: { roleRank: 5, helpRank: 5, plannerEligible: true, conductorEligible: false, reviewerEligible: true },
     displayName: "Qwen Code",
     family: "qwen",
     transport: "acp",
@@ -21711,13 +21711,14 @@ function assertDefinitionCoherence(definition) {
   }
   const projection = definition.projection;
   if (projection !== undefined) {
-    if (!projection || typeof projection !== "object" || Array.isArray(projection) || Object.keys(projection).some((key) => !["roleRank", "startRank", "helpRank", "plannerEligible"].includes(key)))
+    if (!projection || typeof projection !== "object" || Array.isArray(projection) || Object.keys(projection).some((key) => !["roleRank", "startRank", "helpRank", "plannerEligible", "conductorEligible", "reviewerEligible"].includes(key)))
       fail("projection", "invalid projection metadata");
     for (const field of ["roleRank", "startRank", "helpRank"])
       if (projection[field] !== undefined && (typeof projection[field] !== "number" || !Number.isFinite(projection[field])))
         fail(`projection.${field}`, "rank must be finite");
-    if (projection.plannerEligible !== undefined && typeof projection.plannerEligible !== "boolean")
-      fail("projection.plannerEligible", "boolean required");
+    for (const field of ["plannerEligible", "conductorEligible", "reviewerEligible"])
+      if (projection[field] !== undefined && typeof projection[field] !== "boolean")
+        fail(`projection.${field}`, "boolean required");
   }
   const attach = definition.attach, pullOnly = attach?.pullOnlyForms;
   if (pullOnly !== undefined) {

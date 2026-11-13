@@ -245,6 +245,7 @@ import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate, launcherOf 
 import { TerminalLaunches, terminalOwnerReads } from "./terminal-launch.ts";
 
 import { START_AGENTS_DEFAULT, checkStartAgents } from "./start-agents.ts";
+import { adapterCeiling, applyRoleCeiling } from "../adapters/role-eligibility.ts";
 import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
@@ -473,7 +474,19 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
   const roles: Record<string, string[]> = { ...DEFAULT_ROLES };
   const conductor = { ...DEFAULT_CONFIG.conductor };
   const notices: string[] = [];
+  // #1063: what the layers declare after the adapter ceiling and before the #1408 eligibility drop. At most one conductor is checked on this map (as on main), so an eligible-ceiling kind that cannot conduct is refused, never ignored, and a conductor the ceiling never allowed does not count.
+  const declaredRoles: Record<string, string[]> = { ...DEFAULT_ROLES };
   let planner: string | string[] | undefined;
+  // #1408 R2: the conductor role needs an interactive session, so the loader reads each peer's effective start mode (config.local.json wins per peer) before it reads roles.
+  const startModes: Record<string, StartMode> = {};
+  for (const name of CONFIG_FILES) {
+    const raw = layers ? layers.find(layer => layer.name === name)?.raw : (() => { try { return JSON.parse(readFileSync(join(cwd, ".agenthub", name), "utf8")) as Record<string, unknown>; } catch { return undefined; } })();
+    const peers = raw?.peers;
+    if (peers && typeof peers === "object" && !Array.isArray(peers)) for (const [peer, block] of Object.entries(peers)) {
+      const mode = block && typeof block === "object" ? (block as { start_mode?: unknown }).start_mode : undefined;
+      if (mode === "tui" || mode === "headless") startModes[peer] = mode;
+    }
+  }
   for (const name of CONFIG_FILES) {
     let file: Record<string, unknown>;
     if (layers && !layers.some(layer => layer.name === name)) continue;
@@ -483,11 +496,13 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
       if (!file.roles || typeof file.roles !== "object" || Array.isArray(file.roles)) throw new Error("roles must be an object of peer role lists");
       for (const [peer, assigned] of Object.entries(file.roles)) {
         conductorPeer({ [peer]: assigned });
-        const definition = definitionOf(peer), ceiling = definition?.routing?.allowedRoles;
         const declared = assigned as string[];
-        // #525 R1: planner needs a kind that can plan (projection.plannerEligible); such an entry is dropped with the ceiling notice, never thrown.
-        roles[peer] = (ceiling ? declared.filter(role => ceiling.includes(role)) : declared).filter(role => role !== "planner" || !definition || definition.projection?.plannerEligible === true);
-        if (roles[peer]!.length !== declared.length) notices.push(`roles.${peer}: ignored roles outside the adapter ceiling`);
+        declaredRoles[peer] = adapterCeiling(peer, declared);
+        // #525 R1: planner needs a kind that can plan; #1408 R2: conductor needs an eligible kind in an interactive form. Such an entry is dropped with a notice, never thrown, and nobody else gains it.
+        // The builtin registry only, exactly as before: a project-configured ACP kind keeps the roles it is given (#525, #735).
+        const kept = applyRoleCeiling(peer, declared, startModes[peer]);
+        roles[peer] = kept.roles;
+        notices.push(...kept.notices);
       }
     }
     if (file.planner !== undefined) {
@@ -510,6 +525,7 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
       }
     }
   }
+  conductorPeer(declaredRoles);
   conductorPeer(roles);
   return { roles, conductor, ...(planner ? { planner } : {}), ...(notices.length ? { notices } : {}) };
 }
@@ -9907,6 +9923,11 @@ export async function startDaemon(opts: DaemonOptions) {
     else throw new Error(`${def.key} does not restore a boolean`);
     return next;
   }
+  function conductorStartModeRefusal(def: SettingDef, value: SettingValue): string | undefined {
+    const match = /^peers\.([^.]+)\.start_mode$/.exec(def.key);
+    if (!match || value !== "headless") return undefined;
+    return conductorPeer(config.roles) === match[1] ? `${match[1]} holds the conductor role, which needs an interactive session; move the role first (the roles block in .agenthub/config.json), then set the start mode` : undefined;
+  }
   function rosterRemovalRefusal(peer: string, now: boolean): string | undefined {
     if (stopping || recoveryActive()) return "recovery or shutdown is holding roster changes";
     if (conductorPeer(config.roles) === peer) return `${peer} holds the conductor role; move the role before removing it`;
@@ -10032,6 +10053,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const refusal = settingRefusal(def, value, authority);
     if (refusal) return { ok: false, error: refusal };
     const source = settingSource(authority);
+    // #1408 R2: the conductor needs an interactive session, so its start mode cannot be set to headless while it holds the role. The refusal comes before any write, from the running policy.
+    const modeRefusal = conductorStartModeRefusal(def, value);
+    if (modeRefusal) return { ok: false, error: modeRefusal };
     if (def.group === "Roster") return changeRosterSetting(def, value, source, confirm, now === true, false, authority, reason);
     if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     const peer = def.group === "Permissions" ? def.path.at(-1)! : undefined;
