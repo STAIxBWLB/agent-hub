@@ -3080,7 +3080,7 @@ export class Tasks {
    */
   private ownerRefusals(assignment: Assignment): string | undefined {
     const refused = (assignment.refusals ?? []).filter(row => row.role === "owner");
-    return refused.length ? `no peer can take the planner pull: ${refused.map(row => `${row.peer}: ${row.reason}`).join("; ")}` : undefined;
+    return refused.length ? `${NO_PLANNER_CAPACITY}; routing refusals: ${refused.map(row => `${row.peer}: ${row.reason}`).join("; ")}` : undefined;
   }
   /** Keep routing refusals even when other peers also have known WIP or delivery pressure. */
   private pullRefusal(task: Task, assignment: Assignment): string {
