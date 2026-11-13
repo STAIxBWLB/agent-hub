@@ -5287,7 +5287,11 @@ export class Tasks {
   private evidenceOrigins(link: EvidenceLinkV1): EvidenceReadOrigins {
     const unknown: EvidenceReadOrigins = { state: "unknown" };
     if (!this.d.evidenceSourceMeta) return unknown;
-    const inventory = this.d.board.latestEvidenceLinks(this.d.project, link.taskId, link.claimId, link.claimRevision, 128);
+    // #931 follow-up: an inventory that changed since the caller read it (a link revision gone between the list and its read) leaves the origins unknown beside the evidence that did resolve;
+    // it never fails the whole read. Any other board error (storage invalid) is not this case and still throws, so a damaged hub.db is not hidden behind an advisory field.
+    let inventory: ReturnType<Board["latestEvidenceLinks"]>;
+    try { inventory = this.d.board.latestEvidenceLinks(this.d.project, link.taskId, link.claimId, link.claimRevision, 128); }
+    catch (error) { if (error instanceof Error && error.message.startsWith("evidence inventory changed")) return unknown; throw error; }
     if (!inventory.complete || !inventory.links.some(row => row.id === link.id && row.revision === link.revision)) return unknown;
     try {
       const groups: Set<string>[] = [], member: { id: string; keys: readonly string[] }[] = [];
