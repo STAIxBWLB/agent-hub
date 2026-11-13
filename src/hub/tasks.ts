@@ -148,6 +148,8 @@ export interface AuditView extends AuditSummary {
   units: { unit: string; state: string; prior?: { audit: number; head: string }; reason?: string }[];
   items: PublicAuditFinding[];
   withheld?: number;
+  /** Findings in this report that were already verified or rejected, so the hub left them as decided. */
+  notUpdated?: string[];
 }
 export interface TasksDeps {
   /** Private host-owned probe ledger and fixture ports. No configuration, wire or model-selected runner. */
@@ -6519,7 +6521,7 @@ export class Tasks {
     }
     return report;
   }
-  /** #1328 T3: approve a merge observed outside the hub, without attributing a verdict to a reviewer. */
+
   /** #1403 A4: a summary of the newest audit for the release report: ref, profile, partial and unit counts, never a finding or a path. */
   auditLine(): AuditSummary | undefined {
     const audit = this.d.board.audits(1)[0];
@@ -6533,7 +6535,9 @@ export class Tasks {
       const id = unitId(surface, companion);
       for (const audit of audits) {
         const unit = audit.units.find(row => row.unit === id);
-        if (unit?.state !== "covered") continue;
+        // The newest audit that lists the unit decides: a scoped audit that left it out says nothing, but a deferred, out-of-scope or still planned unit plans it again.
+        if (!unit) continue;
+        if (unit.state !== "covered") return undefined;
         const base = unit.prior?.head ?? audit.ref, origin = unit.prior?.audit ?? audit.id, paths = since(base);
         // Unknown never carries: an unreadable change list, or a changed path under the surface, plans the unit again.
         return paths && !paths.some(path => matchConfigPath(surface, path)) ? { audit: origin, head: base } : undefined;
@@ -6554,7 +6558,7 @@ export class Tasks {
     if (config.mode === "off") throw new PreEffectToolRefusal("security audits need the lifecycle on: set sdlc.mode to advise or enforce in .agenthub/sdlc.toml");
     if (!config.security) throw new PreEffectToolRefusal("security audits need a [security] table in .agenthub/sdlc.toml (paths and companions)");
     const source = this.d.auditSource;
-    if (!source) throw new PreEffectToolRefusal("this project has no readable git checkout for an audit");
+    if (!source) throw new PreEffectToolRefusal("this hub has no git source to read for an audit; start the hub from a git checkout of the project and retry ahub sdlc audit start");
     const profile = input.profile === undefined ? "standard" : input.profile;
     if (typeof profile !== "string" || !(AUDIT_PROFILES as readonly string[]).includes(profile)) throw new PreEffectToolRefusal(`profile is one of ${AUDIT_PROFILES.join(", ")}`);
     const head = source.head();
@@ -6656,12 +6660,14 @@ export class Tasks {
     check();
     const now = this.d.board.audit(audit.id), nowTask = this.d.board.get(task.id);
     if (!now || !nowTask || nowTask.owner !== task.owner || nowTask.state !== task.state || JSON.stringify(now.units) !== JSON.stringify(audit.units)) throw new PreEffectToolRefusal("the audit changed while the report was checked; read it again and retry");
-    if (writes) this.d.board.auditReport(audit.id, units, filed);
-    for (const decision of decisions) if (!this.d.board.auditVerify(audit.id, decision.finding, by, decision.verdict)) throw new Error("a finding was decided meanwhile; read the audit again");
+    // One transaction: a unit report, its findings and the verifications land together or not at all.
+    const skipped = this.d.board.auditApply(audit.id, { units: writes ? units : undefined, findings: filed, decisions, by });
+    if (skipped === undefined) throw new PreEffectToolRefusal("a finding was decided meanwhile; read the audit again and retry");
     const full = this.d.board.audit(audit.id)!;
-    return this.auditView(full, true);
+    return { ...this.auditView(full, true), ...(skipped.length ? { notUpdated: skipped } : {}) };
   }
 
+  /** #1328 T3: approve a merge observed outside the hub, without attributing a verdict to a reviewer. */
   async adoptMerge(by: PeerId, id: unknown, pr: unknown, fence?: () => string | undefined): Promise<{ task: number; state: "approved" }> {
     const check = this.requestCheck(by, fence);
     const authority = () => {

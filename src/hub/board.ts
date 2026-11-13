@@ -1229,18 +1229,33 @@ export class Board {
     const all = rows.map(row => this.auditRow(row)!);
     return recorded ? all.filter(row => row.units.some(unit => unit.reportedBy)) : all;
   }
-  /** The ledger and the findings change together: one transaction, so a report is never half applied. */
-  auditReport(id: number, units: readonly AuditUnit[], findings: readonly { finding: ReviewFinding; foundBy: string; at: number }[]): void {
-    this.atomic(() => {
-      this.db.query("UPDATE security_audits SET units=? WHERE id=?").run(JSON.stringify(units), id);
-      const next = (this.db.query("SELECT COALESCE(MAX(seq),0) AS seq FROM security_audit_findings WHERE audit=?").get(id) as { seq: number }).seq;
-      let seq = next;
-      for (const item of findings) {
-        const existing = this.db.query("SELECT seq FROM security_audit_findings WHERE audit=? AND finding_id=?").get(id, item.finding.id) as { seq: number } | null;
-        if (existing) this.db.query("UPDATE security_audit_findings SET body=?,found_by=?,at=? WHERE audit=? AND seq=? AND verified_by IS NULL AND rejected_by IS NULL").run(JSON.stringify(item.finding), item.foundBy, item.at, id, existing.seq);
-        else this.db.query("INSERT INTO security_audit_findings(audit,seq,finding_id,body,found_by,at) VALUES(?,?,?,?,?,?)").run(id, ++seq, item.finding.id, JSON.stringify(item.finding), item.foundBy, item.at);
-      }
-    });
+  /**
+   * One report in one transaction: the ledger, the filed findings and the verifications land together or not at all. A finding id already verified or rejected is left as decided and returned
+   * in the skipped list (the caller says so); a verification whose guard fails (decided meanwhile, or by its own finder) rolls everything back and returns undefined.
+   */
+  auditApply(id: number, change: { units?: readonly AuditUnit[]; findings: readonly { finding: ReviewFinding; foundBy: string; at: number }[]; decisions: readonly { finding: string; verdict: "verified" | "rejected" }[]; by: string }): string[] | undefined {
+    const skipped: string[] = [];
+    try {
+      this.atomic(() => {
+        if (change.units) this.db.query("UPDATE security_audits SET units=? WHERE id=?").run(JSON.stringify(change.units), id);
+        let seq = (this.db.query("SELECT COALESCE(MAX(seq),0) AS seq FROM security_audit_findings WHERE audit=?").get(id) as { seq: number }).seq;
+        for (const item of change.findings) {
+          const existing = this.db.query("SELECT seq FROM security_audit_findings WHERE audit=? AND finding_id=?").get(id, item.finding.id) as { seq: number } | null;
+          if (!existing) { this.db.query("INSERT INTO security_audit_findings(audit,seq,finding_id,body,found_by,at) VALUES(?,?,?,?,?,?)").run(id, ++seq, item.finding.id, JSON.stringify(item.finding), item.foundBy, item.at); continue; }
+          const changed = this.db.query("UPDATE security_audit_findings SET body=?,found_by=?,at=? WHERE audit=? AND seq=? AND verified_by IS NULL AND rejected_by IS NULL").run(JSON.stringify(item.finding), item.foundBy, item.at, id, existing.seq).changes;
+          if (changed !== 1) skipped.push(item.finding.id);
+        }
+        for (const decision of change.decisions) {
+          const column = decision.verdict === "verified" ? "verified_by" : "rejected_by";
+          const done = this.db.query(`UPDATE security_audit_findings SET ${column}=? WHERE audit=? AND finding_id=? AND verified_by IS NULL AND rejected_by IS NULL AND found_by<>?`).run(change.by, id, decision.finding, change.by).changes;
+          if (done !== 1) throw new Error("audit decision lost");
+        }
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "audit decision lost") return undefined;
+      throw error;
+    }
+    return skipped;
   }
   auditFindings(id: number): AuditFinding[] {
     const rows = this.db.query("SELECT body,found_by,at,verified_by,rejected_by FROM security_audit_findings WHERE audit=? ORDER BY seq").all(id) as { body: string; found_by: string; at: number; verified_by: string | null; rejected_by: string | null }[];

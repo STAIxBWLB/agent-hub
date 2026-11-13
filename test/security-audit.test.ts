@@ -353,7 +353,56 @@ test("store: the ledger survives a reopen of hub.db, and a report is one transac
   try {
     expect(again.audit(a.audit)!.units.find(u => u.unit === "src/local/**|agents")?.state).toBe("covered");
     expect(again.auditFindings(a.audit)).toHaveLength(1);
-    expect(() => again.auditReport(a.audit, [{ unit: "x|y", surface: "x", companion: "y", state: "planned" }], [{ finding: { id: "dup", pass: "security", severity: "nit", disposition: "open" } as never, foundBy: "codex", at: 1 }, { finding: { id: "dup", pass: "security", severity: "nit", disposition: "open" } as never, foundBy: "codex", at: 1 }])).not.toThrow();
+    const nit = { finding: { id: "dup", pass: "security", severity: "nit", disposition: "open" } as never, foundBy: "codex", at: 1 };
+    expect(again.auditApply(a.audit, { units: [{ unit: "x|y", surface: "x", companion: "y", state: "planned" }], findings: [nit, nit], decisions: [], by: "codex" })).toEqual([]);
     expect(again.auditFindings(a.audit).filter(f => f.finding.id === "dup")).toHaveLength(1);
   } finally { again.close(); }
+});
+
+test("carry-over: the newest audit that lists a unit decides, so a later deferred unit plans again instead of walking back to an older covered state", async () => {
+  const r = await rig("advise");
+  const close = (a: { task: number; auditor: string }) => { r.board.update(a.task, a.auditor, "done", { state: "in_review" }); r.board.update(a.task, "user", "cancelled", { state: "cancelled" }); };
+  const first = await started(r, { profile: "quick" });
+  await r.tasks.auditReport(first.auditor, { id: first.task, units: covered(r.board.audit(first.audit)!.units) });
+  close(first);
+  // src/local changed since the first audit, so the second plans that unit and the auditor defers it
+  r.source.heads.push(H3);
+  r.source.diffs.set(`${H2}..${H3}`, ["src/local/a.ts"]);
+  const second = await started(r, { profile: "quick" });
+  expect(r.board.audit(second.audit)!.units.find(u => u.unit === "src/local/**|general")!.state).toBe("planned");
+  await r.tasks.auditReport(second.auditor, { id: second.task, units: [{ unit: "src/local/**|general", state: "deferred", reason: "ran out of time" }] });
+  close(second);
+  // nothing changed since the second audit: the unit is still deferred there, so it must not fall back to the first audit's covered
+  r.source.heads.push(H1);
+  r.source.known.add(H1);
+  r.source.diffs.set(`${H2}..${H1}`, []);
+  r.source.diffs.set(`${H3}..${H1}`, []);
+  const third = await r.tasks.auditStart("user", { profile: "quick" });
+  const ledger = r.board.audit(third.audit)!.units;
+  expect(ledger.find(u => u.unit === "src/local/**|general")).toMatchObject({ state: "planned" });
+  expect(ledger.find(u => u.unit === "src/local/**|general")!.prior).toBeUndefined();
+  expect(ledger.filter(u => u.prior)).toHaveLength(2);
+});
+
+test("report: a re-filed finding that was already decided is named in notUpdated and left as decided, and a lost verification rolls the whole report back", async () => {
+  const r = await rig("advise"), a = await started(r);
+  await r.tasks.auditReport(a.auditor, { id: a.task, findings: [finding("one"), finding("two")] });
+  await r.tasks.auditReport(a.others[0]!, { id: a.task, verify: [{ finding: "one", verdict: "verified" }] });
+  const again = await r.tasks.auditReport(a.auditor, { id: a.task, units: [{ unit: "src/local/**|agents", state: "covered" }], findings: [finding("one", { rationale: "rewritten" }), finding("two", { rationale: "revised" })] });
+  expect(again.notUpdated).toEqual(["one"]);
+  expect(r.board.auditFindings(a.audit).find(f => f.finding.id === "one")!.finding.rationale).not.toBe("rewritten");
+  expect(r.board.auditFindings(a.audit).find(f => f.finding.id === "two")!.finding.rationale).toBe("revised");
+  // two verifications where the second is already decided: nothing is applied, including the first
+  const before = JSON.stringify(r.board.auditFindings(a.audit));
+  await expect(r.tasks.auditReport(a.others[1]!, { id: a.task, verify: [{ finding: "two", verdict: "verified" }, { finding: "one", verdict: "rejected" }] })).rejects.toThrow(/already decided/);
+  expect(JSON.stringify(r.board.auditFindings(a.audit))).toBe(before);
+  // the store itself rolls back when a guard fails mid-batch
+  expect(r.board.auditApply(a.audit, { findings: [], decisions: [{ finding: "two", verdict: "verified" }, { finding: "one", verdict: "rejected" }], by: a.others[1]! })).toBeUndefined();
+  expect(JSON.stringify(r.board.auditFindings(a.audit))).toBe(before);
+});
+
+test("start: without a git source the refusal names the next step", async () => {
+  const r = await rig("advise");
+  (r.tasks as unknown as { d: { auditSource?: unknown } }).d.auditSource = undefined;
+  await expect(r.tasks.auditStart("user", {})).rejects.toThrow(/start the hub from a git checkout/);
 });
