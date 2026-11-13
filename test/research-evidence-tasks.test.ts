@@ -480,3 +480,13 @@ for (const code of [0, 1]) test(`#931 T2 observer exclusion survives asynchronou
   expect(check?.note).toContain("EVIDENCE_CHECK_TAIL_CANARY"); expect(check?.withheld).toBe(true);
   expect(JSON.stringify([published, f.notices, tasks.publicView(task, true)])).not.toMatch(/EVIDENCE_CHECK_TAIL_CANARY|EVIDENCE_PENDING_SUMMARY_CANARY/);
 });
+
+
+test("#931 T2 development hosts refuse the hidden evidence reader before consulting sources", async () => {
+  const f = await fixture(), saved = await f.tasks.evidenceRecord("codex", f.input());
+  let reads = 0;
+  const tasks = new Tasks({ cwd: f.cwd, board: f.board, bus: f.bus, project: "evidence-fixture", profile: "dev", roles: { codex: ["implementer"] }, routing: () => loadRouting(f.cwd), notify: () => {},
+    evidenceSourceRead: async (_by, link) => { reads++; return resolvedRead(link); } });
+  await refused(tasks.evidenceRead("codex", { id: saved.id }));
+  expect(reads).toBe(0);
+});

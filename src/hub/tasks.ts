@@ -4982,6 +4982,7 @@ export class Tasks {
   async evidenceRead(by: PeerId, input: unknown): Promise<EvidenceReadResult> {
     const refuse = () => new PreEffectToolRefusal("evidence read unavailable; use a current evidence id on a research task visible through hub_task_show");
     try { requireLocalTaskPeer(by); } catch { throw refuse(); }
+    if (this.d.profile !== "research") throw refuse();
     const check = this.requestCheck(by, () => this.studyHold());
     let id: string, revision: number | undefined;
     try {
@@ -7986,7 +7987,7 @@ export class Tasks {
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
     this.checkQueue = this.checkQueue
-      .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld, specInspection, resolvedReviewComments, reviewObserverTurn))
+      .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld, specInspection, resolvedReviewComments, reviewObserverTurn, observerExcluded))
       .catch((e: Error) => {
         this.releaseNotice(`task #${pending.id}: its check result could not be recorded: ${e.message}`);
         this.releaseNotice(`task #${pending.id}: its owner retry notice could not be published`, () => {
@@ -8089,7 +8090,7 @@ export class Tasks {
     return { ...(key ? { checkKey: key } : {}), ...(match ? { missingKeys: Number(match[2]) } : {}) };
   }
 
-  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean, specInspection: PreparedSpecInspection, resolvedReviewComments?: string[], reviewObserverExcluded = false): Promise<void> {
+  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean, specInspection: PreparedSpecInspection, resolvedReviewComments?: string[], reviewObserverExcluded = false, evidenceObserverExcluded = false): Promise<void> {
     const result = await this.d.runCheck!(command).catch((e: Error) => ({ code: null, timedOut: false, interrupted: false, tail: e.message }));
     const checkOwner = this.checking.get(id);
     this.checking.delete(id);
@@ -8126,7 +8127,7 @@ export class Tasks {
     if (task.owner) this.d.board.recordOutcome(task.owner, task.class, false);
     this.contradict(task);
     this.d.notify(`task ${this.publicTitle(task)}: its check failed (${outcome}); it stays with ${task.owner ?? by}`);
-    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${!reviewObserverExcluded && result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii, "owner", this.reviewObserverTurn(by, id));
+    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${!evidenceObserverExcluded && result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii, "owner", this.reviewObserverTurn(by, id));
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
