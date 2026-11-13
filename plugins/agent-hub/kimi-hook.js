@@ -13353,7 +13353,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.25.0"
+      "@staix/agent-mem": "0.26.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -14082,6 +14082,19 @@ var init_public_prune_inputs = __esm(() => {
   batches = new WeakMap;
 });
 
+// node_modules/@staix/agent-mem/src/memory/inspection-bound.ts
+var kinds;
+var init_inspection_bound = __esm(() => {
+  kinds = new Set(["bytes", "rows", "source-files", "metadata-bytes", "row-bytes", "retained-identities"]);
+});
+
+// node_modules/@staix/agent-mem/src/memory/inspection-stream.ts
+var CHUNK_BYTES, DEFAULT_ROW_BYTES;
+var init_inspection_stream = __esm(() => {
+  CHUNK_BYTES = 64 * 1024;
+  DEFAULT_ROW_BYTES = 16 * 1024 * 1024;
+});
+
 // node_modules/@staix/agent-mem/src/memory/generation-index.ts
 var init_generation_index = __esm(() => {
   init_public_prune_inputs();
@@ -14092,6 +14105,8 @@ var init_generation_index = __esm(() => {
   init_bridge();
   init_prune();
   init_store();
+  init_inspection_bound();
+  init_inspection_stream();
 });
 
 // node_modules/@staix/agent-mem/src/memory/migrate.ts
@@ -14735,6 +14750,7 @@ var init_consolidate = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/sync-policy-inspection.ts
 var init_sync_policy_inspection = __esm(() => {
   init_bridge();
+  init_inspection_bound();
   init_platform();
   init_policy();
   init_config();
