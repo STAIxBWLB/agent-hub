@@ -39,6 +39,7 @@ paths:
   - src/hub/deliverables.ts
   - src/hub/deliverable-files.ts
   - src/hub/plan-conformance.ts
+  - src/hub/audit-source.ts
   - src/hub/sdlc-merge.ts
   - src/hub/sdlc-mirror.ts
   - src/hub/ci-watch.ts
@@ -356,7 +357,7 @@ Agent list reads return bounded, newest-updated compact pages built from public 
 Lifecycle policy can be off, advisory or enforced; this is separate from always-applicable role and privacy invariants. Plans, cost/check scope, review findings and external evidence retain their own typed provenance. Research campaigns and experiments likewise distinguish declared, host-observed and runner-attested facts instead of promoting prose to a signed result ([#481](https://github.com/STAIxBWLB/agent-hub/issues/481), [#932](https://github.com/STAIxBWLB/agent-hub/issues/932), [#1018](https://github.com/STAIxBWLB/agent-hub/issues/1018)). Detailed research contracts remain in the [campaign design](../specs/2026-11-01-research-campaigns-design.md).
 
 
-Enabled lifecycle plans may retain a full base commit, excluded literal paths, stop conditions and ordered steps with verification text. Exclusions override broader includes in PR conformance, including the merge queue. Accept/done drift compares the base with the recorded task head through bounded local Git metadata and privacy-screened names; absent, foreign or incomplete evidence remains unknown. Drift is advisory in every lifecycle mode, independent of the existing PR conformance approval gate. Verification text grants no execution authority. Off exposes no new plan schema or drift readback ([#1403](https://github.com/STAIxBWLB/agent-hub/issues/1403)).
+Enabled lifecycle plans may retain a full base commit, excluded literal paths, stop conditions and ordered steps with verification text. Exclusions override broader includes in PR conformance, including the merge queue. Accept drift compares the base with the local remote-tracking default tip resolved through `refs/remotes/origin/HEAD`, without requiring a task head. Done drift compares the base with the unique merge-base of the recorded task head and that default tip, excluding own commits. Require the base to be an ancestor of the selected endpoint, recheck the default tip, and keep missing, shallow, ambiguous, reversed, foreign or incomplete evidence unknown. Use bounded hardened local-only Git and privacy-screened names; never fetch, use checkout HEAD or guess a default branch. Drift is advisory in every lifecycle mode, independent of the existing PR conformance approval gate. Verification text grants no execution authority. Off exposes no new plan schema or drift readback ([#1403](https://github.com/STAIxBWLB/agent-hub/issues/1403)).
 
 When the specs policy is enabled, covering design specs participate in proposal/accept notices and completion/review reports. Report mode informs; require mode needs an updated spec or a recorded acknowledgement for each applicable unchanged spec. Commitless and verified no-change work remains quiet, and private evidence is withheld rather than exposed to satisfy a report. These modes preserve owner choice while making design drift visible ([#1064](https://github.com/STAIxBWLB/agent-hub/issues/1064)).
 

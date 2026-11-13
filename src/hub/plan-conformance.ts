@@ -53,7 +53,7 @@ export interface PlanDrift {
   paths: string[];
 }
 
-/** A complete base-to-head inventory, independent of PR conformance. Never an admission gate. */
+/** A complete base-to-upstream-endpoint inventory supplied by the host, independent of PR conformance. Never an admission gate. */
 export function planDrift(planPaths: readonly string[] | undefined, changed: readonly string[] | undefined): PlanDrift {
   // Reuse literal path validation and inventory bounds; the dummy head conveys no repository evidence.
   const report = planConformance(planPaths, changed === undefined ? undefined : { head: "0".repeat(40), paths: changed, pathsComplete: true, typesComplete: true });
