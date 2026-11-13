@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { realPath } from "../src/hub/project.ts";
 import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
@@ -57,7 +58,8 @@ test("a Claude channel session lists the same hub tools after a hub restart as b
 
 test("a restart that changes only tool schemas, not names, re-announces the tool list (#490)", async () => {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-schema-")));
-  let daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  // Both starts keep optional lifecycle tools enabled; only the stage schema changes.
+  let daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config, sdlc: sdlcConfig({ mode: "advise" }) });
   const { client, changes } = await channelSession(dir);
   try {
     await until(() => daemon.bus.peers.get("claude")?.state === "idle");
