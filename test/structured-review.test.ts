@@ -8,6 +8,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig, type SdlcMode } from "../src/hub/sdlc.ts";
+import { positionalFindingId } from "../src/hub/review-findings.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
@@ -376,4 +377,25 @@ test("#736 a free-form superseded_by joins the replacement, and repository ident
   await submit(r.tasks, a.id, [finding("same-branch-name")]);
   await submit(r.tasks, b.id, [finding("same-branch-name")]);
   expect(r.board.list("backlog").map(card => card.detail)).toEqual([expect.stringContaining("security:same-branch-name")]);
+});
+
+test("#1436 positional finding ids are review-local: two tasks with an N1 propose no recurrence card; a semantic id still recurs", async () => {
+  for (const id of ["N1", "F5", "B1", "nit-1", "I_2", "3"]) expect(positionalFindingId(id)).toBe(true);
+  for (const id of ["missing-origin-check", "audit-carry-skips-newer-deferred", "nit-limit"]) expect(positionalFindingId(id)).toBe(false);
+  const r = rig("off", { roles: { claude: ["planner", "reviewer"], codex: ["implementer"] } });
+  const one = r.create(), two = r.create();
+  for (const id of ["N1", "F5", "nit-1"]) {
+    await submit(r.tasks, one.id, [finding(id, { pass: "bugs", severity: "nit" })]);
+    await submit(r.tasks, two.id, [finding(id, { pass: "bugs", severity: "nit" })]);
+    r.reopen(one.id); r.reopen(two.id);
+  }
+  expect(r.board.list("backlog")).toHaveLength(0);
+  await submit(r.tasks, one.id, [finding("shared-defect", { pass: "bugs" })]);
+  await submit(r.tasks, two.id, [finding("shared-defect", { pass: "bugs" })]);
+  const cards = r.board.list("backlog");
+  expect(cards).toHaveLength(1);
+  // A planner cannot cancel the hub's card; the refusal names who can and the exact command.
+  const refused = await r.tasks.cancel(cards[0]!.id, "claude", { reason: "false recurrence" }).then(() => "", (error: Error) => error.message);
+  expect(refused).toContain(`ahub task cancel ${cards[0]!.id} --reason`);
+  expect(refused).toContain("filed by the hub");
 });

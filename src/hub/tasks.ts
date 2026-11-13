@@ -64,7 +64,7 @@ import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue
 import { adoptMergeGates, guardedMerge, mergeModeFor, mergeView, readAdoptMergeEvidence, requiredChecksFor, type MergeView } from "./sdlc-merge.ts";
 import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
 import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-scope.ts";
-import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, findingFollowUps, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
+import { positionalFindingId, DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, findingFollowUps, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness, type ReleaseReportPolicy } from "./sdlc-release.ts";
 import { loadRoleCatalog, roleIdentity, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy, matchesPolicyLexically, policyRealPath, insideRoot } from "./path-policy.ts";
@@ -1201,7 +1201,8 @@ export class Tasks {
       .flatMap(row => row.detail?.split("\n").filter(line => line.startsWith("Review finding key: ")) ?? []));
     const created: number[] = [];
     // No await separates the durable dedupe read from creation; concurrent verdicts see the first proposal.
-    for (const item of items.filter(item => item.disposition !== "false_positive")) {
+    // #1436: a positional id is local to its review, so two tasks that both have an `N1` share a label, not a defect.
+    for (const item of items.filter(item => item.disposition !== "false_positive" && !positionalFindingId(item.id))) {
       const same = (finding: ReviewFinding) => finding.id === item.id && finding.pass === item.pass;
       const holders = rows.filter(row => {
         if (this.isPii(row)) return false;
@@ -5694,6 +5695,8 @@ export class Tasks {
         this.planningAuthority(by, task);
         const proposer = task.history.find(h => h.event === "proposed" || h.event === "backlogged")?.by;
         // #812 AC5: back in proposed or backlog with no execution evidence (the `hub_backlog_return_untouched` test: no branch, commit, PR, local check, done, verdict or reopen), an accepted-then-declined task is cancellable; any such evidence keeps today's refusal.
+        // #1436: a card the hub filed (a recurrence or follow-up proposal) is the person's to dismiss; say so and how.
+        if (proposer === HUB && proposer !== by) throw new PreEffectToolRefusal(`planner may cancel only its own historically unaccepted backlog or proposed work; task #${task.id} was filed by the hub, so the person dismisses it with \`ahub task cancel ${task.id} --reason <text>\``);
         if (proposer !== by || !["backlog", "proposed"].includes(task.state) || taskHasWorkEvidence(task)) throw new PreEffectToolRefusal("planner may cancel only its own historically unaccepted backlog or proposed work");
       }
       return task;

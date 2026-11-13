@@ -29,6 +29,11 @@ export interface ReviewFindingSet { head?: string; items: ReviewFinding[] }
 /** `openImportant` counts only findings that block approval; `needsValidation` and `preExisting` (open Important that do not) appear only when nonzero, so an off-mode readback is unchanged. */
 export interface ReviewFindingTally { important: number; nit: number; openImportant: number; openNit: number; fixed: number; falsePositive: number; accepted: number; needsValidation?: number; preExisting?: number }
 export const DEFAULT_MAX_NITS = 5;
+/**
+ * #1436: a positional label (`N1`, `F5`, `B1`, `nit-1`, `3`) numbers findings within one review, so it names nothing across tasks; REVIEW.md asks
+ * for semantic ids such as `missing-origin-check`. Only a semantic id is evidence that the same defect recurred on another task.
+ */
+export const positionalFindingId = (id: string): boolean => /^(?:[A-Za-z]{1,4}[-_.]?)?\d{1,3}$/.test(id);
 const MAX_ITEMS = 64, MAX_BYTES = 64 * 1024;
 const fail = (reason: string): never => { throw new Error("review findings: " + reason); };
 const BASE_FIELDS = ["id", "pass", "severity", "path", "disposition", "rationale", "anchor"], SECURITY_FIELDS = ["state", "boundary", "blocker", "origin"];
