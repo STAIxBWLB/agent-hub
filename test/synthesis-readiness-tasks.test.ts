@@ -313,3 +313,31 @@ test("#931 check input and task-show authority refuse before source resolution; 
   f.control.privateTurn = true;
   expect(await f.check(manifest)).toEqual({ taskId: f.task.id, status: "private" });
 });
+
+test("#931 a ready reversed claim order records the person's exact supplied manifest hash", async () => {
+  const f = await fixture(false);
+  f.board.update(f.task.id, "codex", "claims edited", { plan: { claims: ["CLAIM_TEXT_CANARY one", "CLAIM_TEXT_CANARY two"] } });
+  const firstIdentity = taskClaimIdentity(f.board.get(f.task.id)!, 1);
+  const first = await f.tasks.evidenceRecord("codex", f.input(0, "supports", 1));
+  const secondIdentity = taskClaimIdentity(f.board.get(f.task.id)!, 2);
+  const second = await f.tasks.evidenceRecord("codex", { ...f.input(1), claimId: secondIdentity.claimId, claimRevision: secondIdentity.claimRevision });
+  for (const slot of [1, 2]) f.tasks.recordClaimVerdict("user", f.task.id, { slot, verdict: "supported" });
+  const metadata = await f.tasks.synthesisEvidence("codex", { taskId: f.task.id });
+  if (metadata.status !== "available") throw new Error("expected complete public authoring inventory");
+  const selected = new Set([first.id, second.id]);
+  const manifest: SynthesisManifestV1 = { ...await f.manifest(), claims: metadata.claims.map(claim => {
+    if (!claim.inventory || !claim.complete) throw new Error("expected complete current inventory binding");
+    const evidence = claim.evidence.filter(row => selected.has(row.id));
+    expect(evidence).toHaveLength(1);
+    return { claimId: claim.claimId, claimRevision: claim.claimRevision, inventory: claim.inventory,
+      evidence: evidence.map(row => ({ id: row.id, revision: row.revision, citationKey: "fixture-paper" })) };
+  }).reverse() };
+  expect(manifest.claims.map(claim => claim.claimId)).toEqual([secondIdentity.claimId, firstIdentity.claimId]);
+  expect((await f.check(manifest)).status).toBe("ready");
+  const suppliedHash = synthesisManifestHash(manifest);
+  const recorded = await f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported",
+    synthesis: { manifestSha256: suppliedHash, disposition: "qualified" } }, manifest);
+  expect(recorded.history.at(-1)?.claim?.synthesis).toEqual({ manifestSha256: suppliedHash, disposition: "qualified" });
+  expect(synthesisManifestHash(manifest)).toBe(suppliedHash);
+  expect((await f.check(manifest)).status).toBe("ready");
+});

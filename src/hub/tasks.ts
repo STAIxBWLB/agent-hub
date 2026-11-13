@@ -5977,7 +5977,10 @@ export class Tasks {
   private currentSynthesisManifest(manifest: SynthesisManifestV1, current: SynthesisCurrent): SynthesisManifestV1 | undefined {
     try {
       if (!current.deliverable?.sha256 || !current.bibliography?.sha256 || !current.claims) return;
-      const claims = current.claims.map(claim => {
+      const currentClaims = current.claims;
+      const ordered = [...manifest.claims.flatMap(ref => currentClaims.filter(claim => claim.claimId === ref.claimId)),
+        ...currentClaims.filter(claim => !manifest.claims.some(ref => ref.claimId === claim.claimId))];
+      const claims = ordered.map(claim => {
         if (!claim.inventory) throw new Error("incomplete inventory");
         const inventory = inventoryBinding(claim.inventory.links, claim.inventory.complete);
         if (!inventory) throw new Error("incomplete inventory");
