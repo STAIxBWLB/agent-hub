@@ -117,7 +117,8 @@ export const SPACE_CAPS = { actors: 96, groups: 200, cards: 200, links: 128 } as
 /** Joins per-project scenes within acon's caps, keeping every reference inside what was kept. */
 export function mergeSpaces(scenes: SpaceScene[]): SpaceScene {
   // Declare groups first: a record's `group` must reference one of them, so a scene past the group bound loses the reference
-  // instead of the whole scene failing conformance (one group per project, so only 200+ running projects reach that).
+  // (pruned like `owner` and `card` below, never left as a dangling id) instead of the whole scene failing conformance; one
+  // group per project, so only 200+ running projects reach that.
   const groups: Group[] = [], declared = new Set<string>();
   for (const group of scenes.flatMap((s) => s.groups ?? [])) {
     if (groups.length >= SPACE_CAPS.groups) break;
@@ -125,7 +126,7 @@ export function mergeSpaces(scenes: SpaceScene[]): SpaceScene {
     declared.add(group.id);
     groups.push({ id: group.id, title: group.title });
   }
-  const grouped = <T extends { group?: string }>(row: T): T => ({ ...row, ...(row.group !== undefined && !declared.has(row.group) ? { group: undefined } : {}) });
+  const grouped = <T extends { group?: string }>(row: T): T => row.group === undefined || declared.has(row.group) ? row : (({ group: _group, ...rest }) => rest as T)(row);
   // Cap actors and cards first, then keep only references inside what was kept, so links to cut actors never crowd out visible ones.
   const actors = scenes.flatMap((s) => s.actors).slice(0, SPACE_CAPS.actors).map(grouped);
   const actorIds = new Set(actors.map((a) => a.id));

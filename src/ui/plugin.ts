@@ -8,7 +8,8 @@ import { guidanceLines, guidanceProbeStatusLines } from "./guidance-view.ts";
  * no action: every action is checked against the manager's own whitelist, and every view against DASHBOARD_VIEWS.
  * D2: the panel is the `ahub ui` dashboard itself, built from renderDashboard(), with post() routed to the host.
  *
- * Contract: @staix/agent-console api 1, declared structurally below so agent-hub keeps zero runtime dependencies.
+ * Contract: @staix/agent-console api 1. The manifest type is acon's own, imported type-only (#1375); the provider and item
+ * shapes below stay structural so agent-hub keeps zero runtime dependencies.
  */
 import type { VisualPayload, VisualSide, ActionMeta, ConsolePanelManifest } from "@staix/agent-console/contract";
 import { createHash } from "node:crypto";
@@ -645,7 +646,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
 /**
  * #1375 (acon#105): how long acon may reuse a snapshot instead of asking again, 0-60000 ms. The inbox provider serves a
  * result under its own `inboxFreshMs` as it is and recomputes past it, so declaring more than that would hand the console a
- * value the provider would already have refreshed — and a person acts on an approval it missed. A Space scene's only
+ * value the provider would already have refreshed, and a person acts on an approval it missed. A Space scene's only
  * time-dependent content is its message arcs, which expire on a 10 s window, so one poll interval of reuse cannot show the
  * page anything older than the poll it would have drawn anyway.
  */

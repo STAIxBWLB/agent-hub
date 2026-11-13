@@ -253,6 +253,23 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
     expect(spaceSceneProblems({ groups: groups(SPACE_CAPS.groups + 1), actors: [], zones: [], cards: [] })).toEqual([`scene.groups exceeds ${SPACE_CAPS.groups}`]);
   });
 
+  test("#1375 AC4: a project past the group bound loses its group reference instead of failing conformance", () => {
+    const one = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p" });
+    const scene = (i: number) => ({ ...one, groups: [{ id: `g${i}`, title: `G${i}` }],
+      actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}`, group: `g${i}` })),
+      zones: one.zones.map((z) => ({ ...z, id: `${i}:${z.id}`, group: `g${i}` })),
+      cards: one.cards.map((c) => ({ ...c, id: `${i}:${c.id}`, group: `g${i}` })) });
+    const past = SPACE_CAPS.groups;
+    const merged = mergeSpaces(Array.from({ length: past + 1 }, (_, i) => scene(i)));
+    expect(merged.groups!.length).toBe(past);
+    expect(merged.groups!.some((g) => g.id === `g${past}`)).toBe(false);
+    // The last project's records survive the zone list, so they are the ones a dangling reference would have failed on.
+    const last = merged.zones.filter((z) => z.id.startsWith(`${past}:`));
+    expect(last.length).toBe(one.zones.length);
+    expect(last.every((z) => !("group" in z))).toBe(true);
+    expect(spaceSceneProblems(merged)).toEqual([]);
+  });
+
   test("#1375 AC5: the manifest declares acon's snapshot max-age bounds, and Space's is its own poll interval", () => {
     expect(plugin.manifest.capabilities).toMatchObject({ inbox: true, inboxMaxAgeMs: 1000, space: true });
     // Reuse for longer than one poll interval would show the page older data than the poll it replaces, so the two are one value.
