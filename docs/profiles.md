@@ -25,7 +25,7 @@
 - Experiment attempts recorded on a study unit are read with `ahub study experiments --campaign <id>` (or `--attempt`, or `--plan` with `--baseline` and `--variant`) and `hub_experiment_show`. Each value shows its source: `declared` is the agent's own word, and only `host-observed`, `runner-attested` or `person-attested` rows are evidence, none of which proves the science. A rerun by a person attaches through an existing check, a hashed output file or a registered runner's signed receipt, as the checklist in `docs/operations.md` ("Experiment readback") says; without one the experiment stays declared and its sealing unverified. The synthetic CPU-only fixture is `test/research-experiments-fixture.test.ts`; no account, GPU or native model has run an experiment here.
 - The deterministic three-source, two-peer example (`test/study-daemon.test.ts`, "three-source, two-peer example"): one contract names sources S0, S1 and S2 and two discovery units, `alpha` (S0 and S1, owned by codex) and `beta` (S2, an independent check, owned by kimi). After `ahub study approve` both units read `none` and `0/2 covered`, `0/1 covered`. A handoff for S0 only moves `alpha` to `incomplete` with `1/2 covered`. A handoff for both S0 and S1, and one for S2, make both `complete` and the discovery round complete. Another peer's handoff for `alpha` is refused. This runs with fake peers: it shows the hub's rules, not that a native model follows the guidance.
 
-# Claim evidence links (#931 T1-T2)
+# Claim evidence links and synthesis readiness (#931 T1-T3)
 
 An active owner of an in-progress research-profile task can record
 `hub_evidence_record`. The task need not belong to a campaign. Researcher role
@@ -81,9 +81,75 @@ text; reads never invent a converter version or page coordinates. An already bou
 opaque IDs. Private, unknown or over-bound inventories make that result unknown.
 Repeated copies or a shared origin do not supply another group. These are
 provenance groups, not proof of independent corroboration, semantic support or
-truth. Source revalidation is offline and performs no download. Study CLI,
-synthesis manifests and readiness checks remain T3. A matching citation key,
-resolved passage or evidence relation never creates a #901 person verdict.
+truth. Source revalidation is offline and performs no download. A matching
+citation key, resolved passage or evidence relation never creates a #901 person verdict.
+
+Use `ahub study evidence <ev-id> [--revision <n>]` to re-read a link through
+current task/source privacy and projection checks. The person can run
+`ahub study evidence --task <task>` for authoring bindings: task incarnation,
+claim identities/revisions, complete-inventory hashes, evidence IDs/revisions
+and registered deliverable IDs/hashes. This view includes no claim prose,
+document, path or origin.
+
+`ahub study check <task> <manifest.json>` explicitly checks a bounded version-1
+manifest naming the task incarnation, registered Markdown and BibTeX
+deliverable IDs/hashes, each current claim's revision and complete latest-link
+inventory revision/hash, and selected evidence IDs/revisions with citation
+keys. It reads local snapshots and guarded artifacts without fetching documents
+or running a semantic judge. It may invoke the existing configured privacy
+screen, including its model: that is privacy policy, not source retrieval.
+Unavailable or unknown screening makes provenance unavailable and never ready;
+the observational check does not upgrade or downgrade source privacy because
+screening did not clear.
+
+The result separately reports citation resolution, source/locator provenance,
+person judgment, open contradictions and unchanged artifacts. `ready` means
+structural/provenance readiness for the complete declared claim list, not
+truth, entailment, source quality or independent corroboration. Changing a
+claim, artifact, projection/converter or any inventory link invalidates the
+earlier binding, including unselected counterevidence. Missing, private,
+truncated or unavailable inputs cannot produce ready. Non-ready exits 1.
+The report shows the person verdict class (`supported`, `unsupported`,
+`unclear`) separately. All count as a recorded assessment; ready does not mean
+supported. JSON and text report the same statuses. This check runs only on explicit
+invocation. The existing `scripts/check-citations.ts` mode is unchanged.
+The manifest is capped at 64 KiB, 50 claims, 128 selected links total and
+128 ASCII characters per citation key. Existing latest-inventory reads use a
+128-row task window; overflow is incomplete, never a truncated success.
+Guarded Markdown/BibTeX reads retain 256 KiB/4 MiB caps. Active registered raw
+inputs have a 64 MiB aggregate ceiling for one check.
+
+To withdraw a link, its owner or the console person records the next revision with the same link ID
+and `status: "withdrawn"` through `hub_evidence_record`. Omitting status means
+active; an explicit `active` normalizes to omission. Prior revisions remain
+retained. Latest readback names withdrawal without returning a passage. A
+withdrawal remains part of the complete inventory hash.
+A former `contradicts` link stays a `withdrawn` contradiction after withdrawal
+or reclassification. An earlier plain verdict cannot clear it: a person must
+resolve or qualify the current manifest. History is verified within 1,024 rows
+per claim; incomplete or unavailable history cannot establish ready. Historical
+source privacy is rechecked too. History across claim versions of the same
+claimId is committed into the inventory hash; restoring an older claim list
+cannot hide counterevidence moved to another version.
+The task must still be in progress and public, including for a person. A closed
+task's evidence stays final; open a follow-up research task for corrections and
+create its own manifest instead of reusing the earlier task's binding.
+
+For an adjudicated or explicitly qualified conclusion with open counterevidence,
+the person uses the existing verdict record:
+`ahub task claim <task> <slot> <supported|unsupported|unclear> --manifest <manifest.json> --disposition <resolved|qualified>`.
+The CLI computes the file's canonical SHA-256; the hub independently refreshes
+current claim, link/inventory and guarded artifact bindings before recording
+the verdict. A mismatch refuses before writing and names the current
+`manifestSha256`. The descriptor is never stored, and a later inventory change
+never silently re-binds the person's earlier disposition. Both flags are
+required together, only on a research task/profile. This is the person's assessment of
+that exact manifest, not an agent's permission to certify truth. Any changed
+manifest binding requires a new disposition. The existing #901 verdict and its
+claim-list revision remain the only judgment record.
+These new forms require the running hub's authenticated `research_synthesis`
+capability. Upgrade and restart an older hub first; the CLI refuses before
+sending a manifest-bound verdict that an older hub could silently downgrade.
 
 # General project example
 

@@ -230,12 +230,97 @@ store. A read does not retrofit a receipt or execute a network fetch. A bounded
 latest-link inventory and current screened metadata collapse overlapping origins
 into opaque connected groups; unknown/private/overflow evidence gives no group
 count. Group counts are provenance, never an independence or truth verdict.
-Study CLI surfaces, complete synthesis inventory bindings and readiness remain
-T3; #901 keeps the sole person-judgment record.
+#901 keeps the sole person-judgment record. The explicit synthesis check below
+consumes it without deriving a verdict from evidence relations.
 Stored evidence adds a conditional `research_evidence` recovery feature and
 `{links, revisions, digest}` integrity section. An absent section is the empty
 store, preserving older recovery records; an empty database requires no new
 feature. Provenance never manufactures a person verdict or readiness result.
+
+### Explicit synthesis readiness (#931 T3)
+
+`ahub study evidence --task <task>` exposes bounded authoring bindings, not
+source or claim prose. `ahub study check <task> <manifest.json>` accepts only a
+version-1 manifest naming the task incarnation, registered Markdown/BibTeX
+deliverable IDs and SHA-256 hashes, current #901 claim identities/revisions,
+complete latest-link inventory revision/hash per claim, and selected evidence
+IDs/revisions with citation keys. The hash includes every latest inventory row,
+including unselected counterevidence and withdrawn links. No second claim or
+judgment identity/store is created.
+The manifest shape permits at most 64 KiB, 50 claims, 128 selected links total
+and 128 ASCII characters per citation key. The existing bounded latest-link
+inventory must be complete. Guarded document/bibliography reads use 256 KiB and
+4 MiB; one check refuses above 64 MiB of active registered raw source inputs.
+
+`EvidenceLinkV1.status` may be `withdrawn` only on a later append-only revision.
+Legacy omission means active and keeps its original canonical bytes/ID;
+explicit active input normalizes to omission. Withdrawn rows remain in complete
+inventory bindings but supply no active locator. A link that was ever
+`contradicts` remains unresolved after withdrawal or reclassification: its state
+is `withdrawn`, never silently `none`. Only a person's resolved/qualified
+disposition bound to the current manifest clears it, whoever withdrew it. The owner or
+console person uses the existing writer for withdrawal; the active task's owner
+is fenced separately from the actual recorded actor. Source, claim and privacy
+admission stay unchanged. The person exception permits withdrawal, not initial
+active-link creation. Historical revisions retain current privacy checks.
+Person withdrawal also requires an in-progress public research task. Closed
+task evidence stays final: corrections require a follow-up research task and
+its own manifest binding, and a refusal names that next step. The earlier task's
+manifest cannot be applied to the new task incarnation.
+The host verifies each retained revision's canonical hash and contiguous
+sequence within 1,024 revisions per claim. Missing, corrupt or over-window
+history is unknown and cannot verify readiness. Current privacy also covers
+historical source references used by this observation. The history spans claim
+revisions of the same claimId and contributes its verified commitment to the
+existing inventory revision/hash. Moving a link to another claim revision or
+restoring the exact #901 claim list cannot discard its former contradiction
+or re-bind an earlier person disposition. #901 identity and verdict restoration
+remain unchanged.
+Recovery requires `research_evidence_withdrawal` only while a persisted
+withdrawal revision needs its newer parser. Active-only legacy stores retain
+their existing compatibility requirement.
+
+The existing person-only #901 `ClaimVerdict` may carry optional
+`synthesis: {manifestSha256, disposition: resolved|qualified}`. The console
+`ahub task claim` takes paired `--manifest <manifest.json>` and `--disposition`
+flags. The descriptor is transient. At entry, the hub independently refreshes
+current bindings and recomputes its canonical manifest hash; a mismatch names
+the current hash and refuses before the existing history write, inside the
+final snapshot fence. No changed inventory silently re-binds an earlier
+disposition. It records no claim or qualification prose. A disposition closes an open contradiction
+only when its manifest hash, claim revision, full inventory and artifact/source
+bindings are current. Agent/model relation labels never supply this authority.
+The CLI requires `research_synthesis` from the authenticated welcome before
+requesting the new study operations or sending an extended `claim_verdict`.
+Without it, upgrade/restart is required before any verdict mutation is sent;
+an older daemon must never silently turn a requested synthesis disposition into
+a plain verdict. Ordinary #901 verdicts retain their earlier compatibility.
+
+Tasks owns both reads. The host obtains current state; callers cannot supply
+screened artifacts, provenance resolutions or person authority. Artifact reads
+use the guarded #509 path/hash boundary. Every active inventory link resolves
+through screened source-read/projection checks. Final raw/projection/converter
+and artifact identity/stat fences run after asynchronous reads. Current task,
+actor, policy, inventory and privacy are checked again. Any concurrent board
+write conservatively stales the batch; a task-scoped evidence generation is the
+later narrowing path. A private upgrade returns only a neutral task/status
+stub. Incomplete inventories and unavailable observations cannot verify
+readiness. The observer latch precedes evidence-derived inputs.
+
+The pure offline checker reports citation resolution, source/locator freshness,
+person-judgment presence, contradiction state and unchanged deliverables
+separately. The person verdict class (`supported`, `unsupported`, `unclear`)
+is shown independently from judgment presence. Any is a recorded assessment
+for structural readiness; ready never means the person supported the claim.
+Every currently declared claim must be covered. A model's relation
+label or matching passage cannot certify semantic support. Offline forbids
+document fetching and network source reads, while the existing configured
+privacy screen may run. An unavailable or unknown screen is never clear; the
+observational read cannot change source privacy because screening did not clear.
+Actual source privacy upgrades still suppress the result. No earlier readiness
+binding remains current after a claim, artifact, projection or inventory
+change. The command runs only explicitly and preserves legacy citation-script
+semantics and ordinary dev-profile completion behavior.
 
 ## Execution-reference admission (#1220 T2)
 

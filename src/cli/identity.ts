@@ -104,7 +104,7 @@ const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadFor
   sdlc: { status: { positional: 1, displayFlags: sdlcReadDisplayFlags }, explain: { positional: 1, displayFlags: sdlcReadDisplayFlags }, queue: { positional: 1, minimum: 1, displayFlags: sdlcReadDisplayFlags }, release: { positional: 33, minimum: 1, displayFlags: sdlcReadDisplayFlags } },
   release: { show: { positional: 1, minimum: 1, displayFlags: [] } },
   // #601: reading a campaign is harmless for any agent (the hub stubs a private one); draft, revise, approve and close fall to `console`.
-  study: { show: { positional: 1, valueFlags: ["--after"], displayFlags: sdlcReadDisplayFlags }, experiments: { valueFlags: ["--campaign", "--attempt", "--after", "--events-after", "--plan", "--baseline", "--variant"], displayFlags: sdlcReadDisplayFlags } },
+  study: { evidence: { positional: 1, minimum: 1, valueFlags: ["--revision"], displayFlags: sdlcReadDisplayFlags }, show: { positional: 1, valueFlags: ["--after"], displayFlags: sdlcReadDisplayFlags }, experiments: { valueFlags: ["--campaign", "--attempt", "--after", "--events-after", "--plan", "--baseline", "--variant"], displayFlags: sdlcReadDisplayFlags } },
   projects: { "": {} },
   models: { status: {} },
   recovery: { status: { positional: 1 } },
@@ -223,7 +223,7 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "learn") return ["list", "accept", "reject"].includes(args.find(arg => arg !== "--json") ?? "") ? `learn ${args.find(arg => arg !== "--json")}` : "learn";
   if (command === "source") return ["add", "list"].includes(args.find(arg => arg !== "--json") ?? "") ? `source ${args.find(arg => arg !== "--json")}` : "source";
   // #601: a campaign id and a contract path are text the person chose, so the audit names the subcommand only.
-  if (command === "study") return ["draft", "revise", "approve", "close", "show", "experiments"].includes(args[0] ?? "") ? `study ${args[0]}` : "study";
+  if (command === "study") return ["draft", "revise", "approve", "close", "show", "experiments", "evidence", "check"].includes(args[0] ?? "") ? `study ${args[0]}` : "study";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";
   // #1084: `autonomy`, `deliverables` and `usage` were missing from the table below, so a refusal and its audit line named them "unknown". Operands (a flag value, a task id) never reach the label.
   if (command === "autonomy") { const sub = args.find(arg => !arg.startsWith("--")); return sub !== undefined && ["on", "off", "status"].includes(sub) ? `autonomy ${sub}` : "autonomy"; }

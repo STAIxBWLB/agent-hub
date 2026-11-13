@@ -258,7 +258,7 @@ import { memoryProjectKey } from "@staix/agent-mem";
 import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory, createIntentBriefSource, createStandalonePolicy } from "@staix/agent-mem";
 import { SourceRegistry, SOURCE_UTF8_PROJECTION_VERSION, type SourceMeta } from "./sources.ts";
-import { readEvidenceSource } from "./source-read.ts";
+import { evidenceSnapshotKey, readEvidenceSource } from "./source-read.ts";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead, sourceRead, validateSourceRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
@@ -3148,11 +3148,13 @@ export async function startDaemon(opts: DaemonOptions) {
       partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
     studySource: id => sourceRegistry.get(id),
     evidenceSourceMeta: id => sourceRegistry.get(id),
-    evidenceSourceRead: (by, link, current) => {
+    evidenceSourceSnapshotKey: link => evidenceSnapshotKey(sourceRegistry, link.sourceId, receipt => receipt.converter
+      ? projections.fingerprint(join(opts.cwd, `source${receipt.converter.extension}`)) : SOURCE_UTF8_PROJECTION_VERSION),
+    evidenceSourceRead: (by, link, current, mode) => {
       const hostCurrent = sourceReadCurrent(by, false, false);
       return readEvidenceSource(sourceRegistry, link, {
         valid: () => hostCurrent() && current(), canReadPrivate: async () => false,
-        screen: screenSourceText,
+        screen: screenSourceText, privacyReadOnly: mode?.privacyReadOnly,
         projectionVersion: receipt => receipt.converter
           ? projections.fingerprint(join(opts.cwd, `source${receipt.converter.extension}`)) : SOURCE_UTF8_PROJECTION_VERSION,
       });
@@ -5882,6 +5884,10 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ handoffs: handoffListView(), synced: false, syncing: true, pending });
       }
       // #601: the person's own forms (a read is hub_study_show, which every connection may use). `by` is USER only on the console path; approval and close are never a tool.
+      case "study_evidence":
+        return JSON.stringify(await tasks.synthesisEvidence(by, a));
+      case "study_check":
+        return JSON.stringify(await tasks.synthesisCheck(by, a));
       case "study_draft":
         return JSON.stringify(await tasks.studyDraft(by, a));
       case "study_revise":
@@ -6036,8 +6042,11 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "release_new":
         return JSON.stringify(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order }));
-      case "claim_verdict": // #901: a person's verdict on one declared claim; the reply names the slot and the verdict only, never a claim
-        return JSON.stringify((({ id, history }) => ({ task: id, recorded: history.at(-1)?.claim }))(tasks.recordClaimVerdict(by, a.id, { slot: a.slot, verdict: a.verdict, ...(a.model === undefined ? {} : { model: a.model }), ...(a.modelVerdict === undefined ? {} : { modelVerdict: a.modelVerdict }) })));
+      case "claim_verdict": { // #901: same person-only record; a synthesis descriptor is validated transiently, never retained.
+        const claim = { slot: a.slot, verdict: a.verdict, ...(a.model === undefined ? {} : { model: a.model }), ...(a.modelVerdict === undefined ? {} : { modelVerdict: a.modelVerdict }), ...(a.synthesis === undefined ? {} : { synthesis: a.synthesis }) };
+        const task = a.synthesis === undefined ? tasks.recordClaimVerdict(by, a.id, claim) : await tasks.recordSynthesisClaimVerdict(by, a.id, claim, a.manifest);
+        return JSON.stringify({ task: task.id, recorded: task.history.at(-1)?.claim });
+      }
       case "github_import":
         return JSON.stringify(await tasks.importGitHub(by, { repo: a.repo, label: a.label, milestone: a.milestone }));
       case "release_show": {
@@ -10667,6 +10676,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_comparisons; persisted comparison plans, approvals or protocol context require a supporting daemon";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_evidence")) && board.hasResearchEvidenceState())
         return "target lacks research_evidence; choose a daemon advertising research_evidence to preserve persisted links and revisions";
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_evidence_withdrawal")) && board.hasWithdrawnEvidenceState())
+        return "target lacks research_evidence_withdrawal; choose a supporting daemon to preserve withdrawal revisions";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {
@@ -12599,6 +12610,7 @@ export async function startDaemon(opts: DaemonOptions) {
           catch { return void reply({ t: "task", ok: false, error: "public release read unavailable" }); }
         }
         // #601: ahub study is the person's. A tools connection (any agent) may use the hub_study_* tools, never these op names, whatever Tasks would answer.
+        if ((msg.op === "study_evidence" || msg.op === "study_check") && c.role !== "console") return void reply({ t: "task", ok: false, error: "task inventory and synthesis checks are console commands; ask the person to run ahub study evidence --task or ahub study check; a single link is readable through hub_evidence_read" });
         if (String(msg.op).startsWith("study_") && c.role !== "console") return void reply({ t: "task", ok: false, error: "ahub study draft, revise, approve and close are console commands; agents use the hub_study_* tools" });
         if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
         if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: msg.op === "hub_visual" || msg.op === "hub_visual_show" ? visualOperational("recovery").message : "recovery is holding mutations" });

@@ -12549,7 +12549,7 @@ var FIELDS, INPUT_FIELDS;
 var init_research_evidence = __esm(() => {
   init_sources();
   init_envelope();
-  FIELDS = ["id", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation", "recordedBy", "taskId", "revision"];
+  FIELDS = ["id", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation", "recordedBy", "taskId", "revision", "status"];
   INPUT_FIELDS = FIELDS.filter((field) => field !== "recordedBy");
 });
 
@@ -17273,7 +17273,8 @@ var init_hub_tools = __esm(() => {
     projectionVersion: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$" },
     locator: { type: "object", properties: { start: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, end: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER } }, required: ["start", "end"], additionalProperties: false, description: "Declared zero-based, half-open Unicode scalar-value offsets; nonempty span <=4096. hub_evidence_read resolves the immutable projection." },
     relation: { type: "string", enum: ["supports", "contradicts", "context"] },
-    revision: { type: "integer", minimum: 1, description: "Default 1; later revisions name the existing link id." }
+    revision: { type: "integer", minimum: 1, description: "Default 1; later revisions name the existing link id." },
+    status: { type: "string", enum: ["active", "withdrawn"], description: "Omitted means active. Withdraw only through the next revision of an existing link; prior revisions remain retained." }
   }, ["taskId", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation"]);
   EVIDENCE_READ_TOOL = tool2("hub_evidence_read", "Read one recorded evidence link, latest revision by default, on a research task visible through hub_task_show. Re-resolves the registered snapshot with current privacy on every read. Resolved means bounded locator provenance only, never entailment, source quality, person judgment or synthesis readiness. Private, stale or unavailable links return ids and status only; refresh the current claim and registered snapshot before retrying. Origin groups denote connected registered-origin provenance, never independent corroboration. Excluded from capture.", {
     id: { type: "string", pattern: "^ev:[0-9a-f]{32}$" },

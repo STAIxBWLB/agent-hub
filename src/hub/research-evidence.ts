@@ -23,12 +23,14 @@ export interface EvidenceLinkV1 {
   recordedBy: string;
   taskId: number;
   revision: number;
+  /** Omission is active for legacy canonical bytes; withdrawal is a later append-only revision. */
+  status?: "withdrawn";
 }
 /** The actor is host-stamped. Revision defaults to 1; a later revision names an existing link explicitly. */
 export type EvidenceRecordInput = Omit<EvidenceLinkV1, "id" | "recordedBy"> & { id?: string };
 export type EvidenceReceipt = Pick<EvidenceLinkV1, "id" | "revision" | "taskId">;
 
-const FIELDS = ["id", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation", "recordedBy", "taskId", "revision"] as const;
+const FIELDS = ["id", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation", "recordedBy", "taskId", "revision", "status"] as const;
 const INPUT_FIELDS = FIELDS.filter(field => field !== "recordedBy");
 const HASH = /^[0-9a-f]{64}$/;
 const LINK_ID = /^ev:[0-9a-f]{32}$/;
@@ -68,6 +70,8 @@ function parsed(value: unknown, stored: boolean): EvidenceRecordInput | Evidence
   const taskId = integer(row.taskId, "taskId"), revision = row.revision === undefined && !stored ? 1 : integer(row.revision, "revision");
   const id = row.id === undefined && !stored ? undefined : token(row.id, "id", LINK_ID);
   if (revision > 1 && id === undefined) fail("id", "a later revision must name its existing link");
+  if (row.status !== undefined && row.status !== "active" && row.status !== "withdrawn") fail("status", "expected active or withdrawn");
+  if (row.status === "withdrawn" && revision < 2) fail("status", "withdrawal requires a later revision of an existing link");
   const sourceId = row.sourceId;
   if (!validSourceId(sourceId)) fail("sourceId", "expected a registered src:<16 hex> id");
   const relation = row.relation;
@@ -83,6 +87,7 @@ function parsed(value: unknown, stored: boolean): EvidenceRecordInput | Evidence
     locator: locator(row.locator),
     relation: relation as EvidenceLinkV1["relation"],
     taskId, revision,
+    ...(row.status === "withdrawn" ? { status: "withdrawn" as const } : {}),
   };
   const result = stored ? { ...common, id: id!, recordedBy: token(row.recordedBy, "recordedBy", /^[A-Za-z0-9][A-Za-z0-9._:@~+-]{0,127}$/) } : common;
   if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_EVIDENCE_RECORD_BYTES) fail("record", `expected at most ${MAX_EVIDENCE_RECORD_BYTES} bytes`);
@@ -92,7 +97,7 @@ export function parseEvidenceRecord(value: unknown): EvidenceRecordInput { retur
 export function parseEvidenceLink(value: unknown): EvidenceLinkV1 { return parsed(value, true) as EvidenceLinkV1; }
 
 /** Stable local identity for an identical initial write, without consulting a clock or creating a claim store. */
-export function evidenceLinkId(input: EvidenceRecordInput, recordedBy: string): string {
+export function evidenceLinkId(input: unknown, recordedBy: string): string {
   const parsed = parseEvidenceRecord(input);
   if (parsed.id !== undefined) return parsed.id;
   const actor = token(recordedBy, "recordedBy", /^[A-Za-z0-9][A-Za-z0-9._:@~+-]{0,127}$/);
@@ -103,7 +108,8 @@ export function evidenceLinkCanonical(value: EvidenceLinkV1): string {
   const row = parseEvidenceLink(value);
   return JSON.stringify({ id: row.id, claimId: row.claimId, claimRevision: row.claimRevision, sourceId: row.sourceId,
     rawSha256: row.rawSha256, projectionSha256: row.projectionSha256, projectionVersion: row.projectionVersion,
-    locator: row.locator, relation: row.relation, recordedBy: row.recordedBy, taskId: row.taskId, revision: row.revision });
+    locator: row.locator, relation: row.relation, recordedBy: row.recordedBy, taskId: row.taskId, revision: row.revision,
+    ...(row.status === "withdrawn" ? { status: row.status } : {}) });
 }
 
 export const MAX_EVIDENCE_EXCERPT_BYTES = 4096;
@@ -113,7 +119,7 @@ export interface EvidenceProjectionSnapshot {
 export type EvidenceResolution =
   | { status: "resolved"; locator: EvidenceLocatorV1; excerpt: string; excerptSha256: string }
   | { status: "stale"; cause: "raw_changed" | "projection_changed" }
-  | { status: "unavailable"; cause: "source_unavailable" | "private" | "projection_missing" | "projection_incomplete" | "locator_invalid" | "excerpt_limit" };
+  | { status: "unavailable"; cause: "source_unavailable" | "private" | "withdrawn" | "projection_missing" | "projection_incomplete" | "locator_invalid" | "excerpt_limit" };
 
 /** Existing source-read offsets count String.iterator code points, not UTF-16 units or sanitized output characters. */
 export function sourceReadRangeToEvidenceLocator(range: { offset: number; length: number }, text: string): EvidenceLocatorV1 | undefined {
@@ -132,6 +138,7 @@ export function sourceReadRangeToEvidenceLocator(range: { offset: number; length
 export function resolveEvidenceLocator(input: EvidenceLinkV1, snapshot?: EvidenceProjectionSnapshot): EvidenceResolution {
   let link: EvidenceLinkV1;
   try { link = parseEvidenceLink(input); } catch { return { status: "unavailable", cause: "locator_invalid" }; }
+  if (link.status === "withdrawn") return { status: "unavailable", cause: "withdrawn" };
   if (!snapshot || typeof snapshot.text !== "string" || snapshot.sourceId !== link.sourceId) return { status: "unavailable", cause: "projection_missing" };
   if (snapshot.complete !== true) return { status: "unavailable", cause: "projection_incomplete" };
   if (snapshot.rawSha256 !== link.rawSha256) return { status: "stale", cause: "raw_changed" };

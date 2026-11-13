@@ -10,6 +10,7 @@ import { parseComparisonPlan, comparisonPlanHash, evaluatorIdentityHash, parseEx
 import type { InvocationRow } from "./invocations.ts";
 import { HOST_CODE_SYMBOLS, parseTaskCodeSymbols, type TaskCodeSymbols } from "./task-code-symbols.ts";
 import { createHash } from "node:crypto";
+import { types } from "node:util";
 import { planFingerprint } from "./plan-conformance.ts";
 import type { PlannerReason } from "./routing.ts";
 import type { ReviewerPoolReason } from "./reviewer-pool.ts";
@@ -165,6 +166,7 @@ export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "sum
 export type TaskClass = (typeof CLASSES)[number];
 /** #1403 A4: one security audit as stored. `units` is the ledger; it changes only through `Board.auditReport`. */
 export interface StoredAudit { id: number; task: number; taskCreated: number; ref: string; since?: string; profile: AuditProfile; scoped: boolean; at: number; by: string; units: AuditUnit[] }
+const EVIDENCE_HISTORY_WINDOW = 1024;
 export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "approved" | "changes_requested" | "cancelled";
 
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
@@ -308,7 +310,7 @@ export interface HistoryEntry {
 /** #901: one person verdict on a plan claim, with the model label the person says produced the claim. All closed or bounded; nothing here is claim text. */
 export const CLAIM_VERDICTS = ["supported", "unsupported", "unclear"] as const;
 /** `modelVerdict` is what the model's own fact check said of the claim, as the person enters it: with it the scorecard can say whether person and model agree; without it agreement is unknown. */
-export interface ClaimVerdict { slot: number; verdict: (typeof CLAIM_VERDICTS)[number]; model?: string; modelVerdict?: (typeof CLAIM_VERDICTS)[number]; /** `claimListId` of the plan's claims when the verdict was entered: the list it evaluated, as a hash. Set by the hub, never by the person. */ list?: string }
+export interface ClaimVerdict { slot: number; verdict: (typeof CLAIM_VERDICTS)[number]; model?: string; modelVerdict?: (typeof CLAIM_VERDICTS)[number]; /** Person-only disposition, valid only for this exact synthesis manifest. */ synthesis?: { manifestSha256: string; disposition: "resolved" | "qualified" }; /** `claimListId` of the plan's claims when the verdict was entered: the list it evaluated, as a hash. Set by the hub, never by the person. */ list?: string }
 /** A short opaque identity of an ordered claim list (a sha-256 prefix of its canonical form): equal lists, in order, give equal ids; it reveals nothing of the claims. Absent list: the empty list's id. */
 export function claimListId(claims: readonly string[] | undefined): string {
   return createHash("sha256").update(planFingerprint({ claims: [...(claims ?? [])] })).digest("hex").slice(0, 16);
@@ -323,14 +325,27 @@ export function taskClaimIdentity(task: Pick<Task, "id" | "created" | "plan">, s
 }
 /** A claim slot is a position in the plan's claim list (at most 50, as the scorecard's own bound); a model label is a bounded token, never prose. */
 export function parseClaimVerdict(value: unknown, slots: number): ClaimVerdict {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("claim verdict must be an object");
+  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length
+    || Object.values(Object.getOwnPropertyDescriptors(value)).some(field => !Object.hasOwn(field, "value") || !field.enumerable)) throw new Error("claim verdict must be an object");
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).some(key => !["slot", "verdict", "model", "modelVerdict"].includes(key))) throw new Error("claim verdict carries only slot, verdict, model and modelVerdict");
+  if (Object.keys(v).some(key => !["slot", "verdict", "model", "modelVerdict", "synthesis"].includes(key))) throw new Error("claim verdict carries only slot, verdict, model, modelVerdict and synthesis");
   if (!Number.isSafeInteger(v.slot) || (v.slot as number) < 1 || (v.slot as number) > Math.min(50, slots)) throw new Error(`claim slot must name one of the task's ${slots} declared claim${slots === 1 ? "" : "s"}`);
   if (typeof v.verdict !== "string" || !(CLAIM_VERDICTS as readonly string[]).includes(v.verdict)) throw new Error(`claim verdict must be one of ${CLAIM_VERDICTS.join(", ")}`);
   if (v.model !== undefined && (typeof v.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$/.test(v.model))) throw new Error("model label must be a short identifier (letters, digits and . _ : / @ + -)");
   if (v.modelVerdict !== undefined && (typeof v.modelVerdict !== "string" || !(CLAIM_VERDICTS as readonly string[]).includes(v.modelVerdict))) throw new Error(`model verdict must be one of ${CLAIM_VERDICTS.join(", ")}`);
-  return { slot: v.slot as number, verdict: v.verdict as ClaimVerdict["verdict"], ...(v.model === undefined ? {} : { model: v.model }), ...(v.modelVerdict === undefined ? {} : { modelVerdict: v.modelVerdict as ClaimVerdict["verdict"] }) };
+  let synthesis: ClaimVerdict["synthesis"];
+  if (v.synthesis !== undefined) {
+    const item = v.synthesis;
+    if (!item || typeof item !== "object" || Array.isArray(item) || types.isProxy(item)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(item)) || Object.getOwnPropertySymbols(item).length
+      || Object.values(Object.getOwnPropertyDescriptors(item)).some(field => !Object.hasOwn(field, "value") || !field.enumerable)
+      || Object.keys(item).some(key => key !== "manifestSha256" && key !== "disposition")) throw new Error("synthesis disposition requires only manifestSha256 and disposition");
+    const row = item as Record<string, unknown>;
+    if (typeof row.manifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(row.manifestSha256) || row.disposition !== "resolved" && row.disposition !== "qualified") throw new Error("synthesis disposition needs a manifest SHA-256 and resolved or qualified");
+    synthesis = { manifestSha256: row.manifestSha256, disposition: row.disposition };
+  }
+  return { slot: v.slot as number, verdict: v.verdict as ClaimVerdict["verdict"], ...(v.model === undefined ? {} : { model: v.model }), ...(v.modelVerdict === undefined ? {} : { modelVerdict: v.modelVerdict as ClaimVerdict["verdict"] }), ...(synthesis ? { synthesis } : {}) };
 }
 /** The ids a stored verdict may carry (#507b): bounded criterion identifiers in the S8 checklist's own format, at most its 32, each once. */
 function criterionIdList(value: unknown): string[] {
@@ -1097,9 +1112,46 @@ export class Board {
     return { links, complete: rows.length <= limit };
   }
 
-  recordEvidenceLink(project: string, input: EvidenceLinkV1, fence: { taskFlowRevision: number; taskCreated: number; owner: PeerId }): EvidenceLinkV1 {
+  /** Verified immutable relation history, never a second judgment store. */
+  evidenceContradictionHistory(project: string, taskId: number, claimId: string, claimRevision: string, links: readonly EvidenceLinkV1[]): { ids: string[]; sources: string[]; members: string[]; binding?: { revision: number; sha256: string }; complete: boolean } {
+    if (!researchText(project) || !researchInteger(taskId) || !/^claim:[1-9][0-9]{0,15}:(?:0|[1-9][0-9]{0,15}):[1-9][0-9]?$/.test(claimId)
+      || !/^[a-f0-9]{16}$/.test(claimRevision) || links.length > 128 || new Set(links.map(link => link.id)).size !== links.length
+      || links.some(link => link.taskId !== taskId || link.claimId !== claimId || link.claimRevision !== claimRevision)) throw new Error("evidence history identity invalid; refresh the complete inventory");
+    const unknown = { ids: [] as string[], sources: [] as string[], members: [] as string[], complete: false };
+    const taskRows = this.db.query("SELECT id,MAX(revision) AS revision FROM research_evidence_links WHERE project=? AND task_id=? GROUP BY id ORDER BY id LIMIT ?")
+      .all(project, taskId, 129) as { id: string; revision: number }[];
+    if (taskRows.length > 128) return unknown;
+    const latest = taskRows.map(row => {
+      const link = this.evidenceLink(project, row.id, row.revision);
+      if (!link || link.taskId !== taskId) throw new Error("evidence inventory changed; refresh its history");
+      return link;
+    }).filter(link => link.claimId === claimId);
+    const current = latest.filter(link => link.claimRevision === claimRevision);
+    if (current.length !== links.length || current.some(link => !links.some(given => evidenceLinkCanonical(given) === evidenceLinkCanonical(link)))) throw new Error("evidence inventory changed; refresh its history");
+    const revisions = latest.reduce((count, link) => count + link.revision, 0);
+    // ponytail: above 1024 owned revisions, history is unknown. Upgrade to paged verified history commitments before widening this window.
+    if (!Number.isSafeInteger(revisions) || revisions > EVIDENCE_HISTORY_WINDOW) return unknown;
+    const rows = latest.length ? this.db.query(`SELECT id,revision FROM research_evidence_links WHERE project=? AND task_id=? AND id IN (${latest.map(() => "?").join(",")}) ORDER BY id,revision LIMIT ?`)
+      .all(project, taskId, ...latest.map(link => link.id), EVIDENCE_HISTORY_WINDOW + 1) as { id: string; revision: number }[] : [];
+    if (rows.length > EVIDENCE_HISTORY_WINDOW) return unknown;
+    const seen = new Map<string, number>(), contradicted = new Set<string>(), sources = new Set<string>(), canonical: string[] = [];
+    for (const row of rows) {
+      const last = latest.find(link => link.id === row.id), prior = this.evidenceLink(project, row.id, row.revision);
+      if (!last || !prior || prior.taskId !== taskId || prior.claimId !== claimId || row.revision !== (seen.get(row.id) ?? 0) + 1 || row.revision > last.revision)
+        throw new Error("evidence history is incomplete or changed; restore trusted evidence storage and retry");
+      seen.set(row.id, row.revision); sources.add(prior.sourceId); canonical.push(evidenceLinkCanonical(prior));
+      if (prior.relation === "contradicts") contradicted.add(row.id);
+      if (row.revision === last.revision && evidenceLinkCanonical(prior) !== evidenceLinkCanonical(last)) throw new Error("evidence inventory changed; refresh its history before retrying");
+    }
+    if (latest.some(link => seen.get(link.id) !== link.revision)) throw new Error("evidence history is incomplete; restore trusted evidence storage and retry");
+    const sha256 = createHash("sha256").update(JSON.stringify({ project, taskId, claimId, rows: canonical })).digest("hex");
+    return { ids: [...contradicted].sort(), sources: [...sources].sort(), members: latest.map(link => link.id), binding: { revision: revisions, sha256 }, complete: true };
+  }
+
+  recordEvidenceLink(project: string, input: EvidenceLinkV1, fence: { taskFlowRevision: number; taskCreated: number; owner: PeerId; personWithdrawal?: true }): EvidenceLinkV1 {
     const link = parseEvidenceLink(input), canonical = evidenceLinkCanonical(link);
-    if (!researchText(project) || !researchInteger(fence.taskFlowRevision, 0) || !researchInteger(fence.taskCreated, 0) || fence.owner !== link.recordedBy) throw new Error("evidence write binding is invalid; refresh the task before retrying");
+    const personWithdrawal = fence.personWithdrawal === true && link.recordedBy === USER && link.status === "withdrawn";
+    if (!researchText(project) || !researchInteger(fence.taskFlowRevision, 0) || !researchInteger(fence.taskCreated, 0) || fence.owner !== link.recordedBy && !personWithdrawal) throw new Error("evidence write binding is invalid; refresh the task before retrying");
     return this.atomic(() => {
       const task = this.get(link.taskId);
       if (!task || task.created !== fence.taskCreated || task.history.length !== fence.taskFlowRevision || task.owner !== fence.owner || task.state !== "in_progress" || task.profile !== "research"
@@ -1393,6 +1445,22 @@ export class Board {
 
   hasResearchEvidenceState(): boolean {
     return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_evidence_links) AS present").get() as { present: number }).present === 1;
+  }
+
+  /** Older evidence readers reject the new optional stored withdrawal field. Keep that downgrade fence conditional. */
+  hasWithdrawnEvidenceState(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM research_evidence_links WHERE json_extract(body,'$.status')='withdrawn') AS present").get() as { present: number }).present === 1;
+  }
+
+  /** Same #901 history record, with the host's completed observation fenced against intervening database writes. No source I/O in this transaction. */
+  recordSynthesisClaimVerdict(id: number, claim: ClaimVerdict, fence: { boardRevision: number; taskCreated: number; taskFlowRevision: number; claimRevision: string }): Task {
+    return this.atomic(() => {
+      const task = this.get(id);
+      if (!task || this.statusRevision() !== fence.boardRevision || task.created !== fence.taskCreated || task.history.length !== fence.taskFlowRevision
+        || !claim.synthesis || claim.list !== fence.claimRevision || taskClaimIdentity(task, claim.slot).claimRevision !== fence.claimRevision)
+        throw new Error("synthesis context changed before the claim verdict write; refresh the manifest and explicitly record the disposition again");
+      return this.update(id, USER, "claim verdict", {}, undefined, { claim }, fence.taskFlowRevision);
+    });
   }
 
   researchEvidenceIntegrity(): { links: number; revisions: number; digest: string } {

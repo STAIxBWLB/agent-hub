@@ -30,10 +30,11 @@ import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "./s
 import { renderIntake, renderIntakeChange } from "./intake-output.ts";
 import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { renderCapabilities } from "./capabilities-output.ts";
+import { parseSynthesisManifest, synthesisManifestHash } from "../hub/synthesis-readiness.ts";
 import { parseStudyArgs } from "./study.ts";
 import { parseBacklogReturn } from "./backlog-return-args.ts";
 import { parseResultsArgs } from "./results-args.ts";
-import { renderExperiments, renderStudyList, renderStudyReceipt, renderStudyShow } from "./study-output.ts";
+import { renderStudyEvidence, renderSynthesisReadiness, renderExperiments, renderStudyList, renderStudyReceipt, renderStudyShow } from "./study-output.ts";
 import { renderHandoffReceipt, renderHandoffs } from "./handoff-output.ts";
 import { parseHandoffArgs } from "./handoff-args.ts";
 import { terminalText } from "./console-state.ts";
@@ -577,6 +578,8 @@ async function taskOp(op: string, a: Record<string, unknown>, throwOnError = fal
   const hub = connection ?? await connect();
   try {
     if (op === "hub_task_cancel" && !hub.features.includes("task_cancel")) fail("this daemon does not support task cancellation; upgrade it first");
+    if ((op === "study_evidence" || op === "study_check" || op === "claim_verdict" && a.synthesis !== undefined) && !hub.features.includes("research_synthesis"))
+      fail("running hub lacks research_synthesis; upgrade and restart the hub before requesting synthesis evidence or recording a manifest-bound verdict");
     const res = await hub.request({ t: "task", op, args: a }, timeoutMs ?? (op === "github_import" ? 60_000 : 30_000));
     if (!res.ok) {
       if (throwOnError) throw new Error(res.error);
@@ -879,6 +882,25 @@ const LOCAL_OPERATION_ARGS: Record<string, () => void> = {
   "bench run": () => { benchRunArgs(args.filter(arg => arg !== "--json").slice(1)); },
   "research backfill": researchArgs,
   "source add": () => { const operands = args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")); if (operands[0] !== "add" || operands.length !== 2 || !operands[1]) fail(SOURCE_USAGE); },
+};
+
+const contract = (file: string, kind: "contract" | "manifest" = "contract"): unknown => {
+  // One descriptor decides everything: opened non-blocking and without following a final symlink (a FIFO would otherwise block the open), checked to be a regular file with fstat, and
+  // read for at most the cap plus one byte, so a file that grows or is replaced after the check, or a device that reports size zero, cannot exhaust memory or hang this process.
+  const cap = 64 * 1024;
+  let text: string;
+  try {
+    const fd = openSync(resolve(invokedFrom, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      if (!fstatSync(fd).isFile()) return fail(`the ${kind} file is not a regular file`);
+      const bytes = Buffer.alloc(cap + 1); let got = 0;
+      while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, null); if (!n) break; got += n; }
+      if (got > cap) return fail(`the ${kind} file is over 64 KiB`);
+      text = bytes.subarray(0, got).toString("utf8");
+    } finally { closeSync(fd); }
+  }
+  catch { return fail(`cannot read the ${kind} file`); }
+  try { return JSON.parse(text); } catch { return fail(`the ${kind} file is not valid JSON`); }
 };
 
 // Outside the command bodies: test/lifecycle-starting-1232.test.ts runs the `up` body as a plain function, where import.meta does not parse.
@@ -1767,24 +1789,17 @@ const commands: Record<string, () => Promise<void> | void> = {
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
     const parsed = parseStudyArgs(split.operands);
     if ("usage" in parsed) return fail(parsed.usage);
-    const contract = (file: string): unknown => {
-      // One descriptor decides everything: opened non-blocking and without following a final symlink (a FIFO would otherwise block the open), checked to be a regular file with fstat, and
-      // read for at most the cap plus one byte, so a file that grows or is replaced after the check, or a device that reports size zero, cannot exhaust memory or hang this process.
-      const cap = 64 * 1024;
-      let text: string;
-      try {
-        const fd = openSync(resolve(invokedFrom, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        try {
-          if (!fstatSync(fd).isFile()) return fail("the contract file is not a regular file");
-          const bytes = Buffer.alloc(cap + 1); let got = 0;
-          while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, null); if (!n) break; got += n; }
-          if (got > cap) return fail("the contract file is over 64 KiB");
-          text = bytes.subarray(0, got).toString("utf8");
-        } finally { closeSync(fd); }
-      }
-      catch { return fail("cannot read the contract file"); }
-      try { return JSON.parse(text); } catch { return fail("the contract file is not valid JSON"); }
-    };
+
+    if (parsed.op === "evidence") return showToolText(data => renderStudyEvidence(data, present.columns), await taskOp("hub_evidence_read", { id: parsed.id, ...(parsed.revision === undefined ? {} : { revision: parsed.revision }) }), present);
+    if (parsed.op === "evidence_inventory") return showToolText(data => renderStudyEvidence(data, present.columns), await taskOp("study_evidence", { taskId: parsed.taskId }), present);
+    if (parsed.op === "check") {
+      const manifest = parseSynthesisManifest(contract(parsed.file, "manifest"));
+      if (manifest.taskId !== parsed.taskId) return fail("synthesis manifest names another task; refresh its task binding and retry");
+      const text = await taskOp("study_check", { taskId: parsed.taskId, manifest });
+      showToolText(data => renderSynthesisReadiness(data, present.columns), text, present);
+      if (JSON.parse(text).status !== "ready") process.exitCode = 1;
+      return;
+    }
     if (parsed.op === "experiments") {
       // A read of the records Tasks keeps (hub_experiment_show): it runs no command and reads no file, and the hub blanks a private record itself.
       const args = parsed.attempt ? { attemptId: parsed.attempt, ...(parsed.eventsAfter === undefined ? {} : { eventAfter: parsed.eventsAfter }) } : parsed.plan ? { planHash: parsed.plan, baselineAttemptId: parsed.baseline, variantAttemptId: parsed.variant } : { campaignId: parsed.campaign, ...(parsed.after === undefined ? {} : { after: parsed.after }) };
@@ -2129,10 +2144,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (sub === "claim") {
       // #901: a person's verdict on one declared plan claim. The claim is named by its 1-based slot and its text is never typed, stored or printed here.
-      const { one, rest: positional } = takeFlags(rest, ["--model", "--model-said"], []);
-      if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[0]!) || !/^[1-9]\d*$/.test(positional[1]!) || !["supported", "unsupported", "unclear"].includes(positional[2]!)) fail("usage: ahub task claim <id> <slot> <supported|unsupported|unclear> [--model <label>] [--model-said <supported|unsupported|unclear>]");
-      const reply = JSON.parse(await taskOp("claim_verdict", { id: Number(positional[0]), slot: Number(positional[1]), verdict: positional[2], ...(one["--model"] === undefined ? {} : { model: one["--model"] }), ...(one["--model-said"] === undefined ? {} : { modelVerdict: one["--model-said"] }) })) as { task: number; recorded?: { slot: number; verdict: string; model?: string; modelVerdict?: string } };
-      return console.log(`task #${reply.task}: claim ${reply.recorded?.slot} recorded as ${reply.recorded?.verdict}${reply.recorded?.model ? ` (model ${reply.recorded.model}` : ""}${reply.recorded?.modelVerdict ? `${reply.recorded?.model ? ", " : " ("}model said ${reply.recorded.modelVerdict}` : ""}${reply.recorded?.model || reply.recorded?.modelVerdict ? ")" : ""}`);
+      const { one, rest: positional } = takeFlags(rest, ["--model", "--model-said", "--manifest", "--disposition"], []);
+      if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[0]!) || !/^[1-9]\d*$/.test(positional[1]!) || !["supported", "unsupported", "unclear"].includes(positional[2]!)
+        || (one["--manifest"] === undefined) !== (one["--disposition"] === undefined)
+        || one["--manifest"] !== undefined && !["resolved", "qualified"].includes(one["--disposition"]!)) fail("usage: ahub task claim <id> <slot> <supported|unsupported|unclear> [--model <label>] [--model-said <supported|unsupported|unclear>] [--manifest <manifest.json> --disposition <resolved|qualified>]");
+      const manifest = one["--manifest"] === undefined ? undefined : parseSynthesisManifest(contract(one["--manifest"], "manifest"));
+      if (manifest && manifest.taskId !== Number(positional[0])) return fail("synthesis manifest names another task; refresh its task binding and retry");
+      const reply = JSON.parse(await taskOp("claim_verdict", { id: Number(positional[0]), slot: Number(positional[1]), verdict: positional[2], ...(one["--model"] === undefined ? {} : { model: one["--model"] }), ...(one["--model-said"] === undefined ? {} : { modelVerdict: one["--model-said"] }), ...(manifest === undefined ? {} : { manifest, synthesis: { manifestSha256: synthesisManifestHash(manifest), disposition: one["--disposition"] } }) })) as { task: number; recorded?: { slot: number; verdict: string; model?: string; modelVerdict?: string; synthesis?: { manifestSha256: string; disposition: string } } };
+      return console.log(`task #${reply.task}: claim ${reply.recorded?.slot} recorded as ${reply.recorded?.verdict}${reply.recorded?.model ? ` (model ${reply.recorded.model}` : ""}${reply.recorded?.modelVerdict ? `${reply.recorded?.model ? ", " : " ("}model said ${reply.recorded.modelVerdict}` : ""}${reply.recorded?.model || reply.recorded?.modelVerdict ? ")" : ""}${reply.recorded?.synthesis ? `; synthesis ${reply.recorded.synthesis.disposition} @ ${reply.recorded.synthesis.manifestSha256}` : ""}`);
     }
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") {
