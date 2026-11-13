@@ -29,7 +29,10 @@ export interface OwnedPrintChildOptions {
   onLimit?: () => void;
   maxFrameBytes?: number;
   maxOutputBytes?: number;
+  /** Opt-in host diagnostic only; raw text is never a frame, activity signal or public log. */
+  captureStderr?: true;
 }
+export type OwnedStderrReceipt = { status: "complete"; text: string } | { status: "unknown" };
 
 /** Shared owned print transport, independent of reviewer or implementer lifecycle and MCP authority. */
 export class OwnedPrintChild {
@@ -38,6 +41,17 @@ export class OwnedPrintChild {
   readonly done: Promise<number | null>;
   private stopping: Promise<void> | undefined;
   private limited = false;
+  private stderrChunks: Buffer[] = [];
+  private stderrBytes = 0;
+  private stderrEnded = false;
+  private stderrUnknown = false;
+  private settled = false;
+  /** Only the current owned child's complete bounded stream after confirmed group settlement is usable. */
+  stderrAfterSettlement(): OwnedStderrReceipt {
+    if (!this.options.captureStderr || !this.settled || !this.stderrEnded || this.stderrUnknown || this.options.current?.() === false) return { status: "unknown" };
+    try { return { status: "complete", text: new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(this.stderrChunks)) }; }
+    catch { return { status: "unknown" }; }
+  }
 
   constructor(private readonly options: OwnedPrintChildOptions) {
     const [command, ...prefix] = options.command;
@@ -45,7 +59,7 @@ export class OwnedPrintChild {
     const child = this.process = spawn(command, [...prefix, ...options.args], {
       cwd: options.cwd, detached: true,
       env: peerChildEnv(options.peer, options.envMode === "replace" ? options.env : { ...process.env, ...options.env }),
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", options.captureStderr ? "pipe" : "ignore"],
     });
     // ponytail: 256 KiB per NDJSON frame and 4 MiB stdout by default; raise only with native receipts.
     const frameLimit = options.maxFrameBytes ?? 256 * 1024, outputLimit = options.maxOutputBytes ?? 4 * 1024 * 1024;
@@ -53,6 +67,16 @@ export class OwnedPrintChild {
     let inputFailed = false;
     const current = () => !this.limited && options.current?.() !== false;
     const limit = () => { if (!this.limited) { this.limited = true; options.onLimit?.(); } };
+    if (options.captureStderr) {
+      child.stderr!.on("data", (chunk: Buffer) => {
+        if (this.stderrUnknown) return;
+        this.stderrBytes += chunk.length;
+        if (options.current?.() === false || this.stderrBytes > 64 * 1024) { this.stderrUnknown = true; this.stderrChunks = []; return; }
+        this.stderrChunks.push(Buffer.from(chunk));
+      });
+      child.stderr!.once("end", () => { this.stderrEnded = true; });
+      child.stderr!.once("error", () => { this.stderrUnknown = true; this.stderrChunks = []; });
+    }
     this.done = new Promise((resolve, reject) => {
       child.once("error", error => { options.onError?.(error); reject(error); });
       child.stdin!.on("error", () => { inputFailed = true; /* exit, rather than a prompt write, settles the owned child */ });
@@ -84,7 +108,7 @@ export class OwnedPrintChild {
       });
       child.once("exit", code => {
         options.onLeaderExit?.();
-        void this.stop().then(() => resolve(code), error => reject(new PrintChildCleanupError((error as Error).message)));
+        void this.stop().then(() => { this.settled = true; resolve(code); }, error => reject(new PrintChildCleanupError((error as Error).message)));
       });
     });
   }

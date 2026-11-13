@@ -51,6 +51,7 @@ for (const change of ["head", "revision", "lifecycle"] as const) test(`running r
   cleanup.push(() => daemon.stop());
   const person = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => person.close());
   expect(await person.request({ t: "start", peer: "kimi-review" })).toMatchObject({ ok: true });
+  expect(await person.request({ t: "budget", set: { peer: "kimi-review", used: 0.1, resetsInMs: 600_000 } })).toMatchObject({ ok: true });
   const reviewer = daemon.bus.peers.get("kimi-review") as ReviewerPrintPeer;
   const legacy=await ControlClient.connect(stateDir,{role:"tools",peer:"kimi-review"});cleanup.push(()=>legacy.close());
   const builder = await ControlClient.connect(stateDir, { role: "peer", peer: "builder", channel: true }); cleanup.push(() => builder.close());

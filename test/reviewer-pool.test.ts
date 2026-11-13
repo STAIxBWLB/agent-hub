@@ -1,9 +1,47 @@
 import { expect, test } from "bun:test";
 import { selectReviewerPool, type ReviewerPoolCandidate, type ReviewerPoolInput } from "../src/hub/reviewer-pool.ts";
+import { DEFAULT_REVIEW_GATE, DEFAULT_REVIEW_MAX_MINUTES, reviewBudgetAdmission, type ReviewBudgetSnapshot } from "../src/hub/review-budget.ts";
+import { reviewerPoolConfig } from "../src/hub/reviewer-pool-config.ts";
 
 const pool = ["alpha", "beta", "gamma", "delta"];
 const candidates = pool.map(kind => ({ id: `${kind}-review`, kind, family: kind }));
 const select = (extra: Partial<ReviewerPoolInput> = {}) => selectReviewerPool({ pool, candidates, seed: 0, ...extra });
+
+test("review quota defaults and validation are explicit without changing legacy pure pool calls", () => {
+  expect(DEFAULT_REVIEW_GATE).toBe(0.8); expect(DEFAULT_REVIEW_MAX_MINUTES).toBe(20);
+  expect(select().reviewer).toBe("alpha-review");
+  expect(reviewerPoolConfig({}, pool, pool)).toEqual({ pool, rerotate: false });
+  expect(reviewerPoolConfig({ gate: 0.8, max_minutes: 20 }, pool, pool)).toMatchObject({ gate: 0.8, maxMinutes: 20 });
+  for (const gate of [-1, 1.1, NaN, "0.8"]) expect(() => reviewerPoolConfig({ gate }, pool, pool)).toThrow("review.gate");
+  for (const max_minutes of [0, -1, Infinity, "20"]) expect(() => reviewerPoolConfig({ max_minutes }, pool, pool)).toThrow("review.max_minutes");
+});
+
+test("known quota at the reviewer floor skips, below floor passes, and unknown never passes an injected gate", () => {
+  const now = 1_700_000_000_000, budget: ReviewBudgetSnapshot = { gate: 0.8, now, readings: { "alpha-review": { headroom: 0.19, resetsAt: now + 60_000 }, "beta-review": { headroom: 0.3 } }, paused: {} };
+  const result = select({ budget });
+  expect(result.reviewer).toBe("beta-review"); expect(result.walk[0]?.reason).toContain("review.gate at 81%"); expect(result.walk[0]?.reason).toContain("resets");
+  const missing = { ...budget, readings: { "alpha-review": budget.readings["alpha-review"]! } }; // Absence is never an empty account.
+  expect(select({ budget: missing }).reviewer).toBeNull(); expect(select({ budget: missing }).quotaWait).toBeUndefined();
+  expect(reviewBudgetAdmission("missing", budget).state).toBe("unknown");
+});
+
+test("quota-only exhaustion waits only when every declared candidate has a known reset and no other blocker", () => {
+  const now = 1_700_000_000_000;
+  const budget: ReviewBudgetSnapshot = { gate: 0.8, now, readings: Object.fromEntries(candidates.map((row, i) => [row.id, { headroom: 0.1, resetsAt: now + (i + 1) * 60_000 }])),
+    paused: { "alpha-review": { resetsAt: now + 60_000 } } };
+  const rows = candidates.map(row => ({ ...row, ...(row.id === "alpha-review" ? { blocked: "paused" } : {}) }));
+  const waiting = select({ budget, candidates: rows });
+  expect(waiting.reviewer).toBeNull(); expect(waiting.quotaWait?.resetsAt).toBe(now + 60_000);
+  expect(waiting.quotaWait?.candidates.map(row => row.state)).toEqual(["paused", "floor", "floor", "floor"]);
+  for (const extra of [
+    { failed: ["gamma-review"] }, { candidates: rows.map(row => row.id === "gamma-review" ? { ...row, blocked: "isolation unavailable" } : row) },
+    { budget: { ...budget, manualPaused: ["alpha-review"] } },
+    { budget: { ...budget, readings: { ...budget.readings, "gamma-review": { headroom: 0.1 } } } },
+    { budget: { ...budget, readings: { ...budget.readings, "gamma-review": { headroom: NaN, resetsAt: now + 60_000 } } } },
+  ]) expect(select({ budget, candidates: rows, ...extra }).quotaWait).toBeUndefined();
+  const never = select({ budget, candidates: rows, implementerFamily: "alpha", sameFamily: "never" });
+  expect(never.quotaWait).toBeUndefined();
+});
 
 test("each implementer family gets an independent reviewer for every rotation start", () => {
   for (const implementerFamily of pool) for (let seed = 0; seed < pool.length; seed++) {
@@ -109,4 +147,14 @@ test("declared rotation retains a blocked kind slot and appends undeclared trace
     { id: "claude-review", kind: "claude", family: "claude", reason: "selected (unavailable skip)" },
     { id: "", kind: "kimi", family: "", reason: "no declared reviewer" },
   ]);
+});
+
+
+test("undeclared optional kinds keep their trace but cannot veto quota waits for all actual candidates", () => {
+  const now = 1_700_000_000_000;
+  const result = selectReviewerPool({ pool: ["claude", "codex", "kimi"], candidates: [{ id: "claude-review", kind: "claude", family: "claude" }], seed: 0,
+    budget: { gate: 0.8, now, readings: { "claude-review": { headroom: 0.1, resetsAt: now + 60_000 } }, paused: {} } });
+  expect(result.quotaWait?.candidates).toEqual([{ id: "claude-review", state: "floor", resetsAt: now + 60_000 }]);
+  expect(result.walk.filter(row => row.reason === "no declared reviewer").map(row => row.kind)).toEqual(["codex", "kimi"]);
+  expect(reviewBudgetAdmission("bad", { gate: 0.8, now, readings: { bad: { headroom: -0.1 } }, paused: {} }).state).toBe("unknown");
 });

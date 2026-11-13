@@ -66,7 +66,10 @@ export class KimiUsage {
   private readonly window = new TokenWindow(KIMI_WINDOW_MS);
   private readonly seen = new Set<string>();
   /** A log that stopped matching the count leaves the window short of the truth until its rows age out. */
+  private reviewerReplayUnknown = false;
+  private readonly reviewerAttempts = new Set<string>();
   private readonly taintedUntil = new Map<string, number>();
+  private readonly reviewerSources = new Set<string>();
   private stopped = false;
 
   constructor(private readonly ports: KimiUsagePorts) {}
@@ -87,8 +90,9 @@ export class KimiUsage {
     if (!this.ports.ceiling()) return { state: "off" };
     for (const state of this.bound.values()) if (state.unknown) return { state: "unreadable", reason: state.unknown };
     const now = this.ports.now();
+    if (this.reviewerReplayUnknown || this.reviewerAttempts.size) return { state: "unreadable", reason: "log changed since it was counted" };
     for (const until of this.taintedUntil.values()) if (now < until) return { state: "unreadable", reason: "log changed since it was counted" };
-    return { state: this.bound.size ? "counting" : "waiting" };
+    return { state: this.bound.size || this.reviewerSources.size ? "counting" : "waiting" };
   }
 
   /** The peer went offline: its log is no longer read, so an unreadable state of it must not hold the other peers' figure unknown. */
@@ -176,6 +180,34 @@ export class KimiUsage {
     }
   }
 
+  /** Terminal private-home callers must prove the entire bounded drain completed before forwarding its rows. */
+  complete(peer: string): boolean {
+    const bound = this.bound.get(peer);
+    return !!bound && !bound.unknown && !bound.backlog;
+  }
+  /** One shared account counter/event attribution, including fresh reviewer profiles read before deletion. */
+  observeReviewer(peer: string, row: KimiWireRow, attributed: KimiRowAttribution): boolean {
+    const counters = [row.inputOther, row.inputCacheCreation, row.inputCacheRead, row.output];
+    if (!/^[a-f0-9]{32}$/.test(row.id) || !Number.isFinite(row.at) || row.at <= 0 || counters.some(value => !Number.isSafeInteger(value) || value < 0)
+      || !Number.isSafeInteger(counters.reduce((sum, value) => sum + value, 0))) throw new Error("invalid reviewer usage observation");
+    if (this.seen.has(row.id)) return false;
+    const counted = kimiCountedTokens(row);
+    this.ports.record(peer, row, counted, attributed);
+    this.seen.add(row.id); this.reviewerSources.add(peer);
+    this.window.add(Math.min(row.at, this.ports.now()), counted);
+    this.report(peer);
+    return true;
+  }
+  reviewerReplayIncomplete(peer: string): void { this.reviewerReplayUnknown = true; this.ports.forget(peer); }
+  /** Unresolved owned attempts have no proven window end. Neither restart nor a host cap clears them. */
+  reviewerAccounting(peer: string, attempt: string, outcome: "started" | "complete" | "unknown"): void {
+    if (!/^[a-f0-9]{32}$/.test(attempt)) throw new Error("invalid reviewer accounting identity");
+    if (outcome === "complete") this.reviewerAttempts.delete(attempt);
+    else this.reviewerAttempts.add(attempt);
+    if (this.reviewerReplayUnknown || this.reviewerAttempts.size) this.ports.forget(peer);
+    else this.report(peer);
+  }
+
   private schedule(peer: string, bound: Bound, scheduled: boolean): void {
     const schedule = this.ports.schedule;
     if (!schedule || this.stopped) return;
@@ -232,7 +264,7 @@ export class KimiUsage {
   /** The window as a reading, only while every Kimi peer's log reads cleanly: otherwise the figure is unknown, never a short count. */
   private report(peer: string): void {
     const ceiling = this.ports.ceiling(), now = this.ports.now();
-    if (!ceiling) return;
+    if (!ceiling || this.reviewerReplayUnknown || this.reviewerAttempts.size) return;
     for (const state of this.bound.values()) if (state.unknown) return;
     for (const until of this.taintedUntil.values()) if (now < until) return;
     const oldest = this.window.oldest(now);

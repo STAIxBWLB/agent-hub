@@ -10,6 +10,7 @@ implements: []
 covers: [task-board]
 tags: [agent-hub, dogfood]
 paths:
+  - src/hub/review-budget.ts
   - src/hub/tasks.ts
   - src/hub/sdlc.ts
   - src/hub/build-entry.ts
@@ -414,3 +415,9 @@ Fresh GraphQL review reads retain the original success proof: a CheckRun must be
 COMPLETED with conclusion SUCCESS; a StatusContext must have state SUCCESS.
 Common normalization cannot turn malformed fresh proof into admission. The shared
 parser and cached evidence schema retain their existing contracts.
+
+## Reviewer quota waits (#1446)
+
+Automatic reviewer selection shares `review.gate` (default 0.8) across routing and explain using canonical-account projected headroom. Unknown/no-source readings skip rather than pass. A quota-only exhausted pool may wait only when every declared candidate is actually paused or at the known floor and each has a known reset; other blockers prevent waiting. Persist task incarnation, opaque head/repo binding, first start and deadline in ordinary role history. The first `task_sweep.review_min` deadline is the sole hard cap; reset timestamps only wake a recheck (including Budget's existing reset plus 60-second grace), and later signals/restarts cannot extend the cap. Expiry/unknown returns to existing fallback. Head/private/close/stop changes cancel timers. Quota does not join the permanent per-head failure set. `review.max_minutes` defaults to 20; a child-specific generation fence and existing owned teardown produce a typed timeout without closing the task.
+
+Quota deadline fallback and native input admission are separate: a person fallback needs no native readiness read, and a failed agent readiness read falls to the person under the same incarnation/head/privacy/recovery fence. `reviewer_quota` is required for a controlled recovery target when new wait/accounting history or explicit new policy exists; it is not a blanket version floor.

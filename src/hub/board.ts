@@ -303,7 +303,8 @@ export interface HistoryEntry {
   queueReviewHeld?: true;
   /** Opaque artifact identity captured by the host at the queue-held role write. */
   queueReviewBinding?: string;
-  reviewerFailure?: { peer: string; head?: string; cause: "start_failed" | "quota" | "no_verdict" };
+  reviewerQuotaWait?: { created: number; binding: string; since: number; deadline: number; resetAt: number };
+  reviewerFailure?: { peer: string; head?: string; cause: "start_failed" | "quota" | "no_verdict"; reason?: "review time cap" };
   resolvedReviewComments?: string[];
   planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
 }
@@ -352,14 +353,18 @@ function criterionIdList(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > 32 || value.some(id => typeof id !== "string" || !/^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(id)) || new Set(value).size !== value.length) throw new Error("unmet criteria: expected up to 32 distinct criterion ids");
   return [...value] as string[];
 }
-export type ReviewerHistory = Pick<HistoryEntry, "reviewerFamily" | "reviewerReason" | "reviewBlocked" | "queueReviewHeld" | "queueReviewBinding" | "reviewerFailure">;
+export type ReviewerHistory = Pick<HistoryEntry, "reviewerFamily" | "reviewerReason" | "reviewBlocked" | "queueReviewHeld" | "queueReviewBinding" | "reviewerFailure" | "reviewerQuotaWait">;
 function reviewerHistory(extra: ReviewerHistory): ReviewerHistory {
   const id = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(value);
   if (extra.reviewerFamily !== undefined && !id(extra.reviewerFamily) || extra.reviewerReason !== undefined && !["rotation", "implementer skip", "unavailable skip", "same-family fallback"].includes(extra.reviewerReason) || extra.reviewBlocked !== undefined && extra.reviewBlocked !== true || extra.queueReviewHeld !== undefined && extra.queueReviewHeld !== true) throw new Error("invalid reviewer metadata");
   if (extra.queueReviewHeld && (typeof extra.queueReviewBinding !== "string" || !/^[0-9a-f]{64}$/.test(extra.queueReviewBinding)) || extra.queueReviewBinding !== undefined && extra.queueReviewHeld !== true) throw new Error("invalid queue-held review binding");
+  const wait = extra.reviewerQuotaWait;
+  if (wait && (!Number.isSafeInteger(wait.created) || wait.created < 0 || !/^[a-f0-9]{64}$/.test(wait.binding)
+    || !Number.isSafeInteger(wait.resetAt) || wait.resetAt <= 0 || !Number.isSafeInteger(wait.since) || !Number.isSafeInteger(wait.deadline) || wait.since < 0 || wait.deadline < wait.since)) throw new Error("invalid reviewer quota wait");
   const failure = extra.reviewerFailure;
+  if (failure?.reason !== undefined && (failure.reason !== "review time cap" || failure.cause !== "no_verdict")) throw new Error("invalid reviewer timeout metadata");
   if (failure && (!id(failure.peer) || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || failure.head !== undefined && (typeof failure.head !== "string" || !failure.head.trim() || failure.head.length > 300 || Buffer.byteLength(failure.head) > 1200 || /\p{Cc}/u.test(failure.head)))) throw new Error("invalid reviewer failure metadata");
-  return { ...(extra.reviewerFamily ? { reviewerFamily: extra.reviewerFamily } : {}), ...(extra.reviewerReason ? { reviewerReason: extra.reviewerReason } : {}), ...(extra.reviewBlocked ? { reviewBlocked: true } : {}), ...(extra.queueReviewHeld ? { queueReviewHeld: true, ...(extra.queueReviewBinding !== undefined ? { queueReviewBinding: extra.queueReviewBinding } : {}) } : {}), ...(failure ? { reviewerFailure: { peer: failure.peer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } } : {}) };
+  return { ...(wait ? { reviewerQuotaWait: { created: wait.created, binding: wait.binding, since: wait.since, deadline: wait.deadline, resetAt: wait.resetAt } } : {}), ...(extra.reviewerFamily ? { reviewerFamily: extra.reviewerFamily } : {}), ...(extra.reviewerReason ? { reviewerReason: extra.reviewerReason } : {}), ...(extra.reviewBlocked ? { reviewBlocked: true } : {}), ...(extra.queueReviewHeld ? { queueReviewHeld: true, ...(extra.queueReviewBinding !== undefined ? { queueReviewBinding: extra.queueReviewBinding } : {}) } : {}), ...(failure ? { reviewerFailure: { peer: failure.peer, cause: failure.cause, ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.head ? { head: failure.head } : {}) } } : {}) };
 }
 function specReportHistory(report: unknown, binding: unknown, event: string): Pick<HistoryEntry, "specReport" | "specRefBinding"> {
   if (!report || typeof report !== "object" || Array.isArray(report) || !["done", "done (checking)"].includes(event)

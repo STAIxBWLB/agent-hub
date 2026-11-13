@@ -1,3 +1,4 @@
+import { nativeReviewerQuota } from "../adapters/definitions/native-quota.ts";
 import { parseGuidanceCreateInput, parseGuidanceIdQuery } from "./guidance-variants.ts";
 import { GuidanceProbeStore } from "./guidance-probe-store.ts";
 import { GuidanceProbeError, probeSessionGeneration, type ProbePublicReceipt, type ProbePublicStatus, type ProbeReceiptExport } from "./guidance-probes.ts";
@@ -169,6 +170,7 @@ import { isReviewerPrintPeer, reviewerNoVerdictLine, reviewerUnavailableReason, 
 import type { OwnedInputContext } from "../adapters/claude-print-child.ts";
 import { createReviewerMcpSession, type ReviewerToolName } from "../adapters/reviewer-mcp.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
+import { DEFAULT_REVIEW_GATE, DEFAULT_REVIEW_MAX_MINUTES, reviewerAccountingIntegrity, reviewerAccountingRelevant } from "./review-budget.ts";
 import { reviewDiff } from "../adapters/claude-print.ts";
 import { Capture } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
@@ -354,7 +356,7 @@ export interface HubConfig {
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
-  review: { adaptive: boolean; min_reviews: number; pool?: string[]; rerotate?: boolean; same_family?: "fallback" | "never" };
+  review: { adaptive: boolean; min_reviews: number; pool?: string[]; rerotate?: boolean; same_family?: "fallback" | "never"; gate?: number; max_minutes?: number };
   /** After an unplanned stop, start Kimi, Pi and the local worker again with their recorded sessions (issue #37). */
   /** #489 H4: the five waits the upgrade coordinator reads from this project's config at the start of each wait; the daemon itself only validates and carries them. */
   recovery: { auto_resume_after_crash: boolean; reconnect_wait_s?: number; unmanaged_reconnect_wait_s?: number; control_timeout_s?: number; shutdown_wait_s?: number; terminal_idle_wait_s?: number };
@@ -425,7 +427,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   terminal: { open: [] },
   start: { agents: [...START_AGENTS_DEFAULT] },
   limits: DEFAULT_LIMITS,
-  review: { adaptive: false, min_reviews: 5 },
+  review: { adaptive: false, min_reviews: 5, gate: DEFAULT_REVIEW_GATE, max_minutes: DEFAULT_REVIEW_MAX_MINUTES },
   recovery: { auto_resume_after_crash: false, reconnect_wait_s: RECOVERY_RECONNECT_WAIT_SETTING.defaultValue, unmanaged_reconnect_wait_s: RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING.defaultValue, control_timeout_s: RECOVERY_CONTROL_TIMEOUT_SETTING.defaultValue, shutdown_wait_s: RECOVERY_SHUTDOWN_WAIT_SETTING.defaultValue, terminal_idle_wait_s: RECOVERY_TERMINAL_IDLE_WAIT_SETTING.defaultValue },
   capabilities: {},
   coordination: "advisory",
@@ -1291,9 +1293,18 @@ export async function startDaemon(opts: DaemonOptions) {
   for (const note of lifecycleConfig.deprecations ?? []) log(note);
   const resolvedProfile = resolveProfile(config.profile, config.profile_overrides);
   let roleAssignments = { ...resolvedProfile.catalog_roles, ...catalogAssignments(config.catalog_roles) };
-  const event = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
+  let reviewerJournalComplete = true;
+  const reviewerJournalRows: unknown[] = [];
+  const appendEvent = eventLog(join(opts.stateDir, "events.jsonl"), (entry) => {
     if (entry.type === "permission") log(`permission event recording failed at ${entry.event} for ${entry.peer}`);
   });
+  const event: ReturnType<typeof eventLog> = entry => {
+    const stamped = { ...entry, at: new Date().toISOString() };
+    const committed = appendEvent(stamped);
+    if (!committed) reviewerJournalComplete = false;
+    else if (reviewerAccountingRelevant(entry)) reviewerJournalRows.push(stamped);
+    return committed;
+  };
   const compatibleRoles = (peer: string) => [...catalog.roles.values()].filter(role => role.base.some(base => config.roles[peer]?.includes(base))).map(role => role.id).sort();
   const configuredRoles = (peer: string) => selectedRoles(peer, config.roles, roleAssignments, catalog).map(role => role.id);
   const dataRoleContract = (peer: string, contract: string) => config.data?.readonly.length && definitionOf(peer)?.trust.hubSandboxed === true
@@ -3168,7 +3179,10 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     recordScreen: (record) => event({ type: "pii_screen", ...record }),
     quota: (): ReturnType<Budget["headroom"]> => projectBudgetHeadroom(budget.headroom(), accountMembers), // budget is built below; this runs at assignment time
-    review: config.review,
+    get review() { return config.review; },
+    reviewBudget: () => {
+      return { paused: Object.fromEntries(SUPPORTED_PEERS.flatMap(peer => { const paused = budget.reviewerPause(peer); return paused ? [[peer, paused]] : []; })), manualPaused: [...manualPaused] };
+    },
     sweep: taskSweepConfig(config.task_sweep),
     sweepHeld: () => stopping || recoveryActive(),
     submodules: () => factsRepo ? submodulePaths(factsRepo) : [], // #798 D1: read from .gitmodules, no git call
@@ -3524,6 +3538,16 @@ export async function startDaemon(opts: DaemonOptions) {
   const hookModels = new Map<PeerId, string>();
   startupTimings.mark("task_runtime");
   const startupSeeds = readStartupEventSeeds(join(opts.stateDir, "events.jsonl"));
+  reviewerJournalComplete &&= startupSeeds.complete;
+  for (const row of startupSeeds.events) if (reviewerAccountingRelevant(row)) reviewerJournalRows.push(row);
+  const startupReviewerAccounting = reviewerAccountingIntegrity(reviewerJournalRows, reviewerJournalComplete);
+  reviewerJournalComplete &&= startupReviewerAccounting.complete;
+  const expectedReviewerQuota = restored?.integrity?.reviewerQuota;
+  if (restored?.integrity && (expectedReviewerQuota
+    ? JSON.stringify(startupReviewerAccounting) !== JSON.stringify({ rows: expectedReviewerQuota.rows, completed: expectedReviewerQuota.completed, pending: expectedReviewerQuota.pending, unknown: expectedReviewerQuota.unknown, complete: expectedReviewerQuota.complete, digest: expectedReviewerQuota.digest })
+    : startupReviewerAccounting.rows !== 0 || !startupReviewerAccounting.complete)) {
+    throw new Error("reviewer accounting recovery binding changed; retain the journal and use a supporting recovery target");
+  }
   try { opts.startupSeedObserved?.({ readPasses: startupSeeds.readPasses, readBytes: startupSeeds.readBytes }); } catch { /* Diagnostic observers cannot change replay or readiness. */ }
   const nativeStopsSeen = startupSeeds.nativeStopsSeen;
   startupTimings.mark("native_stop_seed");
@@ -3557,6 +3581,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** What quiescence was judged on, for the log when an integration waits on it. */
   const stopEvidence = (peer: PeerId) => `${peer}: turn end ${turnEnded.has(peer) ? new Date(turnEnded.get(peer)!).toISOString() : "none"}, last tool call ${activeAt.has(peer) ? new Date(activeAt.get(peer)!).toISOString() : "none"}, ${bus.peers.get(peer)?.state ?? "offline"}`;
   board.onChange = (t, h) => {
+    tasks.reviewQuotaTaskChanged(t);
     if (!isClosedTaskState(t.state) && t.state !== "backlog") {
       if (t.owner) inboxPolling.reset(t.owner);
       if (t.reviewer) inboxPolling.reset(t.reviewer);
@@ -3916,11 +3941,13 @@ export async function startDaemon(opts: DaemonOptions) {
       if (budgetFeedSeen.get(hold.peer) !== key && supervision.budgetPaused(hold.peer, hold.resetsAt)) budgetFeedSeen.set(hold.peer, key);
     }
   };
+  const unsettledReviewerQuota = new Map<string, { account: string; peer: string }>();
   const budget = new Budget(join(opts.stateDir, "hub.db"), config.budget, instanceBudgetHooks({
     definitionOf,
     pause: (peer) => bus.pause(peer),
     resume: (peer) => {
       if (!manualPaused.has(peer) && !conductorHolds.has(peer)) bus.resume(peer);
+      queueMicrotask(() => tasks.refreshReviewerQuotaWaits());
     },
     requestCheckpoint: (peer) => requestCheckpoint(peer, "quota"),
     platformContext: async (peer) => {
@@ -3931,11 +3958,11 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     attached: (peer) => bus.peers.has(peer),
     // Somebody other than the paused peer has to be there, or the handoff would only leave its tasks without an owner.
-    canHandOff: (peer) => [...bus.peers.keys()].some((id) => accountOf(id) !== accountOf(peer) && ["idle", "busy"].includes(bus.stateOf(id))),
+    canHandOff: (peer) => ![...unsettledReviewerQuota.values()].some(row => row.account === accountOf(peer)) && [...bus.peers.keys()].some((id) => accountOf(id) !== accountOf(peer) && ["idle", "busy"].includes(bus.stateOf(id))),
     // A reading that arrived through a file carries the file's time; a stale one must not look fresh in the export.
     // #683 U1: pauses, resumes and derived resets go to the event log, ids and numbers only.
     ledger: entry => event(entry),
-    reading: (peer, windows, hard, at) => event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, ...(Math.abs(Date.now() - at) > 1000 ? { measuredAt: new Date(at).toISOString() } : {}) }),
+    reading: (peer, windows, hard, at) => { queueMicrotask(() => tasks.refreshReviewerQuotaWaits()); return event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, ...(Math.abs(Date.now() - at) > 1000 ? { measuredAt: new Date(at).toISOString() } : {}) }) },
     handoff: (peer, context, urgentOnly) => tasks.reassignForPause(peer, context, urgentOnly),
     resumed: (record) => {
       // Coalesce unread notices without forgetting the public moves they carried.
@@ -3966,6 +3993,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const startupEvents = startupSeeds.events;
   budget.seedResets(startupEvents.flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
   // #285 phase 2: Kimi's consumption is the hub's own count of its session wire log (`src/adapters/kimi-wire-usage.ts`), not an ACP total.
+  const softTokenAccount = (peer: string): boolean => definitionOf(accountOf(peer))?.budget?.resetSoftTokensOnResume === true;
   const kimiEvents = new KimiEventWriter({ append: event, read: () => readEvents(join(opts.stateDir, "events.jsonl")) }, startupEvents);
   const kimiUsage = new KimiUsage({
     home: opts.kimiHome ?? process.env.KIMI_CODE_HOME ?? join(homedir(), ".kimi-code"),
@@ -3986,6 +4014,16 @@ export async function startDaemon(opts: DaemonOptions) {
   });
   startupCleanup.push(() => kimiUsage.stop());
   kimiUsage.seed(kimiSeedRows(startupEvents, Math.max(0, ...startupEvents.flatMap(e => e.type === "budget_resume" && definitionOf(e.peer)?.budget?.resetSoftTokensOnResume ? [Date.parse(e.at)] : []).filter(Number.isFinite))));
+  if (!reviewerJournalComplete) {
+    // ponytail: a damaged journal cannot prove which owned attempts settled. Keep soft counts unknown;
+    // recovery needs a verified settlement, not a guessed expiry from a host start/cap timestamp.
+    for (const peer of SUPPORTED_PEERS.filter(softTokenAccount)) kimiUsage.reviewerReplayIncomplete(peer);
+  }
+  for (const row of startupEvents) if (row.type === "reviewer_accounting" && softTokenAccount(row.peer)) {
+    if (/^[a-f0-9]{32}$/.test(row.attempt) && ["started", "complete", "unknown"].includes(row.outcome))
+      kimiUsage.reviewerAccounting(row.peer, row.attempt, row.outcome);
+    else kimiUsage.reviewerReplayIncomplete(row.peer);
+  }
   startupTimings.mark("usage_seed");
   /** Why a peer shows no number (no quota, nothing read yet): one line each, from the definition and the counters, never from a log's text. */
   const budgetPeerNotes = (): BudgetPeerNote[] => {
@@ -7029,6 +7067,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const modelCommandSafe = (input: Record<string, unknown>, grant: ModelGrant): Record<string, unknown> => {
     try { return modelCommand(input, grant); } catch { return modelFailure("model override state could not be read or written; inspect ahub status and hub.db before retrying"); }
   };
+  const reviewerQuotaIntegrity = () => ({ ...reviewerAccountingIntegrity(reviewerJournalRows, reviewerJournalComplete),
+    waits: board.list().filter(task => task.history.some(row => row.reviewerQuotaWait !== undefined)).length });
   const integrity = (older = 0) => {
     const queues = Object.fromEntries(Object.keys(bus.snapshot(false).queues).sort().map((id) => [id, bus.queueIds(id)]));
     const boardState = board.list().sort((a, b) => a.id - b.id).map((t) => {
@@ -7043,6 +7083,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchComparisons = board.researchComparisonIntegrity();
     const researchRunners = board.runnerReceiptIntegrity();
     const researchEvidence = board.researchEvidenceIntegrity();
+    const reviewerQuota = reviewerQuotaIntegrity();
     const guidanceVariants = board.guidanceVariantsIntegrity();
     const guidanceProbes = guidanceProbeStore.integrity();
     const executionReferences = board.executionReferencesIntegrity();
@@ -7051,7 +7092,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const visualIntegrity = visuals.integrity();
     if (!Number.isSafeInteger(visualIntegrity.count) || visualIntegrity.count < 0 || !/^[a-f0-9]{64}$/.test(visualIntegrity.digest))
       throw new Error("visual recovery integrity unavailable; inspect the retained store before recovery");
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(guidanceProbes.experiments || guidanceProbes.sessions ? { guidanceProbes } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    return { ...(reviewerQuota.rows || !reviewerQuota.complete || reviewerQuota.waits ? { reviewerQuota } : {}), queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(guidanceProbes.experiments || guidanceProbes.sessions ? { guidanceProbes } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -7321,7 +7362,7 @@ export async function startDaemon(opts: DaemonOptions) {
       writeStatus();
     } finally { reportingQueues = false; }
     if (ready) {
-      tasks.scheduleQueuePressureRecheck();
+      tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits();
       const policy = queuePolicy();
       if ((policy.max_queued > 0 || policy.max_oldest_s > 0) && !queuePressureStatusQueued) {
         queuePressureStatusQueued = true;
@@ -7591,7 +7632,7 @@ export async function startDaemon(opts: DaemonOptions) {
       roomCommands.changed();
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
-      if (ready) tasks.scheduleQueuePressureRecheck();
+      if (ready) { tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits(); }
       if (e.peer.includes("@")) { if (!stopping) writeStatus(); return; }
       // #248: the add-ons it works with, once per attach (names and versions only).
       // A result is written unless a later attachment began meanwhile: a peer that detached before its probe settled
@@ -9009,6 +9050,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const reviewer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["reviewer-print"]({
         ...(isFixedBuiltinDefinition(adapter) && adapter.modelOverride && !adapter.modelOverride.acp ? { getModelOverride: () => modelSelection(peer) } : {}),
         backend, cwd: executionCwd,
+        maxMinutes: () => config.review.max_minutes ?? DEFAULT_REVIEW_MAX_MINUTES,
         mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", SERVER_JS], env: toolEnv(peer, true) } } }),
         systemPrompt: sessionRoleContract(peer),
         watchdogMs: config.watchdog_ms,
@@ -9033,7 +9075,35 @@ export async function startDaemon(opts: DaemonOptions) {
         },
         facts: env => env.private ? undefined : reviewDiff(executionCwd, env.refs?.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(executionCwd, path, config.pii?.paths ?? [], true), nameable: tasks.nameable }),
         verdictSince: (task, since) => board.get(task)?.history.some(h => h.by === peer && h.at >= since && (h.event === "approved" || h.event === "changes_requested")) === true,
-        onUsage: usage => void addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)),
+        onQuota: (value, attempt, current) => {
+          const reading = nativeReviewerQuota(value);
+          if (!reading || !current() || bus.peers.get(peer) !== reviewer || !/^[a-f0-9]{32}$/.test(attempt)) return false;
+          unsettledReviewerQuota.set(attempt, { account: accountOf(peer), peer });
+          budget.report(peer, [reading], true);
+          return budget.record(peer) !== undefined;
+        },
+        quotaSettled: attempt => {
+          if (unsettledReviewerQuota.get(attempt)?.peer !== peer) return;
+          unsettledReviewerQuota.delete(attempt);
+          queueMicrotask(() => budget.tick()); // Existing Budget handoff, only after the owned attempt settled.
+        },
+        usageIntent: (attempt, task) => {
+          if (!softTokenAccount(peer) || !event({ type: "reviewer_accounting", peer: accountOf(peer), attempt, outcome: "started" })) return false;
+          kimiUsage.reviewerAccounting(peer, attempt, "started");
+          return true;
+        },
+        usageSettled: (attempt, outcome) => {
+          if (!softTokenAccount(peer) || !event({ type: "reviewer_accounting", peer: accountOf(peer), attempt, outcome })) return false;
+          kimiUsage.reviewerAccounting(peer, attempt, outcome);
+          return true;
+        },
+        onUsage: (usage, task, identity) => {
+          if (identity && softTokenAccount(peer)) {
+            kimiUsage.observeReviewer(peer, { id: identity.id, at: identity.at, ...(identity.model ? { model: identity.model } : {}),
+              inputOther: usage.input_tokens ?? 0, inputCacheCreation: usage.cache_creation_input_tokens ?? 0,
+              inputCacheRead: usage.cache_read_input_tokens ?? 0, output: usage.output_tokens ?? 0 }, { attribution: taskAttribution(peer, task) });
+          } else addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0), task);
+        },
         onNoVerdict: (diagnostic, current) => {
           const task = board.get(diagnostic.task);
           const observerHeld = reviewer.reviewObserverInputHeld();
@@ -9047,6 +9117,14 @@ export async function startDaemon(opts: DaemonOptions) {
         onUnavailable: (failure, current) => {
           const attached = () => current() && bus.peers.get(peer) === reviewer;
           if (!attached()) return false;
+          if (failure.cause === "quota") {
+            const readings = (failure.quota ?? []).map(nativeReviewerQuota).filter((row): row is NonNullable<typeof row> => row !== undefined);
+            // ponytail: reviewer-only children have no attached native quota transport. Only an attached account sibling
+            // or Budget's existing evaluate/expiry paths can end a pause; never infer an early reset here.
+            if (readings.length && !budget.record(peer)) budget.report(peer, readings, true);
+            // Canonical account handoff may already have moved this exact review while applying the hard pause.
+            if (!tasks.reviewBindingCurrent(peer, failure.task, failure)) return true;
+          }
           if (failure.cause === "start_failed") {
             // #722: the class (a closed list) is the only detail; never a path, native text or token.
             const reason = reviewerUnavailableReason(failure.causeClass ?? "unknown", failure.causeDetail);
@@ -9872,7 +9950,7 @@ export async function startDaemon(opts: DaemonOptions) {
       desiredRouting = structuredClone(prepared.routing);
       acknowledgeConfiguration(sources, prepared.accepted);
       if (priorDesired !== JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers])) configRevision++;
-      if (ready && changes.some(change => change.key === "tasks.queue_backpressure" || change.key.startsWith("tasks.queue_backpressure."))) tasks.scheduleQueuePressureRecheck();
+      if (ready) { if (changes.some(change => change.key === "tasks.queue_backpressure" || change.key.startsWith("tasks.queue_backpressure."))) tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits(); }
       pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate, [{ catalog: adapterCatalog, instances: declarations }, configIdentityScope(acceptedSources.identity), configIdentityScope(sources.identity)]).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
       pendingRestart.push(...routingChanges.filter(key => configApply(key).applies === "restart").map(key => ({ key, reason: configApply(key).reason! })));
       retainedConfig = retainedConfigAfterReload(sources, prepared.fileConfig, prepared.rejected, scope);
@@ -10577,6 +10655,21 @@ export async function startDaemon(opts: DaemonOptions) {
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
     const incompatibleRecoveryTarget = () => {
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_quota")) {
+        const proof = reviewerQuotaIntegrity();
+        let explicit = config.review.gate !== undefined && config.review.gate !== DEFAULT_REVIEW_GATE || config.review.max_minutes !== undefined && config.review.max_minutes !== DEFAULT_REVIEW_MAX_MINUTES;
+        try {
+          const texts = configSourceTexts(opts.cwd);
+          explicit ||= CONFIG_FILES.some(name => {
+            if (texts[name] === null) return false;
+            const review = JSON.parse(texts[name]!).review;
+            return review && typeof review === "object" && (Object.hasOwn(review, "gate") || Object.hasOwn(review, "max_minutes"));
+          });
+        } catch { return "reviewer quota compatibility is unknown; configuration could not be read"; }
+        if (proof.rows || !proof.complete || proof.waits || explicit)
+          return "target lacks reviewer_quota; retained accounting, wait deadlines or explicit reviewer quota policy require a supporting daemon";
+      }
+
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("guidance_probes")) {
         try { if (guidanceProbeStore.hasRecords()) return "target lacks guidance_probes; retained probe declarations or held work require a supporting daemon; choose a target advertising guidance_probes"; }
         catch { return "guidance probe compatibility is unknown; inspect retained probe state or choose a supporting target"; }
@@ -10785,7 +10878,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryPhase = undefined;
       recoveryPeerSnapshot = undefined;
       clearTimeout(recoveryLeaseTimer);
-      budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck();
+      budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits();
       writeStatus();
       return { t: "recovery", ok: true, aborted: true, recovery: recoveryView() };
     }
@@ -10825,7 +10918,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (msg.op === "release") {
       if (recoveryPhase === "released") {
-        bus.setRecoveryHold(false); budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck();
+        bus.setRecoveryHold(false); budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits();
         return { t: "recovery", ok: true, released: true, recovery: recoveryView() };
       }
       if (recoveryPhase !== "restored") return recoveryError("recovery is not restored");
@@ -10843,7 +10936,7 @@ export async function startDaemon(opts: DaemonOptions) {
       clearTimeout(recoveryLeaseTimer);
       reconcileGuidanceProbes();
       bus.setRecoveryHold(false);
-      budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck();
+      budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits();
       writeStatus();
       return { t: "recovery", ok: true, released: true, recovery: recoveryView() };
     }
@@ -13024,7 +13117,7 @@ export async function startDaemon(opts: DaemonOptions) {
   { const every = opts.handoffCatchUpMs ?? 5 * 60_000, watch = opts.handoffWatchMs ?? 15_000;
     const periodic = setInterval(() => void handoffCatchUp(), every), descriptorWatch = setInterval(handoffWatch, watch);
     periodic.unref?.(); descriptorWatch.unref?.(); intervals.push(periodic, descriptorWatch); }
-  tasks.scheduleQueuePressureRecheck();
+  tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits();
   for (const name of opts.configWatch === false ? [] : CONFIG_SOURCE_FILES) {
     const path = join(opts.cwd, ".agenthub", name);
     const listener = (current: import("node:fs").Stats, previous: import("node:fs").Stats) => {

@@ -1,6 +1,7 @@
 import { contextHeadroom, type ContextAdmission } from "./context-window.ts";
 import { queueBackpressure, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueuePressure } from "./queue-backpressure.ts";
 import { selectReviewerPool, type ReviewerPoolSelection } from "./reviewer-pool.ts";
+import type { ReviewBudgetSnapshot } from "./review-budget.ts";
 import { ADAPTERS, definitionOf, kindOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -444,7 +445,7 @@ export function assign(
     namedPlanner?: PeerId;
     /** The planner already recorded on the task (525-2): kept while it is still a holder. */
     keptPlanner?: PeerId;
-    reviewPool?: { pool: readonly string[]; rerotate?: boolean; failed?: readonly string[]; required?: boolean; sameFamily?: "fallback" | "never" };
+    reviewPool?: { pool: readonly string[]; rerotate?: boolean; failed?: readonly string[]; required?: boolean; sameFamily?: "fallback" | "never"; budget?: ReviewBudgetSnapshot; waitForReset?: boolean };
     candidates?: PeerId[];
     notReviewer?: PeerId;
     waitsFor?: number[];
@@ -674,10 +675,13 @@ export function assign(
         const continuityFamily = last && "reviewerFamily" in last && typeof last.reviewerFamily === "string" ? last.reviewerFamily : last ? (opts.adapterCatalog?.familyOf ?? familyOf)(last.by, opts.instances) : undefined;
         const pr = task.sdlc?.pr;
         const seed = typeof pr === "number" && Number.isSafeInteger(pr) && pr > 0 ? pr : task.id ?? 0;
-        reviewSelection = selectReviewerPool({ pool: opts.reviewPool!.pool, candidates: declaredPool, seed, implementerFamily: ownerFamily, continuityFamily, rerotate: opts.reviewPool!.rerotate, failed: opts.reviewPool!.failed, ...(neverSame ? { sameFamily: "never" as const } : {}) });
+        reviewSelection = selectReviewerPool({ pool: opts.reviewPool!.pool, candidates: declaredPool, seed, implementerFamily: ownerFamily, continuityFamily, rerotate: opts.reviewPool!.rerotate, failed: opts.reviewPool!.failed, waitForReset: opts.reviewPool!.waitForReset, ...(opts.reviewPool!.budget ? { budget: opts.reviewPool!.budget } : {}), ...(neverSame ? { sameFamily: "never" as const } : {}) });
         for (const row of reviewSelection.walk) trace.push(row.id ? `  reviewer pool candidate ${row.id} (${row.family}): ${row.reason}` : `  reviewer pool kind ${row.kind}: ${row.reason}`);
         reviewer = reviewSelection.reviewer ?? "user";
-        if (reviewSelection.blocked) {
+        if (reviewSelection.quotaWait) {
+          reviewBlocked = true;
+          trace.push(`  waiting for reviewer quota; reset recheck at ${new Date(reviewSelection.quotaWait.resetsAt).toISOString()}`);
+        } else if (reviewSelection.blocked) {
           trace.push("blocked: no reviewer can run");
           // Optional defaults retain the legacy planner escape when no fresh reviewer can run.
           const planners = opts.reviewPool?.required && !neverSame ? [] : automatic.filter(peer => peer !== reviewOwner && peerEntry(opts.roles, peer)?.includes("planner") && (!neverSame || peerEntry(opts.roles, peer)?.includes("reviewer") === true) && !(opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.reviewOnly && !blocked(peer, "reviewer"));

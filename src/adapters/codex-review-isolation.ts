@@ -1,4 +1,5 @@
 import { isNativeModelToken } from "./model-token.ts";
+import { codexReviewerQuota } from "./definitions/native-quota.ts";
 import { DENY_NAMES, DENY_SEGMENTS } from "@staix/agent-mem/platform";
 import { assessVersion, COMPAT } from "./compat.ts";
 import { createHash } from "node:crypto";
@@ -304,6 +305,7 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
 
 export const codexReviewerBackend: ReviewerBackend = {
   id: "codex", prepare,
+  failure: codexReviewerQuota,
   toolTrace(event) {
     const row = event as { type?: string; item?: { type?: string; server?: string; tool?: string; error?: { message?: unknown } | string; result?: { isError?: boolean; content?: { type?: string; text?: unknown }[] } } };
     const item = row?.item;

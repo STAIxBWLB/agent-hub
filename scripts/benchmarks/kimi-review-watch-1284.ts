@@ -1,7 +1,8 @@
 /** After benchmark. Historical old-timer evidence is immutable at 4daaa842; both modes here use the NEW controller. */
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { request } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ReviewerBackend, ReviewerLaunch } from "../../src/adapters/reviewer-print.ts";
@@ -168,11 +169,32 @@ async function preparedBenchmark(root: string, engine: KimiWatch1284Engine): Pro
     }
     return launch satisfies ReviewerLaunch;
   } };
+  // The synthetic host owns one review attempt and ACKs only its bounded private accounting journal.
+  const accountingFile = join(root, "accounting.jsonl");
+  let accountingAttempt: string | undefined, accountingRows = 0, usageRecorded = false;
+  const account = (row: { phase: "started" | "usage" | "complete"; attempt: string; task: number; tokens?: number }): boolean => {
+    if (accountingRows >= 3) return false;
+    try { appendFileSync(accountingFile, JSON.stringify(row) + "\n", { mode: 0o600 }); accountingRows++; return true; }
+    catch { return false; }
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     peer = new ReviewerPrintPeer("kimi-review", { cwd: root, command: [process.execPath, import.meta.path, "--fake-cli", version],
       mcpConfig: '{"mcpServers":{}}', systemPrompt: "Synthetic benchmark only.", watchdogMs: DEADLINE_MS,
       backend, verdictSince: () => false, inputReleased: () => released.resolve(),
+      usageIntent: (attempt, task) => {
+        if (accountingAttempt !== undefined || accountingRows !== 0 || task !== 7 || !/^[a-f0-9]{32}$/.test(attempt)
+          || !account({ phase: "started", attempt, task })) return false;
+        accountingAttempt = attempt; return true;
+      },
+      onUsage: (usage, task, identity) => {
+        if (!accountingAttempt || usageRecorded || task !== 7 || !identity || !/^[a-f0-9]{32}$/.test(identity.id)
+          || usage.input_tokens !== 3 || usage.output_tokens !== 2 || usage.cache_creation_input_tokens !== 0 || usage.cache_read_input_tokens !== 0
+          || !account({ phase: "usage", attempt: accountingAttempt, task, tokens: 5 })) throw numericFailure();
+        usageRecorded = true;
+      },
+      usageSettled: (attempt, outcome, task) => outcome === "complete" && attempt === accountingAttempt && usageRecorded && task === 7
+        && accountingRows === 2 && account({ phase: "complete", attempt, task }),
       taskMcp: (task, current) => createReviewerMcpSession({ task, current,
         tools: ["hub_review", "hub_task_show"].map(name => ({ name, description: "fixture", inputSchema: { type: "object" as const, properties: {}, additionalProperties: false as const } })), call: async () => "0" }) });
     const run = async () => {
@@ -213,7 +235,17 @@ if (!isMainThread) {
   const version = process.argv[process.argv.indexOf("--fake-cli") + 1];
   if (!version || !/^\d+\.\d+\.\d+$/.test(version)) process.exit(2);
   if (process.argv.at(-1) === "--version") console.log(version);
-  else { void (async () => { for await (const _ of Bun.stdin.stream()) { /* Drain synthetic facts without observing or printing them. */ } setInterval(() => {}, 1000); })(); }
+  else { void (async () => {
+    for await (const _ of Bun.stdin.stream()) { /* Drain synthetic facts without observing or printing them. */ }
+    const home = process.env.KIMI_CODE_HOME; if (!home) throw numericFailure();
+    // Native 1.5 usage-only fixture inside the actual owned profile; no quota JSON or model output.
+    const sessionId = `session_${randomUUID()}`, sessionDir = join(home, "sessions", "wd_fixture", sessionId), agentDir = join(sessionDir, "agents", "main");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(home, "session_index.jsonl"), JSON.stringify({ sessionId, sessionDir }) + "\n");
+    writeFileSync(join(agentDir, "wire.jsonl"), JSON.stringify({ type: "metadata", protocol_version: "1.5", created_at: 1 }) + "\n"
+      + JSON.stringify({ type: "usage.record", agentId: "main", model: "fixture", usage: { inputOther: 3, output: 2, inputCacheRead: 0, inputCacheCreation: 0 }, usageScope: "turn", time: Date.now() }) + "\n");
+    setInterval(() => {}, 1000);
+  })(); }
 } else if (import.meta.main) {
   try { console.log(JSON.stringify(await runKimiReviewWatchBenchmark(process.argv.includes("--inline-reference") ? "inline-reference" : "worker"))); }
   catch { console.log(JSON.stringify({ schema: 2, failed: 1, stage: failureStage })); process.exitCode = 1; }

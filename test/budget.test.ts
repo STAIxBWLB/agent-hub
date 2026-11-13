@@ -569,3 +569,21 @@ test("#1292 the product default gate is 0.99: 0.95 does not pause, 0.99 does, an
   expect(Object.hasOwn(template.budget, "gate")).toBe(false);
   expect(template.budget).toMatchObject({ stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0, wait_max_min: 30 });
 });
+
+test("reviewer pause reset evidence rejects fallback and keeps only the same proven pause through expiry grace", async () => {
+  const unknown = setup({ canHandOff: () => false });
+  try {
+    unknown.budget.report("codex", [{ id: "5h", used: 1, windowMins: 300, source: "Codex reviewer quota" }], true);
+    await unknown.settle(); expect(unknown.budget.reviewerPause("codex")).toEqual({});
+  } finally { unknown.budget.close(); }
+  const known = setup({ canHandOff: () => false });
+  try {
+    const reset = known.clock.now + MIN;
+    known.budget.report("codex", [{ id: "5h", used: 1, windowMins: 300, resetsAt: reset, source: "Codex reviewer quota" }], true);
+    await known.settle(); expect(known.budget.reviewerPause("codex")).toEqual({ resetsAt: reset });
+    known.clock.now = reset + 59_000; expect(known.budget.reviewerPause("codex")).toEqual({ resetsAt: reset });
+    expect(known.budget.record("codex")).toBeDefined(); // Projection never resumes the account.
+    known.clock.now = reset + 61_000; expect(known.budget.reviewerPause("codex")).toEqual({ resetsAt: reset });
+    known.clock.now = reset + 70_000; known.budget.tick(); expect(known.budget.record("codex")).toBeUndefined();
+  } finally { known.budget.close(); }
+});

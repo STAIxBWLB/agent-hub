@@ -1,7 +1,7 @@
 import type { ModelOverrideSelection } from "./registry-types.ts";
 import { isNativeModelToken } from "./model-token.ts";
 import type { ChildProcess } from "node:child_process";
-import { OwnedPrintChild, PrintChildCleanupError, type OwnedInputContext, type OwnedInputObserver } from "./claude-print-child.ts";
+import { OwnedPrintChild, PrintChildCleanupError, type OwnedInputContext, type OwnedInputObserver, type OwnedStderrReceipt } from "./claude-print-child.ts";
 import { randomUUID } from "node:crypto";
 import { HUB, frame, sanitize } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
@@ -9,8 +9,11 @@ import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import type { Envelope } from "../hub/envelope.ts";
 import type { ReviewerMcpSession, ReviewerToolName } from "./reviewer-mcp.ts";
 import { createReviewerPolicyWatch, type ReviewerPolicyProbe, type ReviewerPolicyWatch } from "./reviewer-policy-watch.ts";
+import { DEFAULT_REVIEW_MAX_MINUTES, MAX_REVIEW_MINUTES } from "../hub/review-budget.ts";
+import { nativeReviewerQuota, type NativeReviewerQuota } from "./definitions/native-quota.ts";
 
 /** #722: the closed list of legs a reviewer's per-review start can fail on. A class names a leg, never a path, content or token. */
+class ReviewerUsageCleanupError extends PrintChildCleanupError {}
 export const REVIEWER_CAUSE_CLASSES = ["version", "binary", "mcp_inventory", "plugins_hooks_apps", "sandbox_proof", "credential_root", "timeout", "unknown"] as const;
 export type ReviewerCauseClass = typeof REVIEWER_CAUSE_CLASSES[number];
 const REVIEWER_CAUSE_HINT: Record<ReviewerCauseClass, string> = {
@@ -41,6 +44,7 @@ class ReviewerPolicyCleanupError extends PrintChildCleanupError {
 }
 
 export interface ReviewerPrintUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
+export interface ReviewerUsageIdentity { id: string; at: number; model?: string }
 export interface ReviewerIsolationReceipt {
   backend: string;
   version: string;
@@ -84,6 +88,8 @@ export interface ReviewerLaunch {
   watchCurrent?: true;
   /** Fixed host factory: periodic work is separate from the synchronous current() authority fence. */
   startPolicyWatch?: () => ReviewerPolicyProbe;
+  /** Runs only after owned teardown and before private-profile cleanup. Receives counts and opaque identity only. */
+  readUsage?(startedAt: number, receive: (usage: ReviewerPrintUsage, identity: ReviewerUsageIdentity) => void): boolean;
 }
 export interface ReviewerBackend {
   id: string;
@@ -93,7 +99,8 @@ export interface ReviewerBackend {
   usage?(event: unknown): ReviewerPrintUsage | undefined;
   /** #1402: the model a result frame says was served, by the backend's own native shape; absent when the frame names none. */
   model?(event: unknown): string | undefined;
-  failure?(event: unknown): "quota" | undefined;
+  failure?(event: unknown): NativeReviewerQuota | "quota" | undefined;
+  failureOnExit?(event: { exitCode: number | null; stderr: OwnedStderrReceipt }): NativeReviewerQuota | undefined;
   /** Structured native MCP events only, never model messages or tool arguments. */
   toolTrace?(event: unknown): ReviewerToolTrace | undefined;
 }
@@ -128,6 +135,8 @@ export interface ReviewerFailure {
   /** Only for `start_failed`: the leg that refused (#722). */
   causeClass?: ReviewerCauseClass;
   causeDetail?: string;
+  reason?: "review time cap";
+  quota?: readonly NativeReviewerQuota[];
 }
 
 export interface ReviewerReviewBinding { readonly head?: string; readonly flowRevision?: number }
@@ -140,10 +149,22 @@ export interface ReviewerPrintOptions {
   systemPrompt: string;
   privatePaths?: readonly string[];
   watchdogMs: number;
+  /** Sampled once for each actual child; activity never extends this wall-clock cap. */
+  maxMinutes?(): number;
+  /** Host-owned deterministic timer seam; never accepted from a review envelope. */
+  reviewTimer?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void };
   backend: ReviewerBackend;
   facts?(env: Envelope): string | undefined;
   verdictSince(task: number, since: number): boolean;
-  onUsage?(usage: ReviewerPrintUsage, task: number): void;
+  onUsage?(usage: ReviewerPrintUsage, task: number, identity?: ReviewerUsageIdentity): void;
+  /** Host journal ACK before any usage-producing child is constructed; absent port refuses that launch. */
+  usageIntent?(attempt: string, task: number): boolean;
+  /** Proven native quota is account evidence, independent of whether this task later reroutes. */
+  onQuota?(reading: NativeReviewerQuota, attempt: string, current: () => boolean): boolean;
+  /** Only after this attempt's owned group and watch have settled. Never grants task authority. */
+  quotaSettled?(attempt: string): void;
+  /** ACK after owned settlement and usage read; failed ACK retains the private profile for recovery. */
+  usageSettled?(attempt: string, outcome: "complete" | "unknown", task: number): boolean;
   /** True confirms that the host re-offered the current review; void/false retains uncertainty. */
   onUnavailable?(failure: ReviewerFailure, current: () => boolean): boolean | void | Promise<boolean | void>;
   onNoVerdict?(diagnostic: ReviewerNoVerdict, current: () => boolean): void;
@@ -243,7 +264,7 @@ export class ReviewerPrintPeer extends BasePeer {
   async start(): Promise<void> {
     // A retained child means a review's process group was never confirmed gone: no new review beside it.
     if (this.child) throw new Error(`${this.id}: an earlier review's process group is still running; stop it first`);
-    if (this.policyWatch) throw new ReviewerPolicyCleanupError();
+    if (this.policyWatch || this.childCleanup) throw new ReviewerPolicyCleanupError();
     if (this.preparation) throw new Error(`${this.id}: reviewer preparation is still running`);
     this.receipt = undefined;
     const generation = ++this.generation;
@@ -272,7 +293,8 @@ export class ReviewerPrintPeer extends BasePeer {
 
   protected override onWatchdog(): void { this.abortReview("review watchdog timeout", "timeout"); }
 
-  private abortReview(reason: "review watchdog timeout" | "review output limit exceeded" | "review policy changed", failureCause?: DeliveryFailureCause): void {
+  private abortReview(reason: "review watchdog timeout" | "review output limit exceeded" | "review policy changed" | "review time cap", failureCause?: DeliveryFailureCause): void {
+    const cappedTask = this.reviewing;
     const generation = ++this.generation, batch = this.batch, preparation = this.preparation;
     this.reviewing = undefined;
     this.reviewMcpClose?.();
@@ -286,13 +308,13 @@ export class ReviewerPrintPeer extends BasePeer {
       if (generation !== this.generation) return;
       await this.kill();
       if (generation !== this.generation) return; // a person's stop owns the hold; never reroute it
-      if (batch) await this.reportFailures([...batch.failures, ...remainingFailures(batch, batch.next, "no_verdict")], generation);
+      if (batch) await this.reportFailures([...batch.failures, ...remainingFailures(batch, batch.next, "no_verdict").map(failure => reason === "review time cap" && failure.task === cappedTask ? { ...failure, reason: "review time cap" as const } : failure)], generation);
       if (generation === this.generation && this.state === "busy") { this.batch = undefined; super.onWatchdog(); }
     })().catch((error: Error) => this.opts.log?.(`[${this.id}] review cleanup failed, staying busy`));
   }
 
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
-    if (this.state !== "idle") {
+    if (this.state !== "idle" || this.childCleanup) {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
       throw new Error(`${this.id} is ${this.state}`);
     }
@@ -320,7 +342,7 @@ export class ReviewerPrintPeer extends BasePeer {
       if (task === undefined) continue; // a withdrawal or other notice: nothing to review
       if (env.private) { failure = { state: "needs_review", reason: "a private review is the person's, never a cloud reviewer's" }; break; }
       const since = Date.now();
-      let result: { code: number | null; quota: boolean; trace: ReviewerTraceState };
+      let result: { code: number | null; quota: boolean; quotaReadings?: readonly NativeReviewerQuota[]; trace: ReviewerTraceState };
       try { result = await this.review(env, task, generation); }
       catch (error) {
         if (generation !== this.generation) return;
@@ -340,6 +362,7 @@ export class ReviewerPrintPeer extends BasePeer {
           continue;
         }
         if (error instanceof PrintChildCleanupError) {
+          if (error instanceof ReviewerUsageCleanupError) await this.reportFailures(batch.failures.filter(row => row.cause === "quota"), generation);
           // Unavailable until a stop confirms the group gone: no new review runs beside the survivors.
           this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
           this.settle("needs_review", error instanceof ReviewerPolicyCleanupError ? error.message : `review process group still running: ${error.message}`);
@@ -365,9 +388,10 @@ export class ReviewerPrintPeer extends BasePeer {
           if (this.opts.onNoVerdict) this.opts.onNoVerdict(diagnostic, () => generation === this.generation);
           else this.opts.log?.(reviewerNoVerdictLine(this.id, diagnostic));
         } catch { this.opts.log?.(reviewerNoVerdictLine(this.id, { task, exitCode: result.code, reviewCalled: false }, undefined, true)); }
-        if (target) reroute.push({ ...target, cause: result.quota ? "quota" : "no_verdict" });
+        const quotaMetadata = result.quotaReadings?.length ? { quota: result.quotaReadings } : {};
+        if (target) reroute.push({ ...target, cause: result.quota ? "quota" : "no_verdict", ...quotaMetadata });
         if (result.quota) {
-          reroute.push(...remainingFailures(batch, index + 1, "quota"));
+          reroute.push(...remainingFailures(batch, index + 1, "quota").map(failure => ({ ...failure, ...quotaMetadata })));
           batch.next = envs.length;
           break;
         }
@@ -430,7 +454,7 @@ export class ReviewerPrintPeer extends BasePeer {
     if (this.opts.admit?.(env) === false) throw new ReviewerAdmissionError(this.opts.bindingCurrent?.(task, binding) === false ? "stale_binding" : "policy_changed");
   }
 
-  private async review(env: Envelope, task: number, generation: number): Promise<{ code: number | null; quota: boolean; trace: ReviewerTraceState }> {
+  private async review(env: Envelope, task: number, generation: number): Promise<{ code: number | null; quota: boolean; quotaReadings?: readonly NativeReviewerQuota[]; trace: ReviewerTraceState }> {
     const revision=Number(env.refs?.reviewRevision);
     const binding: ReviewerReviewBinding=Object.freeze({head:env.refs?.commit,flowRevision:Number.isSafeInteger(revision)&&revision>0?revision:undefined});
     this.assertAdmission(env, task, binding);
@@ -458,7 +482,18 @@ export class ReviewerPrintPeer extends BasePeer {
     };
     this.reviewMcpClose=closeMcp;
     let ownedChild: OwnedPrintChild | undefined, releasing: Promise<void> | undefined;
+    let deadline: { handle: unknown } | undefined;
+    const clearDeadline = () => {
+      if (!deadline) return;
+      if (this.opts.reviewTimer) this.opts.reviewTimer.clear(deadline.handle);
+      else clearTimeout(deadline.handle as ReturnType<typeof setTimeout>);
+      deadline = undefined;
+    };
     let inputReleased = false, childClosed = false, launchCleanupConfirmed = false;
+    let nativeStartedAt: number | undefined, usageRead = false;
+    const quotaAttempt = randomUUID().replaceAll("-", "");
+    let quotaSettlementSent = false;
+    let accountingAttempt: string | undefined, accountingOutcome: "complete" | "unknown" = "unknown";
     let inputFinished = false;
     const finishInput = () => {
       const closedWithoutChild = !ownedChild || ownedChild.process.pid === undefined;
@@ -468,23 +503,75 @@ export class ReviewerPrintPeer extends BasePeer {
       }
     };
     let policyOwner: ReviewPolicyOwner | undefined;
-    const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
+    const release = () => releasing ??= Promise.resolve().then(() => {
+      if (!quotaSettlementSent) {
+        quotaSettlementSent = true;
+        this.opts.quotaSettled?.(quotaAttempt);
+      }
+      if (accountingAttempt) {
+        if (!usageRead) {
+          usageRead = true;
+          if (ownedChild?.process.pid === undefined) accountingOutcome = "complete";
+          else if (nativeStartedAt !== undefined && launch?.readUsage) {
+            try { if (launch.readUsage(nativeStartedAt, (usage, identity) => this.opts.onUsage?.(usage, task, identity))) accountingOutcome = "complete"; }
+            catch { /* An unreadable or uncommitted count remains unknown. */ }
+          }
+        }
+        if (this.opts.usageSettled?.(accountingAttempt, accountingOutcome, task) !== true)
+          throw new ReviewerUsageCleanupError("reviewer accounting settlement was not acknowledged");
+        if (accountingOutcome === "unknown") throw new ReviewerUsageCleanupError("reviewer usage is incomplete; owned profile retained");
+      }
+      return launch?.cleanup?.();
+    }).then(() => {});
     try {
     launch = await this.prepare(sessionId, input, task, mcp?.config, selection?.model);
     if (generation !== this.generation) throw new ReviewerAdmissionError("stale_binding");
     this.assertAdmission(env, task, binding);
     if (launch.current?.() === false) throw new ReviewerUnavailableError("reviewer isolation changed before child spawn", "binary");
     this.receipt = launch.isolation;
+    const maxMinutes = this.opts.maxMinutes?.() ?? DEFAULT_REVIEW_MAX_MINUTES;
+    if (!Number.isFinite(maxMinutes) || maxMinutes <= 0 || maxMinutes > MAX_REVIEW_MINUTES) throw new ReviewerAdmissionError("policy_changed");
     let quota = false;
+    const quotaReadings = new Map<NativeReviewerQuota["id"], NativeReviewerQuota>();
+    const publishedQuota = new Set<string>();
+    const observeQuota = (reading: NativeReviewerQuota) => {
+      const key = JSON.stringify(reading);
+      if (publishedQuota.has(key)) return;
+      try { if (this.opts.onQuota?.(reading, quotaAttempt, () => generation === this.generation) === true) publishedQuota.add(key); }
+      catch { /* Retain the proven quota in the batch even if its immediate account write could not commit. */ }
+    };
+    const rememberQuota = () => {
+      const batch = this.batch, target = batch?.targets[batch.next];
+      if (!batch || generation !== this.generation || target?.task !== task) return;
+      const failure: ReviewerFailure = { ...target, cause: "quota", ...(quotaReadings.size ? { quota: [...quotaReadings.values()] } : {}) };
+      const prior = batch.failures.findIndex(row => row.task === target.task && row.head === target.head && row.flowRevision === target.flowRevision && row.cause === "quota");
+      if (prior < 0) batch.failures.push(failure); else batch.failures[prior] = failure;
+    };
+    if (launch.readUsage) {
+      const attempt = randomUUID().replaceAll("-", "");
+      if (this.opts.usageIntent?.(attempt, task) !== true) throw new ReviewerAdmissionError("policy_changed");
+      accountingAttempt = attempt;
+      // The journal intent precedes spawn: the native agent-file already contains the review facts.
+      this.assertAdmission(env, task, binding);
+    }
     const child = new OwnedPrintChild({ peer: this.id, command: launch.command, args: launch.args,
       cwd: launch.cwd ?? this.opts.cwd, env: launch.env, envMode: launch.envMode, input,
+      ...(this.opts.backend.failureOnExit ? { captureStderr: true as const } : {}),
       current: () => generation === this.generation, stop: launch.stop,
       onInputReleased: () => { inputReleased = true; this.opts.inputReleased?.(inputContext, [env]); },
       onError: () => { if (this.child === child) this.child = undefined; },
       onSpawn: () => {
+        nativeStartedAt = Date.now();
         try { selection?.applied(); } catch { /* Native spawn remains authoritative. */ }
         this.runningBinding={task,binding};
         this.reviewing = task; this.reviewSeq++;
+        const reviewSequence = this.reviewSeq;
+        const expire = () => {
+          if (this.child === child && generation === this.generation && this.reviewing === task && this.reviewSeq === reviewSequence)
+            this.abortReview("review time cap", "timeout");
+        };
+        if (this.opts.reviewTimer) deadline = { handle: this.opts.reviewTimer.set(expire, maxMinutes * 60_000) };
+        else { const timer = setTimeout(expire, maxMinutes * 60_000); timer.unref?.(); deadline = { handle: timer }; }
         if (launch!.watchCurrent) {
           try {
             const sequence = this.reviewSeq, probe = launch!.startPolicyWatch!();
@@ -509,11 +596,19 @@ export class ReviewerPrintPeer extends BasePeer {
         const usage = this.opts.backend.usage?.(event);
         if (usage) this.opts.onUsage?.(usage, task);
         try { const model = this.opts.backend.model?.(event); if (model) this.servedModel = model; } catch { /* optional metadata never changes review execution */ }
-        if (this.opts.backend.failure?.(event) === "quota") quota = true;
+        try {
+          const failure = this.opts.backend.failure?.(event);
+          if (failure === "quota") { quota = true; rememberQuota(); } // Legacy synthetic backends carry no reset evidence.
+          else {
+            const reading = nativeReviewerQuota(failure);
+            if (reading) { quota = true; quotaReadings.set(reading.id, reading); observeQuota(reading); rememberQuota(); }
+          }
+        } catch { /* Malformed optional metadata cannot manufacture a quota pause. */ }
       },
       onActivity: () => this.touch(),
       onLimit: () => this.abortReview("review output limit exceeded"),
       onLeaderExit: () => {
+        clearDeadline();
         if (this.child === child) { this.reviewing = undefined; this.runningBinding=undefined; }
         void this.stopPolicyWatch(policyOwner).catch(() => {});
       },
@@ -523,10 +618,17 @@ export class ReviewerPrintPeer extends BasePeer {
     this.childCleanup = release;
     this.childCurrent = launch.watchCurrent ? launch.current : undefined;
     const code = await child.done;
+    if (generation === this.generation && this.child === child && this.opts.backend.failureOnExit) {
+      try {
+        const reading = nativeReviewerQuota(this.opts.backend.failureOnExit({ exitCode: code, stderr: child.stderrAfterSettlement() }));
+        if (reading) { quota = true; quotaReadings.set(reading.id, reading); observeQuota(reading); rememberQuota(); }
+      } catch { /* Unknown or incomplete exit diagnostics remain ordinary failure. */ }
+    }
     childClosed = true;
     if (this.child === child) this.child = undefined;
-    return { code, quota, trace };
+    return { code, quota, trace, ...(quotaReadings.size ? { quotaReadings: [...quotaReadings.values()] } : {}) };
     } finally {
+      clearDeadline();
       if (this.activeTrace?.value === trace) this.activeTrace = undefined;
       closeMcp();
       // Joining the watcher precedes deletion of files it can still read, even when native cleanup failed.
@@ -537,7 +639,7 @@ export class ReviewerPrintPeer extends BasePeer {
           launchCleanupConfirmed = true;
           if (this.policyWatch === policyOwner) this.policyWatch = undefined;
         }
-      } catch { this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`); }
+      } catch (error) { this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`); if (error instanceof ReviewerUsageCleanupError) throw error; }
       finishInput();
     }
   }
@@ -568,6 +670,10 @@ export class ReviewerPrintPeer extends BasePeer {
     try { await workerStopped; } catch (error) { workerError = error; }
     if (workerError) throw workerError;
     if (childError) throw childError;
+    if (!child && cleanup) {
+      await cleanup();
+      if (this.childCleanup === cleanup) this.childCleanup = undefined;
+    }
     if (child) {
       await cleanup?.();
       owner?.closed();

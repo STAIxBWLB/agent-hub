@@ -53,6 +53,7 @@ else {
   const person = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => person.close());
   expect(await person.request({ t: "start", peer: "codex-review" })).toMatchObject({ ok: true });
   if (twoReviewers) expect(await person.request({ t: "start", peer: "codex-two" })).toMatchObject({ ok: true });
+  expect(await person.request({ t: "budget", set: { peer: "codex-review", used: 0.1, resetsInMs: 600_000 } })).toMatchObject({ ok: true });
   const builder = await ControlClient.connect(stateDir, { role: "peer", peer: "builder", channel: true }); cleanup.push(() => builder.close());
   await until(() => daemon.bus.stateOf("builder") === "idle");
   const db = new Database(join(stateDir, "hub.db"), { readonly: true }); cleanup.push(() => db.close());
