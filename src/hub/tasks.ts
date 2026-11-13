@@ -119,8 +119,6 @@ import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, read
 /** #1176: refusals for an agent that reaches a person-run card by a path other than the pull gate. */
 const PERSON_RUN_SPLIT = "a person-run card is the person's to split: its children would be unmarked cards an agent could take (the person's own split marks every child person-run)";
 const PERSON_RUN_ACCEPT = (id: number) => `task #${id} is a person-run leg: no agent accepts it (it waits on the person: live receipts, their accounts or approvals). The person runs it or clears the mark with ahub backlog plan`;
-/** #1430: `plannerRefusal`'s sentence when it has nothing specific to name; `pullPlanned` then falls back to routing's own owner refusals. */
-const NO_PLANNER_CAPACITY = "no peer has eligible planner WIP capacity";
 
 function requireLocalTaskPeer(peer: unknown): void {
   if (isRemotePeerId(peer)) throw new PreEffectToolRefusal("remote peers have no local task authority");
@@ -3072,7 +3070,7 @@ export class Tasks {
       const refusal = queueBackpressure(peer, pressure.queueBackpressure, peerEntry(pressure.queues, peer), pressure.now ?? NaN);
       if (refusal) parts.push(`${peer} ${refusal.reason}`);
     }
-    return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : NO_PLANNER_CAPACITY;
+    return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : "no peer has eligible planner WIP capacity";
   }
   /**
    * #1430: the owner refusals routing itself recorded, named the way the reserved branch already names its peer: peer id and
@@ -3080,13 +3078,13 @@ export class Tasks {
    */
   private ownerRefusals(assignment: Assignment): string | undefined {
     const refused = (assignment.refusals ?? []).filter(row => row.role === "owner");
-    return refused.length ? `${NO_PLANNER_CAPACITY}; routing refusals: ${refused.map(row => `${row.peer}: ${row.reason}`).join("; ")}` : undefined;
+    return refused.length ? `routing refusals: ${refused.map(row => `${row.peer}: ${row.reason}`).join("; ")}` : undefined;
   }
   /** Keep routing refusals even when other peers also have known WIP or delivery pressure. */
   private pullRefusal(task: Task, assignment: Assignment): string {
     const known = this.plannerRefusal(task);
     const routing = this.ownerRefusals(assignment);
-    return routing ? known === NO_PLANNER_CAPACITY ? routing : `${routing}; ${known}` : known;
+    return routing ? `${known}; ${routing}` : known;
   }
   private plannerAssignment(task: Task, reservedOnly = false, routing: Routing = this.d.routing(), queueOverride?: "owner", projectedHealth?: ReturnType<Tasks["health"]>): Assignment {
     const states = this.states();
