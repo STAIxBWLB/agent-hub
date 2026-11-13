@@ -3993,7 +3993,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const startupEvents = startupSeeds.events;
   budget.seedResets(startupEvents.flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
   // #285 phase 2: Kimi's consumption is the hub's own count of its session wire log (`src/adapters/kimi-wire-usage.ts`), not an ACP total.
-  const softTokenAccount = (peer: string): boolean => definitionOf(peer)?.budget?.resetSoftTokensOnResume === true;
+  const softTokenAccount = (peer: string): boolean => definitionOf(accountOf(peer))?.budget?.resetSoftTokensOnResume === true;
   const kimiEvents = new KimiEventWriter({ append: event, read: () => readEvents(join(opts.stateDir, "events.jsonl")) }, startupEvents);
   const kimiUsage = new KimiUsage({
     home: opts.kimiHome ?? process.env.KIMI_CODE_HOME ?? join(homedir(), ".kimi-code"),

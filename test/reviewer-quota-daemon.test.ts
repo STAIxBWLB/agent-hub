@@ -259,3 +259,42 @@ test("pre-review quota relay does not spend the later done transition's first re
   f.clock.now += 30_000; f.restart(); await drain();
   expect(f.board.get(done.id)!.history.at(-1)!.reviewerQuotaWait!.deadline).toBe(wait.deadline);
 });
+
+
+test("Kimi reviewer accounting resolves canonical account policy and admits its already-selected owned child", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-kimi-account-policy-")), native = join(root, "native"), bin = join(root, "bin"), project = join(root, "project"), stateDir = join(project, "state"), log = join(root, "review.jsonl");
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  for (const dir of [native, bin, project, join(native, "credentials"), join(native, "oauth")]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(native, "device_id"), "fixture-device");
+  writeFileSync(join(native, "config.toml"), 'default_model="fixture"\n[providers."managed:kimi-code"]\ntype="kimi"\nbase_url="https://api.kimi.ai/coding/v1"\n[providers."managed:kimi-code".oauth]\nstorage="file"\nkey="oauth/kimi-code"\n[models.fixture]\nprovider="managed:kimi-code"\nmodel="fixture"\n');
+  const fake = resolve(import.meta.dir, "fakes/fake-kimi-reviewer.ts"), executable = join(bin, "kimi");
+  writeFileSync(executable, `#!/bin/sh\nexec '${process.execPath}' '${fake}' '${log}' "$@"\n`); chmodSync(executable, 0o755);
+  const previous = { PATH: process.env.PATH, KIMI_CODE_HOME: process.env.KIMI_CODE_HOME };
+  process.env.PATH = `${bin}:${previous.PATH ?? "/usr/bin:/bin"}`; process.env.KIMI_CODE_HOME = native;
+  cleanup.push(() => { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+  const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, instances: { "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } },
+      roles: { ...DEFAULT_CONFIG.roles, builder: ["implementer"] }, review: { ...DEFAULT_CONFIG.review, pool: ["kimi"] },
+      budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 100 }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
+      inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false },
+      approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } }); cleanup.push(() => daemon.stop());
+  const person = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => person.close());
+  expect(await person.request({ t: "start", peer: "kimi-review" })).toMatchObject({ ok: true });
+  expect(await person.request({ t: "budget", set: { peer: "kimi-review", used: 0.1, resetsInMs: 600_000 } })).toMatchObject({ ok: true });
+  const builder = await ControlClient.connect(stateDir, { role: "peer", peer: "builder", channel: true }); cleanup.push(() => builder.close());
+  const until = async (condition: () => boolean) => { for (let n = 0; n < 400 && !condition(); n++) await Bun.sleep(5); expect(condition()).toBe(true); };
+  await until(() => daemon.bus.stateOf("builder") === "idle");
+  const invoke = async (op: string, args: Record<string, unknown>) => { const reply = await builder.request({ t: "task", op, args }); expect(reply.ok).toBe(true); return String(reply.text); };
+  const proposed = await invoke("hub_task_propose", { title: "canonical Kimi accounting", class: "implement", owner: "builder" }), id = Number(/#(\d+)/.exec(proposed)![1]);
+  await invoke("hub_task_accept", { id }); await invoke("hub_task_done", { id, summary: "fixture implementation" });
+  const db = new Database(join(stateDir, "hub.db"), { readonly: true }); cleanup.push(() => db.close());
+  await until(() => (db.query("SELECT state FROM tasks WHERE id=?").get(id) as { state: string }).state === "approved" && daemon.bus.stateOf("kimi-review") === "idle");
+  const events = readFileSync(join(stateDir, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  const accounting = events.filter(row => row.type === "reviewer_accounting");
+  expect(accounting.map(row => [row.peer, row.outcome])).toEqual([["kimi", "started"], ["kimi", "complete"]]);
+  expect(accounting[0]!.attempt).toBe(accounting[1]!.attempt);
+  expect(events.filter(row => row.type === "usage" && row.source === "kimi_wire" && row.task === id)).toHaveLength(1);
+  expect(events.filter(row => row.type === "tokens" && row.source === "kimi_wire" && row.task === id).map(row => row.n)).toEqual([5]);
+  const shown = await person.request({ t: "budget" }); expect(shown.kimiSource.state).toBe("counting");
+  expect(shown.budget.kimi.windows).toEqual(expect.arrayContaining([expect.objectContaining({ id: "tokens", kind: "count", used: 0.05 })]));
+});
