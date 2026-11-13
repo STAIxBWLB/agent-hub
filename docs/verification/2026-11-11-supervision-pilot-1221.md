@@ -371,20 +371,25 @@ revisions: the same three at `8:3`, the same two at `11:4`, the same three at `1
 and the row at `15:6` was written at that same second. The revision therefore moved `14:5` to
 `15:6` between the two, and the only change on this task this receipt can name in that window is
 its own plan refresh, recorded by the hub at 18:45:02 KST (`hub_task_accept` with an updated plan).
-The measured part is that the stale-revision row closed at the same second the new-revision row
-opened, which is the dedupe key working as the design states it: the pair carries rule, task,
-revision and trigger, so a task edit re-derives the key and the rule fires again instead of
-inheriting the old row. Whether the plan refresh is what advanced the revision is not visible from
-a role-scoped read and stays in the list at the end.
+The measured part is the coincidence of the two timestamps: a row at a new revision opened at the
+second the old one closed, which is what a revision-keyed pair (`rule`, `task`, `revision`,
+`trigger` per the design) looks like from outside. Whether the queue closed the old row because of
+that, or on its own schedule, is not in the stored record, and neither is whether the plan refresh
+is what advanced the revision.
 
 `sup-9b89abfbd309` is that new row, and it expired at 20:23:59 KST, 1 h 34 m 13 s after its write.
 #917's PR #1456 was created at 20:23:05 KST (`createdAt` 2026-11-13T11:23:05Z), 54 s before the
-expiry, and re-filed at 20:28:01 KST, after the row had already closed. So this pair also left
-supervision before any merge, and this time before any approval: the close tracks the partner's
-review hand-off, not a verdict. The receipt's earlier sentence that a pair expires at the approving
-verdict is narrowed here rather than contradicted — readings 1 to 3 saw closes 1.3 to 1.4 s after a
-review time, reading 11 saw one 16 s after a bot `COMMENTED` review on a PR whose decision was never
-recorded, and reading 12 sees one 54 s after the partner's PR appeared.
+expiry, and re-filed at 20:28:01 KST, after the row had already closed, so this pair also left
+supervision before any merge and before any approval of it. Which of the rule's exits closed it is
+not visible from a role-scoped read: `unintegratedOverlap` (`src/hub/supervision-rules.ts`) produces
+the row only while both sides' latest episode is an `accepted` one, neither side is closed
+(`approved` or `cancelled`, `isClosedTaskState` in `src/hub/board.ts`), no integration evidence
+(`integration requested`, `integrated`, `integration unresolved`) was recorded after either
+acceptance, and neither side's window is clipped. An expiry therefore means one of those four
+stopped holding, and the stored row names none of them. What the wave can say is that its closes
+now fall at three different boundaries: readings 1 to 3 saw them 1.3 to 1.4 s after a review time,
+reading 11 saw one 16 s after a bot `COMMENTED` review on a PR whose decision was never recorded,
+and reading 12 sees one 54 s after the partner's PR appeared.
 
 `refused` still reads 3, unchanged over the 2 h 05 m since reading 11, during which the queue wrote
 one row and closed two. Refusals therefore do not track rows written: this is the first window in
@@ -453,10 +458,10 @@ and is not part of this wave.
   All three of those partners then merged on main (`2d341c298`, `89e69a38a`, `60db687fd`) and no
   row named any of the three merges, though the third had merged before reading 3 returned its
   expired row. Measured four times on 2026-11-11; it is a limit of the reading window, not a
-  defect of any task. Reading 12 measures a second boundary on the same limit: the `15:6` row
-  closed 54 s after #917's PR appeared and before any approval, and the `14:5` row closed at the
-  instant the revision moved under it, so the window that ends a pair is the partner's review
-  hand-off and not only a verdict;
+  defect of any task. Reading 12 adds two closes this list cannot attribute: the `14:5` row closed
+  at the instant the revision moved under it, and the `15:6` row closed 54 s after #917's PR
+  appeared and before any approval of it. Both ended the pair at something other than an approving
+  verdict, and neither stored row names which of the rule's four conditions stopped holding;
 - every row the read page left out. Reading 5 measured the page bound for the first time: the
   unfiltered read returned two of my three rows because the other 48 slots of the 50-row page went
   to rows on tasks I cannot decide, and the `task`-narrowed read returned all three. The size of
