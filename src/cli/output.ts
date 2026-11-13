@@ -512,7 +512,7 @@ export function renderBudget(data: BudgetOutput, columns?: number, now = Date.no
     if (!info) continue;
     const parts: string[] = [];
     if (info.resetCreditsAvailable !== undefined) {
-      const expiry = info.resetCreditsExpireAt !== undefined ? `expires ${new Date(info.resetCreditsExpireAt).toISOString().slice(0, 10)}`
+      const expiry = info.resetCreditsExpireAt !== undefined ? `expires ${new Date(info.resetCreditsExpireAt).toISOString().split("T")[0]}`
         : info.resetCreditsExpiryKnown ? "no expiry" : "expiry unknown";
       parts.push(`${plural(info.resetCreditsAvailable, "reset credit")} available${info.resetCreditsAvailable ? ` (${expiry})` : ""}`);
     }

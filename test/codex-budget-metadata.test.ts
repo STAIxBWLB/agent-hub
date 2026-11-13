@@ -109,3 +109,11 @@ test("#1440 public projections discard extra account fields and stale diagnostic
   expect(text).toContain("stale snapshot"); expect(text).toContain("expiry unknown");
   expect(text).not.toContain("turns would use paid credits"); expect(text).not.toContain("CANARY");
 });
+
+
+test("#1440 every accepted native expiry retains its complete ISO date", () => {
+  const expiry = Date.parse("+010000-01-02T00:00:00.000Z"), info = codexAccountUsage({ rateLimitResetCredits: { availableCount: 1, credits: [row(expiry / 1000)] } });
+  expect(info.resetCreditsExpireAt).toBe(expiry);
+  const text = renderBudget({ budget: { codex: { windows: [], paused: { reason: "quota" }, accountUsage: { ...info, at: 1, stale: false } } } }, undefined, 1).map(line => line.map(part => part.text).join("")).join("\n");
+  expect(text).toContain("expires +010000-01-02");
+});
