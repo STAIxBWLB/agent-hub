@@ -8653,7 +8653,7 @@ export class Tasks {
       try { this.d.onReviewObserverInput?.(by); }
       catch { throw new PreEffectToolRefusal("the anchored review input could not be privately scoped; retry after ordinary new input"); }
     }
-    const observerExcluded = this.observerExcluded(by);
+    const evidenceObserverExcluded = this.observerExcluded(by);
     const requestCheck = this.requestCheck(by);
     if (typeof id !== "number" && !(typeof id === "string" && /^\s*\d+\s*$/.test(id))) this.need(id, false, true);
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
@@ -8706,7 +8706,7 @@ export class Tasks {
     const anchorPrivacy = new Map(parsed.flatMap(item => item.anchor ? [[item.anchor.path, this.reviewPathPrivate(item.anchor.path)] as const] : []));
     try { parsed = parsed.map(item => item.anchor && anchorPrivacy.get(item.anchor.path) ? { ...item, anchor: privateReviewAnchor(item.anchor) } : item); }
     catch { throw new PreEffectToolRefusal("private finding path needs an existing lineRange or structural selector; remove quoted selectors and retry"); }
-    const observerExcluded = reviewObserverTurn || parsed.some(item => item.anchor !== undefined);
+    const observerExcluded = evidenceObserverExcluded || reviewObserverTurn || parsed.some(item => item.anchor !== undefined);
     // #852 AC3 (amended): a code-scope reviewer's changes_requested is always recorded, never refused. Without an open structured finding it is
     // evidence-only: it does not count toward rejections or escalation, the task returns to its owner as usual, and the conductor gets one ids-only
     // notice. The rule is structural (a finding with disposition open), never a reading of the unmet text.
@@ -8767,7 +8767,7 @@ export class Tasks {
       path: anchor.path, ...(anchor.side ? { side: anchor.side } : {}), ...(anchor.contentHash ? { contentHash: anchor.contentHash } : {}),
       ...(anchor.projection ? { projection: anchor.projection } : {}),
     } } : {}) }));
-    const withheld = observerExcluded || await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: screenFindings }) : note, valid())
+    const withheld = evidenceObserverExcluded || await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: screenFindings }) : note, valid())
       || parsed.length > 0 && !this.findingTextAllowed(initial, parsed);
     let task = valid();
     let reviewedHead: string | undefined;

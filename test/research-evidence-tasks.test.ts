@@ -47,7 +47,7 @@ async function fixture() {
       rawSha256: registry.get(source)!.sha256, projectionSha256: sha256Of(Buffer.from("declared projection")), projectionVersion: "declared-v1",
       locator: { start: 0, end: 3 }, relation: "supports", revision: 1 };
   };
-  return { cwd, file, registry, control, patterns, piiPaths, task, first, second, input, notices, get board() { return board; }, get tasks() { return tasks; },
+  return { cwd, file, bus, registry, control, patterns, piiPaths, task, first, second, input, notices, get board() { return board; }, get tasks() { return tasks; },
     restart() { board.close(); board = new Board(file); tasks = build(); } };
 }
 const refused = async (call: Promise<unknown>) => { try { await call; throw new Error("expected a pre-effect refusal"); } catch (error) { expect(error).toBeInstanceOf(PreEffectToolRefusal); return error; } };
