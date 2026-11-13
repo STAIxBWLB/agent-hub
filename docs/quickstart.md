@@ -41,6 +41,8 @@ If the dotfiles CLI manages ahub (`dot ai family install ahub`), `ahub` runs fro
 
 `ahub doctor` tells you what is installed, running and configured. Rows you do not need can stay red: the hub works with any subset of the peers.
 
+Who conducts, plans and reviews is yours to choose, including with no commercial agent at all: see [choosing who conducts, plans and reviews](roles.md#choosing-who-conducts-plans-and-reviews).
+
 For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move a running project to a newer release later, run `ahub upgrade` in a

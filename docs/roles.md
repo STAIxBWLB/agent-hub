@@ -12,6 +12,50 @@
 - `ahub doctor` has a `roles` row: who holds conductor, planner and reviewer as the hub settled them, with a warning when a conductor is ignored, when no rostered planner is eligible, or when no reviewer can run and reviews fall to the person.
 - `ahub init --conductor <peer>|none`, `--planner <a,b,...>` and `--reviewer <a,b,...>|person` (hub task 900, #1408 T2) choose the three roles at init, each on its own, judged by the same `roleEligibility` the loader and doctor use. Only the named role moves: each peer whose roles change is written to the shared `roles` as an explicit list (the one that loses a role too), implementer and verifier stay, and a refused choice names the reason, the fix and the eligible peers before any write. No flag changes nothing. See [operations](operations.md).
 
+# Choosing who conducts, plans and reviews
+
+Hub task 901 (#1408 R4). Three roles are chosen separately, at `ahub init` (`--conductor`, `--planner`, `--reviewer`, see [operations](operations.md)) or in the `roles` block of `.agenthub/config.json`. A project with no conductor is valid: you conduct from `ahub console`. `ahub doctor` shows who holds each role as the hub settled them. The shipped default is `claude` as planner and reviewer, written by `templates/config.json`; `ahub init --planner <peer>` changes it and nothing else does.
+
+## Who may hold what
+
+The table is generated from `roleEligibility` (`src/adapters/role-eligibility.ts`), the one function init, the loader and doctor read, and `test/roles-doc.test.ts` fails when it differs from the registry. A conductor is judged in each start form: it needs an interactive session that receives hub pushes and holds a writable tools connection, so a headless form never conducts.
+
+<!-- eligibility-table:begin -->
+| Kind | Start forms | Conductor | Planner | Reviewer |
+| --- | --- | --- | --- | --- |
+| claude | tui | tui | yes | yes |
+| codex | tui, headless | tui | yes | yes |
+| kimi | tui, headless | no | yes | yes |
+| pi | tui, headless | tui | no | yes |
+| local | headless | no | no | yes |
+| qwen | headless | no | yes | yes |
+| jcode | tui, headless | tui | yes | yes |
+| agy | tui | no | no | no |
+<!-- eligibility-table:end -->
+
+- **Conductor**: claude, codex, jcode and pi, in their interactive (`tui`) form only. kimi's tui is pull-only (no pushes), qwen's tui has no case that drives it as a conductor yet, local is headless only and agy is pull-only; a kind stays `no` until a case proves it. claude has no headless form at all.
+- **Planner**: a kind with `plannerEligible`. **pi stays implementer-only**: its tool bridge carries the planner tools (`hub_backlog_*`, `hub_plan_review`), so tool admission is not the gap; the gap is a receipt that a Pi model plans a backlog, which no fixture can give. `plannerEligible` is not flipped without a live receipt (T5).
+- **Reviewer**: any kind that can receive `hub_review` (all but agy), or the person (`--reviewer person`).
+
+## Evidence grades
+
+- **fixture-proven**: the hub's side of the contract is exercised on the existing fakes (a real daemon, the fake native transports, no model and no account). It proves roles, refusals and delivery, never a model's behavior.
+- **live-proven**: a person ran it on real local models and recorded it under `docs/verification/`. None of the combinations below is live-proven yet.
+
+`test/conformance/conductor.test.ts` is the conformance for the conductor column. For each kind the table lists it starts a real daemon whose project config names the kind the conductor, connects as that kind and checks, in the interactive form, that the conductor feed (the hub's supervision envelopes) reaches it and that `hub_status`, `hub_task_assign` and the hold tools (`hub_peer_hold`, `hub_peer_release`) are accepted. In the headless form the loader ignores the role (with the fix), every one of those calls is refused and no feed is sent. A kind the table marks `no` is checked to be refused the same way.
+
+## Combinations without a commercial service
+
+Every role is filled by open-source tooling on local or self-hosted models; none needs a commercial agent. Each row below is settled through the real loader and the doctor row by `test/roles-doc.test.ts`, so the roles are the roles the hub keeps.
+
+| Combination | Conductor | Planner | Reviewer | Implementer and verifier | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| open, agent-led | jcode (tui, on an OpenAI-compatible self-hosted gateway) | jcode | qwen, local | pi, local | fixture-proven: roles, conductor conformance and doctor row. The live leg on local models is manual and needs the person's approval (T5). |
+| open, qwen-led | none: qwen has no conductor case yet, so the loader ignores it | qwen | jcode, local | pi, local | fixture-proven for planner and reviewer; **no agent conducts**, so you conduct from `ahub console` until a qwen conductor case exists. |
+| person-led | none (you, `ahub console`) | none (you, `ahub backlog` and `ahub task`) | the person | pi, local | fixture-proven: the hub settles no conductor, planner or reviewer, and the doctor row warns that reviews go to the person and that no planner is rostered, which is this combination's intent. |
+
+To write the first row with init: `ahub init --conductor jcode --planner jcode --reviewer qwen,local`, after turning the peers on in the roster (`ahub roster add <peer>`).
+
 # Definitions and layers
 
 - Shipped definitions live at `templates/roles/<group>/<id>.md`: six dev and five research roles, plus four writing and two ops roles that the domain packs use ([profiles](profiles.md)).
