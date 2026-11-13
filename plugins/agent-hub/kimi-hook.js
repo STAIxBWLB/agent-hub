@@ -18441,7 +18441,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_task_show", "Read a task's public view and history, its done summary and check result included. PII tasks remain stubs. Only the conductor, the configured planner and the task's current owner and reviewer may use this tool.", { id: id2 }, ["id"]),
     tool2("hub_task_assign", "Name an owner (default role) or reviewer. Only the conductor may name a reviewer through this tool. A proposer may redirect an unaccepted proposed task's owner; a task that still waits reserves that owner. Pull-only peers receive work when named while attached or when they claim it; a peer that cannot take the task is refused with the reason, and the task is unchanged. With an explicit capabilities list, the conductor needs assign capability for either role, the proposer only to give ownership to another peer.", { id: id2, peer: str2, role: { type: "string", enum: ["owner", "reviewer"] } }, ["id", "peer"]),
     tool2("hub_task_escalate", "Escalate a task through the normal task flow, as the conductor. Requires assign capability when explicitly listed.", { id: id2 }, ["id"]),
-    tool2("hub_peer_start", "Start local, kimi, qwen, jcode, pi, claude or codex in the start mode a person set for it; you cannot choose the mode. A headless peer starts at once. A TUI peer (claude, and pi and codex by default) opens in a terminal with a fixed command; when the hub cannot open a terminal the call fails with the command for the person to run.", { peer: { type: "string", enum: CONDUCTOR_START_PEERS } }, ["peer"]),
+    tool2("hub_peer_start", `Start ${conductorStartText().peers} in the start mode a person set for it; you cannot choose the mode. A headless peer starts at once. A TUI peer (${conductorStartText().tuiPeers} by default) opens in a terminal with a fixed command; when the hub cannot open a terminal the call fails with the command for the person to run.`, { peer: { type: "string", enum: CONDUCTOR_START_PEERS } }, ["peer"]),
     tool2("hub_peer_hold", "Hold a peer's deliveries as the conductor. This hold is separate from the person's hold and budget pauses.", { peer: str2 }, ["peer"]),
     tool2("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
@@ -22892,6 +22892,17 @@ function createProjectAdapterCatalog(rawAdapters, externalDefinitions = []) {
 }
 function defaultPeerRoles(includeOptional = false) {
   return Object.fromEntries(ROLE_ORDER.filter((peer) => includeOptional || !definitionOf(peer).optional).map((peer) => [peer, [...definitionOf(peer).roles]]));
+}
+function conductorStartText() {
+  const startable = SUPPORTED_PEERS.filter((peer) => definitionOf(peer)?.start.conductorStartable === true);
+  const list = (names, joiner) => names.length < 2 ? names.join("") : `${names.slice(0, names.length - 1).join(", ")} ${joiner} ${names[names.length - 1]}`;
+  const optional = (peer) => definitionOf(peer)?.optional === true;
+  const tui = startable.filter((peer) => definitionOf(peer).start.defaultForm === "tui" && definitionOf(peer).start.forms.includes("tui"));
+  return {
+    peers: list(startable, "or"),
+    refusal: `only ${list(startable.filter((peer) => !optional(peer)), "and")}, plus the opt-in ${list(startable.filter(optional), "and")}, may be started by the conductor`,
+    tuiPeers: list(tui, "and")
+  };
 }
 function assertDaemonEngine(definition) {
   const engine = definition.start.daemonPort;

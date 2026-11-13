@@ -576,6 +576,7 @@
   "src/adapters/qwen-dual.ts:cut:inline:full.length > 600=600#0": "safety floor",
   "src/adapters/qwen-dual.ts:timer:inline:setTimeout=10_000#0": "operational",
   "src/adapters/qwen-dual.ts:title:inline:full.slice=600#0": "safety floor",
+  "src/adapters/registry.ts:list:inline:names.length < 2=2#0": "contract",
   "src/adapters/registry.ts:roleValues:inline:roles.length <= 4=4#0": "contract",
   "src/adapters/reviewer-mcp.ts:BODY_CAP:constant:BODY_CAP=256 * 1024#0": "safety floor",
   "src/adapters/reviewer-mcp.ts:RESULT_CAP:constant:RESULT_CAP=4 * 1024 * 1024#0": "safety floor",

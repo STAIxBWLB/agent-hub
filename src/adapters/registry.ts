@@ -174,6 +174,23 @@ export const CONDUCTOR_START_PEERS = [
   ...ADAPTERS.filter(adapter => !(CONDUCTOR_START_PRIORITY as readonly string[]).includes(adapter.kind)).map(adapter => adapter.kind),
 ];
 
+/**
+ * The words a person reads about which kinds a conductor may start, derived from the definitions in registry order so a new kind is named without a text edit (#1408 R5).
+ * `refusal` keeps the sentence the conductor always got, with the kinds read from `conductorStartable` and `optional`.
+ */
+export function conductorStartText(): { peers: string; refusal: string; tuiPeers: string } {
+  const startable = SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.start.conductorStartable === true);
+  const list = (names: readonly string[], joiner: string) => names.length < 2 ? names.join("") : `${names.slice(0, names.length - 1).join(", ")} ${joiner} ${names[names.length - 1]}`;
+  const optional = (peer: string) => definitionOf(peer)?.optional === true;
+  // A kind opens in a terminal when its person-set start mode is tui, and a kind whose own default form is a terminal one starts that way.
+  const tui = startable.filter(peer => definitionOf(peer)!.start.defaultForm === "tui" && definitionOf(peer)!.start.forms.includes("tui"));
+  return {
+    peers: list(startable, "or"),
+    refusal: `only ${list(startable.filter(peer => !optional(peer)), "and")}, plus the opt-in ${list(startable.filter(optional), "and")}, may be started by the conductor`,
+    tuiPeers: list(tui, "and"),
+  };
+}
+
 /** A missing definition retains external-id admission; Pi's legacy enabled switch controls its default only. */
 export function defaultRosterEnabled(peer: string, piEnabled: boolean): boolean {
   const definition = definitionOf(peer);

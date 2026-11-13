@@ -3568,8 +3568,10 @@ Planner badge, and the console marks their rows.
   Only those peers hold the role. Builtins are `claude`, `codex`, `kimi`, `qwen`
   and `jcode`; a declared planner-capable instance is also eligible. A singleton
   settings write stores a string for older configuration readers.
-- `roles`: with no `planner` key, the `roles` planners stand. That is `claude`
-  by default.
+- `roles`: with no `planner` key, the `roles` planners stand. A new project gets
+  `claude` from the shipped `templates/config.json`, which `ahub init` copies;
+  change it with `ahub init --planner <peer>` on a new project or by editing
+  `roles` in `.agenthub/config.json`.
 - `automatic`: when no rostered peer holds the role, the hub gives it to the
   first rostered peer of that list. It recomputes this at start and after
   each roster change, and writes nothing to disk.
