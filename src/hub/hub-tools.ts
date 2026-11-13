@@ -116,6 +116,15 @@ const evidencePlanProperties = {
   proof: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "test paths or check names planned to prove the change" },
   risks: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "short risks to check during implementation and review" },
 } as const;
+const coldPlanProperties = {
+  base: { type: "string", pattern: "^[a-f0-9]{40}$", description: "full commit the plan was written against; drift is advice only" },
+  out_of_scope: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "literal repository-relative paths excluded even under a broader paths prefix" },
+  stop_if: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "conditions to stop and report instead of improvising" },
+  steps: { type: "array", maxItems: 32, items: { type: "object", additionalProperties: false, required: ["description"], properties: {
+    description: { type: "string", minLength: 1, maxLength: 512 },
+    verify: { type: "string", minLength: 1, maxLength: 512, description: "verification command and expected result; recorded text, never executed by the hub" },
+  } } },
+} as const;
 const plan = {
   type: "object",
   description: "what you will change, before you start. Owners of open tasks on the same files or symbols see it, and get a notice when your task is done.",
@@ -361,7 +370,7 @@ export function projectToolList<T extends { name: string }>(tools: T[], readOnly
 /** Role contracts, by role name. Shown to each peer for the roles `.agenthub/config.json` gives it. */
 export const ROLE_TEXT: Record<string, string> = {
   conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
-  planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
+  planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself. Write plans an implementer can follow without session context, with ordered steps, checks and expected results, and conditions to stop and report.",
   implementer: "implementer: accept tasks assigned to you, do them, and finish with hub_task_done (summary: what changed, why, and the check you ran with its result; refs). Decline what you cannot do. Before starting work nobody assigned you, claim it with hub_task_propose naming yourself as owner, with the paths in refs. With a claim or an accept, give a plan: the files, symbols and signatures you will change and where new code goes.",
   verifier: "verifier: run the checks a task names and report what passed and what did not in hub_task_done.",
   reviewer: "reviewer: when asked to review, read the change itself, then hub_review with approved or changes_requested and a note that says what to fix.",
@@ -416,11 +425,11 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
     if (criteria && tool.name === "hub_review") { properties.findings = securityReviewFindings; properties.security_pass = securityPassSchema; }
     if (criteria && properties.plan && tool.name !== "hub_experiment_record") {
       const current = properties.plan as { properties: Record<string, unknown> };
-      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties } };
+      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties, ...coldPlanProperties } };
     }
     if (criteria && tool.name === "hub_backlog_split") {
       const parts = properties.parts as { items: { properties: { plan: { properties: Record<string, unknown> } } } };
-      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties, ...evidencePlanProperties } } } } };
+      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties, ...evidencePlanProperties, ...coldPlanProperties } } } } };
     }
     let description = tool.description;
     if (customProfile && tool.name === "hub_task_propose") {
@@ -434,6 +443,7 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
       const summaryLabel = data.name === "research" || data.name === "writing" ? "deliverables, provenance and checks" : "deliverables and checks";
       description = `Mark your task finished. It goes to its reviewer with your summary (${summaryLabel}) and refs; no duplicate hub_send chat is needed. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.`;
     }
+    if (criteria && tool.name === "hub_task_propose") description += " Planner: write a plan an implementer can run without session context: full base commit, scope and exclusions, ordered steps with verification commands and expected results, proof and stop conditions.";
     return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   });
 }

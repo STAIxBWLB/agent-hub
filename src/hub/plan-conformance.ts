@@ -29,7 +29,7 @@ export function completePlanInventory(evidence: { head: string; paths: readonly 
 }
 
 /** Compare current complete PR file metadata with the current plan; never inspect patches or the filesystem. */
-export function planConformance(planPaths: readonly string[] | undefined, evidence: { head: string; paths: readonly string[]; pathsComplete?: boolean; typesComplete?: boolean } | undefined): PlanConformance {
+export function planConformance(planPaths: readonly string[] | undefined, evidence: { head: string; paths: readonly string[]; pathsComplete?: boolean; typesComplete?: boolean } | undefined, outOfScope: readonly string[] = []): PlanConformance {
   const head = typeof evidence?.head === "string" && /^[a-f0-9]{40}$/.test(evidence.head) ? evidence.head : undefined;
   const unknown: PlanConformance = { state: "unknown", ...(head ? { head } : {}), outside: [], untouched: [] };
   const changed = completePlanInventory(evidence);
@@ -40,9 +40,27 @@ export function planConformance(planPaths: readonly string[] | undefined, eviden
     const path = pathIdentity(raw); if (path === undefined) return unknown;
     if (!seenPlan.has(path)) { seenPlan.add(path); planned.push(path); }
   }
-  const outside = changed.filter(path => !planned.some(plan => covers(plan, path)));
+  if (!Array.isArray(outOfScope) || outOfScope.length > 1000) return unknown;
+  const excluded: string[] = [];
+  for (const raw of outOfScope) { const path = pathIdentity(raw); if (path === undefined) return unknown; excluded.push(path); }
+  const outside = changed.filter(path => excluded.some(scope => covers(scope, path)) || !planned.some(plan => covers(plan, path)));
   const untouched = planned.filter(plan => !changed.some(path => covers(plan, path)));
   return { state: outside.length ? "departure" : "covered", head, outside, untouched };
+}
+
+export interface PlanDrift {
+  state: "none" | "changed" | "unknown";
+  paths: string[];
+}
+
+/** A complete base-to-head inventory, independent of PR conformance. Never an admission gate. */
+export function planDrift(planPaths: readonly string[] | undefined, changed: readonly string[] | undefined): PlanDrift {
+  // Reuse literal path validation and inventory bounds; the dummy head conveys no repository evidence.
+  const report = planConformance(planPaths, changed === undefined ? undefined : { head: "0".repeat(40), paths: changed, pathsComplete: true, typesComplete: true });
+  if (report.state === "unknown") return { state: "unknown", paths: [] };
+  const planned = planPaths!.map(raw => pathIdentity(raw)!);
+  const paths = changed!.map(raw => pathIdentity(raw)!).filter(path => planned.some(scope => covers(scope, path)));
+  return { state: paths.length ? "changed" : "none", paths };
 }
 
 /** Hash plain plan data without invoking accessors/toJSON; object key order is immaterial, list order is not. */
