@@ -1,3 +1,4 @@
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -426,4 +427,40 @@ test("successful audit false-positive settlement records the stored actor/source
   await f.tasks.auditReport("user", { id: task.id, show: true });
   await expect(f.tasks.auditReport("user", { id: task.id, settle: [{ finding: ids[0], disposition: "false_positive" }] })).rejects.toThrow(/already settled/);
   expect(f.board.rejectedFindingsFor(entry.repo, entry.pass, entry.id).rows).toHaveLength(1);
+});
+
+
+test("malformed survey tool input is pre-effect, field-actionable and never echoes caller values or unknown keys", async () => {
+  const f = await fixture(), s = await f.start(), before = f.board.surveyIntegrity();
+  const cases: [unknown, string][] = [
+    [[{ ...finding(), effort: "PRIVATE_ENUM_CANARY" }], "findings[].effort"], [[finding(), finding()], "findings[].id"],
+    [[{ ...finding(), id: "N1" }], "findings[].id"], [[{ ...finding(), evidence: "src/parser.ts:0" }], "findings[].evidence"],
+    [[{ ...finding(), paths: ["src/other.ts"] }], "findings[].paths"], [[{ ...finding(), PRIVATE_UNKNOWN_KEY_CANARY: "PRIVATE_VALUE_CANARY" }], "findings[]"],
+    [Array.from({ length: 65 }, (_, i) => finding(`semantic-${i}`)), "findings"], [[{ ...finding(), impact: "x".repeat(2049) }], "findings[].impact"],
+  ];
+  for (const [findings, field] of cases) {
+    const error = await f.tasks.surveyReport(s.owner, { id: s.task, findings }).then(() => undefined, error => error);
+    expect(error).toBeInstanceOf(PreEffectToolRefusal); expect(error.message).toContain(field);
+    expect(error.message).toContain("fix that field and resend hub_survey_report; tool description lists shape");
+    expect(error.message).not.toMatch(/PRIVATE_ENUM_CANARY|PRIVATE_UNKNOWN_KEY_CANARY|PRIVATE_VALUE_CANARY/);
+    expect(f.board.surveyIntegrity()).toEqual(before);
+  }
+  const start = await f.tasks.surveyStart("user", { PRIVATE_START_KEY_CANARY: true }).then(() => undefined, error => error);
+  expect(start).toBeInstanceOf(PreEffectToolRefusal); expect(start.message).toContain("resend ahub sdlc survey start"); expect(start.message).not.toContain("PRIVATE_START_KEY_CANARY");
+});
+
+test("considered readback shares Git reads by ref only within one call and projects at most sixteen details", async () => {
+  const f = await fixture(), s = await f.start(), rows = [finding("cached-one"), finding("cached-two")];
+  await f.tasks.surveyReport(s.owner, { id: s.task, findings: rows });
+  for (const row of rows) for (let n = 0; n < 20; n++) f.board.recordRejectedFinding({ ...f.prior(s.task, row.id), reason: `Prior reason ${n}` });
+  f.control.changed = []; f.control.sourceCalls.length = 0;
+  const shown = f.tasks.surveyShow(s.owner, s.task); expect("items" in shown).toBe(true);
+  expect(f.control.sourceCalls.filter(call => call === "resolve")).toHaveLength(2); expect(f.control.sourceCalls.filter(call => call === "changed")).toHaveLength(1);
+  if (!("items" in shown)) throw new Error("expected survey items");
+  expect(shown.items.every(row => row.rejected.length === 16 && row.rejectedComplete === false)).toBe(true);
+  f.control.changed = ["src/parser.ts"]; f.control.sourceCalls.length = 0;
+  const fresh = f.tasks.surveyShow(s.owner, s.task); expect("items" in fresh).toBe(true);
+  expect(f.control.sourceCalls.filter(call => call === "changed")).toHaveLength(1);
+  if (!("items" in fresh)) throw new Error("expected fresh survey items");
+  expect(fresh.items.every(row => row.change === "changed" && row.suppressed === false)).toBe(true);
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseSurveyFindings, parseSurveyVetDecisions, publicSurveyCard, publicSurveyFinding, surveyBrief, surveyCards, surveyFindingKey } from "../src/hub/advisor-survey.ts";
+import { parseSurveyFindings, parseSurveyVetDecisions, publicSurveyCard, publicSurveyFinding, surveyBrief, surveyCards, surveyFindingKey, surveyInputProblem } from "../src/hub/advisor-survey.ts";
 
 const finding = { id: "bounded-survey-parser", evidence: "src/hub/parser.ts:12", paths: ["src/hub/parser.ts"], impact: "Incorrect data accepted", effort: "S", risk: "Small behavioral change", confidence: "high", fix_sketch: "Validate the boundary" };
 
@@ -61,4 +61,23 @@ test("survey bounds and literal evidence path membership cannot be bypassed", ()
   expect(() => parseSurveyFindings([finding, finding])).toThrow();
   expect(() => parseSurveyFindings([{ ...finding, repo: "caller-selected-repo" }])).toThrow();
   expect(parseSurveyFindings([{ ...finding, evidence: "src/literal*.ts:1", paths: ["src/literal*.ts"] }])[0]?.paths).toEqual(["src/literal*.ts"]);
+});
+
+
+test("survey parser attaches fixed field/rule metadata without changing its generic storage errors", () => {
+  const cases: [unknown, string][] = [
+    [[finding, finding], "findings[].id"], [[{ ...finding, id: "N1" }], "findings[].id"],
+    [[{ ...finding, evidence: "src/hub/parser.ts:0" }], "findings[].evidence"], [[{ ...finding, paths: ["src/other.ts"] }], "findings[].paths"],
+    [[{ ...finding, effort: "PRIVATE_ENUM_CANARY" }], "findings[].effort"], [[{ ...finding, confidence: "PRIVATE_ENUM_CANARY" }], "findings[].confidence"],
+    [[{ ...finding, pass: "PRIVATE_ENUM_CANARY" }], "findings[].pass"], [[{ ...finding, impact: "x".repeat(2049) }], "findings[].impact"],
+    [Array.from({ length: 65 }, (_, i) => ({ ...finding, id: `semantic-${i}` })), "findings"],
+    [Array.from({ length: 32 }, (_, i) => ({ ...finding, id: `semantic-${i}`, impact: "x".repeat(2048) })), "findings"],
+    [[{ ...finding, PRIVATE_UNKNOWN_KEY_CANARY: true }], "findings[]"],
+  ];
+  for (const [input, field] of cases) {
+    let error: unknown; try { parseSurveyFindings(input); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error); const problem = surveyInputProblem(error)!; expect(problem.field).toBe(field);
+    expect(problem.rule.length).toBeGreaterThan(0); expect(JSON.stringify(problem)).not.toMatch(/PRIVATE_ENUM_CANARY|PRIVATE_UNKNOWN_KEY_CANARY/);
+  }
+  expect(() => parseSurveyFindings([{ ...finding, effort: "bad" }])).toThrow("invalid bounded survey data");
 });

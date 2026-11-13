@@ -12,6 +12,18 @@ export interface SurveyFinding {
 }
 export interface SurveyVetDecision { id: string; verdict: "vetted" | "rejected"; reason?: string }
 export const SURVEY_LIMITS = { findings: 64, bytes: 64 * 1024, paths: 64, pathBytes: 512, textBytes: 2048, cardBytes: 8192 } as const;
+export interface SurveyInputProblem { field: string; rule: string }
+const inputProblems = new WeakMap<object, SurveyInputProblem>();
+/** Add only host-written field/rule metadata; preserve generic parser/storage error messages. */
+export function surveyInputAt<T>(field: string, rule: string, read: () => T): T {
+  try { return read(); } catch (error) {
+    if (error && typeof error === "object" && !inputProblems.has(error)) inputProblems.set(error, { field, rule });
+    throw error;
+  }
+}
+export function surveyInputProblem(error: unknown): SurveyInputProblem | undefined {
+  return error && typeof error === "object" ? inputProblems.get(error) : undefined;
+}
 const invalid = (): never => { throw new Error("invalid bounded survey data"); };
 
 /** Shared closed own-data decoding. Never call methods or getters on caller data. */
@@ -63,29 +75,37 @@ export function surveySemanticId(value: unknown): string {
 function bounded<T>(value: T): T { if (Buffer.byteLength(JSON.stringify(value)) > SURVEY_LIMITS.bytes) return invalid(); return value; }
 export function parseSurveyFindings(input: unknown): SurveyFinding[] {
   const ids = new Set<string>();
-  return bounded(surveyArray(input, SURVEY_LIMITS.findings).map(value => {
-    const row = surveyObject(value, ["id", "pass", "evidence", "paths", "impact", "effort", "risk", "confidence", "fix_sketch"]);
-    const id = surveySemanticId(row.id), pass = row.pass === undefined ? "bugs" : surveyPass(row.pass);
-    if (ids.has(id)) return invalid(); ids.add(id);
-    const evidence = surveyText(row.evidence, SURVEY_LIMITS.pathBytes + 18), match = /^(.*):([1-9][0-9]*)$/.exec(evidence);
-    if (!match || !Number.isSafeInteger(Number(match[2]))) return invalid();
-    const evidencePath = surveyPath(match[1]), paths = surveyArray(row.paths, SURVEY_LIMITS.paths).map(surveyPath);
-    if (!paths.length || new Set(paths).size !== paths.length || !paths.includes(evidencePath)) return invalid();
-    if (row.effort !== "S" && row.effort !== "M" && row.effort !== "L") return invalid();
-    if (row.confidence !== "high" && row.confidence !== "medium" && row.confidence !== "low") return invalid();
-    return { id, pass, evidence, paths, impact: surveyText(row.impact), effort: row.effort,
-      risk: surveyText(row.risk), confidence: row.confidence, fix_sketch: surveyText(row.fix_sketch) };
-  }));
+  const at = surveyInputAt, textRule = `must be nonempty one-line text within ${SURVEY_LIMITS.textBytes} UTF-8 bytes`;
+  return at("findings", `must contain at most ${SURVEY_LIMITS.findings} findings within ${SURVEY_LIMITS.bytes} JSON bytes`, () => bounded(surveyArray(input, SURVEY_LIMITS.findings).map(value => {
+    const row = at("findings[]", "must be a closed finding object with the documented fields", () => surveyObject(value, ["id", "pass", "evidence", "paths", "impact", "effort", "risk", "confidence", "fix_sketch"]));
+    const id = at("findings[].id", "must be a unique semantic, non-positional finding id", () => { const id = surveySemanticId(row.id); if (ids.has(id)) return invalid(); ids.add(id); return id; });
+    const pass = at("findings[].pass", "must be bugs, security or compliance", () => row.pass === undefined ? "bugs" : surveyPass(row.pass));
+    const evidence = at("findings[].evidence", "must be a literal repository path:positive-line within the byte limit", () => {
+      const evidence = surveyText(row.evidence, SURVEY_LIMITS.pathBytes + 18), match = /^(.*):([1-9][0-9]*)$/.exec(evidence);
+      if (!match || !Number.isSafeInteger(Number(match[2]))) return invalid(); surveyPath(match[1]); return evidence;
+    });
+    const evidencePath = evidence.slice(0, evidence.lastIndexOf(":"));
+    const paths = at("findings[].paths", `must contain 1..${SURVEY_LIMITS.paths} distinct literal repository paths including the evidence path`, () => {
+      const paths = surveyArray(row.paths, SURVEY_LIMITS.paths).map(surveyPath);
+      if (!paths.length || new Set(paths).size !== paths.length || !paths.includes(evidencePath)) return invalid(); return paths;
+    });
+    const effort = at("findings[].effort", "must be S, M or L", () => { if (row.effort !== "S" && row.effort !== "M" && row.effort !== "L") return invalid(); return row.effort; });
+    const confidence = at("findings[].confidence", "must be high, medium or low", () => { if (row.confidence !== "high" && row.confidence !== "medium" && row.confidence !== "low") return invalid(); return row.confidence; });
+    return { id, pass, evidence, paths, impact: at("findings[].impact", textRule, () => surveyText(row.impact)), effort,
+      risk: at("findings[].risk", textRule, () => surveyText(row.risk)), confidence, fix_sketch: at("findings[].fix_sketch", textRule, () => surveyText(row.fix_sketch)) };
+  })));
 }
 export function parseSurveyVetDecisions(input: unknown): SurveyVetDecision[] {
-  const ids = new Set<string>();
-  return bounded(surveyArray(input, SURVEY_LIMITS.findings).map(value => {
-    const row = surveyObject(value, ["id", "verdict", "reason"]), id = surveySemanticId(row.id);
-    if (ids.has(id) || row.verdict !== "vetted" && row.verdict !== "rejected") return invalid(); ids.add(id);
-    const reason = row.reason === undefined ? undefined : surveyText(row.reason);
-    if (row.verdict === "rejected" && !reason) return invalid();
-    return { id, verdict: row.verdict, ...(reason === undefined ? {} : { reason }) };
-  }));
+  const ids = new Set<string>(), at = surveyInputAt;
+  return at("vet", `must contain at most ${SURVEY_LIMITS.findings} decisions within ${SURVEY_LIMITS.bytes} JSON bytes`, () => bounded(surveyArray(input, SURVEY_LIMITS.findings).map(value => {
+    const row = at("vet[]", "must be a closed object with id, verdict and optional reason", () => surveyObject(value, ["id", "verdict", "reason"]));
+    const id = at("vet[].id", "must be a unique semantic, non-positional finding id", () => { const id = surveySemanticId(row.id); if (ids.has(id)) return invalid(); ids.add(id); return id; });
+    const verdict = at("vet[].verdict", "must be vetted or rejected", () => { if (row.verdict !== "vetted" && row.verdict !== "rejected") return invalid(); return row.verdict; });
+    const reason = at("vet[].reason", `must be one-line text within ${SURVEY_LIMITS.textBytes} UTF-8 bytes and is required for rejected`, () => {
+      const reason = row.reason === undefined ? undefined : surveyText(row.reason); if (verdict === "rejected" && !reason) return invalid(); return reason;
+    });
+    return { id, verdict, ...(reason === undefined ? {} : { reason }) };
+  })));
 }
 /** repo is host-resolved identity, not a field accepted from a finding or vet report. */
 export function surveyFindingKey(repo: string, pass: SurveyPass, id: string): string {

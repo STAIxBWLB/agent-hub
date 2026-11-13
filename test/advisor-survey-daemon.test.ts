@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Tasks } from "../src/hub/tasks.ts";
+import { ownerToolEffect } from "../src/hub/no-writes.ts";
 import { Board } from "../src/hub/board.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
@@ -16,6 +18,8 @@ import type { Envelope } from "../src/hub/envelope.ts";
 class PlannerPeer extends BasePeer {
   async start() { this.setState("idle"); }
   async stop() { this.setState("offline"); }
+  beginTurn() { this.setState("busy"); }
+  endTurn() { this.setState("idle"); }
   async deliver(_envelopes: Envelope[], id?: string) { if (id) this.delivery({ id, state: "completed" }); }
 }
 
@@ -118,3 +122,30 @@ test("legacy snapshot bytes remain unchanged and survey integrity accepts only c
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("actual daemon native turn counts a valid survey mutation but leaves malformed pre-effect input unmarked", async () => {
+  expect(ownerToolEffect("hub_survey_report", {})).toBe(true);
+  expect(ownerToolEffect("hub_survey_report", { show: true })).toBe(false);
+  const f = await fixture(), original = Tasks.prototype.recordOwnerTurn, observed: boolean[] = [];
+  Tasks.prototype.recordOwnerTurn = function(peer, bindings, changed, effect) {
+    if (peer === "codex") observed.push(effect);
+    return original.call(this, peer, bindings, changed, effect);
+  };
+  try {
+    const s = await f.start();
+    // Synthetic fixture ownership chooses the adapter-end-signal peer for observing the real daemon turn record.
+    f.board.update(s.task, "user", "fixture current planner", { owner: "codex" });
+    const peer = f.daemon.bus.peers.get("codex") as PlannerPeer, owner = f.planners.codex;
+    const until = async (count: number) => { for (let i = 0; i < 400 && observed.length < count; i++) await Bun.sleep(5); expect(observed).toHaveLength(count); };
+    peer.beginTurn(); const valid = await f.report(owner, { id: s.task, findings: [finding] }); expect(valid.ok).toBe(true); peer.endTurn(); await until(1);
+    expect(observed[0]).toBe(true);
+    const before = f.board.surveyIntegrity();
+    peer.beginTurn(); const refused = await f.report(owner, { id: s.task, findings: [{ ...finding, effort: "PRIVATE_ENUM_VALUE_CANARY" }] }); peer.endTurn(); await until(2);
+    expect(refused.ok).toBe(false); expect(refused.error).toContain("findings[].effort");
+    expect(refused.error).toContain("fix that field and resend hub_survey_report; tool description lists shape");
+    expect(JSON.stringify(refused)).not.toContain("PRIVATE_ENUM_VALUE_CANARY"); expect(observed[1]).toBe(false); expect(f.board.surveyIntegrity()).toEqual(before);
+    peer.beginTurn(); const shown = await f.report(owner, { id: s.task, show: true }); expect(shown.ok).toBe(true); peer.endTurn(); await until(3);
+    expect(observed[2]).toBe(false); expect(f.board.surveyIntegrity()).toEqual(before);
+  } finally { Tasks.prototype.recordOwnerTurn = original; await f.close(); }
+}, 20_000);

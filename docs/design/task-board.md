@@ -446,7 +446,7 @@ planner vetted reason records reconsideration and permits a new card without
 deleting historical rejection. Dedupe covers only open host-created cards. A closed approved/cancelled marker permits a new unsuppressed vetted card, whose screened detail names the prior "hub task N" and reopening reason; a closed card never clears an active rejection. Peer-authored marker copies confer no dedupe authority. Unknown path/ref records remain historical,
 never invented unchanged proof. Public projections preserve existing security
 and PII boundaries; internal repository keys are not public markers. Survey
-arguments/results stay out of capture. Off exposes no new tool/task fields,
+arguments/results stay out of capture. Malformed tool reports are pre-effect refusals with a fixed field/rule and resend hint, without echoing caller values or unknown key text. Successful report mutations count as native task effects; show-only reads and refused parsing do not. Stored-data parser failures retain generic storage errors. Off exposes no new tool/task fields,
 and no background scanner, timer or model judge is introduced. Live pilots
 require the person's separate instruction.
 

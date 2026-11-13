@@ -15429,10 +15429,11 @@ var init_research_campaign = __esm(() => {
 });
 
 // src/hub/advisor-survey.ts
-var SURVEY_LIMITS;
+var SURVEY_LIMITS, inputProblems;
 var init_advisor_survey = __esm(() => {
   init_review_findings();
   SURVEY_LIMITS = { findings: 64, bytes: 64 * 1024, paths: 64, pathBytes: 512, textBytes: 2048, cardBytes: 8192 };
+  inputProblems = new WeakMap;
 });
 
 // src/hub/considered-findings.ts

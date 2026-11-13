@@ -51,7 +51,7 @@ import { evalAdvice, evalGapBlockers, evalRequiredChecks, readEvalFor } from "./
 import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequestLine, SECURITY_CHECKLIST, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
 import { AUDIT_PROFILES, applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, needsVerification, parseUnitReports, seedLedger, settlementRefusal, SETTLEMENTS, unitId, verificationRefusal, type AuditFinding, type AuditProfile, type AuditSummary, type CarryLookup, type PublicAuditFinding } from "./security-audit.ts";
 import type { AuditSource } from "./audit-source.ts";
-import { SURVEY_FOCUS, SURVEY_LIMITS, parseSurveyFindings, parseSurveyVetDecisions, publicSurveyFinding, surveyBrief, surveyFindingKey, surveyObject, surveyPath,
+import { SURVEY_FOCUS, SURVEY_LIMITS, parseSurveyFindings, parseSurveyVetDecisions, publicSurveyFinding, surveyBrief, surveyFindingKey, surveyObject, surveyPath, surveyInputAt, surveyInputProblem,
   type SurveyFinding, type SurveyFocus, type SurveyPass } from "./advisor-survey.ts";
 import { consideredFindingMatch, parseConsideredEntry, type ConsideredEntry } from "./considered-findings.ts";
 import type { StoredSurvey, SurveyPreparedCard } from "./board.ts";
@@ -6933,6 +6933,14 @@ export class Tasks {
     return audit ? auditSummary({ audit: audit.id, task: audit.task, ref: audit.ref, profile: audit.profile, scoped: audit.scoped, at: audit.at }, audit.units, this.d.board.auditFindings(audit.id)) : undefined;
   }
 
+  private surveyToolInput<T>(command: "start" | "report", field: string, rule: string, read: () => T): T {
+    try { return surveyInputAt(field, rule, read); } catch (error) {
+      const problem = surveyInputProblem(error) ?? { field, rule };
+      const next = command === "report" ? "fix that field and resend hub_survey_report; tool description lists shape"
+        : "fix that field and resend ahub sdlc survey start; ahub help sdlc survey lists shape";
+      throw new PreEffectToolRefusal(`${problem.field}: ${problem.rule}; ${next}`);
+    }
+  }
   private surveyStarting = false;
   private surveyAdmit(by: PeerId, check: () => void): void {
     check();
@@ -6954,8 +6962,8 @@ export class Tasks {
   }
   /** The existing task routing chooses one planner; no worker, scanner, issue or fix is launched. */
   async surveyStart(by: PeerId, input: unknown = {}, fence?: () => string | undefined): Promise<{ task: number; survey: number; ref: string; focus?: SurveyFocus }> {
-    const fields = surveyObject(input, ["focus"]), focus = fields.focus;
-    if (focus !== undefined && (typeof focus !== "string" || !(SURVEY_FOCUS as readonly string[]).includes(focus))) throw new PreEffectToolRefusal("survey focus is bugs, tests, debt, deps, dx or docs");
+    const fields = this.surveyToolInput("start", "start", "must be a closed object with optional focus", () => surveyObject(input, ["focus"])), focus = fields.focus;
+    if (focus !== undefined && (typeof focus !== "string" || !(SURVEY_FOCUS as readonly string[]).includes(focus))) this.surveyToolInput("start", "focus", "must be bugs, tests, debt, deps, dx or docs", () => { throw new Error("invalid bounded survey data"); });
     const check = this.requestCheck(by, fence), authority = () => {
       this.surveyAdmit(by, check);
       if (by !== USER && !(this.configuredManualConductor(by) && this.d.bus.isRostered(by))) throw new PreEffectToolRefusal("only the person or current unique conductor may start a survey");
@@ -6983,8 +6991,22 @@ export class Tasks {
       return { task: task.id, survey: surveyID!, ref, ...(focus === undefined ? {} : { focus: focus as SurveyFocus }) };
     }); } finally { this.surveyStarting = false; }
   }
+  private consideredChanges(repo: string, ref?: string): (entryRef?: string) => string[] | undefined {
+    // ponytail: distinct refs still use synchronous reads within the existing ledger window per key; batch through an async audit port if histories outgrow interactive readback.
+    const cache = new Map<string, string[] | undefined>(); let currentKnown: boolean | undefined;
+    return entryRef => {
+      if (!entryRef || !ref || entryRef === ref || repo !== this.repositories.scope({}).key) return undefined;
+      if (cache.has(entryRef)) return cache.get(entryRef);
+      let changed: string[] | undefined;
+      try {
+        currentKnown ??= this.d.auditSource?.resolve(ref) === ref;
+        if (currentKnown && this.d.auditSource?.resolve(entryRef) === entryRef) changed = this.d.auditSource.changed(entryRef, ref);
+      } catch { currentKnown ??= false; /* Per-call unknown evidence stays unknown; no cross-call freshness cache. */ }
+      cache.set(entryRef, changed); return changed;
+    };
+  }
   /** Same semantic identity and affected literal paths only; unreadable change evidence never clears suppression. */
-  consideredBefore(task: Task, finding: Pick<ReviewFinding, "id" | "pass" | "path"> | SurveyFinding, ref?: string): { rejectedBefore: boolean; change: "none" | "unchanged" | "changed" | "unknown"; suppressed: boolean } {
+  consideredBefore(task: Task, finding: Pick<ReviewFinding, "id" | "pass" | "path"> | SurveyFinding, ref?: string, readChanges?: (entryRef?: string) => string[] | undefined): { rejectedBefore: boolean; change: "none" | "unchanged" | "changed" | "unknown"; suppressed: boolean } {
     const neutral = { rejectedBefore: false, change: "none" as const, suppressed: false };
     if (positionalFindingId(finding.id) || (this.d.sdlc?.config().mode ?? "off") === "off" || this.surveyPrivate(task)) return neutral;
     const repo = this.repositories.scope(task.refs).key, ledger = this.d.board.rejectedFindingsFor(repo, finding.pass, finding.id, 1000);
@@ -6993,13 +7015,12 @@ export class Tasks {
     if (!matched.length) return neutral;
     if (repo !== this.repositories.scope({}).key) return { rejectedBefore: true, change: "unknown", suppressed: true };
     const currentRef = ref, paths = "paths" in finding ? finding.paths : finding.path ? (() => { try { return [surveyPath(finding.path)]; } catch { return []; } })() : [];
+    const changes = readChanges ?? this.consideredChanges(repo, ref);
     let seen = false, unknown = false, unchanged = false;
     const overlaps = (a: string, b: string) => a === b || a.startsWith(b + "/") || b.startsWith(a + "/");
     for (const row of matched) {
       seen = true;
-      let changed: string[] | undefined;
-      try { if (row.entry.ref && currentRef && row.entry.ref !== currentRef && this.d.auditSource?.resolve(row.entry.ref) === row.entry.ref && this.d.auditSource.resolve(currentRef) === currentRef)
-        changed = this.d.auditSource.changed(row.entry.ref, currentRef); } catch { /* Unknown remains suppressed. */ }
+      const changed = changes(row.entry.ref);
       const match = consideredFindingMatch(row.entry, { repo, id: finding.id, pass: finding.pass, currentRef: currentRef ?? "", ...(changed === undefined ? {} : { diff: { repo, base: row.entry.ref!, head: currentRef!, complete: true, paths: changed } }) });
       if (match.status === "unknown" || !paths.length) unknown = true;
       if (match.status === "applicable" && match.applicablePaths.some(path => paths.some(candidate => overlaps(path, candidate)))) unchanged = true;
@@ -7023,30 +7044,30 @@ export class Tasks {
     } catch { return false; }
   }
   /** Bounded public historical reasons; never expose internal scope keys, security text or paths. */
-  consideredDetails(repo: string, id: string, pass: SurveyPass, ref?: string): { complete: boolean; change: "unchanged" | "changed" | "unknown"; items: { id: string; reason?: string; change: "unchanged" | "changed" | "unknown"; withheld?: true }[] } {
+  consideredDetails(repo: string, id: string, pass: SurveyPass, ref?: string, readChanges?: (entryRef?: string) => string[] | undefined): { complete: boolean; change: "unchanged" | "changed" | "unknown"; items: { id: string; reason?: string; change: "unchanged" | "changed" | "unknown"; withheld?: true }[] } {
     const publicId = this.publicMetadataText(id) ? id : "withheld";
     const ledger = this.d.board.rejectedFindingsFor(repo, pass, id, 1000);
     if (!ledger.complete) return { complete: false, change: "unknown", items: [{ id: publicId, change: "unknown", withheld: true }] };
-    const items = ledger.rows.map(row => {
+    const changes = readChanges ?? this.consideredChanges(repo, ref);
+    const items = ledger.rows.slice(0, 16).map(row => {
       const entry = row.entry;
-      let changed: string[] | undefined;
-      try { if (repo === this.repositories.scope({}).key && entry.ref && ref && entry.ref !== ref && this.d.auditSource?.resolve(entry.ref) === entry.ref && this.d.auditSource.resolve(ref) === ref) changed = this.d.auditSource.changed(entry.ref, ref); } catch { /* Unknown never clears. */ }
+      const changed = changes(entry.ref);
       const match = repo === this.repositories.scope({}).key ? consideredFindingMatch(entry, { repo, id, pass, currentRef: ref ?? "", ...(changed === undefined ? {} : { diff: { repo, base: entry.ref!, head: ref!, complete: true, paths: changed } }) }) : undefined;
       const change = match?.status === "applicable" ? "unchanged" as const : match?.status === "changed" ? "changed" as const : "unknown" as const;
       return { id: publicId, change, ...(this.consideredPublic(entry) ? { reason: entry.reason } : { withheld: true as const }) };
     });
-    const change = items.some(row => row.change === "unknown") ? "unknown" : items.some(row => row.change === "unchanged") ? "unchanged" : items.length ? "changed" : "unknown";
-    return { complete: ledger.rows.length <= 16, change, items: items.slice(0, 16) };
+    const change = ledger.rows.length > 16 ? "unknown" : items.some(row => row.change === "unknown") ? "unknown" : items.some(row => row.change === "unchanged") ? "unchanged" : items.length ? "changed" : "unknown";
+    return { complete: ledger.rows.length <= 16, change, items };
   }
   consideredBrief(repo: string, ref?: string, scope?: readonly string[]): string {
     const ledger = this.d.board.rejectedFindings(repo, 1000);
     if (!ledger.complete) return "Previously rejected findings: history incomplete; change is unknown and rejection remains in effect.";
-    const lines = ["Previously rejected findings (unknown change retains rejection; positional ids never match across tasks):"], seen = new Set<string>();
+    const lines = ["Previously rejected findings (unknown change retains rejection; positional ids never match across tasks):"], seen = new Set<string>(), changes = this.consideredChanges(repo, ref);
     for (const row of ledger.rows) {
       const entry = row.entry, key = `${entry.pass}:${entry.id}`;
       if (seen.has(key) || scope?.length && entry.paths.length && !entry.paths.some(path => scope.some(surface => matchConfigPath(surface, path) || path === surface || path.startsWith(surface + "/")))) continue;
       seen.add(key);
-      const details = this.consideredDetails(repo, entry.id, entry.pass, ref), detail = details.items[0];
+      const details = this.consideredDetails(repo, entry.id, entry.pass, ref, changes), detail = details.items[0];
       const reason = detail?.reason ? `: ${Array.from(detail.reason).slice(0, 160).join("")}${Array.from(detail.reason).length > 160 ? "..." : ""}` : " (details withheld)";
       const line = `${entry.pass}:${detail?.id ?? "withheld"}: rejected before; change ${details.change}${reason}`;
       if (seen.size > 32 || Buffer.byteLength([...lines, line].join("\n")) > 3072) { lines.push("Additional rejection history omitted; consult authorized readback. Unknown change retains rejection."); break; }
@@ -7088,11 +7109,11 @@ export class Tasks {
     if (this.surveyPrivate(task, by)) return { task: task.id, status: "private" as const };
     const revision = this.d.board.statusRevision(), policy = JSON.stringify([this.d.roles, this.d.routing(), this.d.piiPaths]);
     const full = by === USER || this.d.bus.isRostered(by) && (task.owner === by && this.isConfiguredPlanner(by) || task.reviewer === by && !!this.d.roles?.[by]?.includes("reviewer"));
-    const stored = this.d.board.surveyFindings(survey.id);
+    const stored = this.d.board.surveyFindings(survey.id), changes = this.consideredChanges(survey.repo, survey.ref);
     if (stored.some(row => !this.publicMetadataText(JSON.stringify(row.finding)) || this.signalsFor({ title: row.finding.id, detail: JSON.stringify(row.finding), refs: { paths: row.finding.paths } }).some(signal => signal === "pii" || signal === "pii_path"))) return { task: task.id, status: "private" as const };
     const items = stored.map(row => {
-      const finding = full ? row.finding : publicSurveyFinding(row.finding), before = this.consideredBefore(task, row.finding, survey.ref);
-      const details = this.consideredDetails(survey.repo, row.finding.id, row.finding.pass, survey.ref);
+      const finding = full ? row.finding : publicSurveyFinding(row.finding), before = this.consideredBefore(task, row.finding, survey.ref, changes);
+      const details = this.consideredDetails(survey.repo, row.finding.id, row.finding.pass, survey.ref, changes);
       return { ...finding, ...(row.decision ? { verdict: row.decision.verdict } : {}), ...before, rejected: details.items, rejectedComplete: details.complete };
     });
     this.surveyAdmit(by, check);
@@ -7102,14 +7123,18 @@ export class Tasks {
     return { task: task.id, survey: survey.id, ref: survey.ref, ...(survey.focus ? { focus: survey.focus } : {}), status: "available" as const, items };
   }
   async surveyReport(by: PeerId, input: unknown, fence?: () => string | undefined) {
-    const fields = surveyObject(input, ["id", "findings", "vet", "show"]);
-    if (fields.show !== undefined && fields.show !== true || fields.show && (fields.findings !== undefined || fields.vet !== undefined)) throw new PreEffectToolRefusal("survey show is read-only and cannot include findings or vet decisions");
+    const fields = this.surveyToolInput("report", "report", "must be a closed object with id and findings, vet or show", () => surveyObject(input, ["id", "findings", "vet", "show"]));
+    this.surveyToolInput("report", "id", "must be a positive integer survey task id", () => { if (!Number.isSafeInteger(fields.id) || (fields.id as number) < 1) throw new Error("invalid bounded survey data"); });
+    this.surveyToolInput("report", "show", "must be true for read-only show and cannot include findings or vet decisions", () => {
+      if (fields.show !== undefined && fields.show !== true || fields.show && (fields.findings !== undefined || fields.vet !== undefined)) throw new Error("invalid bounded survey data");
+    });
     if (fields.show) { this.requestCheck(by, fence)(); return this.surveyShow(by, fields.id); }
-    const findings = fields.findings === undefined ? [] : parseSurveyFindings(fields.findings), decisions = fields.vet === undefined ? [] : parseSurveyVetDecisions(fields.vet);
+    const findings = fields.findings === undefined ? [] : this.surveyToolInput("report", "findings", "must match the documented finding array", () => parseSurveyFindings(fields.findings));
+    const decisions = fields.vet === undefined ? [] : this.surveyToolInput("report", "vet", "must match the documented vet array", () => parseSurveyVetDecisions(fields.vet));
     const check = this.requestCheck(by, fence), guard = () => { this.surveyAdmit(by, check); return this.surveyTask(by, fields.id, true); };
     const initial = guard();
     if (this.surveyPrivate(initial.task, by) || this.observerExcluded(by) || this.reviewObserverTurn(by)) throw new PreEffectToolRefusal("survey writes unavailable during private or observer work");
-    if (!findings.length && !decisions.length) throw new PreEffectToolRefusal("survey report needs findings or explicit vet decisions");
+    if (!findings.length && !decisions.length) throw new PreEffectToolRefusal("report: needs findings or explicit vet decisions; fix that field and resend hub_survey_report; tool description lists shape");
     const observerExcluded = this.observerExcluded(by); // Capture before any awaited screen; never forward observer material.
     if (observerExcluded) throw new PreEffectToolRefusal("survey observer input is unavailable");
     return this.studyWrite(async () => {
@@ -7120,16 +7145,17 @@ export class Tasks {
           || this.d.board.statusRevision() !== boardRevision || JSON.stringify([this.d.sdlc?.config().mode, this.d.roles, this.d.routing(), this.d.piiPaths]) !== policy) throw new PreEffectToolRefusal("survey authority, privacy or policy changed; reload before reporting");
       };
       const existing = this.d.board.surveyFindings(survey.id), merged = new Map(existing.map(row => [row.finding.id, row.finding]));
-      for (const finding of findings) { const prior = merged.get(finding.id); if (prior && JSON.stringify(prior) !== JSON.stringify(finding)) throw new PreEffectToolRefusal("survey candidate id already records different content"); merged.set(finding.id, finding); }
-      const text = JSON.stringify({ findings: parseSurveyFindings([...merged.values()]), decisions });
+      for (const finding of findings) { const prior = merged.get(finding.id); if (prior && JSON.stringify(prior) !== JSON.stringify(finding)) throw new PreEffectToolRefusal("findings[].id: survey candidate id already records different content; fix that field and resend hub_survey_report; tool description lists shape"); merged.set(finding.id, finding); }
+      const text = JSON.stringify({ findings: this.surveyToolInput("report", "findings", "combined findings must remain within the documented bounds", () => parseSurveyFindings([...merged.values()])), decisions });
       if (!this.publicMetadataText(text)) throw new PreEffectToolRefusal("survey metadata was not cleared as public");
       if (this.screenOn() && (await this.screenCall(text)).label !== "clear") throw new PreEffectToolRefusal("survey metadata privacy screening was unavailable or refused");
       current();
+      const changes = this.consideredChanges(survey.repo, survey.ref);
       const cards: SurveyPreparedCard[] = [], rejections: ConsideredEntry[] = [], reconsiderations: ConsideredEntry[] = [];
       const items: { id: string; rejectedBefore: boolean; change: "none" | "unchanged" | "changed" | "unknown"; suppressed: boolean }[] = [];
       for (const decision of decisions) {
-        const finding = merged.get(decision.id); if (!finding) throw new PreEffectToolRefusal("vet decision names an unknown survey candidate");
-        const before = this.consideredBefore(task, finding, survey.ref); items.push({ id: finding.id, ...before });
+        const finding = merged.get(decision.id); if (!finding) throw new PreEffectToolRefusal("vet[].id: vet decision names an unknown survey candidate; fix that field and resend hub_survey_report; tool description lists shape");
+        const before = this.consideredBefore(task, finding, survey.ref, changes); items.push({ id: finding.id, ...before });
         const entry = (reason: string): ConsideredEntry => ({ repo: survey.repo, id: finding.id, pass: finding.pass, paths: finding.paths, reason, ref: survey.ref,
           source: { task: task.id, created: task.created, kind: "survey" }, ...(finding.pass === "security" ? { withheld: true } : {}) });
         if (decision.verdict === "rejected") { rejections.push(entry(decision.reason!)); continue; }
