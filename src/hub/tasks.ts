@@ -119,6 +119,8 @@ import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, read
 /** #1176: refusals for an agent that reaches a person-run card by a path other than the pull gate. */
 const PERSON_RUN_SPLIT = "a person-run card is the person's to split: its children would be unmarked cards an agent could take (the person's own split marks every child person-run)";
 const PERSON_RUN_ACCEPT = (id: number) => `task #${id} is a person-run leg: no agent accepts it (it waits on the person: live receipts, their accounts or approvals). The person runs it or clears the mark with ahub backlog plan`;
+/** #1430: `plannerRefusal`'s sentence when it has nothing specific to name; `pullPlanned` then falls back to routing's own owner refusals. */
+const NO_PLANNER_CAPACITY = "no peer has eligible planner WIP capacity";
 
 function requireLocalTaskPeer(peer: unknown): void {
   if (isRemotePeerId(peer)) throw new PreEffectToolRefusal("remote peers have no local task authority");
@@ -3070,7 +3072,21 @@ export class Tasks {
       const refusal = queueBackpressure(peer, pressure.queueBackpressure, peerEntry(pressure.queues, peer), pressure.now ?? NaN);
       if (refusal) parts.push(`${peer} ${refusal.reason}`);
     }
-    return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : "no peer has eligible planner WIP capacity";
+    return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : NO_PLANNER_CAPACITY;
+  }
+  /**
+   * #1430: the owner refusals routing itself recorded, named the way the reserved branch already names its peer: peer id and
+   * reason only, never task text (#531), so the text is safe for a PII task. Undefined when routing recorded none.
+   */
+  private ownerRefusals(assignment: Assignment): string | undefined {
+    const refused = (assignment.refusals ?? []).filter(row => row.role === "owner");
+    return refused.length ? `no peer can take the planner pull: ${refused.map(row => `${row.peer}: ${row.reason}`).join("; ")}` : undefined;
+  }
+  /** Keep routing refusals even when other peers also have known WIP or delivery pressure. */
+  private pullRefusal(task: Task, assignment: Assignment): string {
+    const known = this.plannerRefusal(task);
+    const routing = this.ownerRefusals(assignment);
+    return routing ? known === NO_PLANNER_CAPACITY ? routing : `${routing}; ${known}` : known;
   }
   private plannerAssignment(task: Task, reservedOnly = false, routing: Routing = this.d.routing(), queueOverride?: "owner", projectedHealth?: ReturnType<Tasks["health"]>): Assignment {
     const states = this.states();
@@ -3117,8 +3133,12 @@ export class Tasks {
       if (task.reserved && this.excluded(task).includes(task.reserved)) throw new PreEffectToolRefusal(this.plannerRefusal(task));
       const assignment = this.plannerAssignment(task, !!task.reserved, this.d.routing(), queueAssignment ? "owner" : undefined);
       if (!assignment.owner) {
-        const refusal = task.reserved ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}` : this.plannerRefusal(task);
-        throw new PreEffectToolRefusal(`${this.hasPersonReservation(task) ? "a person's reservation is retained; " : ""}${refusal}`);
+        // #1430: an unreserved card names what routing refused instead of dropping it, and every pull refusal names the route out.
+        const nextStep = "reserve a peer with hub_backlog_plan fields.reserved, then pull again";
+        const refusal = task.reserved
+          ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}`
+          : this.pullRefusal(task, assignment);
+        throw new PreEffectToolRefusal(`${this.hasPersonReservation(task) ? "a person's reservation is retained; " : ""}${refusal}; ${nextStep}`);
       }
       this.studyDispatchCheck(task, assignment.owner);
       return { task, owner: assignment.owner, assignment };
