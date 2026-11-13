@@ -8,9 +8,10 @@ import { guidanceLines, guidanceProbeStatusLines } from "./guidance-view.ts";
  * no action: every action is checked against the manager's own whitelist, and every view against DASHBOARD_VIEWS.
  * D2: the panel is the `ahub ui` dashboard itself, built from renderDashboard(), with post() routed to the host.
  *
- * Contract: @staix/agent-console api 1, declared structurally below so agent-hub keeps zero runtime dependencies.
+ * Contract: @staix/agent-console api 1. The manifest type is acon's own, imported type-only (#1375); the provider and item
+ * shapes below stay structural so agent-hub keeps zero runtime dependencies.
  */
-import type { VisualPayload, VisualSide, ActionMeta } from "@staix/agent-console/contract";
+import type { VisualPayload, VisualSide, ActionMeta, ConsolePanelManifest } from "@staix/agent-console/contract";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Registry } from "../hub/registry.ts";
@@ -49,11 +50,8 @@ export interface ConsoleProvider {
   close?(): Promise<void>;
 }
 export interface ConsolePlugin {
-  manifest: {
-    api: 1; tool: string; version: string; title: string; icon?: string; pollMs?: number;
-    panels: { id: string; title: string; order?: number }[];
-    capabilities?: { actions?: string[]; confirm?: boolean; multiProject?: boolean; inbox?: boolean; space?: boolean };
-  };
+  /** acon's own manifest type, imported type-only: a field or bound the console does not know fails typecheck here (#1375). */
+  manifest: ConsolePanelManifest;
   open(ctx: { home: string; log(line: string): void; features?: readonly string[] }): Promise<ConsoleProvider>;
 }
 
@@ -414,9 +412,11 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
       const cursor = Number.isSafeInteger(snap.cursor) && Number(snap.cursor) >= 0 ? Number(snap.cursor) : 0;
       next.set(project.id, { instanceId: project.instanceId, cursor, model });
       cursors.push([project.id, project.instanceId, cursor]);
-      const label = projects.length > 1 ? (project.root.split("/").filter(Boolean).pop() ?? project.id) : undefined;
+      // #1375: the project is the scene's group, always named by its directory, so the console shows the group instead of a
+      // name prefix on every actor (a lone project's id is not a human name).
+      const label = project.root.split("/").filter(Boolean).pop() ?? project.id;
       // Keep the wall clock here even when the model is reused: message arcs expire without a daemon event.
-      scenes.push(officeSpace(model, { id: project.id, ...(label ? { label } : {}) }, Date.now()));
+      scenes.push(officeSpace(model, { id: project.id, label }, Date.now()));
     }
     const scene = mergeSpaces(scenes);
     if (generation !== inboxGeneration) return { scene, cursor: 0 };
@@ -643,11 +643,21 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
     }
 }
 
+/**
+ * #1375 (acon#105): how long acon may reuse a snapshot instead of asking again, 0-60000 ms. The inbox provider serves a
+ * result under its own `inboxFreshMs` as it is and recomputes past it, so declaring more than that would hand the console a
+ * value the provider would already have refreshed, and a person acts on an approval it missed. A Space scene's only
+ * time-dependent content is its message arcs, which expire on a 10 s window, so one poll interval of reuse cannot show the
+ * page anything older than the poll it would have drawn anyway.
+ */
+const POLL_MS = 2_000, INBOX_MAX_AGE_MS = 1_000, SPACE_MAX_AGE_MS = POLL_MS;
+
 const plugin: ConsolePlugin = {
   manifest: {
-    api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: 2000,
+    api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: POLL_MS,
     panels: [...DASHBOARD_VIEWS.map((id, order) => ({ id, title: TITLES[id], order })), { id: "guidance", title: "Guidance", order: DASHBOARD_VIEWS.length }],
-    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...RESULT_ADVERTISED, ...REVIEW_ACTIONS], confirm: true, multiProject: true, inbox: true, space: true },
+    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...RESULT_ADVERTISED, ...REVIEW_ACTIONS], confirm: true, multiProject: true,
+      inbox: true, inboxMaxAgeMs: INBOX_MAX_AGE_MS, space: true, spaceMaxAgeMs: SPACE_MAX_AGE_MS },
   },
   async open(ctx) { return createProvider({ home: ctx.home, log: ctx.log, features: ctx.features }); },
 };

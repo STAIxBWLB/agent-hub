@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import plugin, { createProvider, panelAssets } from "../src/ui/plugin.ts";
+import { spaceSceneProblems } from "@staix/agent-console/conformance";
 import { DASHBOARD_VIEWS, renderDashboard, startDashboard } from "../src/hub/ui.ts";
 import type { Lifecycle, ProjectRecord } from "../src/hub/manager.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -187,7 +188,95 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
     expect(JSON.stringify(dirty)).toContain(MARKER);
     const scene = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p1", label: "proj" });
     expect(JSON.stringify(scene)).not.toContain(MARKER);
-    expect(scene.actors[0]!.name.startsWith("proj / ")).toBe(true);
+    // #1375: the project is the scene's one group, titled by the caller; actor names are bare, so no project text rides on them.
+    expect(scene.groups).toEqual([{ id: "p1", title: "proj" }]);
+    expect(scene.actors.map((a) => a.name).sort()).toEqual(["codex", "kimi", "pi"]);
+  });
+
+  test("#1375 AC1/AC2: every record carries its project's group and roles come from the project's configured ones", () => {
+    const configured = { ...dirty, status: { ...dirty.status, roleInfo: {
+      codex: { flowRoles: ["implementer", "reviewer"] }, pi: { flowRoles: [] }, kimi: { flowRoles: ["planner", "conductor", "a", "b", "c"] } } } } as OfficeSnapshotInput;
+    const one = officeSpace(officeModel(configured, null, { cols: 4, now: 3000 }), { id: "p1", label: "alpha" });
+    const two = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p2", label: "beta" });
+    const scene = mergeSpaces([one, two]);
+    // A two-project scene keeps both groups distinct, and no actor, zone or card is left without its own.
+    expect(scene.groups).toEqual([{ id: "p1", title: "alpha" }, { id: "p2", title: "beta" }]);
+    for (const [group, part] of [["p1", one], ["p2", two]] as const) {
+      expect(part.actors.length + part.zones.length + part.cards.length).toBeGreaterThan(0);
+      expect(part.actors.every((a) => a.group === group)).toBe(true);
+      expect(part.zones.every((z) => z.group === group)).toBe(true);
+      expect(part.cards.every((c) => c.group === group)).toBe(true);
+    }
+    // The console shows the group itself, so no actor name repeats the project (#1375).
+    expect(scene.actors.some((a) => /alpha|beta/.test(a.name))).toBe(false);
+    expect(one.actors.find((a) => a.id === "p1:codex")?.roles).toEqual(["implementer", "reviewer"]);
+    expect(one.actors.find((a) => a.id === "p1:pi")?.roles).toBeUndefined();
+    // acon's bounds: at most 4 names of at most 32 characters, the rest dropped rather than truncated.
+    expect(one.actors.find((a) => a.id === "p1:kimi")?.roles).toEqual(["planner", "conductor", "a", "b"]);
+  });
+
+  test("#1375: `since` is the open turn's start and is present only while the actor is working", () => {
+    const started = 1_790_000_000_000;
+    const input = { status: { peers: {
+        codex: { state: "busy", turn: { since: started, task: 1 } },
+        pi: { state: "busy", turn: { since: started, task: 3 } },
+        kimi: { state: "idle", turn: { since: started } } } },
+      tasks: [{ id: 1, title: "a", class: "implement", state: "in_progress", owner: "codex", deps: [] },
+        { id: 3, title: "b", class: "review", state: "in_review", owner: "pi", deps: [] }],
+      permissions: [{ peer: "pi", title: "approve a command", options: [] }] } as unknown as OfficeSnapshotInput;
+    const scene = officeSpace(officeModel(input, null, { cols: 4, now: 3000 }), { id: "p1" });
+    expect(scene.actors.find((a) => a.id === "p1:codex")?.since).toBe(new Date(started).toISOString());
+    // An open approval puts the desk in `waiting`, which its turn start does not date, so no time is claimed for it.
+    expect(scene.actors.find((a) => a.id === "p1:pi")?.state).toBe("waiting");
+    expect(scene.actors.find((a) => a.id === "p1:pi")?.since).toBeUndefined();
+    expect(scene.actors.find((a) => a.id === "p1:kimi")?.since).toBeUndefined();
+  });
+
+  test("#1375 AC4: the merged scene passes acon's own conformance kit, and every cap we trim to is acon's", () => {
+    const scene = mergeSpaces([officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p1", label: "alpha" }),
+      officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p2", label: "beta" })]);
+    expect(spaceSceneProblems(scene)).toEqual([]);
+    // Pin our copy of acon's bounds against acon's own checker: the last value inside a bound conforms, and the next one fails
+    // naming acon's own number as ours, so a drift in either direction fails here rather than at a person's console.
+    const actors = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `a${i}`, name: `a${i}`, state: "idle", link: { panel: "agents" } }));
+    const links = (n: number) => Array.from({ length: n }, () => ({ kind: "overlap", from: "a0", to: "a1" }));
+    const cards = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `c${i}`, title: "a card", zone: "z", link: { panel: "board" } }));
+    const groups = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `g${i}`, title: `G${i}` }));
+    const zones = [{ id: "z", title: "Zone", count: 0 }];
+    expect(spaceSceneProblems({ actors: actors(SPACE_CAPS.actors), zones, cards: [] })).toEqual([]);
+    expect(spaceSceneProblems({ actors: actors(SPACE_CAPS.actors + 1), zones, cards: [] })).toEqual([`scene.actors exceeds ${SPACE_CAPS.actors}`]);
+    expect(spaceSceneProblems({ actors: actors(2), zones, cards: cards(SPACE_CAPS.cards) })).toEqual([]);
+    expect(spaceSceneProblems({ actors: actors(2), zones, cards: cards(SPACE_CAPS.cards + 1) })).toEqual([`scene.cards exceeds ${SPACE_CAPS.cards}`]);
+    expect(spaceSceneProblems({ actors: actors(2), zones, cards: [], links: links(SPACE_CAPS.links) })).toEqual([]);
+    expect(spaceSceneProblems({ actors: actors(2), zones, cards: [], links: links(SPACE_CAPS.links + 1) })).toEqual([`scene.links exceeds ${SPACE_CAPS.links}`]);
+    expect(spaceSceneProblems({ groups: groups(SPACE_CAPS.groups), actors: [], zones: [], cards: [] })).toEqual([]);
+    expect(spaceSceneProblems({ groups: groups(SPACE_CAPS.groups + 1), actors: [], zones: [], cards: [] })).toEqual([`scene.groups exceeds ${SPACE_CAPS.groups}`]);
+  });
+
+  test("#1375 AC4: a project past the group bound loses its group reference instead of failing conformance", () => {
+    const one = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p" });
+    const scene = (i: number) => ({ ...one, groups: [{ id: `g${i}`, title: `G${i}` }],
+      actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}`, group: `g${i}` })),
+      zones: one.zones.map((z) => ({ ...z, id: `${i}:${z.id}`, group: `g${i}` })),
+      cards: one.cards.map((c) => ({ ...c, id: `${i}:${c.id}`, group: `g${i}` })) });
+    const past = SPACE_CAPS.groups;
+    const merged = mergeSpaces(Array.from({ length: past + 1 }, (_, i) => scene(i)));
+    expect(merged.groups!.length).toBe(past);
+    expect(merged.groups!.some((g) => g.id === `g${past}`)).toBe(false);
+    // The last project's records survive the zone list, so they are the ones a dangling reference would have failed on.
+    const last = merged.zones.filter((z) => z.id.startsWith(`${past}:`));
+    expect(last.length).toBe(one.zones.length);
+    expect(last.every((z) => !("group" in z))).toBe(true);
+    expect(spaceSceneProblems(merged)).toEqual([]);
+  });
+
+  test("#1375 AC5: the manifest declares acon's snapshot max-age bounds, and Space's is its own poll interval", () => {
+    expect(plugin.manifest.capabilities).toMatchObject({ inbox: true, inboxMaxAgeMs: 1000, space: true });
+    // Reuse for longer than one poll interval would show the page older data than the poll it replaces, so the two are one value.
+    expect(plugin.manifest.capabilities?.spaceMaxAgeMs).toBe(plugin.manifest.pollMs);
+    for (const value of [plugin.manifest.capabilities?.inboxMaxAgeMs, plugin.manifest.capabilities?.spaceMaxAgeMs]) {
+      expect(Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 60_000).toBe(true);
+    }
   });
 
   test("phase 5 backlog wall maps to a queue zone and its public cards retain that placement", () => {
@@ -208,17 +297,19 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
 
   test("Codex thread 4: after the caps, links, card owners and actor cards point only inside what was kept", () => {
     const one = officeSpace(officeModel(dirty, null, { cols: 4, now: 3000 }), { id: "p" });
-    // 11 projects of 3 actors: project 10's actors are cut. Its links come last (newest) and must not crowd out kept ones.
-    const scenes = Array.from({ length: 11 }, (_, i) => ({ actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}`, ...(a.card ? { card: `${i}:${a.card}` } : {}) })), zones: [],
+    // Projects of 3 actors each, one past the actor cap: that project's actors are cut. Its links come last (newest) and must
+    // not crowd out the kept ones, which is why the reference filter runs before the link cap.
+    const CUT = Math.ceil(SPACE_CAPS.actors / one.actors.length);
+    const scenes = Array.from({ length: CUT + 1 }, (_, i) => ({ actors: one.actors.map((a) => ({ ...a, id: `${i}:${a.id}`, ...(a.card ? { card: `${i}:${a.card}` } : {}) })), zones: [],
       cards: one.cards.map((c) => ({ ...c, id: `${i}:${c.id}`, ...(c.owner ? { owner: `${i}:${c.owner}` } : {}) })),
-      links: Array.from({ length: i === 10 ? 64 : 2 }, () => ({ ...one.links![0]!, from: `${i}:p:codex`, to: `${i}:p:pi` })) }));
+      links: Array.from({ length: i === CUT ? SPACE_CAPS.links : 2 }, () => ({ ...one.links![0]!, from: `${i}:p:codex`, to: `${i}:p:pi` })) }));
     const merged = mergeSpaces(scenes);
     const actors = new Set(merged.actors.map((a) => a.id)), cards = new Set(merged.cards.map((c) => c.id));
     expect(merged.actors.length).toBe(SPACE_CAPS.actors);
-    expect(merged.links!.length).toBe(20);
+    expect(merged.links!.length).toBe(CUT * 2);
     expect(merged.links!.every((l) => actors.has(l.from) && actors.has(l.to))).toBe(true);
     expect(merged.cards.every((c) => !c.owner || actors.has(c.owner))).toBe(true);
-    expect(merged.cards.some((c) => c.id.startsWith("10:") && c.owner === undefined)).toBe(true);
+    expect(merged.cards.some((c) => c.id.startsWith(`${CUT}:`) && c.owner === undefined)).toBe(true);
     expect(merged.actors.every((a) => !a.card || cards.has(a.card))).toBe(true);
     const tight = mergeSpaces([{ ...scenes[0]!, cards: [] }]);
     expect(tight.actors.every((a) => a.card === undefined)).toBe(true);
@@ -284,7 +375,7 @@ describe("acon Space from the office model (#1012 Part 2)", () => {
     const started = Date.now();
     const { scene } = await provider.snapshot({ after: 0, panel: "space" }) as { scene: any };
     expect(Date.now() - started).toBeLessThan(2000);
-    expect(scene).toEqual({ actors: [], zones: [], cards: [], links: [] });
+    expect(scene).toEqual({ groups: [], actors: [], zones: [], cards: [], links: [] });
   });
 });
 

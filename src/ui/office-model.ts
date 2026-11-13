@@ -3,8 +3,8 @@ import { OFFICE_PEER_ORDER } from "../adapters/registry.ts";
 /**
  * Pure office scene model for the dashboard (#264, phase 1: the static Flat view).
  * Self-contained so `src/hub/ui.ts` injects it into the page by toString(), exactly like
- * task-progress.ts. Inputs are allowlisted: peer states, queue counts and modes; task ids,
- * classes, states, owners, reviewers, deps and public titles; approval counts by peer; budget
+ * task-progress.ts. Inputs are allowlisted: peer states, queue counts and modes; a peer's configured roles and the open
+ * turn's start; task ids, classes, states, owners, reviewers, deps and public titles; approval counts by peer; budget
  * pause readings. env.body, task detail, approval titles, paths and symbols never enter;
  * test/office-model.test.ts pins that with a marker fixture.
  */
@@ -121,6 +121,10 @@ export interface OfficeDesk {
   approvals: number;
   tray: { queued: number; important: number; heldBy: string; needsReview: number };
   mode: string;
+  /** The project's configured `roles` for this peer (#1375), as configured; absent when it has none. */
+  roles?: readonly string[];
+  /** The open turn's start, in epoch ms (#1375): the one state-change time the model knows. Absent without a reported turn. */
+  turnSince?: number;
   /** "#id class" of the turn's attributed task (phase 3, exact), else of the peer's single in_progress task; empty when unknown. Never guessed. */
   bubble: string;
   /** The peer is paused with a turn still open: "finishing a turn" under the Break sign. */
@@ -351,6 +355,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     // The open turn's attributed task names the bubble exactly (phase 3); without it the
     // single-in_progress-task heuristic applies, and otherwise there is no bubble. Never guessed.
     const turn = peer.turn && typeof peer.turn === "object" ? peer.turn : undefined;
+    const turnSince = turn && typeof turn.since === "number" && Number.isFinite(turn.since) ? turn.since : undefined;
     const turnTask = turn && typeof turn.task === "number" && Number.isSafeInteger(turn.task) ? turn.task : undefined;
     const bubble = turnTask !== undefined ? `#${turnTask} ${classById.get(turnTask) ?? "task"}`
       : !Object.hasOwn(peer, "turn") && current.length === 1 ? `#${current[0]!.id} ${text(current[0]!.class) || "task"}` : "";
@@ -363,7 +368,9 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
     if (finishing) parts.push("finishing a turn");
     if (condition !== "waiting" && count > 0) parts.push(`${count} approval${count === 1 ? "" : "s"} waiting`);
     if (!attached) parts.push("disconnected, work retained");
-    const planner = Array.isArray(snapshot.status?.roleInfo?.[id]?.flowRoles) && snapshot.status!.roleInfo![id]!.flowRoles!.includes("planner");
+    const flowRoles = snapshot.status?.roleInfo?.[id]?.flowRoles;
+    const roles = Array.isArray(flowRoles) ? flowRoles.filter((role): role is string => typeof role === "string") : [];
+    const planner = roles.includes("planner");
     if (planner) parts.push(`planner, ${unplanned} unplanned backlog cards`);
     // An over-full desk shows two chips and a "+N more" line in the third slot.
     const shown = work.length > DESK_CARDS ? work.slice(0, DESK_CARDS - 1) : work;
@@ -373,6 +380,7 @@ export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene
       dimmed: condition === "offline", attached, approvals: count,
       tray: { queued: num(peer.queued), important: num(peer.queuedImportant), heldBy: text(peer.heldBy), needsReview: num(peer.needsReview) },
       mode: text(peer.permissionMode), bubble, breakNote, breakResetsAt,
+      ...(roles.length ? { roles } : {}), ...(turnSince !== undefined ? { turnSince } : {}),
       finishing,
       cards: shown.map((task, index) => card(task, x + 0.8, y + 8.5 + index * 2.5, DESK_W - 1.6, 2)),
       extraCards: work.length - shown.length,
