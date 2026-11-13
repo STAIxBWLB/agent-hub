@@ -81,7 +81,7 @@ import { VERSION_REFUSAL, configuredCommands, describe, isCompatId } from "../ad
 import { agentVersionsAsync, type AgentVersionRow } from "../cli/agents.ts";
 import { driftedAgents, noticeDrift, type DriftedAgent } from "./agent-drift.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
-import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
+import { loadSdlc, readSpecEdit, sdlcGh, type SdlcConfig } from "./sdlc.ts";
 import { claudePeer as defaultChannelPeer, claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
 import { peerRosterConfig, rosterAllows, staleInstanceKey, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
@@ -780,6 +780,12 @@ export interface DaemonOptions {
   /** Host-only bounds of the per-head CI watcher (#785 P1b); tests shorten them, never read from config or a tool. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   checkoutBranch?: typeof mainCheckoutBranch;
+  /**
+   * Host-only fixture lifecycle config (#1411): the daemon runs this instead of reading `.agenthub/sdlc.toml`,
+   * and reports it as the file's value too, so a fixture at this checkout neither runs the repository's own
+   * mode nor shows a restart pending against a file it is ignoring. Never read from project config or control input.
+   */
+  sdlc?: SdlcConfig;
   /** Host-only admission transport; never selected by project config or tools. */
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
   /** Host-only (#285): Kimi's data home for its wire-log usage reader; default `KIMI_CODE_HOME`, else `~/.kimi-code`. Never read from config or tools. */
@@ -1000,7 +1006,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const loadedConfig = recoveryConfiguration ?? (opts.config ? { ...opts.config, adapter_modules: moduleDeclarations.length ? moduleDeclarations : undefined }
     : loadConfig(opts.cwd, startupLayers, undefined, externalDefinitions));
   reviewerPoolConfig(loadedConfig.review, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS);
-  const lifecycleConfig = loadSdlc(opts.cwd, VERSION);
+  const lifecycleConfig = opts.sdlc ?? loadSdlc(opts.cwd, VERSION);
+  /** The file's lifecycle as the status and settings views report it; a supplied fixture config stands in for it. */
+  const readSdlcFile = () => opts.sdlc ?? loadSdlc(opts.cwd, VERSION);
   // Preserve embedding-owned policy references, but never publish reloads into shared defaults.
   const ownedConfig = Object.fromEntries(Object.entries(loadedConfig).map(([key, value]) => [key, !opts.config || value === (DEFAULT_CONFIG as unknown as Record<string, unknown>)[key] ? structuredClone(value) : value])) as unknown as HubConfig;
   const adapterCatalog = createProjectAdapterCatalog(loadedConfig.adapters, externalDefinitions);
@@ -9225,7 +9233,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function sdlcSettingsView() {
     let file: ReturnType<typeof loadSdlc> | undefined;
-    try { file = loadSdlc(opts.cwd, VERSION); } catch { /* unreadable file stays unknown */ }
+    try { file = readSdlcFile(); } catch { /* unreadable file stays unknown */ }
     return {
       "sdlc.mode": { value: lifecycleConfig.mode, fileValue: file?.mode ?? null, ...(!file ? { problem: "file unavailable" } : {}) },
       "sdlc.required_checks": { value: lifecycleConfig.requiredChecks, fileValue: file?.requiredChecks ?? null, ...(!file ? { problem: "file unavailable" } : {}) },
@@ -10337,7 +10345,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (sdlcFileCache?.stamp !== stamp) {
         let value: { mode: string; requiredChecks: readonly string[] } | string;
         sdlcFileReads++;
-        try { const loaded = loadSdlc(opts.cwd, VERSION); value = { mode: loaded.mode, requiredChecks: loaded.requiredChecks }; } catch (error) { value = sanitize((error as Error).message).slice(0, 300); }
+        try { const loaded = readSdlcFile(); value = { mode: loaded.mode, requiredChecks: loaded.requiredChecks }; } catch (error) { value = sanitize((error as Error).message).slice(0, 300); }
         sdlcFileCache = { stamp, value };
       }
       return sdlcFileCache.value;

@@ -1,0 +1,13 @@
+# agent-hub dogfoods its own SDLC lifecycle (docs/dogfood.md).
+# advise: every gate is computed and shown, nothing blocks. Moving to enforce is a
+# person's decision, recorded in docs/dogfood.md. Applies at the next hub start.
+mode = "advise"
+required_checks = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"]
+# #481 S5: agent-configuration PRs need this check; it reports eval_pass_rate= and eval_suite= (#637 part 1, person decision 2026-10-28).
+eval_check = "routing-eval"
+
+# #481 S7: daily open-alert counts from GitHub's own scanners (no scanner runs here).
+# Code scanning is left out: this repository has no CodeQL analysis (person decision 2026-10-28).
+[security_scan]
+sources = ["dependabot", "secret_scanning"]
+every_h = 24

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { newEnvelope, USER } from "../src/hub/envelope.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { summarizeByTask } from "../src/hub/report.ts";
@@ -22,6 +23,7 @@ test("a permission asked during a delivery of a task is attributed to that task,
   const dir = mkdtempSync(join(tmpdir(), "ahub-person-attribution-")), stateDir = join(dir, "state");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const daemon = await startDaemon({ cwd: ROOT, stateDir, projectId: "p-person", instanceId: "i-person", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 5_000,
+    sdlc: sdlcConfig(undefined), // #1411: the checkout's own lifecycle file is not this fixture's subject
     config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, specs: { ...DEFAULT_CONFIG.specs, enabled: false }, kimi_cmd: ["bun", join(ROOT, "test/fakes/acp-server.ts")], batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
   cleanup.push(() => daemon.stop());
   const person = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => person.close());

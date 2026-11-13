@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { processTable, stopOwnedProcess, trackGroup } from "../src/hub/child-process.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 
@@ -25,6 +26,7 @@ test("a rejected peer stop still removes state files and resolves stopped", asyn
     controlPort: 0,
     codexAppPort: 0,
     codexProxyPort: 0,
+    sdlc: sdlcConfig(undefined), // #1411: the checkout's own lifecycle file is not this fixture's subject
     config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } },
   });
   const stubborn = new StubbornPeer("kimi");
@@ -49,6 +51,7 @@ async function watchedDaemon(cwd: string, stateDir: string) {
     controlPort: 0,
     codexAppPort: 0,
     codexProxyPort: 0,
+    sdlc: sdlcConfig(undefined), // #1411: the checkout's own lifecycle file is not this fixture's subject
     config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } },
     orphanWatchMs: 50,
   });
