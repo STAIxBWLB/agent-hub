@@ -2860,6 +2860,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let runnerState = await checkRunner.available(runnerRefreshAbort.signal);
   const orphanChecks = (await checkRunner.sweep()).map(line => boundedSafe(line) ? sanitize(line) : "orphan check: details withheld by privacy policy");
   if (opts.boundedTools?.specAvailable || !opts.config && (config.pi.enabled || config.checks.runner === "container" || config.checks.runner === "remote")) await ensureSpec();
+  startupTimings.mark("task_checks");
   let runnerStateAt = runnerState.checkedAt ?? Date.now(), refreshingRunner: Promise<void> | undefined;
   const refreshRunner = (): Promise<void> => {
     if (stopping || runnerRefreshAbort.signal.aborted) return Promise.resolve();
@@ -2957,6 +2958,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const projectSpecs = specInspectorAt(opts.cwd);
   let specsMissingBlockHintShown = false;
   let releaseReportPolicy: ((head: string, repo: string) => ReleaseReportPolicy | undefined) | undefined;
+  startupTimings.mark("task_ports");
   const tasks: Tasks = new Tasks({
     guidanceProbes: { store: guidanceProbeStore, session: by => {
       const request = guidanceProbeRequestContext.getStore();
@@ -3197,6 +3199,7 @@ export async function startDaemon(opts: DaemonOptions) {
     failing: () => ({ ...bus.failingPeers(), ...Object.fromEntries(reviewerUnavailable) }),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
+  startupTimings.mark("task_board");
   /**
    * #1221 T2: the bounded proposal queue. The store is built even while the mode is off (its tables are additive and a
    * person may turn the mode on at the next reload), and nothing in it runs until an explicit decision arrives: reading
@@ -3333,6 +3336,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return true;
   };
   tasks.recoverIntegrations();
+  startupTimings.mark("task_recovery");
   // #1221 T2 AC6: a restart keeps the dedupe keys, the dispositions and an action outcome the hub never observed. A
   // pending proposal whose task moved or closed expires here, once, with nothing replayed.
   void supervisionProposals.recover().catch((error: Error) => log(`supervision reconcile failed: ${error.message}`));

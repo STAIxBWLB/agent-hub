@@ -1,6 +1,7 @@
 /** Closed labels only: startup diagnostics must never carry paths, task text or errors. */
 export const STARTUP_PHASES = [
   "schema", "source", "configuration", "control", "recovery", "journal", "bus", "memory", "model_runtime", "board",
+  "task_checks", "task_ports", "task_board", "task_recovery",
   "task_runtime", "native_stop_seed", "budget", "usage_seed", "usage_rollup", "token_runtime", "token_seed",
   "services", "transcript_usage_seed", "ready", "post_ready",
 ] as const;
