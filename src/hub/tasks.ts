@@ -8063,7 +8063,8 @@ export class Tasks {
     let selection = this.poolReview(task, refs);
     let reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined), reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
-      reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
+      // #1435: the head this done submits is the head the gate compares with the PR. `refs.commit` still holds the earlier head until the done is written, so an approval-path gate (no reviewer after an escalation) would refuse the very head its refusal names.
+      reviewEvidence = await this.lifecycleGate(draft?.commit ? { ...task, refs: { ...task.refs, commit: draft.commit } } : task, reviewer ? "review" : "approval");
       requestCheck();
       task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, false, refresh), draft), link, refs);
       if (specInspection && asyncCheckCompletion && this.refreshAsyncSpecInspection(specInspection, task, by)) { this.requestSpecRefile(task); return task; }
