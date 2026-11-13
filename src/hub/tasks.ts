@@ -43,7 +43,7 @@ import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampa
 import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit, HandoffOutboundRow } from "./board.ts";
 import { HANDOFF_EVENTS, HANDOFF_KEY, HandoffRefusal, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, type HandoffEvent } from "./handoff.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
-import type { ReviewBudgetSnapshot } from "./review-budget.ts";
+import type { ReviewBudgetSnapshot, ReviewGate, ReviewUnknownQuota } from "./review-budget.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
@@ -305,7 +305,7 @@ export interface TasksDeps {
   /** Fresh trusted machine-local runner registrations. A source-trust failure refuses new receipts. */
   researchRunners?: () => unknown;
   /** Reviewer choice from recorded review outcomes (issue #35); off unless the project config turns it on. */
-  review?: { adaptive: boolean; min_reviews: number; pool?: readonly string[]; rerotate?: boolean; same_family?: "fallback" | "never"; gate?: number; max_minutes?: number };
+  review?: { adaptive: boolean; min_reviews: number; pool?: readonly string[]; rerotate?: boolean; same_family?: "fallback" | "never"; gate?: ReviewGate; unknown_quota?: ReviewUnknownQuota; max_minutes?: number };
   reviewBudget?: () => Pick<ReviewBudgetSnapshot, "paused" | "manualPaused">;
   /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
   capabilities?: () => Record<PeerId, PeerCapabilities>;
@@ -1799,7 +1799,7 @@ export class Tasks {
     const round = task.state === "in_review" ? task.history.slice(task.history.findLastIndex(entry => entry.event === "done") + 1) : [];
     const failed = [...new Set(round.flatMap(entry => entry.reviewerFailure?.head === head && entry.reviewerFailure && entry.reviewerFailure.cause !== "quota" ? [entry.reviewerFailure.peer] : []))];
     const gate = this.d.review?.gate;
-    const budget: ReviewBudgetSnapshot | undefined = gate === undefined ? undefined : { gate, now: this.d.now?.() ?? Date.now(), readings: this.d.quota?.() ?? {}, paused: {}, ...this.d.reviewBudget?.() };
+    const budget: ReviewBudgetSnapshot | undefined = gate === undefined ? undefined : { gate, unknownQuota: this.d.review?.unknown_quota, now: this.d.now?.() ?? Date.now(), readings: this.d.quota?.() ?? {}, paused: {}, ...this.d.reviewBudget?.() };
     const wait = this.priorReviewerQuotaWait(task), now = this.d.now?.() ?? Date.now();
     return { waitForReset: !wait || now < wait.deadline, pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, failed, required: this.d.review?.pool !== undefined, ...(budget ? { budget } : {}), ...(this.d.review?.same_family === "never" ? { sameFamily: "never" as const } : {}) };
   }
@@ -4458,10 +4458,11 @@ export class Tasks {
     const tagged = assignment.sameFamilyFallback ? `${note}; sameFamilyFallback=true` : note;
     const pool = assignment.reviewSelection, metadata = this.reviewMetadata(assignment);
     const walk = pool?.blocked ? pool.walk.slice(0, 16).map(row => {
-      const reason = this.nameable(row.reason) ? Array.from(sanitize(row.reason).replace(/\s+/g, " ")).slice(0, 80).join("") : "[withheld]";
+      const reason = this.nameable(row.reason) ? Array.from(sanitize(row.reason).replace(/\s+/g, " ")).slice(0, 160).join("") : "[withheld]";
       return `${row.id || row.kind}: ${reason}`;
     }).join("; ") + (pool.walk.length > 16 ? `; +${pool.walk.length - 16} walk entries` : "") : "";
-    const recorded = pool ? `${tagged}; reviewerFamily=${metadata.reviewerFamily ?? "none"}; reviewerReason=${metadata.reviewerReason ?? pool.blocked}${pool.blocked ? `; pool=${pool.blocked}; walk: ${walk}` : ""}` : tagged;
+    const admission = pool?.admissionRule ? this.nameable(pool.admissionRule) ? Array.from(sanitize(pool.admissionRule).replace(/\s+/g, " ")).slice(0, 160).join("") : "[withheld]" : undefined;
+    const recorded = pool ? `${tagged}; reviewerFamily=${metadata.reviewerFamily ?? "none"}; reviewerReason=${metadata.reviewerReason ?? pool.blocked}${pool.blocked ? `; pool=${pool.blocked}; walk: ${walk}` : ""}${admission ? `; reviewerQuotaRule=${admission}` : ""}` : tagged;
     const quota = pool?.quotaWait ? `; quota wait: ${pool.quotaWait.candidates.map(row => `${row.id} ${row.state}, reset ${new Date(row.resetsAt).toISOString()}`).join("; ")}` : "";
     return assignment.plannerFallback ? `${recorded}; reviewer=planner (fallback)${quota}` : recorded + quota;
   }
@@ -8753,7 +8754,7 @@ export class Tasks {
     reviewer = selection?.reviewer ?? task.reviewer ?? (refresh?.state === "approved" ? USER : undefined);
     const reviewCost: ReviewCost | undefined = reviewer && task.plan && (task.plan.review || task.plan.ci)
       ? { ...cleanCostPlan(task.plan), ...(admission?.ready && admission.head ? { head: admission.head } : {}) } : undefined;
-    const routedSummary = selection?.reviewSelection?.blocked ? `${summary ?? ""}\nReview routing: ${this.assignmentNote("pool unavailable", selection)}`.trim() : summary;
+    const routedSummary = selection?.reviewSelection && (selection.reviewSelection.blocked || selection.reviewSelection.admissionRule) ? `${summary ?? ""}\nReview routing: ${this.assignmentNote(selection.reviewSelection.blocked ? "pool unavailable" : "pool selected", selection)}`.trim() : summary;
     if (refresh?.state === "approved") {
       await this.unmergedForReopen(task, () => { requestCheck(); return this.completionCurrent(task.id, by, true, refresh); });
       task = this.withLink(this.completionDraft(this.completionCurrent(task.id, by, true, refresh), draft), link, refs);

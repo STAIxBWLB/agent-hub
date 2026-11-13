@@ -20,7 +20,7 @@ const STUDY_PROJECTION = { id: "rc-0123456789ab", revision: 1, held: true, reaso
     handoff: { present: true, complete: false, insufficientEvidence: false, coveredSourceIds: ["src:0000000000000001"] }, budget: { tool_calls: { support: "enforceable", used: 3, limit: 10 }, tokens: { support: "unavailable", used: null, limit: null }, model_calls: { support: "advisory", used: null, limit: null } } },
   { unitId: "beta", round: 0, taskId: 3, state: "approved", purpose: "discovery", intentionalIndependentCheck: true, sourceIds: [], duplicateSourceIds: [],
     handoff: { present: true, complete: true, insufficientEvidence: false, coveredSourceIds: [] }, budget: {} }] };
-function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; kimiSource?: unknown; budget?: Record<string, unknown> } = {}) {
+function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; kimiSource?: unknown; budget?: Record<string, unknown>; review?: Record<string, unknown> } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-output-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
@@ -50,7 +50,7 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; ki
       const req = JSON.parse(String(body)); requests.push(req);
       const reply = req.t === "hello" ? { t: "welcome", cwd: root, projectId: project.id, instanceId: status.instanceId }
         : req.t === "status" ? { status }
-        : req.t === "budget" ? { budget, gate: 0.95, ...(options.kimiSource ? { kimiSource: options.kimiSource } : {}) }
+        : req.t === "budget" ? { budget, gate: 0.95, ...(options.kimiSource ? { kimiSource: options.kimiSource } : {}), ...(options.review ? { review: options.review } : {}) }
         : req.t === "execution_budget" ? req.op === "disable" ? { disabled: true } : { budgets }
         : req.t === "queue" ? ["show", "resolve"].includes(req.op) ? { delivery } : { deliveries }
         : req.t === "task" && options.rejectChecked && ["task_assign_checked", "task_unassign"].includes(req.op) ? { ok: false, error: "unknown operation" }
@@ -403,4 +403,13 @@ test("#1440 ahub budget text and JSON show safe paused-account diagnostics witho
   for (const part of ["1 reset credit available", "expires 2026-12-13", "ordinary usage not allowed", "credits available: yes", "unlimited credits: no", "turns would use paid credits"]) expect(text.stdout.replace(/\s+/g, " ")).toContain(part);
   expect(JSON.parse(json.stdout).budget.codex.accountUsage).toEqual(accountUsage);
   expect(text.stdout + json.stdout).not.toMatch(/CANARY|balance|accountId|creditId/);
+});
+
+
+test("budget CLI text and JSON retain the host reviewer admission policy", async () => {
+  const review = { gate: "off", unknown_quota: "skip", rule: "review.gate=off (quota floor, unknown check and quota waiting disabled; Budget/manual pauses still block)" };
+  const f = fixture({ review });
+  const text = await f.run(["budget", "--color=never"]), json = await f.run(["budget", "--json"]);
+  expect(text.code).toBe(0); expect(text.stdout).toContain("Reviewer admission"); expect(text.stdout).toContain("review.gate=off");
+  expect(text.stdout).toContain("Budget/manual pauses still block"); expect(json.code).toBe(0); expect(JSON.parse(json.stdout).review).toEqual(review);
 });

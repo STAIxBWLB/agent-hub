@@ -1603,7 +1603,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const res = await hub.request({ t: "budget", ...(set ? { set } : {}) });
     hub.close();
     if (!res.ok) fail(res.error);
-    const data = { budget: res.budget, ...(res.peers ? { peers: res.peers } : {}), gate: res.gate };
+    const data = { budget: res.budget, ...(res.peers ? { peers: res.peers } : {}), ...(res.review ? { review: res.review } : {}), gate: res.gate };
     if (options.json) return console.log(JSON.stringify(data, null, 2));
     printOutput(renderBudget(data, options.columns, Date.now(), options.full), options.color);
   },
@@ -2604,7 +2604,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (sub === "list" && row.group !== group) console.log(`${group ? "\n" : ""}${group = row.group}`);
         const facts = [`from ${row.source}`, `file: ${settingText(row.fileValue === undefined ? row.pending ?? row.value : row.fileValue)}`, row.applies === "live" ? "applies at once" : row.applies === "next use" ? "applies at next use" : "pending restart", ...(row.restartReason ? [row.restartReason] : []), ...(row.note ? [row.note] : [])];
         console.log(`  ${row.key.padEnd(width)}  ${settingText(row.value).padEnd(valueWidth)}  ${facts.join("; ")}`);
-        if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "integer" || row.type === "number" ? `a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "peers" ? "a comma list of peer ids" : row.type === "roles" ? "up to two comma-separated catalog ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
+        if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "number-or-off" ? `off or a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "integer" || row.type === "number" ? `a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "peers" ? "a comma list of peer ids" : row.type === "roles" ? "up to two comma-separated catalog ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
       }
       if (sub === "list" && view.pendingRestart?.length) console.log(`\npending restart: ${view.pendingRestart.map((entry: { key: string }) => entry.key).join(", ")}`);
       if (sub === "list" && view.undo) console.log(`\nahub settings undo puts back the last write (${view.undo})`);

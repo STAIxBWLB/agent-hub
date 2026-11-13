@@ -30,7 +30,7 @@ export interface SettingDef {
   key: string;
   group: "Permissions" | "Start" | "Routing" | "Switches" | "Roster" | "Roles";
   label: string;
-  type: "enum" | "boolean" | "peers" | "roles" | "integer" | "number" | "lines";
+  type: "enum" | "boolean" | "peers" | "roles" | "integer" | "number" | "number-or-off" | "lines";
   /** Written only by the named hub command, never by `settings set`, a dashboard session or a conductor (#514b). */
   managed?: "learn" | "autonomy";
   min?: number; max?: number;
@@ -87,7 +87,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "research.enabled", group: "Switches", label: "Research records", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["research", "enabled"] },
   // #1292: the quota share at which a peer checkpoints and pauses (resume is below gate - 0.1); default 0.99 in DEFAULT_BUDGET. Raising it is guarded.
   { key: "budget.gate", group: "Routing", label: "Budget gate: pause a peer when a fresh quota window reaches this share (0..1)", type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["budget", "gate"] },
-  { key: "review.gate", group: "Routing", label: "Reviewer quota floor (0..1)", type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["review", "gate"] },
+  { key: "review.gate", group: "Routing", label: "Reviewer quota floor (0..1 or off)", type: "number-or-off", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["review", "gate"] },
+  { key: "review.unknown_quota", group: "Routing", label: "Unknown reviewer quota (skip or pass)", type: "enum", values: ["skip", "pass"], store: "config", applies: "next use", risk: "raises", path: ["review", "unknown_quota"] },
   { key: "review.max_minutes", group: "Routing", label: "Reviewer wall-clock cap (minutes)", type: "number", min: Number.MIN_VALUE, max: MAX_REVIEW_MINUTES, store: "config", applies: "next use", risk: "raises", path: ["review", "max_minutes"] },
   { key: "specs.enabled", group: "Switches", label: "Design specs and freshness", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["specs", "enabled"] },
   { key: "specs.review", group: "Switches", label: "Covering spec review", type: "enum", values: ["off", "report", "require"], store: "config", applies: "live", risk: "safe", path: ["specs", "review"] },
@@ -192,8 +193,9 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
     if (def.store === "runtime") throw new Error(`${def.key} has no stored value to remove`);
     return null;
   }
-  if (def.type === "integer" || def.type === "number") {
-    if (typeof raw !== "number" || !(def.type === "integer" ? Number.isSafeInteger(raw) : Number.isFinite(raw)) || raw < (def.min ?? 0) || raw > (def.max ?? Number.MAX_SAFE_INTEGER)) throw new Error(`${def.key} takes ${def.type === "integer" ? "an integer" : "a number"} from ${def.min ?? 0} to ${def.max ?? Number.MAX_SAFE_INTEGER}`);
+  if (def.type === "number-or-off" && raw === "off") return raw;
+  if (def.type === "integer" || def.type === "number" || def.type === "number-or-off") {
+    if (typeof raw !== "number" || !(def.type === "integer" ? Number.isSafeInteger(raw) : Number.isFinite(raw)) || raw < (def.min ?? 0) || raw > (def.max ?? Number.MAX_SAFE_INTEGER)) throw new Error(`${def.key} takes ${def.type === "integer" ? "an integer" : def.type === "number-or-off" ? "off or a finite number" : "a number"} from ${def.min ?? 0} to ${def.max ?? Number.MAX_SAFE_INTEGER}`);
     return raw;
   }
   if (def.type === "lines") {
@@ -230,7 +232,8 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
 /** A terminal's text for a value: `inherit` removes the machine-local value, a peers setting takes a comma list. */
 export function parseSettingText(def: SettingDef, text: string): unknown {
   if (text === "inherit") return null;
-  if (def.type === "number") return text.trim() && Number.isFinite(Number(text)) ? Number(text) : text;
+  if (def.type === "number-or-off" && text.trim() === "off") return "off";
+  if (def.type === "number" || def.type === "number-or-off") return text.trim() && Number.isFinite(Number(text)) ? Number(text) : text;
   if (def.type === "integer") return /^(0|[1-9]\d*)$/.test(text) ? Number(text) : text;
   if (def.type === "boolean") return text === "true" ? true : text === "false" ? false : text;
   if (def.key === "start.agents" && text.trim() === "none") return [];
@@ -633,7 +636,7 @@ export function settingRows(input: {
   const routes = Object.keys(input.routing.hub_routes ?? {});
   const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? value : Array.isArray(value) ? value.map(String) : null;
   return projectSettings(input.instances, input.adapterCatalog).map((def): SettingRow => {
-    const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(["integer", "number"].includes(def.type) ? { min: def.min, max: def.max } : {}), applies: def.applies, ...(def.restartReason ? { restartReason: def.restartReason } : {}), risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
+    const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(["integer", "number", "number-or-off"].includes(def.type) ? { min: def.min, max: def.max } : {}), applies: def.applies, ...(def.restartReason ? { restartReason: def.restartReason } : {}), risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
       ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.key.startsWith("action_policy.") ? { hint: "enforced for Claude (PreToolUse hook) and hub-owned ACP peers in ask mode; ahub status lists each peer that is not enforceable" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!, input.instances, input.adapterCatalog) } : {}) };
     if (def.locked) return { ...base, values: def.values, file: def.store === "runtime" ? "this hub run" : CONFIG_LOCAL,
       source: "instance declaration", value: "read-only", fileValue: "read-only", locked: def.locked, note: def.locked };

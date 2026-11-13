@@ -855,6 +855,9 @@ function settingRow(row, raise) {
       select.value = current[index] || ''; actions.append(select); return select;
     });
     read = () => choices.map(select => select.value).filter(Boolean);
+  } else if (row.type === 'number-or-off') {
+    const input=el('input');input.type='text';input.id=id;input.name=row.key;input.value=fileValue===null ? '' : String(fileValue);input.placeholder='0..1 or off; empty inherits';input.autocomplete='off';input.autocapitalize='none';input.setAttribute('autocorrect','off');input.spellcheck=false;
+    read=()=>{const value=input.value.trim();return value==='' ? null : value==='off' ? 'off' : Number.isFinite(Number(value)) ? Number(value) : value;};actions.append(input);
   } else if (row.type === 'integer' || row.type === 'number') {
     const input=el('input');input.type='number';input.id=id;input.step=row.type === 'number' ? 'any' : '1';input.min=String(row.min ?? 0);input.max=String(row.max ?? Number.MAX_SAFE_INTEGER);const current=fileValue;input.value=current===null ? '' : String(current);input.placeholder='Empty inherits';
     read=()=>input.value==='' ? null : Number(input.value);actions.append(input);

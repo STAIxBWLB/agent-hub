@@ -158,3 +158,24 @@ test("undeclared optional kinds keep their trace but cannot veto quota waits for
   expect(result.walk.filter(row => row.reason === "no declared reviewer").map(row => row.kind)).toEqual(["codex", "kimi"]);
   expect(reviewBudgetAdmission("bad", { gate: 0.8, now, readings: { bad: { headroom: -0.1 } }, paused: {} }).state).toBe("unknown");
 });
+
+test("off admits the quota-exhausted numeric label, explains its rule and never waits, without lifting actual pauses", () => {
+  const now = 1_700_000_000_000, budget: ReviewBudgetSnapshot = { gate: "off", now, readings: { "alpha-review": { headroom: 0, resetsAt: now + 60_000 } }, paused: {} };
+  const result = select({ budget, candidates: candidates.map(row => row.id === "alpha-review" ? { ...row, blocked: "quota exhausted" } : row) });
+  expect(result.reviewer).toBe("alpha-review"); expect(result.quotaWait).toBeUndefined(); expect(result.walk[0]?.reason).toContain("selected (rotation); admitted by review.gate=off");
+  expect(result.admissionRule).toContain("review.gate=off");
+  const paused = select({ budget: { ...budget, paused: { "alpha-review": { resetsAt: now + 60_000 } } }, candidates: candidates.map(row => row.id === "alpha-review" ? { ...row, blocked: "quota exhausted" } : row) });
+  expect(paused.reviewer).toBe("beta-review"); expect(paused.walk[0]?.reason).toContain("quota paused");
+});
+
+test("opt-out admission rules are named on continuity and same-family fallback while legacy walk text stays unchanged", () => {
+  const now = 1_700_000_000_000;
+  const continuity = select({ continuityFamily: "beta", budget: { gate: 0.8, unknownQuota: "pass", now, readings: {}, paused: {} } });
+  expect(continuity.walk[0]?.reason).toContain("selected (continuity); admitted by review.unknown_quota=pass");
+  expect(continuity.admissionRule).toContain("review.unknown_quota=pass");
+  const fallback = select({ candidates: [candidates[0]!], implementerFamily: "alpha", budget: { gate: "off", now, readings: {}, paused: {} } });
+  expect(fallback.walk.find(row => row.reason.startsWith("selected"))?.reason).toContain("selected (same-family fallback); admitted by review.gate=off");
+  expect(fallback.admissionRule).toContain("review.gate=off");
+  expect(select().admissionRule).toBeUndefined();
+  expect(select().walk[0]?.reason).toBe("selected (rotation)");
+});

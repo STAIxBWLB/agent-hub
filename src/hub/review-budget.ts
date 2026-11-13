@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
 /** Reviewer policy consumes host-projected account observations, never native prose or credit flags. */
+export type ReviewGate = number | "off";
+export type ReviewUnknownQuota = "skip" | "pass";
+export const DEFAULT_REVIEW_UNKNOWN_QUOTA: ReviewUnknownQuota = "skip";
 export const DEFAULT_REVIEW_GATE = 0.8;
 export const DEFAULT_REVIEW_MAX_MINUTES = 20;
 /** setTimeout's signed 32-bit millisecond ceiling. */
 export const MAX_REVIEW_MINUTES = 2_147_483_647 / 60_000;
 export interface ReviewBudgetSnapshot {
-  gate: number;
+  gate: ReviewGate;
+  unknownQuota?: ReviewUnknownQuota;
   now: number;
   readings: Readonly<Record<string, { headroom: number; resetsAt?: number }>>;
   /** A present entry means an actual Budget pause. Only a proven native reset belongs in resetsAt. */
@@ -15,20 +19,37 @@ export interface ReviewBudgetSnapshot {
 export interface ReviewBudgetAdmission {
   state: "available" | "paused" | "floor" | "unknown" | "manual";
   reason?: string;
+  /** Stable host rule for explaining an admission, never native text. */
+  rule?: string;
   resetsAt?: number;
 }
 const reset = (value: unknown, now: number): number | undefined => typeof value === "number" && Number.isSafeInteger(value) && value > now && Number.isFinite(new Date(value).getTime()) ? value : undefined;
+const validGate = (gate: ReviewGate): boolean => gate === "off" || typeof gate === "number" && Number.isFinite(gate) && gate >= 0 && gate <= 1;
+const validUnknown = (value: ReviewUnknownQuota | undefined): boolean => value === undefined || value === "skip" || value === "pass";
+/** The operator-facing policy, kept independent of account observations. */
+export function reviewBudgetPolicyDescription(policy: { gate: ReviewGate; unknownQuota?: ReviewUnknownQuota }): string {
+  if (!validGate(policy.gate) || !validUnknown(policy.unknownQuota)) return "review quota policy invalid; review.gate accepts off or a finite number in 0..1; review.unknown_quota accepts skip or pass";
+  if (policy.gate === "off") return "review.gate=off (quota floor, unknown check and quota waiting disabled; Budget/manual pauses still block)";
+  const unknown = policy.unknownQuota ?? DEFAULT_REVIEW_UNKNOWN_QUOTA;
+  return `review.gate=${policy.gate}; review.unknown_quota=${unknown} (unknown quota ${unknown === "pass" ? "admitted" : "skipped"})`;
+}
 export function reviewBudgetAdmission(id: string, snapshot: ReviewBudgetSnapshot): ReviewBudgetAdmission {
   if (snapshot.manualPaused?.includes(id)) return { state: "manual", reason: "manual pause" };
-  if (!Number.isFinite(snapshot.now) || !Number.isFinite(snapshot.gate) || snapshot.gate < 0 || snapshot.gate > 1) return { state: "unknown", reason: "review quota unknown" };
   const reading = snapshot.readings[id], pause = snapshot.paused[id];
   const resetsAt = pause ? reset(pause.resetsAt, 0) : reset(reading?.resetsAt, snapshot.now);
   const suffix = resetsAt === undefined ? "; reset unknown" : `; resets ${new Date(resetsAt).toISOString()}`;
   if (pause) return { state: "paused", reason: `quota paused${suffix}`, ...(resetsAt === undefined ? {} : { resetsAt }) };
-  if (!reading || (!Number.isFinite(reading.headroom) || reading.headroom < 0 || reading.headroom > 1)) return { state: "unknown", reason: "review quota unknown" };
+  if (!validGate(snapshot.gate) || !validUnknown(snapshot.unknownQuota)) return { state: "unknown", reason: reviewBudgetPolicyDescription(snapshot) };
+  if (snapshot.gate === "off") return { state: "available", rule: "review.gate=off (quota floor and unknown check disabled)" };
+  if (!Number.isFinite(snapshot.now)) return { state: "unknown", reason: "review quota unavailable: clock is unknown" };
+  if (!reading || !Number.isFinite(reading.headroom) || reading.headroom < 0 || reading.headroom > 1) {
+    return (snapshot.unknownQuota ?? DEFAULT_REVIEW_UNKNOWN_QUOTA) === "pass"
+      ? { state: "available", rule: "review.unknown_quota=pass (unknown quota admitted)" }
+      : { state: "unknown", reason: "review quota unknown; set review.unknown_quota=pass or review.gate=off to admit unknown quota" };
+  }
   const used = 1 - reading.headroom;
-  if (used >= snapshot.gate) return { state: "floor", reason: `review.gate at ${Math.round(used * 100)}%${suffix}`, ...(resetsAt === undefined ? {} : { resetsAt }) };
-  return { state: "available", ...(resetsAt === undefined ? {} : { resetsAt }) };
+  if (used >= snapshot.gate) return { state: "floor", reason: `review.gate at ${Math.round(used * 100)}% (review.gate=${snapshot.gate})${suffix}`, ...(resetsAt === undefined ? {} : { resetsAt }) };
+  return { state: "available", rule: `review.gate=${snapshot.gate} (known usage ${Math.round(used * 100)}% below ${Math.round(snapshot.gate * 100)}% floor)`, ...(resetsAt === undefined ? {} : { resetsAt }) };
 }
 
 
