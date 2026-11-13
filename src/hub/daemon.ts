@@ -8100,7 +8100,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const recoveryExit = recoveryOperationId ? ` If a restoration launch was refused, fix its cause and close that launch terminal; run ahub recovery status ${recoveryOperationId}, then ahub recovery resume ${recoveryOperationId} once its runner blocks or exits.` : "";
     if (typeof peer !== "string" || !PEER_ID.test(peer)) return `${held}; no peer was started. Wait for the recovery to finish (ahub recovery status shows where it is), then start the peer again`;
     const owner = bus.peers.get(peer);
-    if (owner && owner.state !== "offline") return `${held}, and ${peer} is already running, so there is nothing to start. Wait for the recovery to finish (ahub recovery status shows where it is), then check ${peer} with ahub status. If the recovery names ${peer} as blocked, a person repairs it with ${recoveryOperationId ? `ahub recovery reattach ${recoveryOperationId} ${peer}, or ends the hold with ahub recovery resume ${recoveryOperationId} or ahub recovery abort ${recoveryOperationId}` : "the commands shown by ahub recovery status"}${recoveryExit}`;
+    if (owner && owner.state !== "offline") return `${held}, and ${peer} is already running, so there is nothing to start. Wait for the recovery to finish (ahub recovery status shows where it is), then check ${peer} with ahub status. If the recovery names ${peer} as blocked, a person repairs it with ahub recovery reattach <operation-id> ${peer}, or ends the hold with ahub recovery resume or abort`;
     return `${held}, so ${peer} was not started. Wait for the recovery to finish (ahub recovery status shows where it is), then start it with ${startCommand(peer)}${recoveryExit}`;
   };
 

@@ -66,3 +66,16 @@ test("a start request during a recovery hold says the peer already runs and what
   const after = await h.person.request({ t: "peer_start", peer: "kimi" });
   expect(String(after.error ?? "")).not.toContain("recovery is holding mutations");
 }, 30_000);
+
+test("#1426 an offline peer held by recovery names the refused-launch exit and exact operation resume", async () => {
+  const h = await rig(), operationId = crypto.randomUUID();
+  expect((await h.person.request({ t: "recovery", op: "prepare", expectedInstanceId: h.instanceId, operationId, targetFeatures: DAEMON_FEATURES })).ok).toBe(true);
+  const before = h.daemon.bus.peers.get("codex")?.state;
+  const refused = await h.person.request({ t: "start", peer: "codex" });
+  expect(refused.ok).toBe(false);
+  expect(refused.error).toContain("fix its cause and close that launch terminal");
+  expect(refused.error).toContain(`ahub recovery status ${operationId}`);
+  expect(refused.error).toContain(`ahub recovery resume ${operationId}`);
+  expect(refused.error).toContain("once its runner blocks or exits");
+  expect(h.daemon.bus.peers.get("codex")?.state).toBe(before);
+});
