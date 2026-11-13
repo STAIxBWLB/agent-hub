@@ -278,6 +278,11 @@ final snapshot fence. No changed inventory silently re-binds an earlier
 disposition. It records no claim or qualification prose. A disposition closes an open contradiction
 only when its manifest hash, claim revision, full inventory and artifact/source
 bindings are current. Agent/model relation labels never supply this authority.
+The CLI requires `research_synthesis` from the authenticated welcome before
+requesting the new study operations or sending an extended `claim_verdict`.
+Without it, upgrade/restart is required before any verdict mutation is sent;
+an older daemon must never silently turn a requested synthesis disposition into
+a plain verdict. Ordinary #901 verdicts retain their earlier compatibility.
 
 Tasks owns both reads. The host obtains current state; callers cannot supply
 screened artifacts, provenance resolutions or person authority. Artifact reads

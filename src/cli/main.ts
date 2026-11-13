@@ -577,6 +577,8 @@ async function taskOp(op: string, a: Record<string, unknown>, throwOnError = fal
   const hub = connection ?? await connect();
   try {
     if (op === "hub_task_cancel" && !hub.features.includes("task_cancel")) fail("this daemon does not support task cancellation; upgrade it first");
+    if ((op === "study_evidence" || op === "study_check" || op === "claim_verdict" && a.synthesis !== undefined) && !hub.features.includes("research_synthesis"))
+      fail("running hub lacks research_synthesis; upgrade and restart the hub before requesting synthesis evidence or recording a manifest-bound verdict");
     const res = await hub.request({ t: "task", op, args: a }, timeoutMs ?? (op === "github_import" ? 60_000 : 30_000));
     if (!res.ok) {
       if (throwOnError) throw new Error(res.error);

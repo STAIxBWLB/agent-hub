@@ -138,6 +138,9 @@ required together, only on a research task/profile. This is the person's assessm
 that exact manifest, not an agent's permission to certify truth. Any changed
 manifest binding requires a new disposition. The existing #901 verdict and its
 claim-list revision remain the only judgment record.
+These new forms require the running hub's authenticated `research_synthesis`
+capability. Upgrade and restart an older hub first; the CLI refuses before
+sending a manifest-bound verdict that an older hub could silently downgrade.
 
 # General project example
 
