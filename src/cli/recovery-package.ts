@@ -7,9 +7,10 @@ import { hubHome, realPath } from "../hub/project.ts";
 import { Registry } from "../hub/registry.ts";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
-export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }) => Promise<CommandResult>;
+export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string }) => Promise<CommandResult>;
 export const runCommand: RunCommand = (args, options = {}) => new Promise((resolve, reject) => {
-  const child = spawn(args[0]!, args.slice(1), { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(args[0]!, args.slice(1), { cwd: options.cwd, env: options.env, stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+  if (options.input !== undefined) { child.stdin?.on("error", () => {}); child.stdin?.end(options.input); }
   let stdout = "", stderr = "", exceeded = false;
   const append = (old: string, value: unknown) => {
     const next = old + String(value);

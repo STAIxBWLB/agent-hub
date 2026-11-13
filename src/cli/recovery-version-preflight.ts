@@ -67,9 +67,9 @@ export async function readRecoveryVersionPreflight(
       || gate.command !== undefined && !words(gate.command))) throw new Error("invalid recovery version preflight scope");
   const module = JSON.stringify(join(targetRoot, "src/adapters/compat.ts"));
   const env = withoutOrcaEnv(childEnv({ ...process.env, JCODE_NO_TELEMETRY: "1", JCODE_DISABLE_CLAUDE_MCP: "1", AGY_CLI_DISABLE_AUTO_UPDATE: "1" }));
-  const run = async (argv: string[]) => {
+  const run = async (argv: string[], input?: string) => {
     if (!ports.current()) throw new Error("recovery version preflight authority changed");
-    const result = await ports.run(argv, { cwd: projectRoot, env, timeoutMs: PROBE_TIMEOUT_MS });
+    const result = await ports.run(argv, { cwd: projectRoot, env, timeoutMs: PROBE_TIMEOUT_MS, ...(input === undefined ? {} : { input }) });
     if (!ports.current()) throw new Error("recovery version preflight authority changed");
     if (result.code !== 0 || typeof result.stdout !== "string" || Buffer.byteLength(result.stdout) > MAX_OUTPUT_BYTES) return undefined;
     return result.stdout;
@@ -85,7 +85,7 @@ export async function readRecoveryVersionPreflight(
       const [executable, ...prefix] = gate.command ?? [policy.probe[0]!];
       const native = await run([executable!, ...prefix, ...policy.probe.slice(1)]);
       if (native === undefined) { results.push(observation); continue; }
-      const assessment = await run([process.execPath, "-e", `// recovery-version-assess\nimport { COMPAT, assessVersion, readTrust } from ${module}; const id = ${JSON.stringify(gate.compatId)}; const p = Object.hasOwn(COMPAT, id) ? COMPAT[id] : undefined; const v = p ? assessVersion(id, p.parse(${JSON.stringify(native)}), readTrust()) : undefined; console.log(JSON.stringify(v ? { ok: v.ok, state: v.state, version: v.version } : null));`]);
+      const assessment = await run([process.execPath, "-e", `// recovery-version-assess\nimport { COMPAT, assessVersion, readTrust } from ${module}; const id = ${JSON.stringify(gate.compatId)}; const p = Object.hasOwn(COMPAT, id) ? COMPAT[id] : undefined; const observed = await Bun.stdin.text(); const v = p ? assessVersion(id, p.parse(observed), readTrust()) : undefined; console.log(JSON.stringify(v ? { ok: v.ok, state: v.state, version: v.version } : null));`], native);
       const verdict: unknown = assessment === undefined ? undefined : JSON.parse(assessment);
       if (plain(verdict) && typeof verdict.version === "string" && verdict.version.length <= 64 && SEMVER.test(verdict.version)) {
         const version = verdict.version;

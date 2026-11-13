@@ -4,6 +4,12 @@ import type { AdapterDefinition } from "../src/adapters/registry-types.ts";
 import { readRecoveryVersionPreflight, recoveryVersionGates, type RecoveryVersionGate } from "../src/cli/recovery-version-preflight.ts";
 import type { RunCommand } from "../src/cli/recovery-package.ts";
 import type { PlannedProject } from "../src/cli/upgrade.ts";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { packageDigest } from "../src/cli/recovery-package.ts";
+import { makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
+import type { RecoveryOperation } from "../src/cli/upgrade.ts";
 
 const gate: RecoveryVersionGate = { peer: "pi", compatId: "pi" };
 const target = "/synthetic-target", project = "/synthetic-project";
@@ -89,4 +95,38 @@ test("#1426 bad preflight scope refuses before any injected command", async () =
   await expect(readRecoveryVersionPreflight("relative", project, [gate], { run: f.run, current: () => true })).rejects.toThrow("invalid recovery version preflight scope");
   await expect(f.read([{ ...gate, command: ["pi", "bad\nflag"] }])).rejects.toThrow("invalid recovery version preflight scope");
   expect(f.calls).toEqual([]);
+});
+
+test("#1426 cached partial-progress staging never rechecks a source already committed or commit-sent", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-partial-version-preflight-"));
+  try {
+    for (const dir of ["src/cli", "plugins/agent-hub/.claude-plugin", "templates", ".claude-plugin", "committed", "pending"]) mkdirSync(join(root, dir), { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version: "0.0.0" }));
+    writeFileSync(join(root, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version: "0.0.0" }));
+    writeFileSync(join(root, "src/cli/main.js"), "");
+    const digest = packageDigest(root), f = fixture();
+    const projects = ["committed", "pending"].map(id => ({
+      project: { id, root: join(root, id), stateDir: join(root, id, "state"), instanceId: "source", pid: null, basePort: 0 },
+      source: { state: "running", peers: id === "committed" ? [{ id: "pi", state: "idle" }] : [], blockers: [] }, terminals: [], blockers: [],
+    }));
+    for (const phase of ["stopped", "started", "peers-restored", "verified", "commit-sent"] as const) {
+      const op = { schema: 3, sourceRoot: root, targetRoot: root, targetDigest: digest, targetFeatures: ["schema_guard"],
+        projects: [{ id: "committed", phase: phase === "commit-sent" ? "prepared" : phase, ...(phase === "commit-sent" ? { commitSent: true } : {}), terminals: {} }, { id: "pending", phase: "pending", terminals: {} }],
+        plan: { kind: "restart", version: "0.0.0", sourceDigest: digest, projects },
+      } as unknown as RecoveryOperation;
+      // The synthetic target refuses Pi. That mutable result must never be asked about the committed source.
+      const result = await makeRecoveryDriver(f.run).stage(op);
+      expect(result.root).toBe(root); expect(result.targetFeatures).toEqual(["schema_guard"]);
+    }
+    expect(f.calls).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("#1426 raw native version output reaches the target parser through stdin, never process argv", async () => {
+  const f = fixture();
+  f.state.native = "NATIVE_OUTPUT_PRIVATE_CANARY";
+  await f.read();
+  expect(f.calls.every(call => !call.argv.some(arg => arg.includes("NATIVE_OUTPUT_PRIVATE_CANARY")))).toBe(true);
+  expect(f.calls[2]?.options?.input).toBe("NATIVE_OUTPUT_PRIVATE_CANARY");
 });

@@ -74,3 +74,20 @@ test("#1426 outcome matching and privacy fail closed without revealing stderr", 
     } finally { capture.dispose(); }
   } finally { rmSync(state, { recursive: true, force: true }); }
 });
+
+test("#1426 an owned fake launch keeps all three terminal descriptors as TTYs", async () => {
+  const state = mkdtempSync(join(tmpdir(), "ahub-launch-pty-"));
+  try {
+    const fake = join(state, "tty.ts"), report = join(state, "tty.json");
+    writeFileSync(fake, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(report)}, JSON.stringify([process.stdin.isTTY, process.stdout.isTTY, process.stderr.isTTY])); console.error("ahub: Version not verified: Pi 1.5.2"); process.exit(1);`);
+    const capture = prepareRecoveryLaunch(state, "pi", [process.execPath, fake], {}, state);
+    try {
+      const script = "import os,pty,subprocess,sys\nm,s=pty.openpty()\ntry:\n r=subprocess.run(['/bin/sh','-c',sys.argv[1]],stdin=s,stdout=s,stderr=s)\nfinally:\n os.close(s);os.close(m)\nsys.exit(r.returncode)\n";
+      const child = Bun.spawn(["python3", "-c", script, capture.command], { cwd: state, env: { ...process.env, HOME: state, AGENTHUB_HOME: state, AMEM_HOME: join(state, "amem"), CODEX_HOME: state, CLAUDE_CONFIG_DIR: state }, stdout: "pipe", stderr: "pipe" });
+      const [code] = await Promise.all([child.exited, child.stdout.text(), child.stderr.text()]);
+      expect(code).toBe(1);
+      expect(JSON.parse(readFileSync(report, "utf8"))).toEqual([true, true, true]);
+      expect(capture.read()?.code).toBe("version_refused");
+    } finally { capture.dispose(); }
+  } finally { rmSync(state, { recursive: true, force: true }); }
+});

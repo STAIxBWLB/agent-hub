@@ -153,7 +153,7 @@ export interface RecoveryOperation {
   /** Presentation observations only: old receipts without these fields have unknown timings and cause. */
   waits?: Record<string, RecoveryWaitTiming>;
   presentationCause?: RecoveryPresentationCause;
-  failure?: { code: "database_busy"; retryable: true; site?: string[] } | (RecoveryLaunchFailure & { peer: string });
+  failure?: { code: "database_busy"; retryable: true; site?: string[] } | (RecoveryLaunchFailure & { peer: string; site?: never; retryable?: never });
   /** A typed verify outcome, never inferred from an error message or a peer's current state. */
   blockedReattachment?: { projectId: string; peer: RecoveryNativePeer };
   /** Positive typed store observation; disposal rechecks it before accepting a repaired-session loss. */

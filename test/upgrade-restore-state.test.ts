@@ -127,7 +127,7 @@ test("the recovery spec contains the exact generated restore transition table (#
 });
 
 test("#1426 a failed receipt retains a bounded typed launch cause, not settlement authority", () => {
-  const failure = { code: "version_refused", exitCode: 1, firstLine: "Version not verified: Pi 1.5.2" };
+  const failure = { code: "version_refused" as const, exitCode: 1, firstLine: "Version not verified: Pi 1.5.2" };
   expect(decodeRestoreReceipt({ state: "failed", failure })).toEqual({ state: "failed", failure });
   expect(() => decodeRestoreReceipt({ state: "failed", failure: { ...failure, exitCode: 0 } })).toThrow();
   expect(() => decodeRestoreReceipt({ state: "failed", failure: { ...failure, firstLine: "x".repeat(513) } })).toThrow();
