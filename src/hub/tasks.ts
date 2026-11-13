@@ -3072,6 +3072,20 @@ export class Tasks {
     }
     return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : "no peer has eligible planner WIP capacity";
   }
+  /**
+   * #1430: the owner refusals routing itself recorded, named the way the reserved branch already names its peer: peer id and
+   * reason only, never task text (#531), so the text is safe for a PII task. Undefined when routing recorded none.
+   */
+  private ownerRefusals(assignment: Assignment): string | undefined {
+    const refused = (assignment.refusals ?? []).filter(row => row.role === "owner");
+    return refused.length ? `routing refusals: ${refused.map(row => `${row.peer}: ${row.reason}`).join("; ")}` : undefined;
+  }
+  /** Keep routing refusals even when other peers also have known WIP or delivery pressure. */
+  private pullRefusal(task: Task, assignment: Assignment): string {
+    const known = this.plannerRefusal(task);
+    const routing = this.ownerRefusals(assignment);
+    return routing ? `${known}; ${routing}` : known;
+  }
   private plannerAssignment(task: Task, reservedOnly = false, routing: Routing = this.d.routing(), queueOverride?: "owner", projectedHealth?: ReturnType<Tasks["health"]>): Assignment {
     const states = this.states();
     const full = this.plannerFull(task);
@@ -3117,8 +3131,13 @@ export class Tasks {
       if (task.reserved && this.excluded(task).includes(task.reserved)) throw new PreEffectToolRefusal(this.plannerRefusal(task));
       const assignment = this.plannerAssignment(task, !!task.reserved, this.d.routing(), queueAssignment ? "owner" : undefined);
       if (!assignment.owner) {
-        const refusal = task.reserved ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}` : this.plannerRefusal(task);
-        throw new PreEffectToolRefusal(`${this.hasPersonReservation(task) ? "a person's reservation is retained; " : ""}${refusal}`);
+        // #1430: an unreserved card names what routing refused instead of dropping it, and every pull refusal names the route out.
+        const personReserved = this.hasPersonReservation(task);
+        const nextStep = personReserved ? "ask the person to change the reservation" : "reserve a peer with hub_backlog_plan fields.reserved, then pull again";
+        const refusal = task.reserved
+          ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}`
+          : this.pullRefusal(task, assignment);
+        throw new PreEffectToolRefusal(`${personReserved ? "a person's reservation is retained; " : ""}${refusal}; ${nextStep}`);
       }
       this.studyDispatchCheck(task, assignment.owner);
       return { task, owner: assignment.owner, assignment };

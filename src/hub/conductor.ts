@@ -245,7 +245,10 @@ export class Conductor {
       if (id === undefined) throw new PreEffectToolRefusal("id must be a positive integer");
       const task = this.hooks.task(id);
       if (!task) throw new PreEffectToolRefusal(`no task #${args.id}`);
-      if (task.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools, not conductor task tools");
+      // #1430: `hub_task_assign` on a backlog card names the planner route out, not only that planner tools read backlog.
+      if (task.state === "backlog") throw new PreEffectToolRefusal(tool === "hub_task_assign"
+        ? "backlog is read through planner tools: reserve a peer with hub_backlog_plan fields.reserved, then pull again"
+        : "backlog is read through planner tools, not conductor task tools");
       if (tool === "hub_task_show") { const result = publicConductorTask(task, this.hooks.publicView); emit({ task: task.id }); return result; }
       if (tool === "hub_task_assign") {
         const peer = peerId(args.peer, true);
