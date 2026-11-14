@@ -128,6 +128,9 @@ Glyphs are semantic; each pairs with one role. Code uses named constants, never 
 
 - `<tool> help`, `-h` and `--help` print to stdout and exit `0`: command groups, each command as `  <name>  <one-line summary>` in two aligned columns, within 80 columns.
 - `<tool> help <command>` shows usage, a short description, each flag with one line, and one or two examples. Long explanations live here, not in the overview.
+  - `ahub` lays it out as `▸ Usage` (every form), `▸ Description` (the overview summary), `▸ Flags (N)` (one line per flag: the flag with its value shape as the usage writes it, then what it is for), `▸ Examples` (one or two complete commands, only for a command that takes arguments) and `▸ Details`, which is the long text, every form with its whole description, unchanged, so nothing a form or flag says is lost. A section with nothing to show is omitted.
+  - A flag's line says what the standard itself defines (`--json`, `--color`) and otherwise which forms of the command take it; a flag's meaning that only the long text states stays in `Details`. Every example is checked against the dispatch table and the command's own usage by `test/help.test.ts`, so it cannot name a command, subcommand or flag that does not exist.
+  - A native agent's overview summary is `cli.summary` in its adapter definition, never a table in the help module.
 - Usage lines use `<required>`, `[optional]`, `a|b` and `...`.
 
 ## Progress (guidance)
