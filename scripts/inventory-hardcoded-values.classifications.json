@@ -1279,6 +1279,7 @@
   "src/hub/daemon.ts:MODEL_CONFIRM_MS:inline:MODEL_CONFIRM_MS=60_000#0": "operational",
   "src/hub/daemon.ts:MODEL_DISPLAY_ROWS_MAX:inline:MODEL_DISPLAY_ROWS_MAX=512#0": "operational",
   "src/hub/daemon.ts:MODEL_PREVIEWS_MAX:inline:MODEL_PREVIEWS_MAX=64#0": "operational",
+  "src/hub/daemon.ts:STARTUP_RUNNER_WAIT_MS:constant:STARTUP_RUNNER_WAIT_MS=500#0": "operational",
   "src/hub/daemon.ts:admit:inline:reviewPolicies.size >= 64=64#0": "operational",
   "src/hub/daemon.ts:ageMs:inline:Math.max=0#0": "operational",
   "src/hub/daemon.ts:approvalAgeMs:inline:approvalAgeMs=(config.conductor?.approval_wait_s ?? 30) * 1000#0": "operational",

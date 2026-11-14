@@ -1169,7 +1169,7 @@ operation cannot confirm startup.
 Each completed daemon startup writes one `startup timings ms:` line to `hub.log`,
 with fixed phase names and durations; the span before `task_runtime` carries
 the sub-phases `task_checks`, `task_ports`, `task_board` and `task_recovery`
-(#1445), and its board reads cover open tasks only. The three event-seed consumers share one
+(#1445), and its board reads cover open tasks only. `task_checks` no longer waits for the first check-runner probe (about 8 s over ssh to a remote runner): startup waits for it at most 500 ms, `ahub status` reports the runner as unavailable with `runner probe in progress` until it settles, and `check_run` joins the same single probe. The three event-seed consumers share one
 lossless streaming pass; abandoned snapshot bodies are not read for startup.
 The [startup receipt](verification/2026-11-07-daemon-startup-1232.md) separates
 seed I/O from bounded usage-rollup I/O and records the isolated measurements.
