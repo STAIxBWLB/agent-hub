@@ -25,7 +25,12 @@ function fixture() {
       if (prior[key] === undefined) delete process.env[key]; else process.env[key] = prior[key];
     }
   });
-  return { cwd, memoryDir, stateDir };
+  // agent-mem 0.26.0 reads the configured transport before outbound screening; a real private
+  // remote keeps the decline reachable. The decline stops the pass before any fetch or push.
+  const remote = join(root, "remote.git");
+  const init = Bun.spawnSync(["git", "init", "-q", "--bare", remote], { stdout: "pipe", stderr: "pipe" });
+  if (init.exitCode !== 0) throw new Error(init.stderr.toString());
+  return { cwd, memoryDir, stateDir, remote };
 }
 
 async function hub(f: ReturnType<typeof fixture>, memorySync: NonNullable<DaemonOptions["memorySync"]>) {
@@ -83,7 +88,7 @@ test("a real package legacy backlog decline reaches daemon status as placement i
     id = store.note({ op: "note", project: memoryProjectKey(f.cwd), scope: "project", tier: "long", kind: "decision",
       peer: "person", source: "person", text: canary, about: [] });
   } finally { store.close(); }
-  const h = await hub(f, (memory, options) => syncMemory(memory, { ...options, visibility: async () => "private" }));
+  const h = await hub(f, (memory, options) => syncMemory(memory, { ...options, remote: f.remote, visibility: async () => "private" }));
   await h.syncNow();
   for (const sync of [await h.status(), await h.snapshot()]) {
     excludesPrivate(sync, [canary, id!]);
