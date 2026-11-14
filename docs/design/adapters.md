@@ -390,7 +390,10 @@ PII/private turns carry only the class.
 Observation-only `onTurnAborted` reports explicit stop/recovery, withdrawal or
 cancelled settlement once per active logical turn. These paths do not invoke
 failure handoff. Internal model-error teardown retains its failure class and
-suppresses a second aborted observation. Only an actual nonerror, noncancelled
+suppresses a second aborted observation. Internal failure teardown and unexpected
+session shutdown may hand a model/transport failure back after going offline,
+while tool admission remains fenced. A later explicit stop revokes that handoff
+synchronously and dominates later failure/shutdown signals. Only an actual nonerror, noncancelled
 settlement calls `onTurnSuccess`, allowing the host to reset continuation state.
 Numbered terminal events for a settled generation cannot be observed again or
 settle a newly delivered prompt before its next native start. Legacy unnumbered

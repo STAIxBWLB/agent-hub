@@ -10524,6 +10524,7 @@ var init_pi = __esm(() => {
     approvalAbortSent = false;
     approvalStopReason = "";
     requestedStopReason;
+    stopCause;
     owner = randomUUID5();
     _tuiLaunch;
     requestedModel = "";
@@ -10571,6 +10572,9 @@ var init_pi = __esm(() => {
     }
     get acceptingTools() {
       return !this.stopping && !this.rosterDetached && !this.rosterUnownedRun;
+    }
+    get failureHandoffAllowed() {
+      return !this.rosterDetached && !this.rosterUnownedRun && this.stopCause !== "aborted" && (!this.stopping || this.state === "offline" && this.stopCause === "failure");
     }
     get recoveryReady() {
       if (this.state === "busy" || this.starting || this.activeTools)
@@ -10874,6 +10878,7 @@ var init_pi = __esm(() => {
       this.rosterDetached = false;
       this.rosterUnownedRun = false;
       this.requestedStopReason = undefined;
+      this.stopCause = undefined;
       this.settledGeneration = undefined;
       this.approvalTurnAbort = false;
       this.fencedPrompt = false;
@@ -11117,6 +11122,8 @@ var init_pi = __esm(() => {
         this.clearWatchdog();
     }
     async stop(reason, failureCause, cause = "aborted") {
+      if (cause === "aborted" || this.stopCause === undefined)
+        this.stopCause = cause;
       if (cause === "aborted")
         this.observeTurn("aborted");
       if (reason !== undefined)
@@ -11512,6 +11519,8 @@ var init_pi = __esm(() => {
         this.titleRevision = -1;
         this.nativeTitleEpoch = undefined;
         this.onDoing?.("reset");
+        if (this.stopCause === undefined)
+          this.stopCause = "failure";
         const exit = this.exitMetadata("session_shutdown");
         this.shutdownExit ??= exit;
         this.stopping = true;
