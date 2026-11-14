@@ -63,20 +63,37 @@ export function ignoreRule(cwd: string, path: string): string | null | undefined
 }
 const SHARED_IGNORE_BEGIN = "# agent-hub shared config (managed by ahub init)";
 const SHARED_IGNORE_END = "# end agent-hub shared config";
-/** Remove only the complete block init owns, preserving every other project rule. */
-function withoutSharedIgnoreBlock(text: string): string {
-  const lines = text.split("\n"), start = lines.indexOf(SHARED_IGNORE_BEGIN), end = lines.indexOf(SHARED_IGNORE_END, start);
-  if (start < 0 || end < start) return text;
-  lines.splice(start, end - start + 1);
-  return lines.join("\n");
+/** One exact-line parser for replacement and removal; malformed ownership is never guessed. */
+function sharedIgnoreBlock(text: string): { start: number; end: number; eol: string; newline: boolean } | undefined {
+  let start: number | undefined, end: number | undefined, offset = 0;
+  let eol = "\n", newline = false;
+  const malformed = () => new Error("--track-config: incomplete or duplicate managed shared-config ignore markers; repair the marker pair in the project .gitignore and retry ahub init; nothing was written");
+  for (const line of text.match(/[^\n]*(?:\n|$)/g) ?? []) {
+    const value = line.replace(/\r?\n$/, "");
+    if (value === SHARED_IGNORE_BEGIN) {
+      if (start !== undefined) throw malformed();
+      start = offset; eol = line.endsWith("\r\n") ? "\r\n" : "\n";
+    } else if (value === SHARED_IGNORE_END) {
+      if (start === undefined || end !== undefined) throw malformed();
+      end = offset + line.length; newline = line.endsWith("\n");
+    }
+    offset += line.length;
+  }
+  if ((start === undefined) !== (end === undefined)) throw malformed();
+  return start === undefined || end === undefined ? undefined : { start, end, eol, newline };
 }
-/** Git evaluates planned project rules in a disposable worktree; the real index/config are never written. */
-function verifySharedIgnores(cwd: string, text: string, tracked: readonly string[], unknown = false): void {
+function sharedIgnoreRepository(cwd: string, unknown = false): { gitDir: string; root: string } | undefined {
   const git = hubGitSync(["rev-parse", "--absolute-git-dir", "--show-toplevel"], { cwd, env: { ...process.env, LC_ALL: "C" }, encoding: "utf8", timeout: 3000 });
-  if (git.status !== 0 && git.stderr?.startsWith("fatal: not a git repository")) return; // Preserve init in a positively identified non-Git folder.
+  if (git.status !== 0 && git.stderr?.startsWith("fatal: not a git repository")) return;
   if (git.status !== 0 || unknown) throw new Error("--track-config: git could not determine repository ignore rules; run git status and retry ahub init; nothing was written");
   const [gitDir, root] = git.stdout.trim().split("\n");
-  if (!gitDir || !root || realPath(root) !== realPath(cwd)) throw new Error("--track-config: ignore preview requires the project repository root; run ahub init from git rev-parse --show-toplevel; nothing was written");
+  if (!gitDir || !root) throw new Error("--track-config: git did not identify the repository paths; run git status and retry ahub init; nothing was written");
+  return { gitDir, root: realPath(root) };
+}
+/** Git evaluates planned project rules in a disposable worktree; the real index/config are never written. */
+function verifySharedIgnores(cwd: string, text: string, tracked: readonly string[], repository: ReturnType<typeof sharedIgnoreRepository>): void {
+  if (!repository || repository.root !== realPath(cwd)) return;
+  const { gitDir } = repository;
   const excludes = hubGitSync(["config", "--path", "--get", "core.excludesFile"], { cwd, encoding: "utf8", timeout: 3000 });
   if (excludes.status !== 0 && excludes.status !== 1) throw new Error("--track-config: git could not read the excludes-file setting; run git config --get core.excludesFile and retry ahub init; nothing was written");
   const excludeArgs = excludes.status === 0 ? ["-c", `core.excludesFile=${resolve(cwd, excludes.stdout.trim())}`] : [];
@@ -368,28 +385,38 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
   if (track === true) {
     const tracked = SHARED_CONFIG.filter(name => !(name === "routing.toml" && routingMachineKeys(cwd).length));
     const rules = tracked.map(name => ignoreRule(cwd, `.agenthub/${name}`));
-    if (rules.some(Boolean) || lines.includes(SHARED_IGNORE_BEGIN)) {
-      const entries = ["!/.agenthub/", "/.agenthub/*", ...tracked.map(name => `!/.agenthub/${name}`)];
-      const block = `${SHARED_IGNORE_BEGIN}\n${entries.join("\n")}\n${SHARED_IGNORE_END}`;
-      const start = lines.indexOf(SHARED_IGNORE_BEGIN), end = lines.indexOf(SHARED_IGNORE_END, start);
-      lines = start !== -1 && end > start
-        ? lines.slice(0, start) + block + lines.slice(end + SHARED_IGNORE_END.length)
-        : `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${block}\n`;
-      const ruleClass = rules.some(rule => rule?.includes("/info/exclude:")) ? "repository info/exclude"
-        : rules.some(rule => rule && !rule.startsWith(".gitignore:") && !rule.startsWith(".agenthub/")) ? "global excludes" : "project ignore";
-      ignoreReason = `re-include shared config over ${ruleClass} rules in project .gitignore: ${entries.join(", ")}`;
-    } else if (routingMachineKeys(cwd).length) add(".agenthub/routing.toml");
-    verifySharedIgnores(cwd, lines, tracked, rules.some(rule => rule === undefined));
+    const repository = sharedIgnoreRepository(cwd, rules.some(rule => rule === undefined));
+    if (repository && repository.root !== realPath(cwd)) {
+      for (const [index, rule] of rules.entries()) if (rule) {
+        const path = `.agenthub/${tracked[index]}`;
+        throw new Error(`--track-config: ${path} is ignored by ${rule}; change that line so git sees the file (after a directory rule such as .agenthub/, add !/.agenthub/, /.agenthub/* and !/${path}), then run ahub init again; nothing was written`);
+      }
+      if (routingMachineKeys(cwd).length) add(".agenthub/routing.toml");
+    } else {
+      const owned = sharedIgnoreBlock(lines);
+      if (rules.some(Boolean) || owned) {
+        const entries = ["!/.agenthub/", "/.agenthub/*", ...tracked.map(name => `!/.agenthub/${name}`)];
+        const eol = owned?.eol ?? (lines.includes("\r\n") ? "\r\n" : "\n");
+        const block = [SHARED_IGNORE_BEGIN, ...entries, SHARED_IGNORE_END].join(eol);
+        lines = owned
+          ? lines.slice(0, owned.start) + block + (owned.newline ? eol : "") + lines.slice(owned.end)
+          : `${lines}${lines && !lines.endsWith("\n") ? eol : ""}${block}${eol}`;
+        const ruleClass = rules.some(rule => rule?.includes("/info/exclude:")) ? "repository info/exclude"
+          : rules.some(rule => rule && !rule.startsWith(".gitignore:") && !rule.startsWith(".agenthub/")) ? "global excludes" : "project ignore";
+        ignoreReason = `re-include shared config over ${ruleClass} rules in project .gitignore: ${entries.join(", ")}`;
+      } else if (routingMachineKeys(cwd).length) add(".agenthub/routing.toml");
+      verifySharedIgnores(cwd, lines, tracked, repository);
+    }
   } else if (track === false) {
-    const owned = lines.includes(SHARED_IGNORE_BEGIN);
-    lines = withoutSharedIgnoreBlock(lines);
+    const owned = sharedIgnoreBlock(lines);
+    if (owned) lines = lines.slice(0, owned.start) + lines.slice(owned.end);
     for (const name of SHARED_CONFIG) {
       const entry = `.agenthub/${name}`;
       // Existing owned negations must not suppress a new ignore line before the block is removed.
       if (owned && !lines.split("\n").includes(entry)) lines += `${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
       else add(entry);
     }
-    if (owned) verifySharedIgnores(cwd, lines, []);
+    if (owned) verifySharedIgnores(cwd, lines, [], sharedIgnoreRepository(cwd));
   }
   if (lines || existsSync(ignore)) write(ignore, lines, ignoreReason);
   // #1065 T1: the settings table. config.json is the text it will have after the template and pack writes above; the rest is what is on disk.

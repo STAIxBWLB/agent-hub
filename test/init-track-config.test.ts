@@ -21,8 +21,8 @@ function fixture() {
   Object.assign(env, { HOME: user, AGENTHUB_HOME: home, CLAUDE_CONFIG_DIR: join(user, "claude"), AMEM_HOME: join(root, "memory"), GIT_CONFIG_GLOBAL: globalConfig, TMPDIR: scratch });
   const cwd = join(root, "project"); mkdirSync(cwd);
   expect(hubGitSync(["init", "-q"], { cwd, env, encoding: "utf8", timeout: 3000 }).status).toBe(0);
-  const run = (args: string[]) => {
-    const r = Bun.spawnSync([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "init", ...args], { cwd, env, stdin: "ignore" });
+  const run = (args: string[], workingDirectory = cwd) => {
+    const r = Bun.spawnSync([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "init", ...args], { cwd: workingDirectory, env, stdin: "ignore" });
     expect(readdirSync(scratch).filter(name => name.startsWith("ahub-init-ignore-"))).toEqual([]);
     return { code: r.exitCode, out: `${r.stdout.toString()}${r.stderr.toString()}` };
   };
@@ -279,6 +279,77 @@ test("a nested negation exposing config.local.json refuses the real planned igno
   expect(readdirSync(p.scratch)).toEqual([]);
   expect(readFileSync(external.location, "utf8")).toBe(external.contents);
   expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+});
+
+test("a configured subproject can track its already-visible shared files without moving init to the Git root (#1496)", () => {
+  const p = fixture(), sub = join(p.cwd, "sub");
+  mkdirSync(join(sub, ".agenthub"), { recursive: true });
+  writeFileSync(join(sub, ".agenthub/config.json"), "{}\n");
+  const done = p.run(["--track-config", "--yes"], sub);
+  expect(done.code, done.out).toBe(0);
+  expect(existsSync(join(sub, "AGENTS.md"))).toBe(true);
+  expect(readFileSync(join(sub, "AGENTS.md"), "utf8")).toContain(ROLES_TRACKED);
+  for (const path of SHARED) expect(p.ignored(`sub/${path}`), path).toBe(false);
+  for (const path of PRIVATE) expect(p.ignored(`sub/${path}`), path).toBe(true);
+  expect(existsSync(join(p.cwd, "AGENTS.md"))).toBe(false);
+  expect(existsSync(join(p.cwd, ".gitignore"))).toBe(false);
+  expect(existsSync(join(p.cwd, ".agenthub"))).toBe(false);
+});
+
+test("a subproject needing an outside-directory reinclude keeps the manual refusal and writes nothing (#1496)", () => {
+  const p = fixture(), external = outsideRule(p, "global excludes"), sub = join(p.cwd, "sub");
+  mkdirSync(join(sub, ".agenthub"), { recursive: true });
+  writeFileSync(join(sub, ".agenthub/config.json"), "{}\n");
+  const before = filesUnder(p.cwd), refused = p.run(["--track-config", "--yes"], sub);
+  expect(refused.code).toBe(1);
+  expect(refused.out).toContain(`.agenthub/config.json is ignored by ${external.location}:2:.agenthub/`);
+  expect(refused.out).toContain("!/.agenthub/");
+  expect(refused.out).toContain("/.agenthub/*");
+  expect(refused.out).toContain("!/.agenthub/config.json");
+  expect(refused.out).toContain("ahub init");
+  expect(refused.out).toContain("nothing was written");
+  expect(filesUnder(p.cwd)).toEqual(before);
+  expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+  expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+});
+
+test("CRLF owned ignore block refresh and removal preserve surrounding project bytes (#1496)", () => {
+  const p = fixture(), external = outsideRule(p, "global excludes");
+  expect(p.run(["--track-config", "--yes"]).code).toBe(0);
+  const begin = "# agent-hub shared config (managed by ahub init)", end = "# end agent-hub shared config";
+  const prefix = "# project prefix\r\nuser-cache/\r\n", suffix = "# project suffix\r\nuser-output/\r\n";
+  const block = `${begin}\r\n${REINCLUDE.join("\r\n")}\r\n${end}\r\n`, before = prefix + block + suffix;
+  writeFileSync(join(p.cwd, ".gitignore"), before);
+  const refreshed = p.run(["--track-config", "--yes"]);
+  expect(refreshed.code, refreshed.out).toBe(0);
+  expect(p.text(".gitignore")).toBe(before);
+  for (const path of SHARED) expect(p.ignored(path), path).toBe(false);
+  const off = p.run(["--no-track-config", "--yes"]);
+  expect(off.code, off.out).toBe(0);
+  const after = p.text(".gitignore");
+  expect(after.startsWith(prefix + suffix)).toBe(true);
+  expect(after).not.toContain(begin); expect(after).not.toContain(end);
+  expect(after.split(/\r?\n/).filter(line => line.startsWith("!/.agenthub"))).toEqual([]);
+  for (const path of [...SHARED, ...PRIVATE]) expect(p.ignored(path), path).toBe(true);
+  expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+  expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+});
+
+for (const missing of ["begin", "end"] as const) test(`an unmatched owned ignore ${missing === "begin" ? "end" : "begin"} marker refuses both track choices without appending a second block (#1496)`, () => {
+  for (const flag of ["--track-config", "--no-track-config"]) {
+    const p = fixture(), external = outsideRule(p, "global excludes");
+    const marker = missing === "begin" ? "# end agent-hub shared config" : "# agent-hub shared config (managed by ahub init)";
+    writeFileSync(join(p.cwd, ".gitignore"), `# project prefix\n${marker}\n!/.agenthub/config.json\n# project suffix\n`);
+    const before = filesUnder(p.cwd), refused = p.run([flag, "--yes"]);
+    expect(refused.code).toBe(1);
+    expect(refused.out).toMatch(/block|marker/);
+    expect(refused.out).toContain("nothing was written");
+    expect(refused.out).toContain("ahub init");
+    expect(filesUnder(p.cwd)).toEqual(before);
+    expect(p.text(".gitignore").split("\n").filter(line => line === marker)).toHaveLength(1);
+    expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+    expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+  }
 });
 
 test("a ! rule that re-includes a file is not an ignore rule; a directory rule is", () => {

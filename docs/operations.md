@@ -1123,11 +1123,17 @@ refusal paths print no success next steps.
 
 Whether the repository commits its shared hub config is a choice made at init
 (#1411, amended by #1496). `--track-config` keeps `.agenthub/config.json`,
-`routing.toml` and `sdlc.toml` visible to git and lists them to commit. When an
-outside rule (`core.excludesFile` or `.git/info/exclude`) or an earlier root
-`.gitignore` rule ignores them, init appends a managed project `.gitignore`
+`routing.toml` and `sdlc.toml` visible to git and lists them to commit. For a
+project at the Git repository root, init handles outside rules
+(`core.excludesFile` or `.git/info/exclude`) and earlier root `.gitignore`
+rules by appending a managed project `.gitignore`
 block: `!/.agenthub/`, `/.agenthub/*`, then `!/.agenthub/<name>` for each shared
-file to track. Dry-run and confirmation show those lines; apply names the rule
+file to track. This also ignores other `.agenthub/` entries; teams sharing
+project packs, `.agenthub/ignore` or other files add their own `!` lines after
+the block. Projects below the repository root retain the earlier behavior:
+track-config succeeds when shared files are visible, and an ignoring rule is
+named with manual re-include guidance rather than changing that project.
+Dry-run and confirmation show those lines; apply names the rule
 class and project re-inclusion, and a second run changes nothing. Before project
 writes, Git verifies the planned rules in a disposable private temporary directory
 containing only the root and existing `.agenthub/.gitignore` text, using the real
