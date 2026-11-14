@@ -204,9 +204,18 @@ test("the bundled MCP server publishes configured targets and enforces read-only
 
     const readOnly = await session("fixture-check");
     const names = (await readOnly.listTools()).tools.map(tool => tool.name);
-    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_capabilities", "hub_study_show", "hub_experiment_show", "hub_specs", "hub_visual_show", "hub_guidance_list", "hub_guidance_show"];   // #601: the one study tool that only reads. The three that write are not here, and the next line proves it
+    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_capabilities", "hub_study_show", "hub_experiment_show", "hub_specs", "hub_visual_show", "hub_guidance_list", "hub_guidance_show", "hub_roadmap_list", "hub_roadmap_show"];   // #601: the one study tool that only reads. The three that write are not here, and the next line proves it
     expect(names.length).toBeGreaterThan(0);
     expect(names.every(name => allowed.includes(name))).toBe(true);
+    expect(names).toContain("hub_roadmap_list"); expect(names).toContain("hub_roadmap_show");
+    expect(names).not.toContain("hub_roadmap_edit");
+    const roadmap = await readOnly.callTool({ name: "hub_roadmap_list", arguments: {} });
+    expect(roadmap.isError).not.toBe(true);
+    expect(roadmap.content).toContainEqual({ type: "text", text: "{\"milestones\":[]}" });
+    const roadmapWrite = await readOnly.request({ method: "tools/call", params: { name: "hub_roadmap_edit", arguments: { op: "new", fields: { title: "Must not write", outcome: "Read-only fixture" } } } }, CallToolResultSchema);
+    expect(roadmapWrite.isError).toBe(true); expect(JSON.stringify(roadmapWrite.content)).toContain("read-only");
+    const afterRoadmap = await readOnly.callTool({ name: "hub_roadmap_list", arguments: {} });
+    expect(afterRoadmap.content).toEqual(roadmap.content);
     expect(names).toContain("hub_guidance_list"); expect(names).toContain("hub_guidance_show");
     expect(names).not.toContain("hub_guidance_create"); expect(names).not.toContain("hub_guidance_withdraw");
     expect(names).toContain("hub_review"); expect(names).toContain("hub_task_list");
