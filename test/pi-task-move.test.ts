@@ -103,5 +103,5 @@ for (const durable of [false, true]) for (const noticeKind of ["move", "cancel"]
       try { await peer.stop("fixture cleanup"); }
       finally { bus.closeJournal(); rmSync(root, { recursive: true, force: true }); }
     }
-  }, 30_000);
+  }, 20_000);
 }
