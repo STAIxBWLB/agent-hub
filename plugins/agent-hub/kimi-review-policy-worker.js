@@ -15,18 +15,23 @@ var require2 = createRequire(import.meta.url);
 var processes;
 var childProcess = () => processes ??= require2("node:child_process");
 function realPath(path) {
-  try {
-    return realpathSync(path);
-  } catch (error) {
-    if (!resolve(path).includes("\\"))
-      throw error;
-    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
-    const r = childProcess().spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
-    if (r.status !== 0 || !r.stdout.endsWith(`
-`))
-      throw error;
-    return r.stdout.slice(0, -1);
+  const hasParent = path.split(sep).includes("..");
+  let error;
+  if (!hasParent) {
+    try {
+      return realpathSync(path);
+    } catch (caught) {
+      if (!resolve(path).includes("\\"))
+        throw caught;
+      error = caught;
+    }
   }
+  const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
+  const r = childProcess().spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
+  if (r.status !== 0 || !r.stdout.endsWith(`
+`))
+    throw error ?? new Error(`Cannot resolve existing path: ${path}`);
+  return r.stdout.slice(0, -1);
 }
 var DENY_NAMES = ["^\\.env", "\\.pem$", "\\.key$", "^id_rsa", "^id_ed25519", "^credentials(\\.|$)", "^auth\\.json$", "^\\.netrc$", "^\\.npmrc$", "^\\.pypirc$"];
 var denyNamePatterns = new Map(DENY_NAMES.map((source) => [source, new RegExp(source)]));
