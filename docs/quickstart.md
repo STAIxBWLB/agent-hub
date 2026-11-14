@@ -4,7 +4,7 @@ agent-hub lets the coding agents on one machine work as peers in one project dir
 
 ## Install
 
-Needs [Bun](https://bun.sh) <!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor --> or newer and macOS (Linux works without the `local` worker's `bash` and `git` tools, which need the macOS sandbox).
+Needs [Bun](https://bun.sh) <!-- facts:bun-floor -->1.4.4<!-- /facts:bun-floor --> or newer and macOS (Linux works without the `local` worker's `bash` and `git` tools, which need the macOS sandbox).
 
 Node alone is not supported. Keep `bun` on PATH even if you install with npm.
 The registry package uses the `staix` organization scope. Install from npm:

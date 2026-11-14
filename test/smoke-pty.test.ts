@@ -207,12 +207,12 @@ test("a bridge whose caller died exits even when the exit of its child is never 
   expect(result.bridgeGone, "the bridge outlived its caller although its child's exit never settled").toBe(true);
 }, 20_000);
 
-test("a caller that dies while Bun.spawn is still running gets neither the bridge nor the child left behind, and its command never runs (the window #45300 widens)", async () => {
-  const cwd = temp(), tmp = join(cwd, "tmp"), pidFile = join(cwd, "bridge.pid"), ran = join(cwd, "ran"), ppidLog = join(cwd, "ppid.log"), mark = `pty560-spawn-${process.pid}-${Date.now()}`;
+test("a caller that dies while Bun.spawn is still running gets neither the bridge nor the child left behind", async () => {
+  const cwd = temp(), tmp = join(cwd, "tmp"), pidFile = join(cwd, "bridge.pid"), ppidLog = join(cwd, "ppid.log"), mark = `pty560-spawn-${process.pid}-${Date.now()}`;
   mkdirSync(tmp);
   const caller = [
     "const { spawn } = require('node:child_process'), { writeFileSync } = require('node:fs')",
-    `const argv = ${JSON.stringify(probed([process.execPath, "-e", `/*${mark}*/ require('node:fs').writeFileSync(${JSON.stringify(ran)}, 'ran'); setInterval(() => {}, 1000)`]))}`,
+    `const argv = ${JSON.stringify(probed([process.execPath, "-e", `/*${mark}*/ setInterval(() => {}, 1000)`]))}`,
     "const p = spawn(argv[0], argv.slice(1), { detached: true, stdio: ['pipe', 'pipe', 'pipe'] })",
     "p.stdout.resume(); p.stderr.resume()",
     `writeFileSync(${JSON.stringify(pidFile)}, String(p.pid))`,
@@ -224,64 +224,25 @@ test("a caller that dies while Bun.spawn is still running gets neither the bridg
   try {
     expect(await waitFor(() => existsSync(pidFile), 8_000)).toBe(true);
     bridge = Number(readFileSync(pidFile, "utf8"));
-    expect(await waitFor(() => descendants(bridge).length >= 2, 8_000)).toBe(true); // the gate shell exists: the bridge is inside the held spawn
+    expect(await waitFor(() => descendants(bridge).length >= 2, 8_000)).toBe(true); // the child exists: the bridge is inside the held spawn
     up = descendants(bridge);
     callerProc.kill("SIGKILL");
     expect(await waitFor(() => !up.some(alive), 8_000), `still alive after the caller died inside the spawn: ${up.filter(alive).join(", ")}`).toBe(true);
     expect(readFileSync(ppidLog, "utf8").trim(), "the bridge was not reparented inside the hold: the test did not reach the window").toBe("1");
-    // The start gate exists only on macOS (Linux runs the child under script(1) and never starts the bridge in production; here it is started directly, so the command has no gate to wait behind
-    // and runs inside the hold). The reaping above holds on both; "the command never ran" and the gate directory are properties of the gate.
-    if (process.platform === "darwin") {
-      expect(existsSync(ran), "the command ran although its caller was already gone").toBe(false);
-      expect(readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"))).toEqual([]);
-    }
   } finally {
     callerProc.kill("SIGKILL");
     for (const pid of up) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
   }
 }, 20_000);
 
-test("a failed spawn in the bridge is reported as 125 and leaves nothing behind, no gate directory included", async () => {
+test("a failed spawn in the bridge is reported as 125 and leaves nothing behind", async () => {
   const cwd = temp(), tmp = join(cwd, "tmp");
   mkdirSync(tmp);
   const result = await runPtyWith(probed, ["/bin/echo", "x"], options(cwd, { env: { ...options(cwd).env, TMPDIR: tmp, PTY_PROBE_MODE: "spawn-throws" } }));
   expect(result.outcome).toBe("exited");
   expect(result.exitCode).toBe(125);
   expect(result.cleaned).toBe(true);
-  // on macOS the bridge made its gate directory before the spawn it could not do: the bridge's own cleanup removes it, no shell ever ran
-  expect(readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"))).toEqual([]);
 });
-
-test.skipIf(process.platform !== "darwin")("a bridge killed with SIGKILL AFTER it released its child leaves no gate directory: the shell removed it when released", async () => {
-  const cwd = temp(), tmp = join(cwd, "tmp"), up = join(cwd, "up"), pidFile = join(cwd, "bridge.pid");
-  mkdirSync(tmp);
-  const childFile = join(cwd, "child.js");
-  writeFileSync(childFile, `require("node:fs").writeFileSync(${JSON.stringify(up)}, "up"); setInterval(() => {}, 1000)`);
-  const caller = [
-    "const { spawn } = require('node:child_process'), { writeFileSync } = require('node:fs')",
-    `const argv = ${JSON.stringify([process.execPath, BRIDGE, process.execPath, childFile])}`,
-    "const p = spawn(argv[0], argv.slice(1), { detached: true, stdio: ['pipe', 'pipe', 'pipe'] })",
-    "p.stdout.resume(); p.stderr.resume()",
-    `writeFileSync(${JSON.stringify(pidFile)}, String(p.pid))`,
-    "setInterval(() => {}, 1000)",
-  ].join("; ");
-  const callerProc = spawn(process.execPath, ["-e", caller], { stdio: "ignore", env: { ...process.env, TMPDIR: tmp } });
-  let members: number[] = [];
-  try {
-    expect(await waitFor(() => existsSync(pidFile) && existsSync(up), 8_000)).toBe(true);
-    const bridge = Number(readFileSync(pidFile, "utf8"));
-    members = descendants(bridge);
-    // the child is running, so the gate was opened and the shell has exec'd: nothing but a SIGKILL-proof removal can have emptied the directory now
-    expect(readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"))).toEqual([]);
-    process.kill(bridge, "SIGKILL");
-    callerProc.kill("SIGKILL");
-    await waitFor(() => !members.some(alive), 6_000);
-    expect(readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"))).toEqual([]);
-  } finally {
-    callerProc.kill("SIGKILL");
-    for (const pid of members) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
-  }
-}, 20_000);
 
 test("a result is never cleaned while a member of the owned process group is still alive", async () => {
   const cwd = temp(), pidFile = join(cwd, "member.pid");
@@ -298,102 +259,6 @@ test("a result is never cleaned while a member of the owned process group is sti
     expect(result.outcome).toBe("failed");
   } finally {
     if (member) { try { process.kill(member, "SIGKILL"); } catch { /* already gone */ } }
-  }
-}, 20_000);
-
-// The bridge, and so its gate, is the macOS launcher: Linux runs the child under script(1) and never starts the bridge.
-test.skipIf(process.platform !== "darwin")("the bridge opens its start gate, keeps a fast child's output and exit code, and leaves no gate directory behind", async () => {
-  const cwd = temp(), tmp = join(cwd, "tmp");
-  mkdirSync(tmp);
-  const gates = () => readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"));
-  const env = { ...options(cwd).env, TMPDIR: tmp };
-  // a long-running child is released (it is up when ready fires) and the gate is gone once it ran
-  let up = false;
-  const running = await runPty([process.execPath, "-e", "require('node:fs').writeFileSync(process.env.UP, 'up'); setInterval(() => {}, 1000)"], options(cwd, { env: { ...env, UP: join(cwd, "up") }, ready: async () => {
-    up = await waitFor(() => existsSync(join(cwd, "up")), 6_000);
-  } }));
-  expect(running.outcome).toBe("completed");
-  expect(up, "the child never ran: the gate was not opened").toBe(true);
-  expect(gates()).toEqual([]);
-  // a child that writes and exits at once keeps its output and code through the gate
-  for (let i = 0; i < 5; i++) {
-    let output = "";
-    const result = await runPty(["/bin/sh", "-c", "printf gated; exit 3"], options(cwd, { env, onOutput: chunk => { output += chunk.toString(); } }));
-    expect(result.outcome).toBe("exited");
-    expect(result.exitCode).toBe(3);
-    expect(output).toContain("gated");
-    expect(result.cleaned).toBe(true);
-  }
-  expect(gates()).toEqual([]);
-}, 20_000);
-
-test.skipIf(process.platform !== "darwin")("the child waits for the gate: it has not run when the bridge opens the gate late, and the gate was closed while Bun.spawn ran", async () => {
-  const cwd = temp(), log = join(cwd, "probe.log"), marker = join(cwd, "child-ran"), tmp = join(cwd, "tmp");
-  mkdirSync(tmp);
-  const result = await runPtyWith(probed, ["/usr/bin/touch", marker], options(cwd, { env: { ...options(cwd).env, TMPDIR: tmp, PTY_PROBE_MODE: "spawn-delay", PTY_PROBE_DELAY_MS: "400", PTY_PROBE_LOG: log, PTY_PROBE_MARKER: marker } }));
-  expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["enter gate=absent", "returned gate=absent", "after-delay child=waiting"]);
-  expect(result.outcome).toBe("exited");
-  expect(result.exitCode).toBe(0);
-  expect(existsSync(marker), "released by the gate, the child ran").toBe(true);
-}, 20_000);
-
-test.skipIf(process.platform !== "darwin")("a bridge killed with SIGKILL, which runs no cleanup, leaves no gate directory and no waiting shell: the gate shell removes its own gate", async () => {
-  const cwd = temp(), tmp = join(cwd, "tmp");
-  mkdirSync(tmp);
-  const gates = () => readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"));
-  // the bridge is held inside Bun.spawn's return for 3 s by the probe, so it is SIGKILLed with its gate shell started and its gate not yet opened
-  const caller = [
-    "const { spawn } = require('node:child_process'), { writeFileSync } = require('node:fs')",
-    `const argv = ${JSON.stringify(probed([process.execPath, "-e", "setInterval(() => {}, 1000)"]))}`,
-    "const p = spawn(argv[0], argv.slice(1), { detached: true, stdio: ['pipe', 'pipe', 'pipe'] })",
-    "p.stdout.resume(); p.stderr.resume()",
-    `writeFileSync(${JSON.stringify(join(cwd, "bridge.pid"))}, String(p.pid))`,
-    "setInterval(() => {}, 1000)",
-  ].join("; ");
-  const callerProc = spawn(process.execPath, ["-e", caller], { stdio: "ignore", env: { ...process.env, TMPDIR: tmp, PTY_PROBE_MODE: "spawn-delay", PTY_PROBE_DELAY_MS: "3000" } });
-  let bridge = 0, shell: number[] = [];
-  try {
-    expect(await waitFor(() => existsSync(join(cwd, "bridge.pid")) && gates().length === 1 && descendants(Number(readFileSync(join(cwd, "bridge.pid"), "utf8"))).length >= 2, 8_000)).toBe(true);
-    bridge = Number(readFileSync(join(cwd, "bridge.pid"), "utf8"));
-    shell = descendants(bridge).filter(pid => pid !== bridge);
-    expect(shell.length).toBeGreaterThanOrEqual(1);
-    process.kill(bridge, "SIGKILL");
-    callerProc.kill("SIGKILL");
-    // the bridge's pty closed, which hangs the gate shell up: its trap removes the directory and it exits, with no bound of its own involved
-    expect(await waitFor(() => !shell.some(alive) && gates().length === 0, 8_000), `left behind: processes ${shell.filter(alive).join(", ")}, gate directories ${gates().join(", ")}`).toBe(true);
-  } finally {
-    callerProc.kill("SIGKILL");
-    for (const pid of [bridge, ...shell]) { if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } } }
-  }
-}, 20_000);
-
-for (const signal of ["SIGHUP", "SIGTERM", "SIGINT"] as const) test.skipIf(process.platform !== "darwin")(`a gate shell that is sent ${signal} while it waits removes its own gate at once, before its bridge could`, async () => {
-  {
-    const cwd = temp(), tmp = join(cwd, "tmp"), pidFile = join(cwd, "bridge.pid");
-    mkdirSync(tmp);
-    const gates = () => readdirSync(tmp).filter(name => name.startsWith("ahub-pty-gate-"));
-    // the probe holds the bridge for 4 s inside the spawn it just made, so the bridge's own cleanup cannot be what removes the directory in the next second
-    const caller = [
-      "const { spawn } = require('node:child_process'), { writeFileSync } = require('node:fs')",
-      `const argv = ${JSON.stringify(probed([process.execPath, "-e", "setInterval(() => {}, 1000)"]))}`,
-      "const p = spawn(argv[0], argv.slice(1), { detached: true, stdio: ['pipe', 'pipe', 'pipe'] })",
-      "p.stdout.resume(); p.stderr.resume()",
-      `writeFileSync(${JSON.stringify(pidFile)}, String(p.pid))`,
-      "setInterval(() => {}, 1000)",
-    ].join("; ");
-    const callerProc = spawn(process.execPath, ["-e", caller], { stdio: "ignore", env: { ...process.env, TMPDIR: tmp, PTY_PROBE_MODE: "spawn-delay", PTY_PROBE_DELAY_MS: "4000" } });
-    let bridge = 0, members: number[] = [];
-    try {
-      expect(await waitFor(() => existsSync(pidFile) && gates().length === 1 && descendants(Number(readFileSync(pidFile, "utf8"))).length >= 2, 8_000), signal).toBe(true);
-      bridge = Number(readFileSync(pidFile, "utf8"));
-      members = descendants(bridge);
-      const shell = members.find(pid => pid !== bridge)!;
-      process.kill(shell, signal);
-      expect(await waitFor(() => gates().length === 0, 1_500), `${signal}: the gate directory outlived the shell that was signalled while its bridge was still blocked`).toBe(true);
-    } finally {
-      callerProc.kill("SIGKILL");
-      for (const pid of [bridge, ...members]) { if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } } }
-    }
   }
 }, 20_000);
 
