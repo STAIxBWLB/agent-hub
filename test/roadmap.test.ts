@@ -8,6 +8,7 @@ import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig, type PlanIssueMetadata } from "../src/hub/sdlc.ts";
 import type { SpecsCheckReport } from "../src/hub/specs.ts";
+import { MILESTONE_HISTORY_LIMIT } from "../src/hub/roadmap.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
 const cleanup: (() => void)[] = [];
@@ -69,6 +70,18 @@ test("done/dropped require the person through every write surface and closed mil
   expect(() => f.tasks.milestoneState("user", one.id, "active")).toThrow();
   expect(() => f.tasks.milestoneLink("kimi", one.id, "spec", "hub.goal")).toThrow();
   expect(f.board.milestone(one.id)).toEqual(before);
+});
+
+test("ordinary history exhaustion preserves the person's done and dropped settlement", async () => {
+  const f = fixture();
+  for (const state of ["done", "dropped"] as const) {
+    const milestone = await f.tasks.milestoneNew("user", fields(`History ${state}`));
+    for (let index = 1; index < MILESTONE_HISTORY_LIMIT - 1; index++) f.tasks.milestoneOrder("kimi", milestone.id, index);
+    expect(f.board.milestone(milestone.id)?.history).toHaveLength(MILESTONE_HISTORY_LIMIT - 1);
+    expect(() => f.tasks.milestoneOrder("kimi", milestone.id, MILESTONE_HISTORY_LIMIT)).toThrow("history");
+    const settled = f.tasks.milestoneState("user", milestone.id, state);
+    expect(settled.state).toBe(state); expect(settled.history).toHaveLength(MILESTONE_HISTORY_LIMIT);
+  }
 });
 
 test("source issue inheritance is repository qualified and explicit task placement wins everywhere", async () => {
