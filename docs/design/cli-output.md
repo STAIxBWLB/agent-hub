@@ -8,6 +8,7 @@ references: [agent-hub-architecture]
 covers: [cli-output]
 tags: [agent-hub, cli, contract]
 paths:
+  - src/cli/output-standard.ts
   - src/cli/console-state.ts
   - src/cli/output.ts
   - test/cli-output-conformance.test.ts
@@ -150,7 +151,7 @@ Glyphs are semantic; each pairs with one role. Code uses named constants, never 
 
 ## Implementation in ahub
 
-`src/cli/console-state.ts` holds the executable form: `Role` and `ROLE_SGR` (the nine roles), `TONE_ROLE` (the console's `Tone` vocabulary mapped onto roles; a tone with no entry names an identity color, never a status), `MARKERS`, `markerCell`, `SECTION_MARKER`, `cellWidth`, `resolveColor` with `streamEnv` (the precedence table, per stream) and `asciiMarkers` (`--ascii` and the non-UTF-8 locale fallback). A `Span` may carry a `role`; it wins over its `tone`. `test/cli-output-conformance.test.ts` runs the five conformance checks and fails on a raw SGR literal in `src/cli/` and `src/hub/` outside `console-state.ts`, `src/cli/console.ts` (the full-screen console) and the identity palettes (`src/ui/peer-palette.ts`, `src/adapters/definitions/native-display.ts`).
+`src/cli/output-standard.ts` is the one module that holds the standard's portable executable form. It imports nothing, so a CLI outside the hub (or a shared package for the Bun family) can reuse it as a file move: `Role` and `ROLE_SGR` (the nine roles), `TONE_SGR` (the console tones that are not an identity palette entry), `MARKERS`, `markerCell`, `SECTION_MARKER`, `cellWidth`, `resolveColor` with `streamEnv` (the precedence table, per stream) and `asciiMarkers` (`--ascii` and the non-UTF-8 locale fallback). `src/cli/console-state.ts` keeps `Tone` and `PALETTE` (mapped onto the roles through `TONE_ROLE`; a tone with no entry names an identity color, never a status), re-exports the style names, lets a `Span` carry a `role` (it wins over its `tone`) and holds the `Report` builder for the layout grammar. `test/cli-output-conformance.test.ts` runs the five conformance checks and fails on a raw SGR literal in `src/cli/` and `src/hub/` outside `src/cli/output-standard.ts`, `src/cli/console.ts` (the full-screen console) and the identity palettes (`src/ui/peer-palette.ts`, `src/adapters/definitions/native-display.ts`).
 
 ## Adoption
 

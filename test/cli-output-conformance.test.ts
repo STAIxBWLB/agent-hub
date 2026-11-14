@@ -3,7 +3,8 @@ import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync,
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { renderHelp } from "../src/cli/help.ts";
-import { MARKERS, MARKER_COLUMN, MARKER_NAMES, PALETTE, ROLE_SGR, SECTION_MARKER, TONE_ROLE, Report, asciiMarkers, cellWidth, markerCell, paint, resolveColor, streamEnv, type Role, type Span } from "../src/cli/console-state.ts";
+import { PALETTE, Report, TONE_ROLE, paint } from "../src/cli/console-state.ts";
+import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
 
 // CLI output standard v1 (docs/design/cli-output.md, #1484): the five conformance checks every CLI runs, the role and marker tables,
 // the color precedence per stream, and the guard that keeps raw SGR codes out of human-output code.
@@ -228,8 +229,8 @@ function sources(dir: string): string[] {
 }
 /** An SGR sequence written as a literal: `\x1b[31m`, `\u001b[0m`, `\033[1m`, `\e[0m` or the ESC character itself. */
 const RAW_SGR = /(?:\\x1[bB]|\\u001[bB]|\\u\{1[bB]\}|\\033|\\e|\x1b)\[[0-9;$\{\}a-zA-Z_.]*m/;
-/** AC1: the identity palettes, the Tone table and the full-screen console own raw codes; every other human-output file names a role. */
-const SGR_ALLOWED = new Set(["src/cli/console-state.ts", "src/cli/console.ts", "src/ui/peer-palette.ts", "src/adapters/definitions/native-display.ts"]);
+/** AC1: `output-standard.ts` (roles and the console tones), the identity palettes and the full-screen console own raw codes; every other human-output file names a role. */
+const SGR_ALLOWED = new Set(["src/cli/output-standard.ts", "src/cli/console.ts", "src/ui/peer-palette.ts", "src/adapters/definitions/native-display.ts"]);
 describe("CLI output standard v1: no raw SGR in human-output code", () => {
   test("the detector finds each literal form and ignores cursor, mode and key sequences", () => {
     for (const form of ["\\x1b[31m", "\\x1B[0m", "\\u001b[1;36m", "\\033[90m", "\\e[0m", "\x1b[32m", "`\\x1b[${code}m`"]) expect(RAW_SGR.test(form)).toBe(true);
@@ -245,6 +246,6 @@ describe("CLI output standard v1: no raw SGR in human-output code", () => {
   });
   test("every allowlisted file exists, so the list cannot rot", () => {
     for (const file of SGR_ALLOWED) expect(statSync(join(ROOT, file)).isFile()).toBe(true);
-    expect(relative(ROOT, join(ROOT, "src/cli/console-state.ts"))).toBe("src/cli/console-state.ts");
+    expect(relative(ROOT, join(ROOT, "src/cli/output-standard.ts"))).toBe("src/cli/output-standard.ts");
   });
 });
