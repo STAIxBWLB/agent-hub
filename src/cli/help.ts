@@ -1,7 +1,7 @@
 import { ADAPTERS, deriveAdapterLists, type AdapterDefinition } from "../adapters/registry.ts";
 import { VERSION } from "../version.ts";
 import { ROADMAP_FORMS } from "./roadmap.ts";
-import { paint, wrap, type Span } from "./console-state.ts";
+import { paint, wrap, Report as LayoutReport, type Span } from "./console-state.ts";
 
 /** One usage form of `ahub help`: the usage starts with `ahub <command>`, alternatives joined by `|`. */
 export interface HelpEntry { section: string; usage: string; description: string }
@@ -234,15 +234,78 @@ export function helpCommands(entry: HelpEntry): string[] {
   return COMMAND.exec(entry.usage)?.[1]!.split(/ ?\| ?/) ?? [];
 }
 
+
+/**
+ * CLI output standard v1, Help: the overview lists each command once per group as `  <name>  <one-line summary>` in two aligned columns; the long text, every usage form
+ * and every flag are in `ahub help <command>`. A summary is at most SUMMARY_MAX cells. A command not named here (the native agents, whose text comes from their
+ * adapter definitions, never from a table that names a peer) takes the first clause of its description. `<group>/<command>` wins over `<command>` where one name
+ * means two things (`backlog`, `check-path`).
+ */
+const SUMMARY_MAX = 56;
+const SUMMARIES: Readonly<Record<string, string>> = {
+  specs: "read design specs and check their freshness", worktrees: "list worktrees, preview and confirm cleanup", "--project": "run a command against another project",
+  projects: "list registered projects and live status", setup: "install the plugin and hooks, choose default agents", init: "write .agenthub/config.json and the AGENTS.md block",
+  "--live-test": "user-authorized console delegation (person only)", help: "this overview, or one command's usage", version: "print the installed version", completion: "print a shell completion script",
+  up: "start the daemon and this project's default agents", console: "open the human console", pet: "read attention without connecting", sdlc: "read lifecycle gates and the next action",
+  "Daemon and runtime/backlog": "return accepted untouched work to the backlog", status: "is the hub OK, and what to do next", logs: "show the hub log", doctor: "check tools, daemon, plugin, models and memory",
+  agents: "show each agent CLI's version and verdict", kill: "stop this project's hub", down: "stop this project's hub (same as kill)", reset: "discard queued deliveries and clear holds",
+  restart: "recover this project's runtime", upgrade: "review and upgrade this project", recovery: "inspect, resume or abort a held operation",
+  daemon: "internal: the detached hub process", "recovery-run": "internal: a detached recovery runner",
+  role: "read catalog guidance for a role", stop: "stop a hub-owned headless peer", peer: "hand the attached session to a standby", models: "inspect local model state",
+  say: "send a message as the console user", watch: "watch a headless ACP peer's activity", tail: "live stream of messages and states", permission: "inspect or set a peer's permission mode",
+  permit: "answer a permission request", answer: "list and answer open hub_ask questions", results: "list what your runs left behind", roster: "every known peer and its participation",
+  roles: "each peer's flow roles, planner and reviewers", autonomy: "apply the autonomy preset", model: "select or inspect runtime models", settings: "list, read and change settings",
+  pause: "hold or release a peer's deliveries", title: "rename a Pi or local-worker session", queue: "inspect and resolve durable deliveries",
+  board: "show the task board, import open issues", task: "put tasks on the board and move them along", "Tasks and review/backlog": "plan, pull and return backlog cards", roadmap: "milestones and their computed progress",
+  release: "plan and ship releases", smoke: "live smoke test in a temporary project", broker: "run the ciphertext relay for rooms", room: "encrypted rooms between hubs (person only)",
+  source: "register inputs as content-hashed sources", schedule: "list and run machine-local schedules", intake: "turn a plain request into a draft backlog card",
+  capabilities: "list the skills each attached peer offers", learn: "review recurring-criterion candidates", study: "research campaign contracts",
+  deliverables: "what each task delivered and a reviewer approved", review: "give a review verdict on a task", route: "why a task went where it did",
+  ask: "answer from the board, memory and the log", remember: "save a note to shared memory", budget: "quota windows per peer and why one is paused",
+  guidance: "guidance declarations and the probe lifecycle", lineage: "execution metadata and evidence strengths", turns: "recent turns and the files each changed",
+  undo: "put back the files a turn changed", report: "turns, tokens, messages and task events", usage: "tokens per group from the roll-up", export: "events as JSON lines",
+  research: "success and rework rates per approved task", bench: "run a benchmark suite against attached peers", "History and reports/check-path": "other owners' open tasks that claim a file",
+  memory: "the hub's own project memory", goal: "long-term tasks and who holds them", "Hooks/check-path": "Claude PreToolUse hook for file claims", facts: "Claude hook for turn-free facts",
+  ui: "open the local dashboard", manager: "internal: the dashboard manager process",
+};
+/** The first clause of a description, cut at a word and ended with `...` when it is longer than the column: the whole text is `ahub help <command>`. */
+function firstClause(description: string, max: number): string {
+  const clause = description.replace(/\s*\([^)]*\)/g, "").split(/;(?= )|\. /)[0]!.trim();
+  if (Bun.stringWidth(clause) <= max) return clause;
+  // A clause that is too long ends where its sentence first pauses (`:` or `, `) when that leaves a readable summary; otherwise it is cut at a word and ended with `...`.
+  const pause = clause.search(/: |, /);
+  if (pause >= 8 && Bun.stringWidth(clause.slice(0, pause)) <= max) return clause.slice(0, pause);
+  let out = "";
+  for (const word of clause.split(" ")) { if (Bun.stringWidth(`${out} ${word}`.trim()) > max - 3) break; out = `${out} ${word}`.trim(); }
+  return `${out.replace(/[,:;\s]+$/, "")}...`;
+}
+/** One overview row: the command words an entry documents (`pause|resume`), and its one-line summary. */
+export interface OverviewRow { section: string; name: string; summary: string }
+export function helpOverviewRows(entries: readonly HelpEntry[] = HELP): OverviewRow[] {
+  const shown = new Map<string, Set<string>>(), rows: OverviewRow[] = [];
+  for (const entry of entries) {
+    const seen = shown.get(entry.section) ?? shown.set(entry.section, new Set()).get(entry.section)!;
+    const fresh = helpCommands(entry).filter(word => !seen.has(word));
+    if (!fresh.length) continue;
+    fresh.forEach(word => seen.add(word));
+    const own = (word: string) => SUMMARIES[`${entry.section}/${word}`] ?? SUMMARIES[word];
+    const summary = own(fresh[0]!) ?? firstClause(entry.description, SUMMARY_MAX);
+    rows.push({ section: entry.section, name: fresh.join("|").replace(/^version\|--version$/, "version|--version"), summary: Bun.stringWidth(summary) > SUMMARY_MAX ? firstClause(summary, SUMMARY_MAX) : summary });
+  }
+  return rows;
+}
+
 const DESCRIPTION = 34;
 /**
  * Usage at 2 spaces, description at one fixed column, wrapped at word boundaries to the terminal width
  * (80 to 100 columns). A usage too long for that column puts its description on the next line.
  * With a command, only its entries; an unknown command renders nothing.
  */
-export function renderHelp(columns: number, color: boolean, command?: string, definitions?: readonly AdapterDefinition[]): string {
+export function renderHelp(columns: number, color: boolean, command?: string, definitions?: readonly AdapterDefinition[], ascii = false): string {
   const width = Math.min(100, Math.max(80, columns || 80));
   const model = definitions === undefined ? HELP : helpEntries(definitions);
+  // The overview is a fixed 80 columns (standard v1, Help): its rows are short, so a wider terminal gains nothing and every terminal reads the same text.
+  if (command === undefined) return renderOverview(80, color, ascii, model);
   const entries = command === undefined ? model : model.filter(entry => helpCommands(entry).includes(command));
   const lines: Span[][] = command === undefined ? wrap(`agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory`, width, 0).map(text => [{ text }]) : [];
   let section = "";
@@ -260,6 +323,27 @@ export function renderHelp(columns: number, color: boolean, command?: string, de
     lines.push(first, ...usage.slice(1).map(text => [{ text: `    ${text}` }]), ...description.map(text => [{ text: " ".repeat(DESCRIPTION) + text }]));
   }
   return lines.map(line => paint(line, color)).join("\n");
+}
+
+/**
+ * `ahub help`: the standard's overview. One intro line, then each group (`▸ Group`) with `  <name>  <summary>` rows in two aligned columns, never wider than the
+ * terminal (80 to 100 cells), then where the long text lives. Every command still appears; every usage form and flag is in `ahub help <command>`.
+ */
+function renderOverview(width: number, color: boolean, ascii: boolean, entries: readonly HelpEntry[]): string {
+  const rows = helpOverviewRows(entries), column = Math.max(...rows.map(row => Bun.stringWidth(row.name))) + 2;
+  const report = new LayoutReport(width, ascii);
+  const out: Span[][] = wrap(`agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory`, width, 0).map(text => [{ text }]);
+  out.push([{ text: "Usage: ahub <command> [args]   Details: ahub help <command>", role: "hint" }]);
+  let section = "";
+  for (const row of rows) {
+    if (row.section !== section) { section = row.section; report.section(section); }
+    const pad = " ".repeat(column - Bun.stringWidth(row.name));
+    const summary = wrap(row.summary, width - 2 - column, 0);
+    report.append([[{ text: "  " }, { text: row.name, role: "accent" }, { text: `${pad}${summary[0]!}` }]]);
+    for (const more of summary.slice(1)) report.append([[{ text: " ".repeat(2 + column) + more }]]);
+  }
+  report.section("More").note("ahub help <command> shows every usage form and flag of one command; ahub --help and ahub -h print this overview", "value");
+  return [...out, ...report.lines()].map(line => paint(line, color)).join("\n");
 }
 
 /** Split a usage at its top-level " | " only: a pipe inside [...] or <...> belongs to one alternative (`[--class <c> | <class>]`). */

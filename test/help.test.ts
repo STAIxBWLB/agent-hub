@@ -2,12 +2,15 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HELP, helpCommands, renderHelp } from "../src/cli/help.ts";
+import { HELP, helpCommands, helpOverviewRows, renderHelp } from "../src/cli/help.ts";
+import { ROLE_SGR } from "../src/cli/output-standard.ts";
 import { initialConsoleState, paint, PALETTE, renderConsole, wrap } from "../src/cli/console-state.ts";
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 
 const SGR = /\x1b\[[0-9;]*m/g;
+/** The long text the overview used to be: every usage form with its whole description, as `ahub help <command>` still prints it. */
+const renderHelpFull = (columns: number) => [...new Set(HELP.flatMap(helpCommands))].flatMap(command => renderHelp(columns, false, command).split("\n"));
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const MARKERS = ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "NO_COLOR"];
 const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-help-")));
@@ -51,35 +54,58 @@ describe("ahub help (#212)", () => {
     expect(helpCommands({ section: "", usage: "ahub version | --version", description: "" })).toEqual(["version", "--version"]);
   });
 
-  for (const columns of [80, 120]) test(`at ${columns} columns: sections in order, one description column, word-boundary wrapping`, () => {
+  for (const columns of [80, 120]) test(`at ${columns} columns: the overview lists every command once per group as a name and a one-line summary, in two aligned columns (#1484 AC4)`, () => {
     const lines = renderHelp(columns, false).split("\n");
-    for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(Math.min(columns, 100));
-    const sections = lines.slice(lines.indexOf("Projects"));
-    expect(sections.filter(line => /^\S/.test(line))).toEqual(["Projects", "Daemon and runtime", "Agents", "Messages and approvals", "Tasks and review", "Budget", "History and reports", "Hooks", "Dashboard"]);
-    // A description starts after a whole usage and two or more spaces, or on a line of its own; usages never hold two spaces.
-    const starts = lines.map(line => /^(?: {2}\S(?:.*?\S)? {2,}| {5,})(?=\S)/.exec(line)?.[0].length).filter(n => n !== undefined);
+    for (const line of lines) expect(Bun.stringWidth(line), line).toBeLessThanOrEqual(80); // the standard: within 80 columns, whatever the terminal width
+    expect(lines.filter(line => line.startsWith("▸ ")).map(line => line.slice(2))).toEqual(["Projects", "Daemon and runtime", "Agents", "Messages and approvals", "Tasks and review", "Budget", "History and reports", "Hooks", "Dashboard", "More"]);
+    // One summary column: every row is two spaces, a name, two or more spaces and a summary that starts at the same cell.
+    const more = lines.indexOf("▸ More"); // the closing note is prose, not a command row
+    const rows = lines.slice(0, more).filter(line => /^ {2}\S/.test(line));
+    const starts = rows.map(line => /^ {2}\S+ {2,}(?=\S)/.exec(line)?.[0].length);
+    expect(starts.every(start => start !== undefined)).toBe(true);
     expect(new Set(starts).size).toBe(1);
-    expect(starts.length).toBeGreaterThanOrEqual(HELP.length);
-    const column = starts[0]!;
-    const long = lines.indexOf("  ahub console [--panels] [--color=auto|always|never]");
-    expect(lines[long + 1]!.startsWith(`${" ".repeat(column)}enter the human console`)).toBe(true);
-    // Only whitespace breaks: the rendered words are exactly the words of the headings, usages and descriptions.
-    const words = (text: string) => text.split(/\s+/).filter(Boolean).sort();
-    expect(words(sections.join("\n"))).toEqual(words([...new Set(HELP.map(e => e.section)), ...HELP.flatMap(e => [e.usage, e.description])].join(" ")));
+    // A summary is one line of at most 56 cells: no row of the overview wraps, so the overview is one row per command.
+    for (const row of rows) expect(Bun.stringWidth(row.slice(starts[0]!)), row).toBeLessThanOrEqual(56);
+    expect(rows.length).toBe(helpOverviewRows().length);
+    // The overview is short: about one line per command instead of one block per usage form.
+    expect(lines.length).toBeLessThan(140);
+    expect(lines.length).toBeLessThan(renderHelpFull(columns).length / 4);
   });
 
-  test("color marks headings and command words only, and the visible text does not change", () => {
-    const painted = renderHelp(80, true);
-    expect(painted.replace(SGR, "")).toBe(renderHelp(80, false));
-    expect(painted).toContain(`${PALETTE.strong}Projects\x1b[0m`);
-    expect(painted).toContain(`  ${PALETTE.info}ahub pause|resume\x1b[0m <peer>`);
-    expect(painted).not.toContain(PALETTE.muted);
-    for (const line of painted.split("\n")) expect((line.match(SGR) ?? []).length).toBeLessThanOrEqual(2); // arguments and descriptions stay default
-    const full = renderHelp(80, false).split("\n"), queue = renderHelp(80, false, "queue").split("\n");
-    expect(queue.filter(line => /^\S/.test(line))).toEqual(["Messages and approvals"]);
-    expect(queue.filter(line => line.startsWith("  ahub "))).toEqual(full.filter(line => line.startsWith("  ahub queue ")));
-    for (const line of queue) expect(full).toContain(line);
-    expect(renderHelp(80, false, "bogus")).toBe("");
+  test("every command, subcommand and flag still appears: each command is in the overview, and `ahub help <command>` carries every usage form and flag of the full text", () => {
+    const overview = renderHelp(100, false);
+    const commands = new Set(HELP.flatMap(helpCommands));
+    // a command is its own row, or one half of a row that names alternatives (`version|--version`, `pause|resume`)
+    const names = overview.split("\n").filter(line => /^ {2}\S/.test(line)).flatMap(line => line.trim().split(/\s+/)[0]!.split("|"));
+    for (const command of commands) expect(names, command).toContain(command);
+    // `ahub help <command>` is the full text: every entry that names the command, usage and description, unchanged.
+    for (const command of commands) {
+      const detail = renderHelp(100, false, command).replace(/\s+/g, " ");
+      for (const entry of HELP.filter(entry => helpCommands(entry).includes(command))) {
+        expect(detail, `${command}: ${entry.usage}`).toContain(entry.usage.replace(/\s+/g, " "));
+        for (const word of entry.description.split(/\s+/).filter(Boolean)) expect(detail, `${command}: ${word}`).toContain(word);
+      }
+    }
+    // every flag the usages name is still in the help text of its command
+    const flags = new Set(HELP.flatMap(entry => entry.usage.match(/--[a-z][a-z-]*/g) ?? []));
+    expect(flags.size).toBeGreaterThan(40);
+    const all = HELP.map(entry => `${entry.usage} ${entry.description}`).join(" ");
+    for (const flag of flags) expect(all, flag).toContain(flag);
+  });
+
+  test("the overview names where the long text lives and has no hidden command", () => {
+    const overview = renderHelp(80, false);
+    expect(overview).toContain("Details: ahub help <command>");
+    expect(overview).toContain("ahub help <command> shows every usage form and flag of one command");
+    // a command whose usage is documented only in the long text still has a row
+    for (const command of ["pause|resume", "version|--version", "check-path"]) expect(overview, command).toContain(`  ${command}`);
+    expect(overview).not.toMatch(/--json|--color=/); // flags belong to `ahub help <command>`
+  });
+
+  test("with ASCII markers the overview has no non-ASCII glyph", () => {
+    const text = renderHelp(80, false, undefined, undefined, true);
+    expect(text).toContain("> Projects");
+    expect(text).not.toMatch(/[▸✓✗⚠→]/);
   });
 
   test("help, --help and -h print it all; help <command> filters; an unknown command gets a one-line hint", async () => {
@@ -105,7 +131,7 @@ describe("ahub help (#212)", () => {
   test("color only on a terminal whose TERM is not dumb and NO_COLOR is empty", async () => {
     const plain = `${renderHelp(120, false)}\n`;
     const tty = await cli(["help"], {}, true);
-    expect(tty.stdout).toContain(PALETTE.strong);
+    expect(tty.stdout).toContain(ROLE_SGR.section);
     expect(tty.stdout.replace(SGR, "")).toBe(plain);
     expect((await cli(["help"], { NO_COLOR: "" }, true)).stdout).toBe(tty.stdout);
     for (const env of [{ TERM: "dumb" }, { NO_COLOR: "1" }] as Record<string, string>[]) expect((await cli(["help"], env, true)).stdout).toBe(plain);
