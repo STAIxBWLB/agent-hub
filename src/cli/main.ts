@@ -383,6 +383,10 @@ function outputArguments(): string[] {
   return args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color="));
 }
 /** `sdlc` operands: the read subcommands that print for a person (#814) drop `--json`, `--full` and `--color=`; every other subcommand keeps its argv exactly. */
+/** The daemon answers a missing task id with a JSON string (`"no task #N"`), a found task with an object: the sentence for a missing one, otherwise undefined. */
+function missingTaskText(text: string): string | undefined {
+  try { const value: unknown = JSON.parse(text); return typeof value === "string" && /^no task #\d+$/.test(value) ? value : undefined; } catch { return undefined; }
+}
 /** A hub tool answers JSON text. Text that does not parse is printed as it came: a renderer never sees it, so it cannot read as an empty report. */
 function showToolText(render: (data: any, columns?: number, now?: number) => Span[][], text: string, present: ReturnType<typeof outputOptions>): void {
   let data: unknown;
@@ -2195,13 +2199,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       // CLI output standard v1: a lookup that finds nothing is a failure (stderr, exit 1), not a successful print. The daemon answers a missing id with a JSON string
       // (`"no task #N"`) while a found task is an object. The exit code is the standard's and is set apart from the format: `--json` keeps printing the hub's own document
       // byte for byte on stdout, and exits 1 like the human path, which prints the error and a next step on stderr instead.
-      const shown = await taskOp("task_show", { id: rest[0] });
-      const missing = (() => { try { const value: unknown = JSON.parse(shown); return typeof value === "string" && /^no task #\d+$/.test(value) ? value : undefined; } catch { return undefined; } })();
-      if (missing !== undefined) {
-        if (outputOptions(presentation.flags).json) { console.log(shown); process.exitCode = 1; return; }
-        return fail(missing, false, undefined, "ahub board");
-      }
-      return shownTask(renderTaskShow)(Promise.resolve(shown));
+      const shown = taskOp("task_show", { id: rest[0] });
+      const missing = missingTaskText(await shown);
+      if (missing !== undefined && !outputOptions(presentation.flags).json) return fail(missing, false, undefined, "ahub board");
+      await shownTask(renderTaskShow)(shown);
+      if (missing !== undefined) process.exitCode = 1; // --json printed the hub's document above; a lookup that found nothing still fails
+      return;
     }
     if (sub === "claim") {
       // #901: a person's verdict on one declared plan claim. The claim is named by its 1-based slot and its text is never typed, stored or printed here.
