@@ -6,7 +6,7 @@ import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { reviewResult } from "./console-review.ts";
-import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow, appendEvent, FIRST_KEYS, LAST_KEYS } from "./console-state.ts";
+import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, streamEnv, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow, appendEvent, FIRST_KEYS, LAST_KEYS } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 import { consoleNeeds, attentionFacts, attentionResults } from "./attention.ts";
@@ -95,7 +95,7 @@ function labeled(text: string): Detail {
 /** One terminal client, no daemon ownership. All text crosses terminalText before writing. */
 export async function runConsole(options: ConsoleOptions): Promise<void> {
   const { client } = options; const terminal = options.terminal ?? nativeTerminal();
-  const color = options.color ?? resolveColor(undefined, { isTTY: terminal.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
+  const color = options.color ?? resolveColor(undefined, streamEnv(terminal.isTTY)) === true;
   let state = initialConsoleState(!!options.panels); state.project = basename(options.cwd);
   let pet = loadPetConfig(options.cwd);
   let petSignature = JSON.stringify([pet.enabled, pet.character, pet.size, pet.glyphs, pet.blink, pet.bell]);

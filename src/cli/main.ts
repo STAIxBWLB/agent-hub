@@ -133,7 +133,7 @@ import { agentShellCause, classifyPeerCommand, cliCommandLabel, detectCliIdentit
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { installedVersions } from "./console-versions.ts";
-import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
+import { paint, permissionBoundary, resolveColor, streamEnv, wrap, type Span } from "./console-state.ts";
 import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp, guidanceProbeUsage, listsSubcommand, subcommandUsage } from "./help.ts";
@@ -348,7 +348,7 @@ try { process.chdir(cwd); } catch { fail(`project directory is unavailable: ${cw
 function outputOptions(source: readonly string[] = args) {
   const flags = source.filter(arg => arg.startsWith("--color="));
   if (flags.length > 1 || source.includes("--color")) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
-  const color = resolveColor(flags[0]?.slice("--color=".length), { isTTY: !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
+  const color = resolveColor(flags[0]?.slice("--color=".length), streamEnv(!!process.stdout.isTTY));
   if (color instanceof Error) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
   return { color: color === true, json: source.includes("--json"), full: source.includes("--full"),
     columns: outputWidth({ isTTY: !!process.stdout.isTTY, columns: process.stdout.columns, COLUMNS: process.env.COLUMNS }) };
@@ -639,7 +639,7 @@ async function hold(t: "pause" | "resume"): Promise<void> {
 function recoveryDisplay() {
   // A terminal gives its own width; a pipe gives COLUMNS when set, else 80 (#814: a person reads a pipe too).
   const width = process.stdout.columns ?? outputWidth({ isTTY: false, COLUMNS: process.env.COLUMNS }) ?? 80;
-  return readRecoveryPresentationFlags(args, { isTTY: !!process.stdout.isTTY, columns: width, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
+  return readRecoveryPresentationFlags(args, { ...streamEnv(!!process.stdout.isTTY), columns: width });
 }
 const humanRecovery = (json: boolean) => !json && !!process.stdin.isTTY && !!process.stdout.isTTY;
 const printRecovery = (lines: readonly string[]) => { for (const line of lines) console.log(line); };
@@ -1032,7 +1032,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     else if (conductorPeer) retireConductorOperation(result, conductorPeer);
   },
   help: () => {
-    const color = resolveColor(undefined, { isTTY: !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
+    const color = resolveColor(undefined, streamEnv(!!process.stdout.isTTY)) === true;
     const topic = asksHelp(args[0]) ? undefined : args[0];
     const text = topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.permission.genericAcp !== undefined
       ? configuredAcpHelp(topic) : renderHelp(process.stdout.columns ?? 80, color, topic);
@@ -1228,7 +1228,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   console: async () => {
     if (args.some(arg => arg !== "--panels" && arg !== "--no-pet" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
-    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), { isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
+    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), streamEnv(!!process.stdin.isTTY && !!process.stdout.isTTY));
     if (color instanceof Error) return fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
     await runConsole({ client: await connect(), cwd, stateDir, liveTest, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color, installed: consoleInstalled() });
   },
@@ -1531,7 +1531,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const peer = args[0];
     if (typeof peer !== "string" || !peerDefinition(peer)?.capabilities?.watch) fail("usage: ahub watch kimi|qwen [--no-thoughts] [--color=auto|always|never]");
     if (args.slice(1).some(arg => arg !== "--no-thoughts" && !/^--color=(auto|always|never)$/.test(arg))) fail("unsupported watch option");
-    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice(8), { isTTY: !!process.stdout.isTTY, ...process.env });
+    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice(8), streamEnv(!!process.stdout.isTTY));
     if (color instanceof Error) fail(color.message);
     const hub = await connect();
     const input = process.stdin;
