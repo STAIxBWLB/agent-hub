@@ -392,6 +392,9 @@ cancelled settlement once per active logical turn. These paths do not invoke
 failure handoff. Internal model-error teardown retains its failure class and
 suppresses a second aborted observation. Only an actual nonerror, noncancelled
 settlement calls `onTurnSuccess`, allowing the host to reset continuation state.
+Numbered terminal events for a settled generation cannot be observed again or
+settle a newly delivered prompt before its next native start. Legacy unnumbered
+failure observations also remain once per logical turn.
 These source/fake receipt checks do not establish the person-run live acceptance
 leg in #1447.
 

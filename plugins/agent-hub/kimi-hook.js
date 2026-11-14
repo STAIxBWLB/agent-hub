@@ -10522,6 +10522,7 @@ var init_pi = __esm(() => {
     turnObserved = false;
     idleBashReservations = new Map;
     budgetGeneration = 0;
+    settledGeneration;
     modelStep = 0;
     observationScope = randomUUID5();
     emptyResumeVerified = false;
@@ -10891,6 +10892,7 @@ var init_pi = __esm(() => {
       this.rosterDetached = false;
       this.rosterUnownedRun = false;
       this.requestedStopReason = undefined;
+      this.settledGeneration = undefined;
       this.approvalTurnAbort = false;
       this.fencedPrompt = false;
       this.hubPromptId = undefined;
@@ -11493,6 +11495,8 @@ var init_pi = __esm(() => {
       }
       if (this.stopping && ["agent_start", "agent_end", "agent_settled"].includes(event.type))
         return;
+      if (["agent_end", "agent_settled"].includes(event.type) && Number.isSafeInteger(event.generation) && event.generation === this.settledGeneration)
+        return;
       if (event.type === "session_start") {
         if (!this.ownerClaimed) {
           this.ownerClaimed = true;
@@ -11605,6 +11609,7 @@ var init_pi = __esm(() => {
       if (event.type === "agent_settled") {
         if (Number.isSafeInteger(event.generation) && event.generation !== this.budgetGeneration)
           return;
+        this.settledGeneration = this.budgetGeneration;
         clearTimeout(this.executionBudgetTimer);
         this.executionBudgetTimer = undefined;
         this.agentRunning = false;
@@ -11633,10 +11638,10 @@ var init_pi = __esm(() => {
         } else if (approvalStopReason) {
           this.observeTurn("aborted");
           this.onMessage?.(approvalStopReason, reply);
-        } else if (error) {
+        } else if (error && !this.turnObserved) {
           this.turnObserved = true;
           this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling, settledCeiling);
-        } else {
+        } else if (error) {} else {
           this.observeTurn("success");
           if (text)
             this.finalAnswer(text, reply);
