@@ -28,7 +28,7 @@ let titleEpoch = "";
 let pendingPromptId: string | undefined;
 let activePromptId: string | undefined;
 let settlement: Promise<void> | undefined;
-const maxSteps = Number(process.env.AGENTHUB_PI_MAX_STEPS ?? 30);
+const maxSteps = Number(process.env.AGENTHUB_PI_MAX_STEPS ?? 100);
 let shutdown: (() => void) | undefined;
 let runtimeCtx: any;
 let modelRegistry: any;

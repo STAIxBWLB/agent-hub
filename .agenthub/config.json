@@ -19,7 +19,7 @@
     "backend": "auto",
     "dgx_coding": "coding",
     "dgx_fast": "fast",
-    "max_steps": 30
+    "max_steps": 100
   },
   "roles": {
     "pi": [
