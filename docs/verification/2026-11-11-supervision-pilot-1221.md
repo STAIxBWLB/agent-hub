@@ -176,6 +176,7 @@ read and present in a `task`-narrowed one.
 | 14 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 to 13 (`etime` 15 h 55 m) | 2026-11-14 03:55 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 15 | 15 | 28 since this daemon start, 12 of them in the 53 m after reading 13 (unknown which bound, task or rule) | 14 |
 | 15 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 to 14 (`etime` 17 h 14 m) | 2026-11-14 05:14 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 15 | 15 | 39 since this daemon start, 11 of them in the 1 h 19 m after reading 14 (unknown which bound, task or rule) | 15 |
 | 16 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 to 15 (`etime` 22 h 12 m) | 2026-11-14 10:12 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 15 | 15 | 45 since this daemon start, 6 of them in the 4 h 58 m after reading 15 (unknown which bound, task or rule) | 15 |
+| 17 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 to 16 (`etime` 25 h 06 m); main reads 0.39.0 at this head, so the measured daemon runs one release behind the repository | 2026-11-14 13:06 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 15 | 15 | 52 since this daemon start, 7 of them in the 2 h 54 m after reading 16 (unknown which bound, task or rule) | 15 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -588,6 +589,46 @@ evaluator and the queue are byte-identical from `0af9fb5a1`, where reading 5 pin
 nothing under `git diff --stat`), so the frozen case set still describes the code under
 measurement.
 
+Reading 17 (2026-11-14 13:06 KST) is the second read with nothing moving, and the first on whose
+window main shipped a release. `ps -o lstart= -p 45122` still answers 2026-11-13 11:59:44 KST with
+`etime` 25 h 06 m at the read, so this is the lifetime of readings 10 to 16 and the release did not
+restart it: `git show 2126d2b1c:package.json` reads `0.39.0` while `ahub status` reports
+`agent-hub 0.38.0`, so the measured daemon runs one release behind the repository. That is recorded
+because the refusal counter is per lifetime: an upgrade that restarts this process resets it, the
+way reading 10 opened a new lifetime at 0. The `task: 866` read returned the same fifteen rows at
+the same six revisions, all expired, so nothing has been written on this task since the three rows
+at `22:9` at 01:50:20 KST: 11 h 16 m, of which the last 2 h 54 m cover the eight commits main took
+since reading 16 (`912f127f2`, `7f75be570` and the release branch's five, merged as `2126d2b1c`).
+
+That stillness is the episode condition again, and the board still says so. Every partner this task
+ever declared reads `approved` at this read (#897, #916, #917, #918, #921 and #928), and
+`declared_overlap_without_integration` proposes only while both sides' latest episode is an accepted
+one, so the rule was not asked a question: a zero-row window under that condition is unknown
+coverage and never a clean non-trigger.
+
+`refused` reads 52 against reading 16's 45, seven more in 2 h 54 m, or 2.41 an hour, and the counter
+rose against a ledger that wrote nothing for a second window. Five consecutive windows now read
+refusals of 2.1, 13.6, 8.35, 1.21 and 2.41 an hour against rows written of 6, 0, 0, 0 and 0. A
+release merge on main writes no row on this task by itself, and the counter is still not a function
+of this task's writes. Which bound refused the seven stays unknown for the reason the earlier
+readings give.
+
+Provenance at this reading: board head `2126d2b1c`, eight commits since reading 16's `dcff79a1e`.
+Their `docs/dogfood.md` hunks are two, both in `bc00e8368`, the release's 0.39.0 document review: one
+in-place rewrite at `@@ -108 +108 @@` of the security-audit row, and one insert at
+`@@ -195,0 +196 @@` of a new `Conductor, planner and reviewer at init (hub task 900, #1408 T2)` row.
+The rewrite is above the anchor at 137 and moves nothing; the insert is 59 rows below the anchor and
+moves nothing above it, so the `Supervision rules and proposals (#1221 T1, T2)` row still reads 137
+with its section ending there (138 blank, 139 `## Memory and knowledge`). That is the same pair of
+cases the earlier readings measured, now on a release merge. Neither file this task touches appears
+in those eight (`git diff --stat dcff79a1e..2126d2b1c` on this receipt and on
+`docs/design/supervision.md` prints nothing), and `docs/design/supervision.md` still ends at
+`## Deliberately outside this contract` (119) with no `Observed limits` heading. The evaluator and
+the queue are byte-identical from the seal `16b8251657a2` to `2126d2b1c` (`supervision-rules.ts`,
+`supervision-proposals.ts` and `settled-roles.ts` all print nothing under `git diff --stat`), and the
+eighteen changed lines in the committed bundle name no supervision symbol, so the frozen case set
+still describes the code under measurement.
+
 ## Proposal ledger
 
 | proposal | rule | task | revision | trigger | action | outcome | evidence |
@@ -630,7 +671,7 @@ holding, and it counts neither as a helpful or false intervention nor as a clean
 | model calls | 0 (no inference path in the rules or the queue) |
 | memory writes | 0 |
 | daemon evaluations | pending (replayed from board revisions) |
-| rows written | 7 at the first conductor read, 3 of them on this task; the task-narrowed read shows 9 at reading 12: the same three, two written and expired before reading 10, three more written between readings 10 and 11 (two expired, one still pending at that read), and one at `15:6` written at 18:49:46 KST as that pending row closed. All nine are expired at reading 12. Fifteen at reading 13, six more: three at `19:8` written 149 to 177 ms after their partner's own accept and all closed in one second by the idle sweep's reassignment at 01:50:04 KST, and three at `22:9` written 338 ms after this task's re-accept, one expired 0.56 s after #921's review request and two still pending. The write latency is measured rather than inferred: `observe()` runs on the accept path, not on a scan. Reading 14 wrote none of its own and closed the #916 row, so the ledger held at fifteen while the refusal counter rose. Reading 15 wrote none of its own and closed the #897 row, so the ledger held at fifteen a second time and every row the wave stored on this task is expired. Reading 16 wrote none and closed none, so the ledger held at fifteen across 8 h 22 m in which main merged five PRs. Written by the daemon on a task change and not by this task |
+| rows written | 7 at the first conductor read, 3 of them on this task; the task-narrowed read shows 9 at reading 12: the same three, two written and expired before reading 10, three more written between readings 10 and 11 (two expired, one still pending at that read), and one at `15:6` written at 18:49:46 KST as that pending row closed. All nine are expired at reading 12. Fifteen at reading 13, six more: three at `19:8` written 149 to 177 ms after their partner's own accept and all closed in one second by the idle sweep's reassignment at 01:50:04 KST, and three at `22:9` written 338 ms after this task's re-accept, one expired 0.56 s after #921's review request and two still pending. The write latency is measured rather than inferred: `observe()` runs on the accept path, not on a scan. Reading 14 wrote none of its own and closed the #916 row, so the ledger held at fifteen while the refusal counter rose. Reading 15 wrote none of its own and closed the #897 row, so the ledger held at fifteen a second time and every row the wave stored on this task is expired. Reading 16 wrote none and closed none, so the ledger held at fifteen across 8 h 22 m in which main merged five PRs. Reading 17 wrote none and closed none, so the ledger held at fifteen across 11 h 16 m in which main merged the 0.39.0 release, and every row the wave stored on this task is still expired. Written by the daemon on a task change and not by this task |
 | wall time | wave open 2026-11-11, cap 2026-11-18 |
 
 ## Person burden
@@ -643,8 +684,8 @@ and is not part of this wave.
 ## What stayed unknown
 
 - coverage per rule family, until the replay at wave end. A window in which no pair of this task
-  holds two accepted episodes asks the rule nothing, so reading 16's 8 h 22 m of silence is unknown
-  coverage and never a clean non-trigger;
+  holds two accepted episodes asks the rule nothing, so reading 16's 8 h 22 m and reading 17's
+  11 h 16 m of silence are unknown coverage and never a clean non-trigger;
 - refusals that happened before a daemon restart, which the counter does not carry;
 - rows dropped by the 400-row prune, if the wave ever reaches it;
 - whether an expired row would have been helpful or false: the expiry records no classification,
@@ -693,7 +734,10 @@ and is not part of this wave.
   added eleven more in 1 h 19 m (28 to 39), 8.35 an hour, again with no row written and one closed,
   so the second such window is a dated count with no attribution either; reading 16 added six in
   4 h 58 m (39 to 45), 1.21 an hour, with neither a row written nor one closed, which is the
-  slowest rate the wave has measured outside reading 12's unchanged window;
+  slowest rate the wave has measured outside reading 12's unchanged window; reading 17 added seven
+  in 2 h 54 m (45 to 52), 2.41 an hour, with neither a row written nor one closed, so five
+  consecutive windows read 2.1, 13.6, 8.35, 1.21 and 2.41 an hour while this task's writes read
+  6, 0, 0, 0 and 0;
 - whether this task's own plan refresh advanced the revision from `14:5` to `15:6`. The hub
   recorded the update at 18:45:02 KST, the queue wrote a row at `15:6` 4 m 44 s later, and the
   `14:5` row closed at that same second. A role-scoped read carries the revision pair on each row
