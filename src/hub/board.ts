@@ -19,7 +19,7 @@ import type { Database } from "./db-schema.ts";
 import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
-import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry } from "./roadmap.ts";
+import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry } from "./roadmap.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { AuditFinding, AuditProfile, AuditUnit } from "./security-audit.ts";
 import type { ReviewFinding } from "./review-findings.ts";
@@ -3003,6 +3003,9 @@ export class Board {
   private writeMilestone(id: number, patch: MilestonePatch, revision: number, event: MilestoneHistoryEntry): Milestone {
     const current = this.currentMilestone(id, revision), next = { ...current, ...patch };
     this.milestoneParent(id, next.parent);
+    const settling = current.state !== next.state && (next.state === "done" || next.state === "dropped");
+    if (current.history.length >= MILESTONE_HISTORY_LIMIT - 1 && !settling)
+      throw new Error(`roadmap history reserves its last slot for settlement; ask the person to run ahub roadmap state ${id} done or ahub roadmap state ${id} dropped`);
     const history = milestoneHistory([...current.history, event]);
     const result = this.db.query("UPDATE milestones SET title=?,outcome=?,state=?,horizon=?,milestone_order=?,target=?,parent=?,history=?,updated=?,revision=revision+1 WHERE id=? AND revision=?")
       .run(next.title, next.outcome, next.state, next.horizon, next.order, next.target, next.parent, JSON.stringify(history), event.at, id, revision);

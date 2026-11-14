@@ -61,7 +61,9 @@ Edits require the revision returned by show. Every write uses a transactional
 revision compare-and-set. Link changes and their history/revision update commit
 together. An identical link/unlink replay changes nothing. History contains at
 most 256 metadata events: actor, time, event, field names and link kind, never
-task text or the linked task id.
+task text or the linked task id. Ordinary mutations reserve the last event slot
+for the person's done/dropped settlement, so reaching the ordinary-write ceiling
+cannot strand an active milestone. Duplicate link/unlink replays consume no slot.
 
 ## Membership and computed progress
 

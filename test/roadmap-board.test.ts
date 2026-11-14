@@ -79,7 +79,8 @@ test("one-level parents refuse self, missing parent, cycles and subtree moves at
 
 test("history ceiling refuses a link and metadata edit together with their side effects", () => {
   const { board } = rig(); let milestone = create(board);
-  for (let index = 1; index < MILESTONE_HISTORY_LIMIT; index++) milestone = board.updateMilestone(milestone.id, { order: index }, milestone.revision, { at: 1000 + index, by: "user", event: "ordered", fields: ["order"] });
+  for (let index = 1; index < MILESTONE_HISTORY_LIMIT - 1; index++) milestone = board.updateMilestone(milestone.id, { order: index }, milestone.revision, { at: 1000 + index, by: "user", event: "ordered", fields: ["order"] });
+  milestone = board.updateMilestone(milestone.id, { state: "done" }, milestone.revision, { at: 2000, by: "user", event: "state", fields: ["state"] });
   expect(milestone.history).toHaveLength(MILESTONE_HISTORY_LIMIT);
   expect(() => board.linkMilestone(milestone.id, "task", "1", "user", milestone.revision)).toThrow("history");
   expect(() => board.updateMilestone(milestone.id, { title: "Too late" }, milestone.revision, edit())).toThrow("history");
