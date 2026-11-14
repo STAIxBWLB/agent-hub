@@ -2193,10 +2193,14 @@ const commands: Record<string, () => Promise<void> | void> = {
       // a stray operand (for example the value of a `--color always` that is not the `--color=` form) is a usage error, never silently ignored
       if (rest.length !== 1) fail("usage: ahub task show <id> [--json] [--full] [--color=auto|always|never]");
       // CLI output standard v1: a lookup that finds nothing is a failure (stderr, exit 1), not a successful print. The daemon answers a missing id with a JSON string
-      // (`"no task #N"`) while a found task is an object. The failure holds with `--json` too: a script gets exit 1 and an empty stdout, not a JSON string that reads as success.
+      // (`"no task #N"`) while a found task is an object. The exit code is the standard's and is set apart from the format: `--json` keeps printing the hub's own document
+      // byte for byte on stdout, and exits 1 like the human path, which prints the error and a next step on stderr instead.
       const shown = await taskOp("task_show", { id: rest[0] });
       const missing = (() => { try { const value: unknown = JSON.parse(shown); return typeof value === "string" && /^no task #\d+$/.test(value) ? value : undefined; } catch { return undefined; } })();
-      if (missing !== undefined) return fail(missing, false, undefined, "ahub board");
+      if (missing !== undefined) {
+        if (outputOptions(presentation.flags).json) { console.log(shown); process.exitCode = 1; return; }
+        return fail(missing, false, undefined, "ahub board");
+      }
       return shownTask(renderTaskShow)(Promise.resolve(shown));
     }
     if (sub === "claim") {

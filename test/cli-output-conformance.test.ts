@@ -224,7 +224,7 @@ describe("CLI output standard v1: conformance checks", () => {
     expect(errorLines("x", "cd /p && ahub init\u001b[31m", false, false)[1]).not.toContain("\u001b"); // a next step is sanitized like any text
   });
   test("4: usage errors exit 2 and everything else 1", () => {
-    for (const message of ["usage: ahub stop <peer>", 'unknown command "x"; run ahub help', "--after pages a campaign\nusage: ahub study ..."]) expect(failureExitCode(message), message).toBe(2);
+    for (const message of ["usage: ahub stop <peer>", 'unknown command "x"; run ahub help', "--after pages a campaign\nusage: ahub study ...", "--task needs a value", "invalid release command"]) expect(failureExitCode(message), message).toBe(2);
     for (const message of ["no task #9", "never-ask requires --yes; nothing was changed", "no hub running for /p (run: ahub up)", "cannot read the manifest file"]) expect(failureExitCode(message), message).toBe(1);
   });
   test("5: with LANG=C the markers are ASCII and the report keeps its alignment", () => {

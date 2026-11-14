@@ -203,7 +203,7 @@ test("ahub deliverables prints the records, --check marks a change since review,
   expect(empty.code).toBe(0); expect(empty.stdout).toContain("task #999 has no deliverables");
   for (const bad of [["--task"], ["--task", "0"], ["--task", "abc"], ["extra"], ["--task", "1", "--task", "2"]]) {
     const refused = await ahub(r.root, ["deliverables", ...bad]);
-    expect(refused.code, bad.join(" ")).toBe(1); expect(refused.stderr).toMatch(/usage: ahub deliverables|needs a value|more than once|repeated/); expect(refused.stdout).toBe("");
+    expect(refused.code, bad.join(" ")).toBe(2); expect(refused.stderr).toMatch(/usage: ahub deliverables|needs a value|more than once|repeated/); expect(refused.stdout).toBe("");
   }
 });
 

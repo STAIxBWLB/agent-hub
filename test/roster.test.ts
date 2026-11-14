@@ -751,7 +751,7 @@ test("ahub roster remove deletes a stale instance key through the real CLI, and 
   };
   try {
     const never = await cli(["roster", "remove", "external-1", "--yes"]);
-    expect(never.code).toBe(1); expect(never.stderr).toContain("usage: ahub roster"); // a typo is still a usage error
+    expect(never.code).toBe(2); expect(never.stderr).toContain("usage: ahub roster"); // a typo is still a usage error
     const removed = await cli(["roster", "remove", "codex-2", "--yes"]);
     expect(removed.code, removed.stderr).toBe(0);
     const after = JSON.parse(readFileSync(file, "utf8"));
@@ -759,7 +759,7 @@ test("ahub roster remove deletes a stale instance key through the real CLI, and 
     expect(after.memory).toEqual({ enabled: false }); // and nothing else in the file moved
     // Adding it back is not offered: an instance that is not declared cannot join the roster, and the CLI says usage before asking the hub.
     const added = await cli(["roster", "add", "codex-2"]);
-    expect(added.code).toBe(1); expect(added.stderr).toContain("usage: ahub roster");
+    expect(added.code).toBe(2); expect(added.stderr).toContain("usage: ahub roster");
     expect(JSON.parse(readFileSync(file, "utf8")).roster).toBeUndefined();
   } finally { await daemon.stop(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
 }, 40000);

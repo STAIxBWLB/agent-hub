@@ -417,13 +417,13 @@ test("budget CLI text and JSON retain the host reviewer admission policy", async
   expect(text.stdout).toContain("Budget/manual pauses still block"); expect(json.code).toBe(0); expect(JSON.parse(json.stdout).review).toEqual(review);
 });
 
-test("#1484 ahub task show for a missing id writes to stderr, exits 1, names the next step and prints nothing on stdout, --json included", async () => {
+test("#1484 ahub task show for a missing id writes to stderr, exits 1 and names the next step; --json keeps the hub's document on stdout and exits 1", async () => {
   const f = fixture({ missingTask: true });
   const text = await f.run(["task", "show", "99"]);
   expect(text.code).toBe(1); expect(text.stdout).toBe("");
   expect(text.stderr).toBe("ahub: no task #99\n  → ahub board\n"); // plain on a pipe (no fail marker), with the next step
   const json = await f.run(["task", "show", "99", "--json"]);
-  expect(json.code).toBe(1); expect(json.stdout).toBe(""); expect(json.stderr).toContain("ahub: no task #99"); // a lookup that finds nothing is a failure in both modes
+  expect(json.code).toBe(1); expect(json.stdout).toBe('"no task #99"\n'); expect(json.stderr).toBe(""); // the document is unchanged; the exit code is the standard's
   const found = await f.run(["task", "show", String(f.tasks[0]!.id)]);
   expect(found.code).toBe(0); expect(found.stdout).not.toBe("");
 }, 20_000);

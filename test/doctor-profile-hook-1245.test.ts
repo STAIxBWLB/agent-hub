@@ -42,8 +42,8 @@ test("doctor CLI warns about an unselected default's stale profile hook and name
   });
   try {
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    expect(code, stderr).toBe(0);
     const rows = JSON.parse(stdout) as { name: string; level: string; section: string; detail: string }[];
+    expect(code, stderr).toBe(rows.some(row => row.level === "fail") ? 1 : 0); // #1484: exit 1 exactly when a row failed
     const profiles = rows.filter(row => row.name.includes("profile hook"));
     const current = profiles.find(row => JSON.stringify(row).includes(selected));
     const stale = profiles.find(row => JSON.stringify(row).includes(fallback));
