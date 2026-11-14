@@ -946,8 +946,8 @@ export function resolutionRefusal(error: unknown): string {
   return RESOLUTION_CAUSES.find(([pattern]) => pattern.test(text))?.[1] ?? "resolution refused: inspect ahub queue show for the delivery's state";
 }
 
-/** No remote set and a stop are not failures: agent-mem words the missing remote "no sync remote" (v1) or "no generation sync remote configured". */
-export const quietSyncError = (error: string | undefined): boolean => /^(no (generation )?sync remote|stopped)/.test(error ?? "");
+/** No remote set and a stop are not failures: agent-mem words the missing remote "no sync remote" (v1), "no generation sync remote configured" or "no shard sync remote configured" (sharded homes). */
+export const quietSyncError = (error: string | undefined): boolean => /^(no (generation |shard )?sync remote|stopped)/.test(error ?? "");
 
 let recoverySourcePackageDigest: string | null | undefined;
 function capturedRecoverySourceDigest(): string | undefined {

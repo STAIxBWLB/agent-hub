@@ -84,6 +84,11 @@ test("declined inspection fallback keeps the canonical count and marks IDs unkno
 
 test("memory sync failure classification is closed and excludes upstream error text", () => {
   expect(classifyMemorySyncFailure("no sync remote: a person sets one with `amem sync --remote <private git url>`")).toEqual({ cause: "remote" });
+  expect(classifyMemorySyncFailure("no generation sync remote configured")).toEqual({ cause: "remote" });
+  expect(classifyMemorySyncFailure("no shard sync remote configured")).toEqual({ cause: "remote" });
+  // only the exact text is a remote cause: a prefix match or other shard wording is not
+  expect(classifyMemorySyncFailure("no shard sync remote configured at https://secret.invalid/private")).toEqual({ cause: "unknown" });
+  expect(classifyMemorySyncFailure("shard sync remote is invalid")).toEqual({ cause: "unknown" });
   expect(classifyMemorySyncFailure("push failed: remote rejected https://secret.invalid/private token=secret")).toEqual({ cause: "transport" });
   expect(JSON.stringify(classifyMemorySyncFailure("push failed: remote rejected https://secret.invalid/private token=secret"))).not.toContain("secret");
   expect(classifyMemorySyncFailure("https://secret.invalid/private token=secret")).toEqual({ cause: "unknown" });
