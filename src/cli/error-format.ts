@@ -4,10 +4,10 @@ import { MARKERS, terminalText } from "./console-state.ts";
 /**
  * 2 for a usage error (standard v1: an unknown command or flag, a bad argument), 1 for every other failure. A usage error is one whose text starts with
  * `usage:` or names an unknown command, or that carries its usage as a line of its own (`<what is wrong>\nusage: ...`, the form `ahub study` prints), or is a flag
- * with no value (`--task needs a value`), or is the release command's malformed-arguments refusal. A refusal that changed nothing (`never-ask requires --yes`) is not a usage error and keeps exit 1.
+ * with no value (`--task needs a value`), or is the release command's malformed-arguments refusal, or names an argument or option the command does not take (`unknown argument`, `unknown option`). A refusal that changed nothing (`never-ask requires --yes`) is not a usage error and keeps exit 1.
  */
 export function failureExitCode(message: string): 1 | 2 {
-  return /^(usage:|unknown command )|\nusage:|^--[a-z][a-z-]* needs a value|^invalid release command$/i.test(message) ? 2 : 1;
+  return /^(usage:|unknown command )|\nusage:|^--[a-z][a-z-]* needs a value|^invalid release command$|^(ahub [a-z-]+: )?unknown (argument|option) /i.test(message) ? 2 : 1;
 }
 
 /** The error line and its optional next step, as `fail()` prints them; pure so a test reads the exact text. */

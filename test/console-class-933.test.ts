@@ -131,7 +131,7 @@ test("#933: a local conductor form's usage error is refused before the admission
   const f = await fixture(); try {
     for (const [args, label] of [[["bench", "run", "--arm", "x"], "bench run"], [["research", "backfill", "--unknown"], "research backfill"], [["source", "add", "a", "b"], "source add"]] as [string[], string][]) {
       const result = await cli(f.root, args);
-      expect(result.code, label).toBe(1); expect(result.stderr).toMatch(/usage|unknown argument/);
+      expect(result.code, label).toBe(2); expect(result.stderr).toMatch(/usage|unknown argument/); // usage errors (#1484)
       expect(f.admitted(label), label).toBe(0);
     }
   } finally { await f.close(); }
