@@ -1088,8 +1088,8 @@ repository. `test/companion-contract.test.ts` holds ahub to the file.
 
 ## Install and start
 
-Use Bun <!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor --> or newer. Source checks and CI use the version pinned in
-`.bun-version` (currently <!-- facts:bun-pinned -->1.4.2<!-- /facts:bun-pinned -->). Install the released package and install its Claude
+Use Bun <!-- facts:bun-floor -->1.4.4<!-- /facts:bun-floor --> or newer. Source checks and CI use the version pinned in
+`.bun-version` (currently <!-- facts:bun-pinned -->1.4.4<!-- /facts:bun-pinned -->). Install the released package and install its Claude
 channel plugin:
 
 ```bash

@@ -10,7 +10,7 @@
 
 ## npm releases
 
-The package is `@staix/agent-hub` in the `staix` npm organization. Bun >=<!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor -->
+The package is `@staix/agent-hub` in the `staix` npm organization. Bun >=<!-- facts:bun-floor -->1.4.4<!-- /facts:bun-floor -->
 is required to run it; Node and npm are also needed for the development gate.
 The commands remain `ahub` and `agent-hub`.
 

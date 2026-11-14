@@ -14,7 +14,7 @@ declared and never cause an external fetch. See [execution lineage](docs/operati
 
 ## Quick start
 
-You need [Bun](https://bun.sh) <!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor --> or later on PATH.
+You need [Bun](https://bun.sh) <!-- facts:bun-floor -->1.4.4<!-- /facts:bun-floor --> or later on PATH.
 
 ```bash
 bun add -g @staix/agent-hub && ahub setup
