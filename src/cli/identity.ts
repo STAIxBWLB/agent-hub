@@ -215,6 +215,10 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
 
 /** No argument text is included: notices and refusal logs must not copy task text or credentials. */
 export function cliCommandLabel(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): string {
+  if (command === "roadmap") {
+    const sub = args[0] === "--json" ? args[1] : args[0];
+    return ["list", "show", "new", "edit", "link", "unlink", "order", "state"].includes(sub ?? "") ? `roadmap ${sub}` : "roadmap";
+  }
   if (command === "sdlc" && args[0] === "configure") return "sdlc configure";
   if (command === "sdlc" && args[0] === "survey") return ["start", "show"].includes(args[1] ?? "") ? `sdlc survey ${args[1]}` : "sdlc survey";
   if (command === "sdlc" && args[0] === "audit") return ["start", "show"].includes(args[1] ?? "") ? `sdlc audit ${args[1]}` : "sdlc audit";

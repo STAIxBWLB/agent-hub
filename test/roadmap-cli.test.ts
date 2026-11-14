@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { classifyPeerCommand, cliCommandLabel, liveTestRefusal } from "../src/cli/identity.ts";
 import { parseRoadmapArgs, renderRoadmap } from "../src/cli/roadmap.ts";
 
 test("roadmap parses reads, optional default list and explicit JSON", () => {
@@ -7,6 +8,18 @@ test("roadmap parses reads, optional default list and explicit JSON", () => {
   expect(parseRoadmapArgs(["list", "--json"])).toEqual({ op: "hub_roadmap_list", args: {}, json: true });
   expect(parseRoadmapArgs(["show", "12", "--json"])).toEqual({ op: "hub_roadmap_show", args: { id: 12 }, json: true });
   expect(parseRoadmapArgs(["--json", "show", "12"])).toEqual({ op: "hub_roadmap_show", args: { id: 12 }, json: true });
+});
+
+test("roadmap audit labels contain only closed command names and person states cannot be delegated", () => {
+  const canary = "PRIVATE_ROADMAP_ARGUMENT_CANARY";
+  for (const op of ["list", "show", "new", "edit", "link", "unlink", "order", "state"]) {
+    expect(cliCommandLabel("roadmap", [op, "42", canary])).toBe(`roadmap ${op}`);
+    expect(cliCommandLabel("roadmap", [op, "42", canary])).not.toContain(canary);
+    if (!["list", "show"].includes(op)) expect(liveTestRefusal("roadmap", [op, "42", canary])).toBe(true);
+  }
+  expect(cliCommandLabel("roadmap", ["future", canary])).toBe("roadmap");
+  expect(classifyPeerCommand("roadmap", ["list", "--as-user"])).toBe("console");
+  for (const state of ["done", "dropped"]) expect(classifyPeerCommand("roadmap", ["state", "42", state])).toBe("console");
 });
 
 test("new/edit preserve text values and consume text that looks like a presentation option", () => {
