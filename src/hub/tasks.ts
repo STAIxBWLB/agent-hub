@@ -4804,7 +4804,7 @@ export class Tasks {
       try { claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" }); }
       catch (error) { undoWorktree?.(); throw error; }
       this.captureOwnerAcceptance(claimed);
-      claimed = await this.prepareAcceptedWorktree(claimed, by, requestCheck);
+      claimed = await this.prepareAcceptedWorktree(claimed, by, opts.current ?? this.requestCheck(by));
       this.releaseNotice(`task ${this.publicTitle(claimed)} claimed by ${by}`);
       return claimed;
     }

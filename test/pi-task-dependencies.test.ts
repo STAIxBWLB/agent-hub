@@ -54,7 +54,7 @@ test("Pi installs exact argv in private same-volume staging with only fake HOME 
   } });
   expect(result).toEqual({ ready: true }); expect(observed).toBeDefined();
   expect(existsSync(observed!.cwd)).toBe(false); expect(existsSync(observed!.env.HOME)).toBe(false); cleanStage(cwd);
-  expect(statSync(join(cwd, "node_modules")).ino).toBe(modulesInode);
+  expect(modulesInode).toBeDefined(); expect(statSync(join(cwd, "node_modules")).ino).toBe(modulesInode!);
   expect(readFileSync(join(cwd, "node_modules", "fixture-ready"), "utf8")).toBe("prepared from reviewed snapshot");
   expect(readFileSync(join(cwd, "package.json"), "utf8")).toBe(manifest);
 });

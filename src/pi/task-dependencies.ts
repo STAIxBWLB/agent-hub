@@ -73,6 +73,7 @@ export async function preparePiDependencies(cwd: string, options: PiDependencyOp
   const fail = (reason: DependencyReason): never => { throw new PreparationStopped(reason); };
   try {
     check(); root = realPath(cwd);
+    if (root !== cwd) return { ready: false, reason: "task changed" };
     if (!options.base || !/^[0-9a-f]{40}$/.test(options.base) || !options.repositoryRoot) return { ready: false, reason: "unsupported install inputs" };
     if (!options.stagingParent) return { ready: false, reason: "staging unavailable" };
     const repository = realPath(options.repositoryRoot), parent = realPath(options.stagingParent);
@@ -136,7 +137,7 @@ export async function preparePiDependencies(cwd: string, options: PiDependencyOp
         const manifest = parseInstallManifest(data);
         if (Object.hasOwn(manifest, "trustedDependencies")) return { ready: false, reason: "unsupported install inputs" };
       } else if (name.endsWith("bunfig.toml")) {
-        const config = Bun.TOML.parse(data.toString("utf8"));
+        const config = Bun.TOML.parse(data.toString("utf8")) as Record<string, unknown>;
         const installKeysUnsafe = (value: unknown): boolean => !!value && typeof value === "object" && Object.entries(value).some(([key, item]) => /preload|lifecycle|script|trustedDependencies/i.test(key) || installKeysUnsafe(item));
         // Test-only preload does not execute during install and stays byte-for-byte in the reviewed snapshot.
         if (Object.hasOwn(config, "preload") || installKeysUnsafe(config.install)) return { ready: false, reason: "unsupported install inputs" };
