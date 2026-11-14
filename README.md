@@ -140,6 +140,9 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   ([details](docs/memory.md#agent-authored-records-1320)).
 - **Local and on-prem models.** Pi and the local worker can run on DGX or local MLX
   through an authenticated relay. Tasks marked as PII stay on the on-prem worker.
+  Pi can checkpoint and continue after a tool-step ceiling, within a configured
+  continuation allowance; exhausted ceilings and model failures have distinct
+  task-move reasons ([Pi operations](docs/operations.md#pi-with-dgx-and-mlx)).
 - **Guard rails.** The local worker and Pi run in a sandbox, and their writes and
   shell commands wait for your approval unless you choose a looser permission mode.
   Publish, external-write, destroy and install calls ask a person in every mode for
