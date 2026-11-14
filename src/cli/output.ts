@@ -408,6 +408,116 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.personRun?.length) out.push(...lines(`WAITING ON YOU  ${data.personRun.map(id => `#${id}`).join(", ")} (person-run: no agent is offered it; ahub backlog list)`, columns, "attention"));
   return out;
 }
+/** One thing on `ahub status` that needs action: a marker, the finding, and the exact next command when the fix is known. */
+export interface AttentionItem { marker: "fail" | "warn"; text: string; next?: string }
+/**
+ * CLI output standard v1: every item of the status data that needs a person or an agent to act, in one list. Facts stay out; a row that is only information
+ * is not here. A next step is given only where the command is complete and copyable (no placeholder), never invented.
+ */
+export function statusAttention(data: StatusOutput, now = Date.now()): AttentionItem[] {
+  const items: AttentionItem[] = [];
+  const add = (marker: AttentionItem["marker"], text: string, next?: string) => { items.push({ marker, text: flat(text), ...(next ? { next } : {}) }); };
+  if (data.runtimeModelsUnavailable === true) add("warn", "runtime models unavailable: could not read a bounded model catalog", "ahub model list");
+  const specs = data.specs;
+  if (specs && [specs.errors, specs.stale].every(value => Number.isSafeInteger(value) && value >= 0) && (specs.errors || specs.stale)) add("warn", `specs: ${specs.errors} errors, ${specs.stale} stale`, "ahub specs check");
+  if (specs?.truncated) add("warn", "specs: report truncated; narrow specs.roots", "ahub specs check");
+  if (specs?.missingBlockHint) add("warn", "specs: AGENTS.md has no specs instruction block");
+  for (const pending of data.pendingRestart ?? []) add("warn", `restart pending: ${pending.key}: ${pending.reason}`, "ahub restart --dry-run");
+  if (data.mainCheckout) add("warn", `main checkout: ${data.mainCheckout}`);
+  for (const drift of data.agentDrift ?? []) add("warn", `agent CLI ${drift.id} ${drift.version} is ${drift.state}`, `ahub agents trust ${drift.id} ${drift.version}`);
+  if (data.retainedConfig?.length) add("warn", `config retained: ${data.retainedConfig.map(row => row.key).join(", ")}`, "ahub settings reload");
+  for (const row of data.schedules ?? []) if (row.error) add("warn", `schedule ${row.id}: ${row.error}`, "ahub schedule list");
+  for (const [peer, row] of Object.entries(data.queueBackpressure?.peers ?? {})) if (row.blocked) add("warn", `${peer} queue pressure: automatic offers held: ${row.reason ?? row.code ?? "unknown"}`, `ahub queue list --peer ${peer}`);
+  for (const stall of data.taskStalls ?? []) add("warn", `task #${stall.task} stalled: ${stall.cause.kind}${stall.cause.peer ? ` ${stall.cause.peer}` : ""}${stall.cause.dependency ? ` #${stall.cause.dependency}` : ""}: ${stall.cause.code}`, `ahub task show ${stall.task}`);
+  for (const offer of data.pendingTaskOffers ?? []) add("warn", `task #${offer.task} is waiting for ${offer.peer}`, `ahub task show ${offer.task}`);
+  if (data.memoryProfile?.state === "unavailable") add("warn", `memory unavailable${data.memoryProfile.error ? `: ${data.memoryProfile.error}` : ""}`, "ahub doctor");
+  if (data.memoryProfile?.sync?.state === "failed") add("warn", `memory sync failed: ${memorySyncLine(data.memoryProfile.sync)}`, "ahub doctor");
+  if (data.memoryRead?.truncated) add("warn", `memory view truncated: newest ${data.memoryRead.limit} project candidates considered`);
+  if (data.planner?.source === "none") add("warn", "no planner is configured", "ahub roles");
+  for (const [id, isolated] of Object.entries(data.ownerIsolation ?? {})) { const text = ownerIsolationText(isolated, data.ownerIsolationNotes?.[id]); if (text && !isolated) add("warn", `${id} owner isolation: ${text}`); }
+  if (data.roomsUnavailable !== undefined) add("fail", roomsUnavailableLine(data.roomsUnavailable));
+  if (data.deliveryError) add("fail", `delivery storage: ${data.deliveryError}; dispatch is stopped`, "ahub doctor");
+  for (const [peer, count] of Object.entries(data.deliveryFailures ?? {})) if (Number.isSafeInteger(count) && count > 0) add("warn", `${peer} has ${count} failed deliver${count === 1 ? "y" : "ies"}`, `ahub queue discard --peer ${peer} --state failed`);
+  if (data.reviewInputHealth) { const health = reviewInputHealthLine(data.reviewInputHealth); if (health) add(data.reviewInputHealth.state === "corrupt" ? "fail" : "warn", `review input provenance: ${health}`); }
+  for (const pending of data.permissionDefaults ?? []) add("warn", `permission default: ${pending.peer} never-ask from ${pending.source} stays ask until a person confirms`, "ahub console");
+  for (const crash of data.crash ?? []) add("warn", `crash recovery: ${crash}`);
+  for (const warning of data.isolatedChecks?.orphans ?? []) add("warn", `isolated check: ${warning}`);
+  for (const id of data.isolatedChecks?.unknownReceipts ?? []) add("warn", `check receipt ${id}: unknown; receipt storage unavailable`);
+  if (data.isolatedChecks?.maintenanceUnavailable) add("warn", "check maintenance unavailable; saved run outcomes are unchanged");
+  for (const [id, p] of Object.entries(data.peers)) {
+    for (const session of Array.isArray(p.standbySessions) ? p.standbySessions : []) {
+      if (!session || typeof session.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(session.id)) continue;
+      add("warn", `${id} has a standby session waiting${Number.isFinite(session.since) ? ` ${relative(session.since, now)}` : ""}`, `ahub peer takeover ${id} ${session.id}`);
+    }
+    if (typeof p.reviewObserverHoldNote === "string" && p.reviewObserverHoldNote) add("warn", `${id} review input: ${p.reviewObserverHoldNote}`);
+    if (p.heldRows?.length) for (const row of p.heldRows) add("fail", `${id}: a delivery is held for review (from ${row.senders.join(",")}; ${duration(Math.max(0, now - row.createdAt))} old)`, `ahub queue show ${row.id}`);
+    else if (p.heldBy) add("fail", `${id}: a delivery is held for review${p.holdNote ? `: ${flat(p.holdNote)}` : ""}`, `${queueResolveCommand({ id: p.heldBy, peer: id, state: "needs_review" })}`);
+    if (p.paused) {
+      const budgetPause = data.budget?.[id]?.paused;
+      const text = budgetPause ? `budget: ${budgetPause.reason ?? "threshold"}${typeof budgetPause.resetsAt === "number" ? `; resets ${relative(budgetPause.resetsAt, now)}` : "; reset unknown"}`
+        : typeof p.paused === "object" ? `${p.paused.by ?? "paused"}${p.paused.reason ? `: ${p.paused.reason}` : ""}` : flat(p.paused);
+      add("warn", `${id} is paused (${text})`, budgetPause ? "ahub budget" : `ahub resume ${id}`);
+    }
+    if (typeof p.reviewerUnavailable === "string" && p.reviewerUnavailable) add("fail", `${id} reviewer unavailable: ${flat(p.reviewerUnavailable)}`);
+    if (p.ownerIsolationNote) add("warn", `${id} owner isolation: ${p.ownerIsolationNote}`);
+    if (typeof p.statusNotice?.message === "string" && p.statusNotice.message) add("warn", `${id}: ${p.statusNotice.message}`);
+    if (typeof p.importantWaitingSince === "number" && p.importantWaitingNote) add("warn", `${id}: ${String(p.importantWaitingNote)}`, `ahub queue list --peer ${id}`);
+    const actionPolicy = data.actionPolicyInfo?.[id];
+    if (actionPolicy?.note && !actionPolicy.enforceable) add("warn", `${id} action policy: ${actionPolicy.note}`);
+  }
+  for (const b of data.models?.backends ?? []) for (const [key, label] of [["coolingUntil", "cooling"], ["failingUntil", "dispatch held"]] as const) {
+    if (!b[key]) continue; const at = Date.parse(b[key]);
+    add("warn", `${backendLabel(b)} ${label}${Number.isFinite(at) ? ` until ${relative(at, now)}` : ""}`);
+  }
+  // The documented line (docs/operations.md, person-run legs): its words are kept so a person searching status for it still finds it.
+  if (data.personRun?.length) add("warn", `WAITING ON YOU  ${data.personRun.map(id => `#${id}`).join(", ")} (person-run: no agent is offered it)`, "ahub backlog list");
+  return items;
+}
+/**
+ * `ahub status` as CLI output standard v1 reads it: a header, an Attention section (every item that needs action, marked, with its next command), then the hub,
+ * the peers and the tasks. Everything else the older view printed stays in `renderStatus`, behind `--verbose` and `--full`. `columns` undefined is a pipe: no wrap.
+ */
+export function renderStatusDefault(data: StatusOutput, columns?: number, now = Date.now(), ascii = false): Span[][] {
+  if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
+  const report = new LayoutReport(columns, ascii).header("ahub", "Status", [data.version, data.pid !== undefined ? `pid ${data.pid}` : undefined, data.controlPort !== undefined ? `127.0.0.1:${data.controlPort}` : undefined].filter(Boolean).join("  "));
+  const attention = statusAttention(data, now);
+  report.section("Attention", attention.length ? plural(attention.length, "item") : undefined);
+  if (!attention.length) report.bullet("ok", "nothing needs attention");
+  for (const item of attention) { report.bullet(item.marker, item.text); if (item.next) report.next(item.next); }
+  const hub: [string, unknown][] = [["version", data.version ?? "unknown"], ["pid", data.pid ?? "unknown"], ["control", `127.0.0.1:${data.controlPort ?? "unknown"}`], ["project", data.cwd ?? ""]];
+  if (data.planner) hub.push(["planner", `${data.planner.peers?.join(", ") || "nobody"} (${data.planner.source ?? "unknown"})`]);
+  if (data.memoryProfile) hub.push(["memory", `${data.memoryProfile.profile === "generation" ? `generation ${data.memoryProfile.generation?.slice(0, 8) ?? "unknown"}` : data.memoryProfile.profile ?? "unbound"}; ${data.memoryProfile.state ?? "unknown"}`]);
+  const specs = data.specs;
+  if (specs && [specs.specCount, specs.documents, specs.errors, specs.stale].every(value => Number.isSafeInteger(value) && value >= 0) && (specs.specCount > 0 || specs.documents > 0 || specs.errors > 0)) hub.push(["specs", `${specs.specCount} (errors ${specs.errors}, stale ${specs.stale})`]);
+  if (data.schedules?.length) hub.push(["schedules", plural(data.schedules.length, "schedule")]);
+  report.section("Hub").kv(hub);
+  const peers = Object.entries(data.peers);
+  const s = initialConsoleState(); s.panel = 1; s.peers = data.peers; s.budget = data.budget ?? {};
+  const head = peers.some(([, p]) => p.permissionMode && p.permissionMode !== "ask") ? ["PEER", "STATE", "MODE", ...TABLES[1]!.slice(2)] : [...TABLES[1]!];
+  head.push("CONTEXT");
+  const peerRows = peers.map(([id, p]) => { const result = cells(s, { id, ...p }, false, now); result[0] = span(id, peerTone(id)); result.push(span(contextText(p, now))); return result; });
+  report.section("Peers", peers.length ? `${peers.length}` : undefined);
+  if (peerRows.length) report.append(rows(head, peerRows, columns));
+  else report.note("no peers attached yet (ahub claude | ahub codex | ahub kimi)");
+  // Plain keys under each peer: the peer is the heading, so a key never repeats its name (`form`, not `claude form`).
+  for (const [id, p] of peers) {
+    const facts: [string, unknown][] = [];
+    if (typeof p.form === "string") facts.push(["form", p.form]);
+    if (p.flowRoles) facts.push(["flow roles", p.flowRoles.join(", ") || "none"]);
+    if (Array.isArray(p.capableRoles)) facts.push(["capable roles", p.capableRoles.join(", ") || "none"]);
+    if (p.catalogRoles && Array.isArray(p.catalogRoles.value) && p.catalogRoles.value.length) facts.push(["catalog roles", p.catalogRoles.value.join(", ")]);
+    if (typeof p.oldestQueuedAt === "number") facts.push(["oldest queued", relative(p.oldestQueuedAt, now)]);
+    if (!facts.length) continue;
+    report.append([[{ text: `  ${id}`, tone: peerTone(id) }]]).kv(facts, 4);
+  }
+  const counts = Object.entries(data.tasks ?? {});
+  report.section("Tasks", counts.length ? `${counts.reduce((sum, [, n]) => sum + n, 0)}` : undefined);
+  if (counts.length) report.kv(counts.map(([state, n]) => [state, n] as const));
+  else report.note("no tasks");
+  if (data.taskWip && Object.keys(data.taskWip).length) report.kv([["planner WIP", Object.entries(data.taskWip).map(([peer, value]) => `${peer} ${value.wip}/${value.wipLimit}${wipSplit(value)}`).join("; ")]]);
+  report.note("ahub board lists them; ahub status --verbose shows every detail", "hint");
+  return report.lines();
+}
 // #724: short next-step codes for the compact board, keyed on the blocker texts of src/hub/sdlc.ts; the full advice stays in --full and ahub task show.
 const STAGE_CODES: [string, string][] = [["issue identity missing", "issue?"], ["PR identity missing", "PR?"], ["PR is not open", "PR closed"], ["current PR evidence unknown", "PR state?"],
   ["required check", "CI?"], ["local gate", "gate?"], ["current head has not been reviewed", "review?"], ["GitHub review approval", "approval?"], ["review requests", "requests?"],
