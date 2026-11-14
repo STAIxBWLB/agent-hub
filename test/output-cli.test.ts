@@ -20,7 +20,7 @@ const STUDY_PROJECTION = { id: "rc-0123456789ab", revision: 1, held: true, reaso
     handoff: { present: true, complete: false, insufficientEvidence: false, coveredSourceIds: ["src:0000000000000001"] }, budget: { tool_calls: { support: "enforceable", used: 3, limit: 10 }, tokens: { support: "unavailable", used: null, limit: null }, model_calls: { support: "advisory", used: null, limit: null } } },
   { unitId: "beta", round: 0, taskId: 3, state: "approved", purpose: "discovery", intentionalIndependentCheck: true, sourceIds: [], duplicateSourceIds: [],
     handoff: { present: true, complete: true, insufficientEvidence: false, coveredSourceIds: [] }, budget: {} }] };
-function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; kimiSource?: unknown; budget?: Record<string, unknown>; review?: Record<string, unknown> } = {}) {
+function fixture(options: { missingTask?: boolean; failFullBoard?: boolean; rejectChecked?: boolean; kimiSource?: unknown; budget?: Record<string, unknown>; review?: Record<string, unknown> } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-output-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
@@ -53,6 +53,8 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; ki
         : req.t === "budget" ? { budget, gate: 0.95, ...(options.kimiSource ? { kimiSource: options.kimiSource } : {}), ...(options.review ? { review: options.review } : {}) }
         : req.t === "execution_budget" ? req.op === "disable" ? { disabled: true } : { budgets }
         : req.t === "queue" ? ["show", "resolve"].includes(req.op) ? { delivery } : { deliveries }
+        : req.t === "task" && req.op === "task_show" && options.missingTask && !tasks.some(t => String(t.id) === String(req.args?.id)) ? { text: JSON.stringify(`no task #${req.args?.id}`) }
+        : req.t === "task" && req.op === "task_show" && options.missingTask ? { text: JSON.stringify(tasks.find(t => String(t.id) === String(req.args?.id))) }
         : req.t === "task" && options.rejectChecked && ["task_assign_checked", "task_unassign"].includes(req.op) ? { ok: false, error: "unknown operation" }
         : req.t === "task" && options.failFullBoard && req.args?.state === undefined && req.args?.ready === undefined && req.args?.release === undefined ? { ok: false, error: "full board temporarily unavailable" }
         : req.t === "task" && String(req.op).startsWith("study_") ? { text: JSON.stringify({ id: "rc-0123456789ab", parentTaskId: 7, revision: req.args?.revision ?? 1, status: req.op === "study_approve" ? "approved" : req.op === "study_close" ? "closed" : "draft", unitCount: 0, units: [] }) }
@@ -114,14 +116,15 @@ test("piped output is plain and complete; explicit color preserves text; COLUMNS
 
 test("invalid color prints command usage before connecting; output-only budget flags never acquire mutation authority", async () => {
   const f = fixture(); const bad = await f.run(["status", "--color=rainbow"]);
-  expect(bad.code).toBe(1); expect(bad.stderr).toContain("usage: ahub status"); expect(f.requests).toHaveLength(0);
+  expect(bad.code).toBe(2); expect(bad.stderr).toContain("usage: ahub status"); expect(f.requests).toHaveLength(0);
   expect(classifyPeerCommand("budget", ["--full", "--color=always", "--json"])).toBe("allowed");
   expect(classifyPeerCommand("budget", ["set", "claude", "1", "--color=always"])).toBe("console");
 });
 
-test("doctor structured checks and sections use declared levels/findings, with its unchanged successful exit code", async () => {
+test("doctor structured checks and sections use declared levels/findings, and it exits 1 when any row is a failure, --json included (#1484)", async () => {
   const f = fixture(); const json = await f.run(["doctor", "--json", "--color=always"]);
-  expect(json.code).toBe(0); expect(json.stdout).not.toContain("\x1b");
+  // the document is unchanged; the exit code follows the standard: a check command exits 1 on a failed row
+  expect(json.code).toBe(1); expect(json.stdout).not.toContain("\x1b");
   const checks = JSON.parse(json.stdout);
   expect(checks).toContainEqual(expect.objectContaining({ section: "Hub", level: "fail", name: "claude plugin" }));
   expect(checks).toContainEqual(expect.objectContaining({ section: "Hub", level: "fail", name: "claude recovery ID" }));
@@ -130,8 +133,8 @@ test("doctor structured checks and sections use declared levels/findings, with i
   expect(checks).toContainEqual(expect.objectContaining({ section: "Memory", level: "ok", name: "memory capture: codex" }));
   for (const check of checks) { expect(["ok", "warn", "fail", "unknown"]).toContain(check.level); expect(check.detail.length).toBeGreaterThan(0); }
   const text = await f.run(["doctor", "--color=never"], { COLUMNS: "80" });
-  expect(text.code).toBe(0); for (const section of ["Tools", "Hub", "Config", "Models", "Memory"]) expect(text.stdout).toContain(`${section}\n`);
-  expect(text.stdout).toContain("failures"); for (const line of text.stdout.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+  expect(text.code).toBe(1); for (const section of ["Tools", "Hub", "Config", "Models", "Memory"]) expect(text.stdout).toMatch(new RegExp(`^▸ ${section}( \\(|$)`, "m"));
+  expect(text.stdout.trimEnd().split("\n").at(-1)).toMatch(/^✗ \d+ failed( {2}⚠ \d+ warnings?)?/); for (const line of text.stdout.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
 }, 20_000);
 
 test("#610 doctor names uncertain maintenance state and leftover quarantine in JSON and text without changing either", async () => {
@@ -150,12 +153,12 @@ test("#610 doctor names uncertain maintenance state and leftover quarantine in J
   chmodSync(ledger, 0o600);
   const before = readFileSync(ledger);
   const json = await f.run(["doctor", "--json", "--color=never"]);
-  expect(json.code, json.stderr).toBe(0);
+  expect(json.code, json.stderr).toBe(1); // the fixture has failed rows elsewhere (#1484: a check command exits 1 on one)
   const rows = JSON.parse(json.stdout) as { section: string; level: string; detail: string }[];
   expect(rows.some(row => row.section === "Hub" && row.level !== "ok" && row.detail.includes(ledger))).toBe(true);
   expect(rows.some(row => row.section === "Hub" && row.level !== "ok" && row.detail.includes(quarantine))).toBe(true);
   const text = await f.run(["doctor", "--color=never"]);
-  expect(text.code, text.stderr).toBe(0);
+  expect(text.code, text.stderr).toBe(1);
   const compact = text.stdout.replace(/\s+/g, "");
   expect(compact).toContain(ledger.replace(/\s+/g, ""));
   expect(compact).toContain(quarantine.replace(/\s+/g, ""));
@@ -190,7 +193,7 @@ test("#285 AC10: a hub without kimiSource in its budget reply adds no kimi usage
 test("doctor preserves collected findings and its error exit when config parsing throws", async () => {
   const f = fixture(); writeFileSync(join(f.root, ".agenthub/config.local.json"), "{bad");
   const result = await f.run(["doctor", "--color=never"]);
-  expect(result.code).toBe(1); expect(result.stdout).toContain("Tools\n"); expect(result.stdout).toContain("fixture 1.0");
+  expect(result.code).toBe(1); expect(result.stdout).toContain("▸ Tools"); expect(result.stdout).toContain("fixture 1.0");
   expect(result.stdout).toContain("claude plugin"); expect(result.stderr.length).toBeGreaterThan(0);
 });
 
@@ -244,7 +247,7 @@ test("new read render paths reject invalid colors before fetching", async () => 
   const f = fixture();
   for (const args of [["projects"], ["status", "--all"], ["queue", "list"], ["turns"], ["models", "status"], ["budget", "execution", "status"], ["report"], ["doctor", "--orphans"]]) {
     const result = await f.run([...args, "--color=bad"]);
-    expect(result.code).toBe(1); expect(result.stderr).toContain(`usage: ahub ${args[0]}`);
+    expect(result.code).toBe(2); expect(result.stderr).toContain(`usage: ahub ${args[0]}`);
   }
   expect(f.requests).toHaveLength(0);
 });
@@ -331,7 +334,7 @@ test("review P2 (#602): ahub study experiments sends exactly the read the hub ta
   // a bad form refuses before any connection: nothing more is sent
   const sent = f.requests.length;
   for (const bad of [["--attempt", attempt, "--after", "1"], ["--campaign", campaign, "--events-after", "1"], ["--evil", "x"], []]) {
-    const refused = await f.run(["study", "experiments", ...bad]); expect(refused.code, bad.join(" ")).toBe(1); expect(refused.stderr).toContain("usage: ahub study");
+    const refused = await f.run(["study", "experiments", ...bad]); expect(refused.code, bad.join(" ")).toBe(2); expect(refused.stderr).toContain("usage: ahub study");
   }
   expect(f.requests).toHaveLength(sent);
   expect(classifyPeerCommand("study", ["experiments", "--attempt", attempt, "--events-after", "50"])).toBe("allowed");   // an agent shell reads later event pages too
@@ -344,9 +347,9 @@ test("ahub study: parse before connecting, read the contract file, send the righ
   writeFileSync(join(f.root, "contract.json"), JSON.stringify({ question: "q" }));
   // usage and bad ids refuse before any connection, so nothing is sent
   for (const argv of [["study"], ["study", "approve"], ["study", "approve", "not-an-id", "1"], ["study", "approve", "rc-0123456789abc", "1"], ["study", "approve", "rc-XYZ", "1"], ["study", "approve", "rc-0123456789ab", "0"], ["study", "approve", "rc-0123456789ab", "1x"], ["study", "close", "rc-0123456789ab", "1"], ["study", "show", "x"], ["study", "draft", "7"]]) {
-    const refused = await f.run(argv); expect(refused.code, argv.join(" ")).toBe(1); expect(refused.stderr).toContain("usage: ahub study");
+    const refused = await f.run(argv); expect(refused.code, argv.join(" ")).toBe(2); expect(refused.stderr).toContain("usage: ahub study");
   }
-  expect((await f.run(["study", "--color=rainbow", "show"])).code).toBe(1);
+  expect((await f.run(["study", "--color=rainbow", "show"])).code).toBe(2); // an invalid flag value is a usage error
   expect(f.requests.filter(r => r.t === "task")).toHaveLength(0);
   const missing = await f.run(["study", "draft", "7", "nope.json"]); expect(missing.code).toBe(1); expect(missing.stderr).toContain("cannot read the contract file");
   writeFileSync(join(f.root, "bad.json"), "{not json"); const bad = await f.run(["study", "draft", "7", "bad.json"]); expect(bad.code).toBe(1); expect(bad.stderr).toContain("not valid JSON");
@@ -413,3 +416,27 @@ test("budget CLI text and JSON retain the host reviewer admission policy", async
   expect(text.code).toBe(0); expect(text.stdout).toContain("Reviewer admission"); expect(text.stdout).toContain("review.gate=off");
   expect(text.stdout).toContain("Budget/manual pauses still block"); expect(json.code).toBe(0); expect(JSON.parse(json.stdout).review).toEqual(review);
 });
+
+test("#1484 ahub task show for a missing id writes to stderr, exits 1 and names the next step; --json keeps the hub's document on stdout and exits 1", async () => {
+  const f = fixture({ missingTask: true });
+  const text = await f.run(["task", "show", "99"]);
+  expect(text.code).toBe(1); expect(text.stdout).toBe("");
+  expect(text.stderr).toBe("ahub: no task #99\n  → ahub board\n"); // plain on a pipe (no fail marker), with the next step
+  const json = await f.run(["task", "show", "99", "--json"]);
+  expect(json.code).toBe(1); expect(json.stdout).toBe('"no task #99"\n'); expect(json.stderr).toBe(""); // the document is unchanged; the exit code is the standard's
+  const found = await f.run(["task", "show", String(f.tasks[0]!.id)]);
+  expect(found.code).toBe(0); expect(found.stdout).not.toBe("");
+}, 20_000);
+
+test("#1484 a piped ahub doctor does not wrap a finding; with COLUMNS set no line exceeds it, and the 32-cell name cap still applies", async () => {
+  const f = fixture();
+  const piped = await f.run(["doctor", "--color=never"]);
+  const long = piped.stdout.split("\n").filter(line => Bun.stringWidth(line) > 120);
+  expect(long.length, "a finding longer than 120 cells must stay on one line on a pipe").toBeGreaterThan(0);
+  // a wrapped continuation of a marker row starts with spaces and no marker: none exists on a pipe
+  for (const line of piped.stdout.split("\n")) if (line.startsWith("  ") && !/^ {2}(✓|✗|⚠|\?|-|~|\*|→|ok|x|!|->) /.test(line) && line.trim()) throw new Error(`wrapped continuation on a pipe: ${line.slice(0, 80)}`);
+  const narrow = await f.run(["doctor", "--color=never"], { COLUMNS: "80" });
+  for (const line of narrow.stdout.split("\n")) expect(Bun.stringWidth(line), line).toBeLessThanOrEqual(80);
+  const names = [...piped.stdout.matchAll(/^ {2}\S+ +(?:fail |warn |unknown )?([^:\n]+):/gm)].map(m => m[1]!);
+  for (const name of names) expect(Bun.stringWidth(name), name).toBeLessThanOrEqual(32 + "unknown ".length);
+}, 30_000);

@@ -87,8 +87,9 @@ describe("ahub help (#212)", () => {
     expect(full).toEqual({ code: 0, stdout: `${renderHelp(80, false)}\n`, stderr: "" });
     for (const args of [["--help"], ["-h"], [], ["help", "--help"], ["help", "-h"], ["-h", "--help"]]) expect(await cli(args)).toEqual(full);
     expect(await cli(["help", "pause"])).toEqual({ code: 0, stdout: `${renderHelp(80, false, "pause")}\n`, stderr: "" });
-    expect(await cli(["bogus"])).toEqual({ code: 1, stdout: "", stderr: 'ahub: unknown command "bogus"; run ahub help\n' });
-    expect(await cli(["help", "bogus"])).toEqual({ code: 1, stdout: "", stderr: 'ahub: unknown command "bogus"; run ahub help\n' });
+    // An unknown command is a usage error: exit 2 (CLI output standard v1).
+    expect(await cli(["bogus"])).toEqual({ code: 2, stdout: "", stderr: 'ahub: unknown command "bogus"; run ahub help\n' });
+    expect(await cli(["help", "bogus"])).toEqual({ code: 2, stdout: "", stderr: 'ahub: unknown command "bogus"; run ahub help\n' });
   }, 20_000);
 
   test("ahub <command> -h prints that command's help instead of running it: kill stays alive, say sends nothing", async () => {

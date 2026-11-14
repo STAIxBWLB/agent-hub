@@ -218,7 +218,9 @@ test("a hub started with a retired setting says so in hub.log, and ahub doctor n
   }
   const home = mkdtempSync(join(tmpdir(), "agenthub-retired-home-"));
   const doctor = Bun.spawnSync([process.execPath, join(import.meta.dir, "..", "src", "cli", "main.ts"), "doctor"], { cwd: dir, env: { ...process.env, COLUMNS: "120", AGENTHUB_HOME: home }, stdout: "pipe", stderr: "pipe" });
-  expect(doctor.stdout.toString()).toMatch(/fail +retired setting +local\.sandbox "allow-default" was removed in 0\.12\.0/);
+  // #1484: a failed row now reads `✗  fail retired setting: <finding>` and the command exits 1
+  expect(doctor.stdout.toString()).toMatch(/✗ +fail retired setting: local\.sandbox "allow-default" was removed in 0\.12\.0/);
+  expect(doctor.exitCode).toBe(1);
 }, 30_000);
 
 test("instruction protection is validated and cannot come from tracked configuration (#323)", () => {

@@ -100,7 +100,7 @@ test("the real CLI refuses a malformed or combined flag before anything is sent,
   const a = await f.card(), before = await f.show(a.id);
   for (const flags of [["--reserved"], ["--reserved", "Not A Peer"], ["--reserved", "kimi", "--unreserve"], ["--unreserve", "--unreserve"]]) {
     const refused = await f.cli(["backlog", "return", String(a.id), String(a.planningRevision ?? 0), "why", ...flags]);
-    expect(refused.code, flags.join(" ")).toBe(1);
+    expect(refused.code, flags.join(" ")).toBe(2); // a usage error (#1484)
     expect(refused.stderr, flags.join(" ")).toContain("usage: ahub backlog return");
     expect(await f.show(a.id), flags.join(" ")).toEqual(before);
   }

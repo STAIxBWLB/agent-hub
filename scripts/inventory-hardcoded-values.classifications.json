@@ -770,6 +770,7 @@
   "src/cli/output.ts:<anonymous>:inline:text=0#0": "operational",
   "src/cli/output.ts:<anonymous>:inline:text=1#0": "operational",
   "src/cli/output.ts:<anonymous>:inline:tone=1#0": "operational",
+  "src/cli/output.ts:COLUMN_CAP:constant:COLUMN_CAP=32#0": "contract",
   "src/cli/output.ts:itemChunks:inline:characters(split.at(-1)!).filter(unit => width(unit) > 0).length < 3=3#0": "contract",
   "src/cli/output.ts:pathFloor:inline:columns > 80=80#0": "contract",
   "src/cli/output.ts:pathFloor:inline:pathFloor=12#0": "contract",

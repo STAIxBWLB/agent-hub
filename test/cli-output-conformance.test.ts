@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { renderHelp } from "../src/cli/help.ts";
 import { PALETTE, Report, TONE_ROLE, paint } from "../src/cli/console-state.ts";
+import { errorLines, failureExitCode } from "../src/cli/error-format.ts";
 import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
 
 // CLI output standard v1 (docs/design/cli-output.md, #1484): the five conformance checks every CLI runs, the role and marker tables,
@@ -207,8 +208,25 @@ describe("CLI output standard v1: conformance checks", () => {
     expect(usage.code).not.toBe(0);
     expect(usage.stderr).toContain("ahub: ");
   }, 20_000);
-  // The usage-error exit code 2 and the `✗ ahub:` marker on a terminal arrive with the shared fail() helper (#1484 T2, AC5).
-  test.todo("4: a usage error exits 2 (#1484 T2)", () => {});
+  test("4: a usage error exits 2, an unknown command too, and the error line is plain on a pipe", async () => {
+    const usage = await cli(["task", "show"]);
+    expect(usage.code).toBe(2); expect(usage.stdout).toBe("");
+    expect(usage.stderr).toMatch(/^ahub: usage: ahub task show/);
+    const unknown = await cli(["no-such-command"]);
+    expect(unknown.code).toBe(2); expect(unknown.stderr).toBe('ahub: unknown command "no-such-command"; run ahub help\n');
+    expect(unknown.stderr).not.toMatch(/[✗→]/); // a piped stderr keeps the plain `ahub: ` form
+  }, 20_000);
+  test("4: the error line leads with the fail marker only on a terminal, carries an optional copyable next step, and falls back to ASCII", () => {
+    expect(errorLines("no task #9", undefined, false, false)).toEqual(["ahub: no task #9"]);
+    expect(errorLines("no task #9", undefined, true, false)).toEqual(["✗ ahub: no task #9"]);
+    expect(errorLines("no task #9", "ahub board", true, false)).toEqual(["✗ ahub: no task #9", "  → ahub board"]);
+    expect(errorLines("no task #9", "ahub board", false, true)).toEqual(["ahub: no task #9", "  -> ahub board"]);
+    expect(errorLines("x", "cd /p && ahub init\u001b[31m", false, false)[1]).not.toContain("\u001b"); // a next step is sanitized like any text
+  });
+  test("4: usage errors exit 2 and everything else 1", () => {
+    for (const message of ["usage: ahub stop <peer>", 'unknown command "x"; run ahub help', "--after pages a campaign\nusage: ahub study ...", "--task needs a value", "invalid release command", "ahub research: unknown argument --x (another project)", "usage: ahub answer ...; unknown flag --x", "unknown flag --x", 'unknown option "--x" for ahub task propose; nothing was filed']) expect(failureExitCode(message), message).toBe(2);
+    for (const message of ["no task #9", "never-ask requires --yes; nothing was changed", "no hub running for /p (run: ahub up)", "cannot read the manifest file"]) expect(failureExitCode(message), message).toBe(1);
+  });
   test("5: with LANG=C the markers are ASCII and the report keeps its alignment", () => {
     const text = sample(80, asciiMarkers({ LANG: "C" })).render(false).join("\n");
     expect(text).toContain("> Attention (2 items)");
@@ -248,4 +266,21 @@ describe("CLI output standard v1: no raw SGR in human-output code", () => {
     for (const file of SGR_ALLOWED) expect(statSync(join(ROOT, file)).isFile()).toBe(true);
     expect(relative(ROOT, join(ROOT, "src/cli/output-standard.ts"))).toBe("src/cli/output-standard.ts");
   });
+});
+
+// #1484 T2: the doctor's exit-1 rule is set where the report prints, and `ahub setup`, which runs the same function, clears it first. A real `ahub setup` writes to
+// the machine (plugin, home registration), so a test never starts one; this pins the two statements that carry the rule instead.
+test("#1484 ahub doctor exits 1 on a failed row but ahub setup clears the rule before it runs the same report", () => {
+  const main = readFileSync(join(ROOT, "src/cli/main.ts"), "utf8");
+  expect(main).toContain("let doctorSetsExit = true;");
+  expect(main).toMatch(/else \{ doctorSetsExit = false; await commands\.doctor!\(\); \}/);
+  expect(main).toMatch(/if \(doctorSetsExit && checks\.some\(check => check\.level === "fail"\)\) process\.exitCode = 1;/);
+});
+
+test("#1484 a Report with no wrap width keeps every line whole, and one with a width wraps at it", () => {
+  const long = "word ".repeat(60).trim();
+  const free = new Report(undefined).section("S").bullet("warn", long).kv([["note", long]]).render(false);
+  expect(free.filter(line => line.includes("word")).every(line => Bun.stringWidth(line) > 200)).toBe(true);
+  expect(free.some(line => /^ {3,}word/.test(line))).toBe(false);
+  for (const line of new Report(80).section("S").bullet("warn", long).kv([["note", long]]).render(false)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
 });

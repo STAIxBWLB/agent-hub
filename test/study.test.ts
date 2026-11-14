@@ -49,6 +49,6 @@ test("#931 real CLI rejects invalid manifest descriptors and paired judgment fla
     const symlink = await ahub("study", "check", "7", "linked.json");
     expect(symlink.code).toBe(1); expect(symlink.text).toContain("cannot read the manifest file");
     const flags = await ahub("task", "claim", "7", "1", "supported", "--manifest", "a".repeat(64));
-    expect(flags.code).toBe(1); expect(flags.text).toContain("--disposition"); expect(flags.text).not.toContain("hub is not running");
+    expect(flags.code).toBe(2); expect(flags.text).toContain("--disposition"); expect(flags.text).not.toContain("hub is not running");
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 20_000);

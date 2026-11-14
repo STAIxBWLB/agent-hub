@@ -58,7 +58,7 @@ test("survey human output includes per-finding prior reasons and closed audit la
 
 test("#1403 malformed survey arguments cause no mutation and old hubs name upgrade", async () => {
   await fixture(async (cli,requests,old) => {
-    for (const args of [["start","--focus","unsafe"],["start","--focus","bugs","--focus","tests"],["start","extra"],["show","0"],["show","9999999999999999999999999"],["show"]]) expect((await cli(["sdlc","survey",...args])).code).toBe(1);
+    for (const args of [["start","--focus","unsafe"],["start","--focus","bugs","--focus","tests"],["start","extra"],["show","0"],["show","9999999999999999999999999"],["show"]]) expect((await cli(["sdlc","survey",...args])).code, args.join(" ")).toBe(2); // usage errors (#1484)
     expect(requests).toEqual([]); old();
     const result = await cli(["sdlc","survey","start"]);
     expect(result.code).toBe(1); expect(result.err).toContain("upgrade and restart");
