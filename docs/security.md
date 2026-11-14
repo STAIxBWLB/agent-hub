@@ -48,6 +48,12 @@ task accepted and give fixed not-prepared guidance; changed ownership, session
 or privacy after the await cannot return a stale successful acceptance. Full
 verification remains with CI and the remote runner.
 
+A bounded `lstat` walk never follows dependency symlinks and rejects every
+regular file with multiple hardlinks before publication. This prevents project
+writes from reaching a shared cache inode. Hardlink-producing backends, including
+Linux's default when cache and installation share a filesystem, remain unprepared
+instead of changing the backend or copying dependency files.
+
 ## Native memory authority and profile selection
 
 The portable core is the exact-pinned first-party `@staix/agent-mem` 0.23.1 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.

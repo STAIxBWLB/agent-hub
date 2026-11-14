@@ -15,7 +15,7 @@ export const PI_DEPENDENCY_ENTRY_LIMIT = 10_000;
 export const PI_DEPENDENCY_MANIFEST_BYTES = 64 * 1024;
 export const PI_DEPENDENCY_INPUT_BYTES = 4 * 1024 * 1024;
 export const PI_DEPENDENCY_SNAPSHOT_BYTES = 16 * 1024 * 1024;
-export type DependencyPreparation = { ready: true } | { ready: false; reason: "missing bun.lock" | "lifecycle script" | "invalid manifest" | "task changed" | "installer unavailable" | "install failed" | "install timed out" | "staging unavailable" | "node_modules exists" | "unsupported workspace layout" | "different filesystem" | "install inputs changed in task" | "unsupported install inputs" };
+export type DependencyPreparation = { ready: true } | { ready: false; reason: "missing bun.lock" | "lifecycle script" | "invalid manifest" | "task changed" | "installer unavailable" | "install failed" | "install timed out" | "staging unavailable" | "node_modules exists" | "unsupported workspace layout" | "unsupported dependency layout" | "different filesystem" | "install inputs changed in task" | "unsupported install inputs" };
 type DependencyReason = Exclude<DependencyPreparation, { ready: true }>["reason"];
 export interface DependencyInstallRequest {
   executable: string; args: readonly ["install", "--frozen-lockfile"]; cwd: string;
@@ -219,7 +219,19 @@ export async function preparePiDependencies(cwd: string, options: PiDependencyOp
         if (entry.isDirectory()) await workspaceLayout(join(dir, entry.name), false);
       }
     };
-    await workspaceLayout(staging); await unchanged(); await targetAbsent(); check();
+    await workspaceLayout(staging);
+    let moduleEntries = 0;
+    const privateModuleFiles = async (dir: string): Promise<void> => {
+      for await (const entry of await opendir(dir)) {
+        check(); if (++moduleEntries > PI_DEPENDENCY_ENTRY_LIMIT) fail("unsupported dependency layout");
+        const file = join(dir, entry.name), info = await lstat(file); check();
+        if (info.isSymbolicLink()) continue; // Never follow a package/bin/workspace link.
+        if (info.isDirectory()) await privateModuleFiles(file);
+        else if (!info.isFile() || info.nlink > 1) fail("unsupported dependency layout");
+      }
+    };
+    await privateModuleFiles(join(staging, "node_modules"));
+    await unchanged(); await targetAbsent(); check();
     // No cooperative path-based fallback: the daemon supplies the CWD-pinned trusted publisher.
     const publicationCurrent = () => { try { check(); return true; } catch { return false; } };
     try { if (!options.publish || !await options.publish(join(staging, "node_modules"), { cwd: root, dev: rootInfo.dev, ino: rootInfo.ino, timeoutMs: deadline - now() }, publicationCurrent)) return { ready: false, reason: "install failed" }; }

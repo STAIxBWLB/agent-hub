@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { realPath } from "../src/hub/project.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { INSTALL_LIFECYCLE, parseInstallManifest } from "../src/hub/install-policy.ts";
 import { dependencyManifest } from "../src/hub/check-runner.ts";
-import { PI_DEPENDENCY_MANIFEST_BYTES, PI_DEPENDENCY_TIMEOUT_MS, preparePiDependencies, type DependencyInstallRequest, type DependencyRunner, type PiDependencyOptions } from "../src/pi/task-dependencies.ts";
+import { PI_DEPENDENCY_ENTRY_LIMIT, PI_DEPENDENCY_MANIFEST_BYTES, PI_DEPENDENCY_TIMEOUT_MS, preparePiDependencies, type DependencyInstallRequest, type DependencyRunner, type PiDependencyOptions } from "../src/pi/task-dependencies.ts";
 
 const roots: string[] = [];
 const projects = new Map<string, { base: string; repositoryRoot: string; stagingParent: string }>();
@@ -37,6 +37,28 @@ const installed: DependencyRunner = async request => {
   mkdirSync(join(request.cwd, "node_modules")); writeFileSync(join(request.cwd, "node_modules", "fixture-ready"), "prepared from reviewed snapshot"); return { code: 0 };
 };
 const cleanStage = (cwd: string) => expect(readdirSync(projects.get(cwd)!.stagingParent)).toEqual([]);
+
+test("a staged file sharing its inode with the cache is refused before any publication", async () => {
+  const cwd = fixture(), cacheFile = join(projects.get(cwd)!.stagingParent, "cache-fixture");
+  writeFileSync(cacheFile, "cache bytes stay outside peer authority"); let published = false;
+  const result = await prepare(cwd, { run: async request => {
+    mkdirSync(join(request.cwd, "node_modules")); linkSync(cacheFile, join(request.cwd, "node_modules", "shared-file")); return { code: 0 };
+  }, publish: async () => { published = true; return true; } });
+  expect(result).toEqual({ ready: false, reason: "unsupported dependency layout" });
+  expect(published).toBe(false); expect(existsSync(join(cwd, "node_modules"))).toBe(false);
+  expect(readFileSync(cacheFile, "utf8")).toBe("cache bytes stay outside peer authority");
+  rmSync(cacheFile); cleanStage(cwd);
+});
+
+test("the staged dependency walk refuses its entry bound without a copy or publication fallback", async () => {
+  const cwd = fixture(); let published = false;
+  const result = await prepare(cwd, { run: async request => {
+    const modules = join(request.cwd, "node_modules"); mkdirSync(modules);
+    for (let index = 0; index <= PI_DEPENDENCY_ENTRY_LIMIT; index++) writeFileSync(join(modules, String(index)), "");
+    return { code: 0 };
+  }, publish: async () => { published = true; return true; } });
+  expect(result).toEqual({ ready: false, reason: "unsupported dependency layout" }); expect(published).toBe(false); cleanStage(cwd);
+}, 20_000);
 
 for (const inputs of [{ workspaces: ["../mutable"] }, { dependencies: { fixture: "file:../../mutable" } }, { devDependencies: { fixture: "link:/mutable" } }, { patchedDependencies: { "fixture@1": "../mutable.patch" } },
   { overrides: { fixture: "file:../../mutable" } }, { resolutions: { fixture: "../mutable" } }, { catalogs: { shared: { fixture: "file:../../mutable" } } }, { peerDependencies: { fixture: "link:../../mutable" } }])

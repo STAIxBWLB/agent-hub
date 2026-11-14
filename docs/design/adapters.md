@@ -383,6 +383,10 @@ private host-state snapshot, then publishes root `node_modules` by same-volume
 rename only to an absent target. Existing directories/symlinks, unsupported
 workspace layouts and cross-device publication refuse; no module-tree copy or
 script-skipping fallback is used. Temporary inputs are removed on every outcome.
+Before publication a bounded, non-following walk rejects regular dependency files
+with multiple hardlinks, so a peer cannot write through into the shared cache.
+A hardlink-producing backend remains unprepared; it is never rewritten or copied
+to bypass that refusal.
 
 ## Pi task-move ordering (#1447 T4)
 

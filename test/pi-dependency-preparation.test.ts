@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
@@ -13,7 +13,7 @@ import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { gitProject } from "./fakes/git-project.ts";
 import { publishPiDependencies } from "../src/pi/dependency-publish.ts";
-import { preparePiDependencies } from "../src/pi/task-dependencies.ts";
+import { PI_DEPENDENCY_ENTRY_LIMIT, preparePiDependencies } from "../src/pi/task-dependencies.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 
 const roots: string[] = [];
@@ -164,19 +164,28 @@ async function preparedTypecheckFixture() {
   }
   const task = f.tasks.accept("pi", f.offer().id), worktree = f.worktrees.describe("pi", task.id)!;
   const result = await preparePiDependencies(worktree.path, { base: worktree.base, repositoryRoot: f.cwd, stagingParent: f.state, current: () => true, publish: publishPiDependencies });
-  expect(result).toEqual({ ready: true });
-  expect(existsSync(join(worktree.path, "node_modules/.bin/tsc"))).toBe(true);
-  return { ...f, worktree };
+  if (result.ready) {
+    expect(existsSync(join(worktree.path, "node_modules/.bin/tsc"))).toBe(true);
+    const entries = (dir: string): number => readdirSync(dir, { withFileTypes: true }).reduce((count, entry) => count + 1 + (entry.isDirectory() ? entries(join(dir, entry.name)) : 0), 0);
+    console.log(`Pi dependency fixture module entries: ${entries(join(worktree.path, "node_modules"))}; ceiling ${PI_DEPENDENCY_ENTRY_LIMIT}`);
+  }
+  return { ...f, worktree, preparation: result };
 }
 
-test("#1447 T5 a Git-prepared worktree installs from the shared cache and runs TypeScript with offline resolution", async () => {
-  const f = await preparedTypecheckFixture(), home = join(f.state, "typecheck-home"); mkdirSync(home);
+test("#1447 T5 private cache output runs offline TypeScript; shared hardlink output remains unpublished", async () => {
+  const f = await preparedTypecheckFixture();
+  if (!f.preparation.ready) {
+    expect(process.platform).toBe("linux"); expect(f.preparation).toEqual({ ready: false, reason: "unsupported dependency layout" });
+    expect(existsSync(join(f.worktree.path, "node_modules"))).toBe(false); return;
+  }
+  const home = join(f.state, "typecheck-home"); mkdirSync(home);
   const checked = Bun.spawnSync([process.execPath, "x", "--offline", "tsc", "--noEmit"], { cwd: f.worktree.path, env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin" }, timeout: 5000 });
   expect(checked.exitCode, checked.stderr.toString()).toBe(0);
 }, 20_000);
 
 test.skipIf(!sandboxAvailable())("#1447 T5 the prepared worktree runs bun x tsc with kernel network access denied", async () => {
   const f = await preparedTypecheckFixture();
+  expect(f.preparation).toEqual({ ready: true });
   const checked = await sandboxedExec([process.execPath, "x", "tsc", "--noEmit"], { cwd: f.worktree.path, profile: profile(f.worktree.path, false), timeoutMs: 5000 });
   expect(checked.code, checked.output).toBe(0);
 }, 20_000);
