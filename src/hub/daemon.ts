@@ -3956,8 +3956,9 @@ export async function startDaemon(opts: DaemonOptions) {
         for (const binding of ownedWork) {
           try {
             const task = board.get(binding.id);
-            if (task?.state === "cancelled") return `task #${binding.id} was cancelled`;
-            if (!task || task.created !== binding.created || task.owner !== peer || ownerEpoch(task) !== binding.epoch) return `task #${binding.id} ownership moved`;
+            if (!task || task.created !== binding.created) return `task #${binding.id} ownership is unavailable`;
+            if (task.state === "cancelled") return `task #${binding.id} was cancelled`;
+            if (task.owner !== peer || ownerEpoch(task) !== binding.epoch) return `task #${binding.id} ownership moved`;
           } catch { return `task #${binding.id} ownership is unavailable`; }
         }
         return undefined;
@@ -6099,9 +6100,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const summary = String(a.summary ?? "").trim();
         if (!summary) throw new Error("summary is required");
         const pending = checkpointWaits.get(by);
-        if (!pending || !pending.valid()) {
-          const cause = pending?.ownershipFailure?.();
-          pending?.done(undefined);
+        if (!pending) throw new PreEffectToolRefusal("checkpoint request expired or absent; read pending notices and wait for a fresh checkpoint request");
+        if (!pending.valid()) {
+          const cause = pending.ownershipFailure?.();
+          pending.done(undefined);
           throw new Error(cause ? `checkpoint refused because ${cause}; read the move or cancel notice and call hub_task_list before answering a fresh checkpoint request` : "checkpoint request expired or its peer/session changed, or task ownership changed; read the move or cancel notice and call hub_task_list before answering a fresh checkpoint request");
         }
         if (pending.reason === "context") {
