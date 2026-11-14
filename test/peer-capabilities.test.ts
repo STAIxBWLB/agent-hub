@@ -111,7 +111,7 @@ function closure(name: string): string {
 function generationRig(peer: PlainPeer) {
   const bus = new Bus({ batchMs: 0 }); bus.add(peer);
   const board = new Board(":memory:");
-  const task = board.propose("user", { title: "checkpoint generation fixture" });
+  const task = board.propose("user", { title: "checkpoint generation fixture", class: "implement" });
   board.update(task.id, "user", "assigned", { owner: peer.id, state: "in_progress" });
   const waits = new Map<string, { valid(): boolean; done(summary: string | undefined): void }>();
   const checkpointOwnershipRefusals = new Map<string, { timer: ReturnType<typeof setTimeout> }>();
