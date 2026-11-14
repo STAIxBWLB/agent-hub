@@ -19,6 +19,8 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
   if (command === "lineage" && args[0] === "link") return true;
   if (command === "guidance" && ["create", "withdraw"].includes(args[0] ?? "")) return true;
   if (command === "sdlc" && args[0] === "survey" && args[1] !== "show") return true;
+  // #1403 A4: starting a security audit files a task; only `show` stays a live-test read.
+  if (command === "sdlc" && args[0] === "audit" && args[1] !== "show") return true;
   if (command === "model") return true; // #1317: even listing runtime overrides is person-only, never live-test delegated.
   if (command === "sdlc" && (args[0] === "authorize-release" || args[0] === "plan-review" || args[0] === "release-assign" || args[0] === "merge" || args[0] === "train" && args[1] !== "report")) return true;
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
@@ -208,6 +210,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
 export function cliCommandLabel(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): string {
   if (command === "sdlc" && args[0] === "configure") return "sdlc configure";
   if (command === "sdlc" && args[0] === "survey") return ["start", "show"].includes(args[1] ?? "") ? `sdlc survey ${args[1]}` : "sdlc survey";
+  if (command === "sdlc" && args[0] === "audit") return ["start", "show"].includes(args[1] ?? "") ? `sdlc audit ${args[1]}` : "sdlc audit";
   if (command === "lineage") return ["show", "link"].includes(args[0] ?? "") ? `lineage ${args[0]}` : "lineage";
   if (command === "guidance") return ["create", "list", "show", "withdraw"].includes(args[0] ?? "") ? `guidance ${args[0]}` : "guidance";
   if (command === "model") return ["list", "set", "clear"].includes(args[0] ?? "") ? `model ${args[0]}` : "model";

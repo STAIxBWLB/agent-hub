@@ -33,7 +33,7 @@ export const conductorLocalAction = (value:unknown): value is ConductorLocalActi
 /** Daemon-authorized labels. Recovery labels pass the initial role check, then require their separate per-operation proof. */
 export const CONDUCTOR_DAEMON_OPERATIONS = ["roster add","roster remove","stop","queue show","queue resolve","queue discard","settings set","doctor orphans kill","logs","export",
   "sdlc configure",
-  "board import","intake approve","schedule run","schedule pause","schedule resume","goal link","task unassign","guidance probe register","guidance probe start","guidance probe show","guidance probe receipts","guidance probe cancel","restart","upgrade","recovery resume","recovery abort","sdlc survey start","sdlc survey show"] as const;
+  "board import","intake approve","schedule run","schedule pause","schedule resume","goal link","task unassign","guidance probe register","guidance probe start","guidance probe show","guidance probe receipts","guidance probe cancel","restart","upgrade","recovery resume","recovery abort","sdlc survey start","sdlc survey show","sdlc audit start","sdlc audit show"] as const;
 /**
  * #933: forms whose effect runs in the CLI process itself (local files). The daemon admits and audits them once at the handshake (`admit`),
  * after the CLI has validated their arguments. Recovery-bearing restart/upgrade forms use the separate source-issued continuation proof.
@@ -73,6 +73,7 @@ export function conductorOperation(command:string,args:readonly string[]): Condu
   const words=args.filter(arg=>!arg.startsWith("--"));
   const sub=words[0];
   if (command === "sdlc" && args[0] === "survey" && (args[1] === "start" || args[1] === "show")) return `sdlc survey ${args[1]}`;
+  if (command === "sdlc" && args[0] === "audit" && (args[1] === "start" || args[1] === "show")) return `sdlc audit ${args[1]}`;
   if (command === "restart" || command === "upgrade") return restartOrUpgrade(command, args);
   if (command === "sdlc" && args[0] === "configure") return "sdlc configure";
   if (command === "recovery") {
@@ -131,6 +132,7 @@ export function operationalRequestLabel(value:unknown):string|undefined {
   if(message.t==="peer_stop")return "stop";
   if(message.t === "sdlc" && message.op === "configure") return "sdlc configure";
   if(message.t==="sdlc" && (message.op==="survey-start"||message.op==="survey-show"))return message.op==="survey-start"?"sdlc survey start":"sdlc survey show";
+  if(message.t==="sdlc" && (message.op==="audit-start"||message.op==="audit-show"))return message.op==="audit-start"?"sdlc audit start":"sdlc audit show";
   if(message.t==="goal_link")return "goal link";
   if(message.t==="task" && typeof message.op==="string" && Object.hasOwn(CONDUCTOR_TASK_OPS,message.op))return CONDUCTOR_TASK_OPS[message.op];
   if (typeof message.t === "string" && message.t.startsWith("guidance_probe_")) {
