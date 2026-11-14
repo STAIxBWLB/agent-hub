@@ -11,7 +11,7 @@ import { isTrustedReviewPackage, isReviewObserverExcluded } from "../src/hub/mem
 import { redactBusEvent } from "../src/hub/operational-view.ts";
 import { Capture } from "../src/memory/capture.ts";
 import type { MemoryClient } from "../src/memory/client.ts";
-import { GUIDANCE_TOOL_NAMES } from "../src/hub/hub-tools.ts";
+import { GUIDANCE_TOOL_NAMES, QUESTION_TOOLS } from "../src/hub/hub-tools.ts";
 
 const canary = "REVIEW_QUOTE_AND_COMMENT_CANARY";
 const capsule = () => newEnvelope(HUB, canary, { kind: "review", to: ["codex"], refs: { task: "7", reviewPackage: "review:fixture-1" } });
@@ -88,13 +88,17 @@ test("production progress admission clears review-turn observations before an es
   expect(start).toBeGreaterThan(0);expect(end).toBeGreaterThan(start);
   const scopeStart=source.indexOf("  const reviewObserverHeld ="),scopeEnd=source.indexOf("  const invocations =",scopeStart);
   expect(scopeStart).toBeGreaterThan(0);expect(scopeEnd).toBeGreaterThan(scopeStart);
-  const context={isReviewObserverExcluded,GUIDANCE_TOOL_NAMES,bus:{lastDeliveredTo:()=>frames},board:{list:()=>[task]},progress,extracted:undefined as unknown};
+  const context={isReviewObserverExcluded,GUIDANCE_TOOL_NAMES,QUESTION_TOOLS,bus:{lastDeliveredTo:()=>frames},board:{list:()=>[task]},progress,extracted:undefined as unknown};
   Object.assign(context,{readReviewObserverScope:()=>undefined});
   runInNewContext(new Bun.Transpiler({loader:"ts"}).transformSync(source.slice(scopeStart,scopeEnd)+"\n"+source.slice(start,end)+"\nglobalThis.extracted=observeProgress;"),context);
   const observe=context.extracted as (peer:string,input:unknown)=>void;
   for(let i=0;i<9;i++)observe("codex",{name:"exec_command",command:"bun test",resultText:"AssertionError: "+canary,isError:true,turn:"review-"+i});
   await progress.evaluate("codex",7);expect(calls).toEqual([]);
   frames=[];
+  for (const name of ["hub_ask", "hub_ask_answer", "mcp__agent_hub__hub_ask", "mcp__agent_hub__hub_ask_answer"]) {
+    for (let i=0;i<9;i++) observe("codex",{name,resultText:"AssertionError: "+canary,isError:true,turn:name+i});
+    await progress.evaluate("codex",7);expect(calls).toEqual([]);
+  }
   for(let i=0;i<9;i++){observe("codex",{name:"exec_command",command:"bun test",resultText:"AssertionError: ordinary failure",isError:true,turn:"normal-"+i});await Promise.resolve();}
   await progress.evaluate("codex",7);expect(calls.length).toBeGreaterThan(0);expect(JSON.stringify(calls)).not.toContain(canary);
 });
