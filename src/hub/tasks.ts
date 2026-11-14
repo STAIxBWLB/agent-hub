@@ -4804,6 +4804,7 @@ export class Tasks {
       try { claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" }); }
       catch (error) { undoWorktree?.(); throw error; }
       this.captureOwnerAcceptance(claimed);
+      claimed = await this.prepareAcceptedWorktree(claimed, by, requestCheck);
       this.releaseNotice(`task ${this.publicTitle(claimed)} claimed by ${by}`);
       return claimed;
     }
@@ -8174,7 +8175,7 @@ export class Tasks {
     if (metadata && !this.isPii(task) && (!this.nameable(metadata.repo!) || looksSecret(metadata.repo!) || this.aboutPrivatePath("", metadata.repo!, task))) throw new PreEffectToolRefusal("this repository metadata is private or sensitive and is not kept");
     let draft = metadata ? { ...task, refs: { ...task.refs, ...metadata } } : task;
     this.warmRepository(draft);
-    if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "off" || !this.isBuildTask(task)) return this.accept(by, id, plan, metadata);
+    if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "off" || !this.isBuildTask(task)) return this.prepareAcceptedWorktree(this.accept(by, id, plan, metadata), by, requestCheck);
     const spec = await this.specGate(by, id, draft.refs);
     if (spec?.carry) draft = metadata ? { ...spec.task, refs: { ...spec.task.refs, ...metadata } } : spec.task;
     await this.planEntryGate(by, draft, spec?.carry);
@@ -8183,7 +8184,7 @@ export class Tasks {
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during build admission");
     this.reviewedAdmissions.set(current.id, { flow: current.history.length, owner: current.owner });
-    try { return this.accept(by, id, plan, metadata, spec?.carry); }
+    try { return await this.prepareAcceptedWorktree(this.accept(by, id, plan, metadata, spec?.carry), by, requestCheck); }
     finally { this.reviewedAdmissions.delete(current.id); }
   }
 
@@ -8419,7 +8420,37 @@ export class Tasks {
   /** The hub-made worktree of the task's owner, for the accept answer: where to edit, and what the hub does at `hub_task_done`. */
   worktreeNote(task: Task, peer: PeerId): string | undefined {
     const found = this.d.taskWorktree?.describe(peer, task.id);
-    return found ? `Worktree: the hub made ${found.path} on branch ${found.branch} for this task. Edit files there only; do not run git. At hub_task_done the hub stages, commits and pushes it for you.` : undefined;
+    return found ? [`Worktree: the hub made ${found.path} on branch ${found.branch} for this task. Edit files there only; do not run git. At hub_task_done the hub stages, commits and pushes it for you.`, this.dependencyNote(task, peer)].filter(Boolean).join("\n") : undefined;
+  }
+
+  private dependencyNote(task: Task, peer: PeerId): string | undefined {
+    const state = this.d.taskWorktree?.dependencyState?.(peer, task.id);
+    return state ? `Task #${task.id} dependencies ${state.ready ? "prepared" : `not prepared: ${state.reason}`}. Full checks stay with CI and the remote runner.` : undefined;
+  }
+
+  /** Only fixed readiness/cause text for this peer's current public work reaches its next prompt. */
+  dependencyNotes(peer: PeerId): string | undefined {
+    return this.d.board.list().filter(task => task.owner === peer && task.state === "in_progress" && !this.isPii(task))
+      .map(task => this.dependencyNote(task, peer)).filter(Boolean).join("\n") || undefined;
+  }
+
+  private async prepareAcceptedWorktree(task: Task, actor: PeerId, requestCheck: () => void): Promise<Task> {
+    const port = this.d.taskWorktree;
+    const peer = task.owner ?? actor;
+    if (!port?.prepareDependencies || !port.preparesDependencies?.(peer) || !port.describe(peer, task.id)) return task;
+    const acceptance = this.ownerAcceptance(task)?.index;
+    const current = () => {
+      try {
+        requestCheck();
+        const row = this.d.board.get(task.id);
+        return !!row && row.created === task.created && row.owner === peer && row.state === "in_progress"
+          && !this.isPii(row) && this.ownerAcceptance(row)?.index === acceptance;
+      } catch { return false; }
+    };
+    await port.prepareDependencies({ peer, task: task.id, current });
+    // Acceptance is already a board effect. Do not describe a lost request as pre-effect.
+    if (!current()) throw new Error(`task #${task.id} changed owner, session or privacy during dependency preparation; read pending notices and call hub_task_list before continuing`);
+    return this.d.board.get(task.id)!;
   }
 
   /**

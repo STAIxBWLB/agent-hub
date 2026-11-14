@@ -122,6 +122,7 @@ revision preserves both behaviors; capture still uses its stricter turn fence.
 
 ## Changes
 
+- 2026-11-15: #1447 T5 separates Pi's focused localhost checks from external egress and the local worker's closed loopback policy. Dependency preparation uses reviewed Git-base install inputs because validating a peer-writable manifest and later running it on the host leaves a race; fixed readiness guidance does not turn an installer failure into a failed acceptance.
 - 2026-11-15: #1447 T4 reproduces a digest prepared before a task-move notice was queued. Conditional queue re-selection keeps that notice in the next host turn without changing durable ACKs; the later provider-prompt window remains unmeasured and open. Checkpoint ownership epochs prevent a pending notice from permitting former-owner summary effects.
 - 2026-11-14: #1473 follows the #1328 cooperative direct-instruction precedent for one conductor-recorded question answer. Visible actor provenance avoids a second terminal step while a DB-only quote and unchanged person/private/self-answer boundaries keep the claim separate from blanket delegation or release consent.
 - 2026-11-14: #1467 separates unknown-quota admission from the numeric reviewer floor. The default remains skip at 0.8; explicit pass can bootstrap a reviewer without a reading, while off disables quota admission checks and waits. Actual account/manual pauses remain independent, and the synthetic opt-out evidence does not claim live use or a new reset source.

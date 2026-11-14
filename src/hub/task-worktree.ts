@@ -8,6 +8,7 @@ import type { PeerId } from "./envelope.ts";
 import { hubGitArgv, hubGitEnv, hubGitSync } from "./git.ts";
 import { grantablePath } from "./permission-mode.ts";
 import { realPath } from "./project.ts";
+import type { DependencyPreparation } from "../pi/task-dependencies.ts";
 
 /**
  * #1115: a hub-sandboxed peer (Pi, the local worker) cannot run `git worktree add` or commit, because its profile refuses `.git` writes that
@@ -39,6 +40,9 @@ export interface TaskWorktreePort {
   available(): TaskWorktreeAvailability;
   create(input: { peer: PeerId; task: number }): TaskWorktreeResult;
   describe(peer: PeerId, task: number): Pick<TaskWorktreeEntry, "path" | "branch" | "base"> | undefined;
+  prepareDependencies?(input: { peer: PeerId; task: number; current: () => boolean }): Promise<void>;
+  preparesDependencies?(peer: PeerId): boolean;
+  dependencyState?(peer: PeerId, task: number): DependencyPreparation | undefined;
   commitAndPush(input: { peer: PeerId; task: number; title: string }): Promise<TaskWorktreeCommit>;
   remove(input: { peer: PeerId; task: number }): TaskWorktreeRemoval;
 }
@@ -77,9 +81,38 @@ export class TaskWorktrees implements TaskWorktreePort {
   private readonly root: string;
   private chain: Promise<unknown> = Promise.resolve();
   private cached?: { at: number; value: TaskWorktreeAvailability };
+  private dependencyPreparers = new Map<PeerId, (cwd: string, current: () => boolean, base: string) => Promise<DependencyPreparation>>();
+  private dependencyRuns = new Map<string, Promise<void>>();
+  private dependencyStates = new Map<string, { path: string; state: DependencyPreparation }>();
   constructor(private readonly o: TaskWorktreeOptions) { this.root = realPath(o.root); }
 
   applies = (peer: PeerId): boolean => this.o.applies(peer);
+
+  /** Host adapter registration only; a peer/tool cannot choose an installer or environment. */
+  registerDependencyPreparation(peer: PeerId, prepare: (cwd: string, current: () => boolean, base: string) => Promise<DependencyPreparation>): void {
+    this.dependencyPreparers.set(peer, prepare);
+  }
+  preparesDependencies = (peer: PeerId): boolean => this.dependencyPreparers.has(peer);
+
+  prepareDependencies(input: { peer: PeerId; task: number; current: () => boolean }): Promise<void> {
+    const { peer, task, current } = input, prepare = this.dependencyPreparers.get(peer), entry = this.describe(peer, task);
+    if (!prepare || !entry || !current()) return Promise.resolve();
+    const key = this.key(peer, task), running = this.dependencyRuns.get(key);
+    if (running) return running;
+    const run = (async () => {
+      let state: DependencyPreparation;
+      try { state = await prepare(entry.path, current, entry.base); }
+      catch { state = { ready: false, reason: "install failed" }; }
+      if (current() && this.describe(peer, task)?.path === entry.path) this.dependencyStates.set(key, { path: entry.path, state });
+    })().finally(() => { if (this.dependencyRuns.get(key) === run) this.dependencyRuns.delete(key); });
+    this.dependencyRuns.set(key, run);
+    return run;
+  }
+
+  dependencyState(peer: PeerId, task: number): DependencyPreparation | undefined {
+    const saved = this.dependencyStates.get(this.key(peer, task));
+    return saved && this.describe(peer, task)?.path === saved.path ? saved.state : undefined;
+  }
 
   /** `extra` is merged after the isolation, which strips GIT_INDEX_FILE: only the hub's own private index passes through it. */
   private git(args: string[], cwd = this.root, timeout = GIT_TIMEOUT_MS, extra: Record<string, string> = {}): Run {
@@ -304,6 +337,7 @@ export class TaskWorktrees implements TaskWorktreePort {
    */
   remove(input: { peer: PeerId; task: number }): TaskWorktreeRemoval {
     const { peer, task } = input;
+    this.dependencyStates.delete(this.key(peer, task));
     let records: Record<string, TaskWorktreeEntry>;
     try { records = this.readRecords(); } catch (error) { return { removed: false, branchDeleted: false, kept: (error as Error).message }; }
     const entry = records[this.key(peer, task)];
