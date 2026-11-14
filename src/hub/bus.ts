@@ -2049,6 +2049,15 @@ export class Bus {
           const condensed = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
           out = this.retryOut(id, delivery, condensed);
         } finally { this.condensing -= mayCondense ? 1 : 0; }
+        // #1447: the batch is still preparation, not a started native turn. Urgent work
+        // queued during condensation must participate in the next take, ahead of chat.
+        if (mayCondense && queue.some(env => env.priority === "important")) {
+          if (!this.journal) {
+            if (preface) this.restorePreface(id, preface);
+            queue.unshift(...batch.filter(env => !this.withdrawn.has(env.id)));
+          }
+          continue;
+        }
         // A session that cannot show pushes may have taken the peer while this was condensed (issue #205).
         if (!this.deliverable(id)) {
           if (!this.journal) { if (preface) this.restorePreface(id, preface); queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id))); }

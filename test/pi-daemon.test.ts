@@ -1636,3 +1636,44 @@ for (const unsafe of ["secret", "private-path"] as const) test(`Pi screens raw $
   expect(h.escalations[0]!.note).toContain("model_error"); expect(h.escalations[0]!.note).toContain("Inspect");
   expect(h.escalations[0]!.note).not.toContain("PUBLIC_PREFIX_CANARY"); expect(h.escalations[0]!.note).not.toContain(tail);
 }, 20_000);
+
+test("#1447 known preflight limit: host-busy Pi refuses cancelled-task tools before its held prompt reaches native input", async () => {
+  const h = await continuationPi(), options = h.pi["opts"], selectModel = options.selectModel!, sendRpc = h.pi["sendRpc"];
+  let entered = false, released = false, release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = () => { released = true; resolve(); }; });
+  const prompts: string[] = [];
+  options.selectModel = async envs => { entered = true; await barrier; return selectModel(envs); };
+  h.pi["sendRpc"] = async command => { if (command.type === "prompt") prompts.push(String(command.message)); return sendRpc.call(h.pi, command); };
+  try {
+    const input = newEnvelope("user", "Preflight task input fixture", { to: ["pi"], kind: "task", refs: { task: String(h.task.id) } });
+    expect(h.daemon.bus.publish(input)).toContain("pi");
+    await h.wait(() => entered, "actual Pi model-selection preflight reached its fixture barrier");
+    expect(h.pi.state).toBe("busy"); expect(prompts).toEqual([]); expect(released).toBe(false);
+    const cancelled = await h.console_.request({ t: "task", op: "hub_task_cancel", args: { id: h.task.id, reason: "Cancel while native input is held" } });
+    expect(cancelled.ok === true, String(cancelled.error ?? "")).toBe(true);
+    const pending = () => h.daemon.bus.pendingEnvelopes("pi").find(env => env.refs?.task === String(h.task.id) && env.body.includes("cancelled. Stop working on it."));
+    await h.wait(() => !!pending(), "the stop notice is retained while host preflight is busy");
+    expect(pending()!.priority).toBe("important"); expect(prompts).toEqual([]);
+    const before = h.board.get(h.task.id)!;
+    const launch = h.native.tuiLaunch, headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    const call = async (name: string, args: object) => {
+      const response = await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers,
+        body: JSON.stringify({ name, args, toolCallId: `preflight-${name}`, sessionId: h.metadata.sessionId, generation: 0 }) });
+      return await response.json() as { text: string; failed: boolean };
+    };
+    const done = await call("hub_task_done", { id: h.task.id, summary: "PREFLIGHT_LATE_DONE_CANARY" });
+    expect(done.failed).toBe(true); expect(done.text).toMatch(/owner|cancelled|closed/);
+    // Pi gets no new checkpoint capability/waiter here: the existing no-pending-request refusal must hold.
+    const checkpoint = await call("hub_checkpoint", { summary: "PREFLIGHT_LATE_CHECKPOINT_CANARY" });
+    expect(checkpoint.failed).toBe(true); expect(checkpoint.text).toMatch(/checkpoint|capability|available/);
+    expect(h.board.get(h.task.id)).toEqual(before);
+    expect(existsSync(join(h.stateDir, "context-checkpoint-pi.json"))).toBe(false);
+    expect(prompts).toEqual([]); expect(released).toBe(false);
+    // This barrier forces the window. Its real-world duration is not measured, and host busy is not native consumption.
+    release(); await h.wait(() => prompts.length > 0, "the already-started host delivery reaches native input only after release");
+    expect(prompts[0]).toContain("Preflight task input fixture");
+    await h.event({ type: "agent_start", generation: 1 });
+    await h.event({ type: "agent_end", generation: 1, text: "Observed cancelled task; no work performed" });
+    await h.event({ type: "agent_settled", generation: 1 });
+  } finally { release(); options.selectModel = selectModel; h.pi["sendRpc"] = sendRpc; }
+}, 20_000);

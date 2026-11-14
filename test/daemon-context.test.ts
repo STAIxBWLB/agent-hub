@@ -10,11 +10,14 @@ import { ContextWindows } from "../src/hub/context-window.ts";
 import { newEnvelope, USER } from "../src/hub/envelope.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
+import { WsPeer } from "../src/adapters/channel-peer.ts";
+import { Budget } from "../src/hub/budget.ts";
+import { Board } from "../src/hub/board.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const until = async (f: () => boolean) => { for (let n = 0; n < 350 && !f(); n++) await Bun.sleep(10); expect(f()).toBe(true); };
-async function fixture(gate = 0.8, reviewOther = false, wipLimits?: Record<string, number>, extra: Partial<typeof DEFAULT_CONFIG> = {}) {
+async function fixture(gate = 0.8, reviewOther = false, wipLimits?: Record<string, number>, extra: Partial<typeof DEFAULT_CONFIG> = {}, withTask = true) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-context-")); cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
   const mem = startFakeMemWorker(); cleanup.push(mem.stop);
   mkdirSync(join(cwd, ".agenthub"));
@@ -36,11 +39,146 @@ async function fixture(gate = 0.8, reviewOther = false, wipLimits?: Record<strin
     const extra = context !== null && typeof context === "object" ? context : {};
     writeFileSync(join(cwd, "claude-context.json"), JSON.stringify({ instanceId: "context-instance", sessionId: "native-1", launchId: "launch-1", at: Date.now(), context: { context_window_size: 200_000, used_percentage: used, current_usage: { input_tokens: used * 2000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, ...extra }, ...metadata }));
   };
-  const tasks = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "implement parser", owner: "claude", class: "implement" } }); expect(tasks.ok).toBe(true);
+  if (withTask) { const tasks = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "implement parser", owner: "claude", class: "implement" } }); expect(tasks.ok).toBe(true); }
   return { cwd, daemon, console_, claude, mem, pushes, otherPushes, reading, session };
 }
 const pressure = (cwd: string) => readEvents(join(cwd, "events.jsonl")).filter(e => e.type === "context_pressure");
 const request = (pushes: any[]) => pushes.find(p => p.t === "event" && p.e?.env?.body?.startsWith("Checkpoint request: your native context"))?.e.env;
+
+for (const checkpoint of ["context", "quota"] as const) for (const move of ["assign", "cancel"] as const)
+  test(`#1447 an owned ${checkpoint} checkpoint waiter refuses the former owner after ${move} while the stop notice is pending`, async () => {
+    const f = await fixture(checkpoint === "context" ? 0.8 : 0, false, undefined, {
+      roles: { ...DEFAULT_CONFIG.roles, other: ["implementer", "reviewer"] }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false },
+    });
+    const accepted = await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } }); expect(accepted.ok === true, String(accepted.error ?? "")).toBe(true);
+    const peer = f.daemon.bus.peers.get("claude");
+    if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+    // Emulate a busy transport without native steering: stop notices must remain pending, not pause the session.
+    peer.steer = undefined; peer.nativeStarted("native-1");
+    const ask = () => f.pushes.find(push => push.t === "event" && push.e?.env?.kind === "budget"
+      && push.e.env.body.startsWith(checkpoint === "context" ? "Checkpoint request: your native context" : "Checkpoint request: your quota"))?.e.env;
+    if (checkpoint === "context") f.reading();
+    else expect((await f.console_.request({ t: "budget", set: { peer: "claude", used: 0.999, resetsInMs: 3_600_000 } })).ok).toBe(true);
+    await until(() => !!ask());
+    const requestId = checkpoint === "context" ? /request_id: "([^"]+)"/.exec(ask().body)![1] : undefined;
+    expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
+    const changed = await f.console_.request({ t: "task", op: move === "assign" ? "task_assign" : "hub_task_cancel",
+      args: move === "assign" ? { id: 1, peer: "other", role: "owner" } : { id: 1, reason: "Stop the fixture task" } });
+    expect(changed.ok === true, String(changed.error ?? "")).toBe(true);
+    const current = JSON.parse((await f.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
+    if (move === "assign") expect(current.owner).toBe("other"); else expect(current.state).toBe("cancelled");
+    const pending = f.daemon.bus.pendingEnvelopes("claude").filter(env => env.refs?.task === "1"
+      && /no longer assigned|Stop working on it/.test(env.body));
+    expect(pending).toHaveLength(1); expect(pending[0]!.priority).toBe("important");
+    const done = await f.claude.request({ t: "task", op: "hub_task_done", args: { id: 1, summary: "Former owner cannot finish this" } });
+    expect(done.ok).toBe(false); expect(String(done.error)).toMatch(/owner|cancelled/);
+    const marker = `LATE_${checkpoint}_${move}_CHECKPOINT_CANARY`, checkpointed = Budget.prototype.checkpointed, persisted: string[] = [];
+    Budget.prototype.checkpointed = function (who, summary) { persisted.push(summary); return checkpointed.call(this, who, summary); };
+    let rejected: Awaited<ReturnType<ControlClient["request"]>>;
+    try {
+      rejected = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, ...(requestId ? { request_id: requestId } : {}) } });
+    } finally { Budget.prototype.checkpointed = checkpointed; }
+    expect(rejected!.ok).toBe(false);
+    expect(String(rejected!.error)).toMatch(/task|owner|moved|cancelled|expired|changed/);
+    expect(persisted).not.toContain(marker);
+    expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
+    expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(false);
+    expect(readFileSync(join(f.cwd, "hub.log"), "utf8")).not.toContain(marker);
+    expect(readFileSync(join(f.cwd, "events.jsonl"), "utf8")).not.toContain(marker);
+  }, 20_000);
+
+test("#1447 a taskless busy-peer context checkpoint still follows its valid peer/session waiter", async () => {
+  const f = await fixture(0.8, false, undefined, { inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false } }, false);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1");
+  f.reading(); await until(() => !!request(f.pushes));
+  const id = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1], marker = "TASKLESS_VALID_CHECKPOINT_CANARY";
+  const saved = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: id } });
+  expect(saved.ok === true, String(saved.error ?? "")).toBe(true);
+  expect(JSON.parse(readFileSync(join(f.cwd, "context-checkpoint-claude.json"), "utf8")).summary).toBe(marker);
+  expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(true);
+  expect(JSON.parse((await f.console_.request({ t: "task", op: "hub_task_list", args: {} })).text)).toEqual([]);
+}, 20_000);
+
+test("#1447 checkpoint owner binding permits ordinary metadata and an explicit same-owner patch", async () => {
+  const f = await fixture();
+  expect((await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1"); f.reading(); await until(() => !!request(f.pushes));
+  const id = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1];
+  const board = new Board(join(f.cwd, "hub.db")); cleanup.push(() => board.close());
+  const before = board.get(1)!;
+  board.update(1, "hub", "fixture progress", {}, "ordinary progress metadata");
+  board.update(1, "hub", "fixture same owner", { owner: "claude" });
+  expect(board.get(1)?.history).toHaveLength(before.history.length + 2);
+  expect(board.get(1)?.owner).toBe("claude");
+  const marker = "VALID_METADATA_CHECKPOINT_CANARY";
+  const saved = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: id } });
+  expect(saved.ok === true, String(saved.error ?? "")).toBe(true);
+  expect(JSON.parse(readFileSync(join(f.cwd, "context-checkpoint-claude.json"), "utf8")).summary).toBe(marker);
+  expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(true);
+}, 20_000);
+
+for (const move of ["unassign", "away-back"] as const) test(`#1447 ${move} invalidates the captured checkpoint ownership epoch while the notice is pending`, async () => {
+  const f = await fixture(0.8, false, undefined, { roles: { ...DEFAULT_CONFIG.roles, other: ["implementer", "reviewer"] }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false } });
+  expect((await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1"); f.reading(); await until(() => !!request(f.pushes));
+  const requestId = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1];
+  const task = JSON.parse((await f.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
+  if (move === "unassign") {
+    const changed = await f.console_.request({ t: "task", op: "task_unassign", args: { id: 1, role: "owner", revision: task.flowRevision } });
+    expect(changed.ok === true, String(changed.error ?? "")).toBe(true);
+  } else {
+    for (const owner of ["other", "claude"]) {
+      const changed = await f.console_.request({ t: "task", op: "task_assign", args: { id: 1, peer: owner, role: "owner" } });
+      expect(changed.ok === true, String(changed.error ?? "")).toBe(true);
+    }
+  }
+  const current = JSON.parse((await f.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
+  expect(current.owner).toBe(move === "unassign" ? null : "claude");
+  expect(f.daemon.bus.pendingEnvelopes("claude").some(env => env.refs?.task === "1" && /no longer assigned/.test(env.body))).toBe(true);
+  const marker = `LATE_${move}_CHECKPOINT_CANARY`;
+  const rejected = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: requestId } });
+  expect(rejected.ok).toBe(false);
+  expect(String(rejected.error)).toContain("task #1"); expect(String(rejected.error)).toContain("moved");
+  expect(String(rejected.error)).toMatch(/notice/); expect(String(rejected.error)).toContain("hub_task_list");
+  expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
+  expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(false);
+}, 20_000);
+
+test("#1447 ownership refusal guidance survives host cleanup until the original checkpoint timeout", async () => {
+  const f = await fixture(0.8, false, undefined, {
+    roles: { ...DEFAULT_CONFIG.roles, other: ["implementer", "reviewer"] },
+    budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 30 },
+    inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false },
+  });
+  expect((await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture requires the attached WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1"); f.reading(); await until(() => !!request(f.pushes));
+  const ask = request(f.pushes), requestId = /request_id: "([^"]+)"/.exec(ask.body)![1];
+  expect((await f.console_.request({ t: "task", op: "task_assign", args: { id: 1, peer: "other", role: "owner" } })).ok).toBe(true);
+  const pending = () => f.daemon.bus.pendingEnvelopes("claude").some(env => env.id === ask.id);
+  const deadline = performance.now() + 10_000;
+  while (pending() && performance.now() < deadline) await Bun.sleep(10);
+  expect(pending(), "host maintenance withdrew the invalid request before its 30-second deadline").toBe(false);
+  expect(f.daemon.bus.pendingEnvelopes("claude").some(env => env.refs?.task === "1" && /no longer assigned/.test(env.body))).toBe(true);
+  const marker = "AFTER_HOST_CLEANUP_CHECKPOINT_CANARY";
+  const rejected = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: requestId } });
+  expect(rejected.ok).toBe(false); expect(String(rejected.error)).toContain("task #1");
+  expect(String(rejected.error)).toContain("moved"); expect(String(rejected.error)).toContain("hub_task_list");
+  const wrong = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: "another-request" } });
+  expect(wrong.ok).toBe(false); expect(String(wrong.error)).not.toContain("task #1");
+  f.session("native-replacement", "replacement-launch");
+  const replacement = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: requestId } });
+  expect(replacement.ok).toBe(false); expect(String(replacement.error)).not.toContain("task #1");
+  expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
+  expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(false);
+}, 20_000);
 
 test("native context checkpoint saves a non-private note without pausing or moving tasks, and never broadcasts its body", async () => {
   const f = await fixture(); f.reading(); await until(() => !!request(f.pushes));

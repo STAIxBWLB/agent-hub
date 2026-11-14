@@ -7,6 +7,7 @@ import ts from "typescript";
 import * as peerContracts from "../src/hub/peers.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Bus } from "../src/hub/bus.ts";
+import { Board } from "../src/hub/board.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { HUB, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
@@ -109,14 +110,18 @@ function closure(name: string): string {
 }
 function generationRig(peer: PlainPeer) {
   const bus = new Bus({ batchMs: 0 }); bus.add(peer);
+  const board = new Board(":memory:");
+  const task = board.propose("user", { title: "checkpoint generation fixture", class: "implement" });
+  board.update(task.id, "user", "assigned", { owner: peer.id, state: "in_progress" });
   const waits = new Map<string, { valid(): boolean; done(summary: string | undefined): void }>();
+  const checkpointOwnershipRefusals = new Map<string, { timer: ReturnType<typeof setTimeout> }>();
   const externalIds = new Set<string>(), executionOwners = new Map<string, { owner: PlainPeer }>();
   const context = { ...peerContracts, isExternalInstance: (id: string) => externalIds.has(id), currentExecutionOwner: (id: string) => executionOwners.get(id), bus, checkConnections: new WeakMap(), instanceId: "fixture-instance", randomUUID: () => crypto.randomUUID(),
-    isWsPeer, isCodexPeer, isPiPeer, stopping: false, recoveryActive: () => false, checkpointWaits: waits,
-    contextSession: () => peer.session, contextPii: () => false, turns: new Map(), board: { list: () => [{ state: "in_progress", owner: peer.id }] },
+    isWsPeer, isCodexPeer, isPiPeer, stopping: false, recoveryActive: () => false, checkpointWaits: waits, checkpointOwnershipRefusals,
+    contextSession: () => peer.session, contextPii: () => false, turns: new Map(), board,
     config: { budget: { checkpoint_timeout_s: 1 } }, HUB, newEnvelope, log: () => {}, setTimeout, clearTimeout,
   };
-  cleanup.push(() => { for (const wait of waits.values()) wait.done(undefined); bus.closeJournal(); });
+  cleanup.push(() => { for (const wait of waits.values()) wait.done(undefined); for (const refusal of checkpointOwnershipRefusals.values()) clearTimeout(refusal.timer); board.close(); bus.closeJournal(); });
   return { bus, waits, externalIds, executionOwners, connection: runInNewContext(closure("connectionGeneration"), context) as (id: string) => string | undefined,
     checkpoint: runInNewContext(closure("requestCheckpoint"), context) as (id: string, reason: "quota" | "context") => Promise<string | undefined> };
 }
