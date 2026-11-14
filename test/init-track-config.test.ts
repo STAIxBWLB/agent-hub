@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -13,20 +13,44 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
   const made = mkdtempSync(join(tmpdir(), "ahub-init-track-")); roots.push(made);
-  const root = realPath(made), user = join(root, "user"), home = join(root, "hub"); mkdirSync(user);
+  const root = realPath(made), user = join(root, "user"), home = join(root, "hub"), scratch = join(root, "tmp"); mkdirSync(user); mkdirSync(scratch);
+  const globalConfig = join(user, "gitconfig"); writeFileSync(globalConfig, "");
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("CODEX_") || key === "CLAUDECODE" || key === "CLAUDE_CODE_SESSION_ID" || key.startsWith("ORCA_") || key === "CI") delete env[key];
   // GIT_CONFIG_GLOBAL keeps the person's own global ignore file out of the verdicts.
-  Object.assign(env, { HOME: user, AGENTHUB_HOME: home, CLAUDE_CONFIG_DIR: join(user, "claude"), AMEM_HOME: join(root, "memory"), GIT_CONFIG_GLOBAL: "/dev/null" });
+  Object.assign(env, { HOME: user, AGENTHUB_HOME: home, CLAUDE_CONFIG_DIR: join(user, "claude"), AMEM_HOME: join(root, "memory"), GIT_CONFIG_GLOBAL: globalConfig, TMPDIR: scratch });
   const cwd = join(root, "project"); mkdirSync(cwd);
   expect(hubGitSync(["init", "-q"], { cwd, env, encoding: "utf8", timeout: 3000 }).status).toBe(0);
-  const run = (args: string[]) => { const r = Bun.spawnSync([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "init", ...args], { cwd, env, stdin: "ignore" }); return { code: r.exitCode, out: `${r.stdout.toString()}${r.stderr.toString()}` }; };
+  const run = (args: string[]) => {
+    const r = Bun.spawnSync([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "init", ...args], { cwd, env, stdin: "ignore" });
+    expect(readdirSync(scratch).filter(name => name.startsWith("ahub-init-ignore-"))).toEqual([]);
+    return { code: r.exitCode, out: `${r.stdout.toString()}${r.stderr.toString()}` };
+  };
   const ignored = (path: string) => hubGitSync(["check-ignore", "-q", "--no-index", "--", path], { cwd, env, encoding: "utf8", timeout: 3000 }).status === 0;
   const text = (path: string) => existsSync(join(cwd, path)) ? readFileSync(join(cwd, path), "utf8") : "";
   const git = (args: string[]) => hubGitSync(args, { cwd, env, encoding: "utf8", timeout: 3000 });
-  return { cwd, run, ignored, text, git };
+  return { root, env, globalConfig, scratch, cwd, run, ignored, text, git };
 }
 const SHARED = [".agenthub/config.json", ".agenthub/routing.toml", ".agenthub/sdlc.toml"];
+const PRIVATE = [".agenthub/state/", ".agenthub/state/fixture.json", ".agenthub/config.local.json", ".agenthub/routing.local.toml"];
+const REINCLUDE = ["!/.agenthub/", "/.agenthub/*", ...SHARED.map(path => `!/${path}`)];
+function filesUnder(root: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  const walk = (relative: string) => {
+    for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
+      const name = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(name); else files[name] = readFileSync(join(root, name)).toString("base64");
+    }
+  };
+  walk(""); return files;
+}
+function outsideRule(p: ReturnType<typeof fixture>, kind: "global excludes" | "info/exclude") {
+  const location = kind === "global excludes" ? join(p.root, "user", "excludes") : join(p.cwd, ".git/info/exclude");
+  const contents = "# outside-rule-content-canary\n.agenthub/\n";
+  writeFileSync(location, contents);
+  if (kind === "global excludes") expect(p.git(["config", "--global", "core.excludesFile", location]).status).toBe(0);
+  return { location, contents, global: readFileSync(p.globalConfig, "utf8") };
+}
 
 test("--track-config leaves the shared files visible to git and names them; --no-track-config ignores them; the role sentence follows (AC1)", () => {
   const tracked = fixture();
@@ -59,17 +83,128 @@ test("init with neither flag on an existing project changes neither the ignore s
   }
 });
 
-test("--track-config with a rule that ignores .agenthub/ names the rule and the file and writes nothing (AC3)", () => {
+test("--track-config appends a reinclude block after a project root directory rule without rewriting that rule (#1496)", () => {
   const p = fixture();
   writeFileSync(join(p.cwd, ".gitignore"), "node_modules/\n.agenthub/\n");
-  const refused = p.run(["--track-config"]);
+  const done = p.run(["--track-config", "--yes"]);
+  expect(done.code, done.out).toBe(0);
+  expect(p.text(".gitignore").startsWith("node_modules/\n.agenthub/\n")).toBe(true);
+  expect(p.text(".gitignore")).toContain(REINCLUDE.join("\n"));
+  for (const path of SHARED) expect(p.ignored(path), path).toBe(false);
+  for (const path of PRIVATE) expect(p.ignored(path), path).toBe(true);
+  expect(existsSync(join(p.cwd, "AGENTS.md"))).toBe(true);
+  expect(p.text("AGENTS.md")).toContain(ROLES_TRACKED);
+  expect(done.out).toContain("Next steps:");
+});
+
+for (const kind of ["global excludes", "info/exclude"] as const) {
+  test(`--track-config overrides ${kind} in one project-local write, stays idempotent, and no-track removes its reincludes (#1496)`, () => {
+    const p = fixture(), external = outsideRule(p, kind);
+    expect(p.ignored(".agenthub/config.json")).toBe(true);
+    const done = p.run(["--track-config", "--yes"]);
+    expect(done.code, done.out).toBe(0);
+    expect(p.text(".gitignore")).toContain(REINCLUDE.join("\n"));
+    for (const path of SHARED) expect(p.ignored(path), path).toBe(false);
+    for (const path of PRIVATE) expect(p.ignored(path), path).toBe(true);
+    expect(done.out).toContain(".gitignore");
+    expect(done.out).toMatch(/re-includ|reinclude/);
+    expect(done.out.toLowerCase()).toContain(kind === "global excludes" ? "global" : "info/exclude");
+    expect(done.out).not.toContain("outside-rule-content-canary");
+    expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+    expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+    const before = filesUnder(p.cwd), again = p.run(["--track-config", "--yes"]);
+    expect(again.code, again.out).toBe(0);
+    expect(filesUnder(p.cwd)).toEqual(before);
+    for (const line of REINCLUDE) expect(p.text(".gitignore").split("\n").filter(item => item === line)).toHaveLength(1);
+    const off = p.run(["--no-track-config", "--yes"]);
+    expect(off.code, off.out).toBe(0);
+    for (const path of [...SHARED, ...PRIVATE]) expect(p.ignored(path), path).toBe(true);
+    expect(p.text(".gitignore").split("\n").filter(line => line.startsWith("!/.agenthub"))).toEqual([]);
+    expect(p.text("AGENTS.md")).toContain(ROLES_UNTRACKED);
+    expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+    expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+  });
+
+  test(`--dry-run previews the reinclude lines and reason for ${kind} without writing project or outside rules (#1496)`, () => {
+    const p = fixture(), external = outsideRule(p, kind);
+    writeFileSync(join(p.cwd, ".gitignore"), "# project-owned rule\nnode_modules/\n");
+    const before = filesUnder(p.cwd), dry = p.run(["--track-config", "--dry-run"]);
+    expect(dry.code, dry.out).toBe(0);
+    expect(dry.out).toContain(".gitignore");
+    expect(dry.out).toMatch(/re-includ|reinclude/);
+    for (const line of REINCLUDE) expect(dry.out).toContain(line);
+    expect(dry.out.toLowerCase()).toContain(kind === "global excludes" ? "global" : "info/exclude");
+    expect(dry.out).not.toContain("outside-rule-content-canary");
+    expect(filesUnder(p.cwd)).toEqual(before);
+    expect(existsSync(join(p.cwd, "AGENTS.md"))).toBe(false);
+    expect(existsSync(join(p.cwd, ".agenthub"))).toBe(false);
+    expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+    expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+  });
+}
+
+test("a nested project ignore still winning after the root reinclude refuses before any writes (#1496)", () => {
+  const p = fixture(), external = outsideRule(p, "global excludes");
+  mkdirSync(join(p.cwd, ".agenthub"));
+  writeFileSync(join(p.cwd, ".agenthub/.gitignore"), "config.json\n");
+  writeFileSync(join(p.cwd, ".gitignore"), "# keep project rules\n");
+  const before = filesUnder(p.cwd), refused = p.run(["--track-config", "--yes"]);
   expect(refused.code).toBe(1);
-  expect(refused.out).toContain(".agenthub/config.json is ignored by .gitignore:2:.agenthub/");
+  expect(refused.out).toContain(".agenthub/.gitignore:1:config.json");
+  expect(refused.out).toContain(".agenthub/config.json");
   expect(refused.out).toContain("nothing was written");
+  expect(refused.out).toContain("ahub init");
   expect(refused.out).not.toContain("Next steps:");
+  expect(filesUnder(p.cwd)).toEqual(before);
   expect(existsSync(join(p.cwd, "AGENTS.md"))).toBe(false);
-  expect(existsSync(join(p.cwd, ".agenthub"))).toBe(false);
-  expect(p.text(".gitignore")).toBe("node_modules/\n.agenthub/\n");
+  expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+  expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+});
+
+test("an outside directory ignore never makes machine routing trackable while shared config is reincluded (#1496)", () => {
+  const p = fixture(), external = outsideRule(p, "global excludes");
+  mkdirSync(join(p.cwd, ".agenthub"));
+  writeFileSync(join(p.cwd, ".agenthub/routing.toml"), '[hub_routes."hub/decision"]\ntype = "stage"\nefficient = "fast"\ncapable = "coding"\ndecision_backend = "adec"\nadec_endpoint = "http://127.0.0.1:8740/v1/route"\n');
+  const routing = p.text(".agenthub/routing.toml"), done = p.run(["--track-config", "--yes"]);
+  expect(done.code, done.out).toBe(0);
+  expect(p.ignored(".agenthub/config.json")).toBe(false);
+  expect(p.ignored(".agenthub/sdlc.toml")).toBe(false);
+  expect(p.ignored(".agenthub/routing.toml")).toBe(true);
+  expect(p.text(".gitignore")).not.toContain("!/.agenthub/routing.toml");
+  for (const path of PRIVATE) expect(p.ignored(path), path).toBe(true);
+  expect(done.out).toContain(".agenthub/routing.toml stays untracked");
+  expect(p.text(".agenthub/routing.toml")).toBe(routing);
+  expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+});
+
+test("a Git preview error removes the scratch directory and leaves every project and outside rule untouched (#1496)", () => {
+  const p = fixture(), external = outsideRule(p, "global excludes"), before = filesUnder(p.cwd);
+  const bin = join(p.root, "bin"), trace = join(p.root, "preview-work-tree"); mkdirSync(bin);
+  const realGit = Bun.which("git", { PATH: p.env.PATH });
+  if (!realGit) throw new Error("fixture requires Git");
+  const quote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
+  writeFileSync(join(bin, "git"), `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --work-tree=*) printf '%s\\n' "$arg" > ${quote(trace)}; exit 128 ;;
+  esac
+done
+exec ${quote(realGit)} "$@"
+`, { mode: 0o700 });
+  p.env.PATH = `${bin}:${p.env.PATH ?? ""}`;
+  expect(p.git(["--version"]).status).toBe(0);
+  const refused = p.run(["--track-config", "--yes"]);
+  expect(refused.code).toBe(1);
+  expect(refused.out).toContain("git could not evaluate the planned ignore rules");
+  expect(refused.out).toContain("nothing was written");
+  expect(existsSync(trace)).toBe(true);
+  const argument = readFileSync(trace, "utf8").trim();
+  expect(argument).toContain("ahub-init-ignore-");
+  expect(existsSync(argument.slice("--work-tree=".length))).toBe(false);
+  expect(readdirSync(p.scratch)).toEqual([]);
+  expect(filesUnder(p.cwd)).toEqual(before);
+  expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+  expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
 });
 
 test("a ! rule that re-includes a file is not an ignore rule; a directory rule is", () => {
