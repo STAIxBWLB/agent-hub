@@ -363,7 +363,9 @@ Kimi 2.5.2's own TUI also earns completions, but only through the `ahub kimi` la
 ## Pi ceiling settlement and continuation evidence (#1447)
 
 Pi's per-turn managed tool-step default is 100 (#1447 T3), including in this
-repository's tracked config. A configured ceiling still rejects the next
+repository's tracked config, init template and unset-env extension fallback.
+An existing project's explicit 30 remains an override until the person edits it.
+A configured ceiling still rejects the next
 attempt before its tool effect. Local-worker step defaults are unchanged.
 
 The extension's structured tool-step ceiling is evidence only for its current

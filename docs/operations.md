@@ -799,7 +799,9 @@ version, or one that cannot be read, is refused before Pi starts, unless the
 person trusts that exact version with `ahub agents trust pi <version>`.
 
 `pi.max_steps` defaults to `100` managed tool-step attempts per native turn
-(#1447 T3); this repository's tracked setting is also `100`. Failed managed
+(#1447 T3); this repository's tracked setting and the init template also use
+`100`. Existing projects with explicit `pi.max_steps: 30` keep `30` until the
+person edits that setting. Failed managed
 calls count and the first rejected attempt is reported as `101/100`. The local
 worker's `local.max_steps` default and repository setting remain `30`. This is a
 source/config change; it does not restart a running Pi or change its active turn.

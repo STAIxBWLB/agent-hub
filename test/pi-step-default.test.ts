@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { validateRawConfig, validateEffectiveConfig } from "../src/hub/config-apply.ts";
+import { mergeNativeConfiguration } from "../src/adapters/definitions/native-config-defaults.ts";
 import { PI_CEILING_KIND } from "../src/pi/ceiling.ts";
 
 test("T3 Pi defaults and tracked config use 100 while local stays 30 and policy accepts both", () => {
@@ -11,11 +12,15 @@ test("T3 Pi defaults and tracked config use 100 while local stays 30 and policy 
   expect(DEFAULT_CONFIG.local.max_steps).toBe(30);
   expect(tracked.pi.max_steps).toBe(100);
   expect(tracked.local.max_steps).toBe(30);
+  const template = JSON.parse(readFileSync(join(import.meta.dir, "../templates/config.json"), "utf8"));
+  expect(template.pi.max_steps).toBe(DEFAULT_CONFIG.pi.max_steps);
+  expect(template.local.max_steps).toBe(30);
+  expect(mergeNativeConfiguration({ pi: { max_steps: 30 } }, DEFAULT_CONFIG).pi.max_steps).toBe(30);
   expect(() => validateRawConfig({ pi: { max_steps: 100 }, local: { max_steps: 30 } })).not.toThrow();
   expect(() => validateEffectiveConfig(DEFAULT_CONFIG)).not.toThrow();
 });
 
-test("T3 the real extension rejects attempt 101 before its tool effect at the configured 100 ceiling", async () => {
+for (const configured of [true, false]) test(`T3 the real extension rejects attempt 101 before its tool effect with ${configured ? "configured" : "unset-env default"} 100 ceiling`, async () => {
   const limit = DEFAULT_CONFIG.pi.max_steps;
   const calls: string[] = [], ceilings: { kind?: string; count?: number; limit?: number }[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
@@ -28,13 +33,15 @@ test("T3 the real extension rejects attempt 101 before its tool effect at the co
     return Response.json({ ok: true });
   } });
   let proc: ReturnType<typeof Bun.spawn> | undefined;
+  const env: NodeJS.ProcessEnv = { ...process.env,
+    AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${server.port}`, AGENTHUB_PI_BRIDGE_TOKEN: "fixture-token",
+    AGENTHUB_PI_TOOLS: JSON.stringify([{ name: "read", description: "read", parameters: { type: "object", properties: { path: { type: "string" } } } }]),
+  };
+  delete env.AGENTHUB_PI_MAX_STEPS;
+  if (configured) env.AGENTHUB_PI_MAX_STEPS = String(limit);
   try {
     const child = Bun.spawn([process.execPath, join(import.meta.dir, "fakes/pi-ceiling-driver.ts"), join(import.meta.dir, "../src/pi/extension.ts"), String(limit + 1)], {
-      stdout: "pipe", stderr: "pipe", env: { ...process.env,
-        AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${server.port}`, AGENTHUB_PI_BRIDGE_TOKEN: "fixture-token",
-        AGENTHUB_PI_MAX_STEPS: String(limit),
-        AGENTHUB_PI_TOOLS: JSON.stringify([{ name: "read", description: "read", parameters: { type: "object", properties: { path: { type: "string" } } } }]),
-      },
+      stdout: "pipe", stderr: "pipe", env,
     });
     proc = child;
     const [output, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

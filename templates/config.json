@@ -4,7 +4,7 @@
   "qwen_cmd": ["qwen", "--acp"],
   "jcode_cmd": ["jcode"],
   "codex_bin": "codex",
-  "pi": { "enabled": false, "auto_start": false, "cmd": ["pi"], "backend": "auto", "dgx_coding": "coding", "dgx_fast": "fast", "max_steps": 30 },
+  "pi": { "enabled": false, "auto_start": false, "cmd": ["pi"], "backend": "auto", "dgx_coding": "coding", "dgx_fast": "fast", "max_steps": 100 },
   "batch_max": 3,
   "batch_ms": 15000,
   "queue_cap": 200,
