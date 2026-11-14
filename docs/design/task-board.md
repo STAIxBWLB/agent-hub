@@ -79,6 +79,9 @@ move-away/back expires that scope before budget/context-file/memory effects;
 metadata updates naming the same owner do not. The refusal names the task/cause
 and directs the former owner to read the notice and `hub_task_list`. No task-id
 parameter or mandatory task ownership is added to the checkpoint tool.
+Host cleanup retains only the body-free refusal cause, bound to the original
+peer/session and request, until that request's original deadline. A fresh request
+replaces it; a different session or context request receives no prior task ids.
 
 Visual attachments (#1058) annotate public work without changing a task's state,
 outcome or evidence authority. Publication checks current role, turn, task and
