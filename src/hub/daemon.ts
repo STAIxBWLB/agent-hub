@@ -8807,7 +8807,7 @@ export async function startDaemon(opts: DaemonOptions) {
       };
       // Tools the person allowed "always" for this Pi start; a new start gets a new set (#209).
       const piAlways = new Set<string>();
-      const shellOptions = { root: executionCwd, projectRoot: opts.cwd, deny: config.local.deny, readOnly: config.data?.readonly, env: { ...proxyEnv(sandboxNetwork), AGENTHUB_PEER_ID: peer } };
+      const shellOptions = { root: executionCwd, projectRoot: opts.cwd, deny: config.local.deny, readOnly: config.data?.readonly, env: { ...proxyEnv(sandboxNetwork, true), AGENTHUB_PEER_ID: peer } };
       const shellProofs = new ShellExecutionProofs(shellOptions);
       actionBudgets.revoke(peer);
       const piPermit = async (title: string, tool: string, signal?: AbortSignal, path?: string, valid: () => boolean = () => true, observe?: ApprovalObserver, originalPath?: string, input?: unknown, policy?: ShellPermitPolicy): Promise<ToolApproval> => {
@@ -8850,8 +8850,8 @@ export async function startDaemon(opts: DaemonOptions) {
       };
       const ctx: ToolContext = {
         cwd: executionCwd, deny: config.local.deny, readOnly: config.data?.readonly,
-        sandboxProfile: profile(executionCwd, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly),
-        sandboxEnv: { ...proxyEnv(sandboxNetwork), AGENTHUB_PEER_ID: peer },
+        sandboxProfile: profile(executionCwd, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly, true),
+        sandboxEnv: { ...proxyEnv(sandboxNetwork, true), AGENTHUB_PEER_ID: peer },
         permit: async () => false, // Pi's calls ask through piPermit in executeTool, which knows the tool's name
         send: (text, to) => {
           if (to?.some((id) => !bus.peers.has(id) && id !== USER)) return "error: unknown peer";

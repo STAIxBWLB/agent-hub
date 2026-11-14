@@ -144,7 +144,7 @@ export type SandboxNetwork = boolean | { proxyPort: number };
  * toolchain and project directories, writing the project and a temp dir of their own. The allow-default profile of
  * 0.9 and earlier was removed in 0.12.0 (issue #83).
  */
-export function profile(cwd: string, network: SandboxNetwork, readAllow: string[] = [], deny: string[] = [], readOnly: string[] = []): string {
+export function profile(cwd: string, network: SandboxNetwork, readAllow: string[] = [], deny: string[] = [], readOnly: string[] = [], loopback = false): string {
   const home = homedir();
   const inHome = (p: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
   const root = realPath(cwd);
@@ -166,12 +166,13 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
     "(allow signal (target same-sandbox))",
     "(allow process-info* (target same-sandbox))",
     "(allow sysctl-read)",
-    `(allow mach-lookup ${globals([...MACH_SERVICES, ...(proxy ? PROXY_MACH_SERVICES : network ? NETWORK_MACH_SERVICES : [])])})`,
+    `(allow mach-lookup ${globals([...MACH_SERVICES, ...(proxy ? PROXY_MACH_SERVICES : network || loopback ? NETWORK_MACH_SERVICES : [])])})`,
     '(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata (ipc-posix-name "apple.shm.notification_center"))',
     "(allow file-read-metadata)",
     `(allow file-read* (literal "/") ${subpaths([...SYSTEM_READABLE, "/dev"])} ${subpaths(readable)})`,
     '(allow file-ioctl (regex #"^/dev/"))',
     ...(proxy ? [proxy] : network ? ["(allow network*)"] : []),
+    ...(loopback ? ['(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (local ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))'] : []),
   ];
   const places = `${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
   return [
@@ -325,8 +326,9 @@ async function probeCommand(argv: string[], opts: { cwd: string; profile: string
 }
 
 /** The environment that sends a command's HTTPS through the egress proxy (#65); empty without one. */
-export function proxyEnv(network: SandboxNetwork): Record<string, string> {
+export function proxyEnv(network: SandboxNetwork, loopback = false): Record<string, string> {
   if (typeof network !== "object") return {};
   const url = `http://127.0.0.1:${network.proxyPort}`;
-  return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, ALL_PROXY: url, all_proxy: url, NO_PROXY: "", no_proxy: "" };
+  const bypass = loopback ? "localhost,127.0.0.1,::1,[::1]" : "";
+  return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, ALL_PROXY: url, all_proxy: url, NO_PROXY: bypass, no_proxy: bypass };
 }
