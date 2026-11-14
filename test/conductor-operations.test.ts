@@ -369,3 +369,18 @@ test("daemon operational cache invalidates on task privacy and live PII routing 
     const privatePath=await lead.request({t:"conductor_operational",op:"logs"});expect(privatePath.lines).not.toContain(path);expect(privatePath.lines.some((line:string)=>line.includes(title))).toBe(false);expect(privatePath.lines.some((line:string)=>line.includes("INNOCUOUS_PATH_TASK_TITLE"))).toBe(false);expect(projections).toBeGreaterThan(before);
   }finally{Tasks.prototype.publicView=original;board.close();await f.close();}
 });
+
+test("the configured conductor runs sdlc audit start and show from its agent shell; a non-conductor is refused and audited (hub task 933, #1403)",async()=>{
+  const f=await operationalFixture();try {
+    const shown=await runOperationalCli(f.root,["sdlc","audit","show","--json"]);
+    expect(shown.code,shown.stderr).toBe(0);expect(JSON.parse(shown.stdout)).toBeNull();
+    // Lifecycle is off in this fixture, so start is refused by the daemon's own audit rule, not by the CLI before it connects.
+    const started=await runOperationalCli(f.root,["sdlc","audit","start","--profile","quick"]);
+    expect(started.code).toBe(1);expect(started.stderr).toContain("security audits need the lifecycle on");expect(started.stderr).not.toContain("requires the explicit conductor role");
+    for(const args of [["sdlc","audit","show"],["sdlc","audit","start"]]) {
+      const refused=await runOperationalCli(f.root,args,"claude");expect(refused.code).toBe(1);expect(refused.stderr).toMatch(/conductor/);
+    }
+    const refusals=readEvents(join(f.stateDir,"events.jsonl")).flatMap(e=>e.type==="agent_cli" && e.peer==="claude" && e.refused ? [e.command] : []);
+    expect(refusals).toEqual(["sdlc audit show","sdlc audit start"]);
+  } finally {await f.close();}
+},20000);
