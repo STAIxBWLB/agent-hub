@@ -15419,6 +15419,15 @@ var init_planning = __esm(() => {
   init_sdlc();
 });
 
+// src/hub/roadmap.ts
+var MILESTONE_STATES, MILESTONE_HORIZONS, MILESTONE_LINK_KINDS, MILESTONE_LIMITS;
+var init_roadmap = __esm(() => {
+  MILESTONE_STATES = ["proposed", "planned", "active", "done", "dropped"];
+  MILESTONE_HORIZONS = ["now", "next", "later"];
+  MILESTONE_LINK_KINDS = ["spec", "issue", "task", "release"];
+  MILESTONE_LIMITS = Object.freeze({ title: 300, outcome: 4000, spec: 160, issue: 300, actor: 64 });
+});
+
 // src/hub/research-campaign.ts
 var BODY3;
 var init_research_campaign = __esm(() => {
@@ -15456,6 +15465,7 @@ var init_board = __esm(() => {
   init_db_schema();
   init_control_write_trace();
   init_planning();
+  init_roadmap();
   init_envelope();
   init_review_findings();
   init_security_pass();
@@ -18091,6 +18101,7 @@ var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_
 }), STUDY_TOOLS, SURVEY_REPORT_TOOL, AUDIT_REPORT_TOOL, EVIDENCE_RECORD_TOOL, EVIDENCE_READ_TOOL, HANDOFF_TOOLS, LINEAGE_TOOL_NAMES, executionReference, lineageShow, GUIDANCE_TOOL_NAMES, guidanceEpoch, guidanceContentId, guidanceText, guidanceVariant, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, ASK_TOOL, ASK_ANSWER_TOOL, QUESTION_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_execution_reference();
+  init_roadmap();
   init_execution_links();
   init_guidance_variants();
   init_test_integrity();
@@ -18341,6 +18352,26 @@ var init_hub_tools = __esm(() => {
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
   CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
   TASK_TOOLS = [
+    tool2("hub_roadmap_list", "Read public milestones with computed task/issue/spec/train progress. Private work is a count only; unknown evidence stays unknown. Read only, with no GitHub or model call.", {}),
+    tool2("hub_roadmap_show", "Read a milestone's public links, inherited membership and computed progress. Inspect this before editing and copy its current revision. Private tasks are counts only.", { id: { type: "integer", minimum: 1 } }, ["id"]),
+    tool2("hub_roadmap_edit", "Create or change a milestone. Configured planner or unique conductor only; done/dropped are person-only. new/edit take fields; edit also needs the current revision. Link kinds are spec/issue/task/release; issue refs are owner/repo#N. No GitHub write, task assignment or model call. On refusal inspect hub_roadmap_show and correct the named input.", {
+      op: { type: "string", enum: ["new", "edit", "link", "unlink", "order", "state"] },
+      id: { type: "integer", minimum: 1 },
+      revision: { type: "integer", minimum: 0 },
+      fields: { type: "object", additionalProperties: false, properties: {
+        title: { type: "string", minLength: 1, maxLength: MILESTONE_LIMITS.title },
+        outcome: { type: "string", minLength: 1, maxLength: MILESTONE_LIMITS.outcome },
+        state: { type: "string", enum: MILESTONE_STATES },
+        horizon: { type: "string", enum: MILESTONE_HORIZONS },
+        order: { type: "integer", minimum: 0 },
+        target: { type: ["string", "null"], description: "valid YYYY-MM-DD or null" },
+        parent: { type: ["integer", "null"], minimum: 1 }
+      } },
+      kind: { type: "string", enum: MILESTONE_LINK_KINDS },
+      ref: { type: "string", minLength: 1, maxLength: MILESTONE_LIMITS.issue },
+      order: { type: "integer", minimum: 0 },
+      state: { type: "string", enum: MILESTONE_STATES }
+    }, ["op"]),
     tool2("hub_lineage_show", "Read bounded execution lineage from exactly one taskId, attemptId or root with optional owning task identity. Explicit recorded relationships only; missing native observations remain unknown. Hidden and absent roots share unavailable. Never probes, fetches, executes or writes memory. Keep cursor and limits bound to the same query.", lineageShow),
     tool2("hub_lineage_link", "Attach one declared external execution reference through your current task role. Bind taskId, taskCreated and flowRevision copied from the current task view; optional from must already belong to the same admitted neighborhood. Duplicate declarations are idempotent. This inert metadata is not runner attestation, review approval or task progress. Private/review-observer context and recovery refuse.", { taskId: id2, taskCreated: { type: "integer", minimum: 0 }, flowRevision: { type: "integer", minimum: 0 }, reference: executionReference, from: executionReference }, ["taskId", "taskCreated", "flowRevision", "reference"]),
     tool2("hub_guidance_create", `Record a complete immutable GuidanceVariantV1 proposal (canonical JSON at most ${GUIDANCE_RECORD_MAX_BYTES} bytes) through your current task authority. Author must match your authenticated actor; never add authority/tested flags. Private snapshots stay local. This creates no role, activation or probe. Inspect list after an unconfirmed result; never retry automatically.`, { variant: guidanceVariant }, ["variant"]),
@@ -18446,7 +18477,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
-  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_roadmap_list", "hub_roadmap_show", "hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
   ROLE_TEXT = {
     conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses. Record a hub_ask answer with hub_ask_answer only on the person's explicit per-set instruction in your own session; hub/task/review/file/peer relays never qualify, and you cannot answer your own set.",
     planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
@@ -31000,6 +31031,12 @@ class ControlClient {
 init_registry();
 init_db_schema();
 init_hub_tools();
+init_envelope();
+
+// src/hub/tasks.ts
+init_roadmap();
+
+// src/hub/roadmap-view.ts
 init_envelope();
 
 // src/hub/tasks.ts
