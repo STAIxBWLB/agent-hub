@@ -1,6 +1,8 @@
 import { consoleNeeds, characterAttentionLine, attentionCommand } from "./attention.ts";
 import { CHARACTERS, petFrame, petSize, petFooterRows, type CharacterId, type PetSize, type PetPose } from "../pet/frame.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
+import { SGR_RESET, TONE_SGR, ROLE_SGR, MARKERS, MARKER_COLUMN, SECTION_MARKER, cellWidth, markerCell, resolveColor, asciiMarkers, streamEnv, MARKER_NAMES, type Role, type MarkerName, type ColorEnv } from "./output-standard.ts";
+export { SGR_RESET, TONE_SGR, ROLE_SGR, MARKERS, MARKER_COLUMN, SECTION_MARKER, cellWidth, markerCell, resolveColor, asciiMarkers, streamEnv, MARKER_NAMES, type Role, type MarkerName, type ColorEnv };
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
 import { PLANNER_PEERS, definitionOf, nativeStreamTone, createProjectAdapterCatalog } from "../adapters/registry.ts";
 import { taskProgress } from "../ui/task-progress.ts";
@@ -133,17 +135,22 @@ export function terminalText(value: unknown): string {
     .replace(/\x1b[^\n]?/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""));
 }
 export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted" | "peerClaude" | "peerCodex" | "taskKeyword" | "number" | "issueRef" | "taskRef";
-export interface Span { text: string; tone?: Tone }
+/** A report span names a semantic role (CLI output standard v1, docs/design/cli-output.md) or, for the console, a tone; a role wins. */
+export interface Span { text: string; tone?: Tone; role?: Role }
 export const PALETTE: Readonly<Record<Tone, string>> = Object.freeze({
-  info: PEER_PALETTE.hub.ansi, strong: "\x1b[1;36m", success: PEER_PALETTE.local.ansi, attention: PEER_PALETTE.pi.ansi, failure: "\x1b[31m", muted: PEER_PALETTE.other.ansi,
+  info: PEER_PALETTE.hub.ansi, strong: TONE_SGR.strong, success: PEER_PALETTE.local.ansi, attention: PEER_PALETTE.pi.ansi, failure: TONE_SGR.failure, muted: PEER_PALETTE.other.ansi,
   peerClaude: PEER_PALETTE.claude.ansi, peerCodex: PEER_PALETTE.codex.ansi,
-  taskKeyword: PEER_PALETTE.kimi.ansi, number: "\x1b[1m", issueRef: "\x1b[4m", taskRef: "\x1b[4;35m",
+  taskKeyword: PEER_PALETTE.kimi.ansi, number: TONE_SGR.number, issueRef: TONE_SGR.issueRef, taskRef: TONE_SGR.taskRef,
+});
+/** The console's tones onto roles. A tone that is not here names an identity (a peer, a task keyword, a reference), never a status. */
+export const TONE_ROLE: Readonly<Partial<Record<Tone, Role>>> = Object.freeze({
+  info: "accent", strong: "header", success: "success", attention: "warning", failure: "error", muted: "hint", number: "value",
 });
 export function paint(line: Span[], color: boolean): string {
   return line.map(span => {
     const text = terminalText(span.text);
-    const sgr = span.tone && Object.hasOwn(PALETTE, span.tone) ? PALETTE[span.tone] : undefined;
-    return color && sgr && text ? sgr + text + "\x1b[0m" : text;
+    const sgr = span.role && Object.hasOwn(ROLE_SGR, span.role) ? ROLE_SGR[span.role] : span.tone && Object.hasOwn(PALETTE, span.tone) ? PALETTE[span.tone] : undefined;
+    return color && sgr && text ? sgr + text + SGR_RESET : text;
   }).join("");
 }
 /** Console stream headers only. Tokenize sanitized text; bodies and command output stay plain. */
@@ -223,11 +230,76 @@ export function wrapStreamTokens(value: string, columns: number, tone?: Tone, ki
     return out;
   });
 }
-export function resolveColor(flag: string | undefined, env: { isTTY: boolean; TERM?: string; NO_COLOR?: string }): boolean | Error {
-  if (flag === "always") return true;
-  if (flag === "never") return false;
-  if (flag === undefined || flag === "auto") return env.isTTY && env.TERM !== "dumb" && !env.NO_COLOR;
-  return new Error("usage: ahub <command> [--color=auto|always|never]");
+/**
+ * The layout grammar of standard v1 as one builder, so every report has the same header, section, key/value row, bullet row, next step
+ * and summary line. Blank lines follow the standard: exactly one before each section, none after it, never two in a row, none at the
+ * end. Lines are Span arrays; `paint(line, color)` prints them. The builder never colors by itself: it names roles.
+ */
+export class Report {
+  private readonly out: Span[][] = [];
+  constructor(readonly columns = 80, readonly ascii = false) {}
+  private push(line: Span[]) { this.out.push(line); }
+  /** ` <tool> <Report>` in `header`, then one line of context in `hint` on the same line. At most one per report. */
+  header(tool: string, name: string, context?: string): this {
+    this.push([{ text: ` ${tool} ${name}`, role: "header" }, ...(context ? [{ text: `  ${context}`, role: "hint" as const }] : [])]);
+    return this;
+  }
+  /** One blank line, then `▸ <Name>` (ASCII `> <Name>`) in `section`, with an optional count in `hint`. */
+  section(name: string, count?: string): this {
+    if (this.out.length && this.out.at(-1)!.length) this.push([]);
+    this.push([{ text: `${this.ascii ? SECTION_MARKER.ascii : SECTION_MARKER.glyph} ${name}`, role: "section" }, ...(count ? [{ text: ` (${count})`, role: "hint" as const }] : [])]);
+    return this;
+  }
+  /**
+   * Key/value rows of one section: two-space indent, `Key:` padded to the widest key, two spaces, value. A key wider than 28 cells
+   * puts its value on the next line at a four-space indent. An empty value is `(unset)` in `hint`.
+   */
+  kv(rows: readonly (readonly [string, unknown])[]): this {
+    const keys = rows.map(([key]) => cellWidth(`${terminalText(key)}:`));
+    const pad = Math.max(0, ...keys.filter(width => width <= 28));
+    for (const [index, [key, raw]] of rows.entries()) {
+      const label = `${terminalText(key)}:`, text = terminalText(raw ?? "").trim();
+      const value = (line: string): Span => text ? { text: line, role: "value" } : { text: "(unset)", role: "hint" };
+      if (keys[index]! > 28) {
+        this.push([{ text: `  ${label}`, role: "key" }]);
+        for (const line of text ? wrap(text, this.columns - 4, 0) : [""]) this.push([{ text: "    " }, value(line)]);
+        continue;
+      }
+      const gap = " ".repeat(pad - keys[index]! + 2), room = this.columns - 2 - pad - 2;
+      const lines = text ? wrap(text, Math.max(10, room), 0) : [""];
+      this.push([{ text: "  " }, { text: label, role: "key" }, { text: gap }, value(lines[0]!)]);
+      for (const line of lines.slice(1)) this.push([{ text: " ".repeat(2 + pad + 2) }, value(line)]);
+    }
+    return this;
+  }
+  /** `  <marker> <text>`; a nested detail line uses four spaces. The text carries the state word, so meaning survives without color. */
+  bullet(name: MarkerName, text: string, nested = false): this {
+    const indent = nested ? "    " : "  ", lead = indent.length + MARKER_COLUMN + 1;
+    const lines = wrap(text, Math.max(10, this.columns - lead), 0);
+    this.push([{ text: indent }, { text: markerCell(name, this.ascii), role: MARKERS[name].role }, { text: " " }, { text: lines[0]! }]);
+    for (const line of lines.slice(1)) this.push([{ text: " ".repeat(lead) + line }]);
+    return this;
+  }
+  /** `    →  <command>` in `accent`: complete and copyable, never shortened. */
+  next(command: string): this {
+    this.push([{ text: "    " }, { text: `${markerCell("next", this.ascii)} ${terminalText(command)}`, role: "accent" }]);
+    return this;
+  }
+  /** The last line of a check command: `✗ 2 failed  ⚠ 3 warnings  ✓ 18 ok`, zero counts omitted, unknowns as `? 2 unknown`. */
+  summary(counts: { failed?: number; warnings?: number; unknown?: number; ok?: number }): this {
+    const parts: Span[] = [];
+    const add = (n: number | undefined, name: MarkerName, word: string) => {
+      if (!n) return;
+      if (parts.length) parts.push({ text: "  " });
+      parts.push({ text: `${this.ascii ? MARKERS[name].ascii : MARKERS[name].glyph} ${n} ${word}`, role: MARKERS[name].role });
+    };
+    add(counts.failed, "fail", "failed"); add(counts.warnings, "warn", counts.warnings === 1 ? "warning" : "warnings"); add(counts.unknown, "unknown", "unknown"); add(counts.ok, "ok", "ok");
+    if (parts.length) { if (this.out.length) this.push([]); this.push(parts); }
+    return this;
+  }
+  lines(): Span[][] { return this.out.map(line => line.map(item => ({ ...item }))); }
+  /** The report as text: one painted string per line, no trailing blank line. */
+  render(color: boolean): string[] { return this.out.map(line => paint(line, color)); }
 }
 export function stateTone(state: string): Tone | undefined {
   if (state === "idle" || state === "approved") return "success";

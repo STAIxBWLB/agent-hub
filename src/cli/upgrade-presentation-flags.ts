@@ -1,11 +1,11 @@
 import { recoveryPresentationFlag } from "./recovery-presentation-options.ts";
-import { resolveColor } from "./console-state.ts";
+import { resolveColor, type ColorEnv } from "./console-state.ts";
 import type { RecoveryPresentationOptions } from "./upgrade-presentation.ts";
 
 /** Presentation flags never consume another option's audit, version or peer value. */
 export function readRecoveryPresentationFlags(
   argv: readonly string[],
-  terminal: { isTTY: boolean; columns?: number; TERM?: string; NO_COLOR?: string },
+  terminal: ColorEnv & { columns?: number },
   now: () => number = Date.now,
 ): { args: string[]; flags: string[]; json: boolean; options: RecoveryPresentationOptions } {
   const args: string[] = [], flags: string[] = [];
