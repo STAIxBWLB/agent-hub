@@ -60,12 +60,37 @@ export function nextSweep(task: Task, config: TaskSweepConfig, now: number, read
   if (!kind) return undefined;
   let activity = task.history.length - 1;
   while (activity >= 0 && (task.history[activity]?.sweep || task.history[activity]?.event === "memory reference started")) activity--;
-  const at = task.history[activity]?.at ?? task.created;
+  let at = task.history[activity]?.at ?? task.created;
+  if (kind === "idle-owner") {
+    // #1454: a pending wait suspends the ladder; once it passes, the ladder restarts from `until`, not from the activity before it.
+    const wait = taskWait(task);
+    if (wait) {
+      if (now < wait.until) return undefined;
+      at = Math.max(at, wait.until);
+    }
+  }
   const threshold = kind === "ready-unassigned" ? config.ready_min ?? 60 : kind === "unaccepted-assignment" ? config.unaccepted_min : kind === "idle-owner" ? config.idle_min : config.review_min;
   if (now - at < threshold * 60_000) return undefined;
   const previous = task.history.flatMap((h) => h.sweep?.kind === kind && h.sweep.activity === activity ? [h.sweep] : []).at(-1);
   if (previous && (previous.step === 3 || now - previous.at < config.ladder_min * 60_000)) return undefined;
   return { kind, activity, step: previous ? (previous.step + 1) as 2 | 3 : 1, at: now };
+}
+
+/** #1454: the longest a bounded wait may reach ahead of the moment it is recorded. */
+export const TASK_WAIT_MAX_MS = 14 * 24 * 3_600_000;
+/** #1454: the reason a wait carries is public text; longer text is refused, never cut. */
+export const TASK_WAIT_REASON_MAX = 200;
+/** History events that leave a recorded wait in force: bookkeeping that neither moves the task nor is owner activity on it. Anything else (done, decline, return, reassignment, cancel) ends it. */
+const WAIT_KEEPING_EVENTS = new Set(["wait recorded", "idle sweep", "answer", "reviewer changed", "memory reference started", "ready held", "plan observed", "planner changed", "claim verdict", "invocation", "shell branch bound"]);
+export interface TaskWait { until: number; at: number; by: string; owner: string }
+/** The wait that is still in force on an in_progress task: the latest `wait recorded` entry, for the current owner, with no state-changing entry after it. A passed `until` still counts (the planner groom view lists it); `nextSweep` is what lets the ladder restart. */
+export function taskWait(task: Pick<Task, "state" | "owner" | "history">): TaskWait | undefined {
+  if (task.state !== "in_progress" || !task.owner) return undefined;
+  const index = task.history.findLastIndex(entry => entry.wait !== undefined);
+  const entry = task.history[index];
+  if (!entry?.wait || entry.event !== "wait recorded" || entry.wait.owner !== task.owner) return undefined;
+  if (task.history.slice(index + 1).some(later => !WAIT_KEEPING_EVENTS.has(later.event))) return undefined;
+  return { until: entry.wait.until, at: entry.at, by: entry.by, owner: entry.wait.owner };
 }
 
 /** A planned start is the earliest automatic start time; the card is eligible at that boundary. */
@@ -74,7 +99,7 @@ export function plannedStartPending(task: Pick<Task, "plannedStart">, now: numbe
 }
 
 export interface GroomingItem {
-  kind: "text-dependency" | "overlap" | "duplicate" | "over-wip" | "stale" | "superseded" | "blocked" | "closed-issue" | "scheduled";
+  kind: "text-dependency" | "overlap" | "duplicate" | "over-wip" | "stale" | "superseded" | "blocked" | "closed-issue" | "scheduled" | "wait-passed";
   task: number;
   related?: number[];
   code?: string;
@@ -173,6 +198,8 @@ export function plannerGrooming(tasks: readonly Task[], options: PlannerGrooming
     if (task.state === "cancelled") continue; // Closed rows contribute supersession evidence only.
     if ((task.state === "backlog" || task.state === "proposed" && !task.owner) && options.now !== undefined && plannedStartPending(task, options.now))
       add({ kind: "scheduled", task: task.id });
+    // #1454: a wait that has passed is shown here, so a stale one is seen rather than silently restarting the idle ladder.
+    if (options.now !== undefined && taskWait(task) && taskWait(task)!.until <= options.now) add({ kind: "wait-passed", task: task.id });
     const issues = new Set<number>();
     for (const issue of [task.external?.issue, task.sdlc?.issue]) {
       if (issue === undefined) continue;

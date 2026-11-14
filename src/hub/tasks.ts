@@ -122,7 +122,7 @@ import { DEFAULT_SPECS_CONFIG, type SpecsConfig } from "./specs-config.ts";
 import type { SpecsCheckReport, SpecsCoverReport } from "./specs.ts";
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
-import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
+import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, taskWait, TASK_WAIT_MAX_MS, TASK_WAIT_REASON_MAX, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
 import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState, localSupersedingTask, storedSpecAcceptance, carriedSpecAcceptance } from "./sdlc.ts";
 
@@ -399,6 +399,7 @@ QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or
 QUIET_EVENTS.add("planner changed"); // Planning authority does not move the execution owner or revoke its handoff.
 QUIET_EVENTS.add("claim verdict"); // #901: a person's bookkeeping on a plan claim moves nothing, so it must not turn a running check into "check finished late".
 QUIET_EVENTS.add("invocation");
+QUIET_EVENTS.add("wait recorded"); // #1454: a recorded wait moves nothing; it only suspends the idle-owner ladder, so it must not turn a running check into "check finished late".
 QUIET_EVENTS.add("shell branch bound"); // #880: the hub's host-observed branch binding (#845) is bookkeeping; it neither moves nor settles the task.
 /** The records of the `done (checking)` entry a passed check now completes: what the owner delivered then (#509a). */
 const latestPendingDeliverables = (task: Task): DeliverableRecord[] | undefined => {
@@ -1022,6 +1023,44 @@ export class Tasks {
     return recorded;
   }
 
+  /**
+   * #1454: record a bounded wait on an in_progress task, so the idle-owner ladder is suspended until `until` and restarts from it.
+   * Owner, its planner or the person only. The reason is public text: one the privacy screen would withhold is refused on an
+   * ordinary task (the wait is shown in every board view), and kept withheld on a PII task. Every refusal is pre-effect and
+   * names its cause and the next step. Done, decline, return and reassignment end a wait by moving the task (`taskWait`).
+   */
+  async wait(by: PeerId, input: { id: unknown; until: unknown; reason: unknown }): Promise<Task> {
+    requireLocalTaskPeer(by);
+    const refuse = (text: string): never => { throw new PreEffectToolRefusal(text); };
+    if (!this.sweepConfig.enabled) refuse("a wait suspends the idle sweep and task_sweep is off, so there is nothing to suspend; just keep working, or ask the person to turn on task_sweep.enabled");
+    const now = this.d.now?.() ?? Date.now();
+    const until = typeof input.until === "number" ? input.until
+      : typeof input.until === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(input.until.trim()) ? Date.parse(input.until.trim()) : NaN;
+    if (!Number.isSafeInteger(until)) refuse("until must be an absolute time with a zone, for example 2026-11-18T09:00:00+09:00 (or milliseconds since the epoch); resend with that");
+    if (until <= now) refuse(`until ${new Date(until).toISOString()} is not in the future (now ${new Date(now).toISOString()}); name a later time, or drop the wait and keep working`);
+    if (until > now + TASK_WAIT_MAX_MS) refuse(`until ${new Date(until).toISOString()} is more than 14 days ahead (latest ${new Date(now + TASK_WAIT_MAX_MS).toISOString()}); name an earlier time and record the wait again when it passes`);
+    const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+    if (!reason) refuse("reason must be a short public sentence naming what the task waits for; resend with it");
+    if ([...reason].length > TASK_WAIT_REASON_MAX || /[\u0000-\u001f\u007f]/.test(reason)) refuse(`reason must be one line of at most ${TASK_WAIT_REASON_MAX} characters; shorten it and resend`);
+    const validate = (): Task => {
+      const task = this.need(input.id, false, true);
+      if (task.state !== "in_progress") refuse(`task #${task.id} is ${task.state}: a wait applies only to in_progress work; ${task.state === "proposed" ? "accept the task first with hub_task_accept" : "it needs no wait"}`);
+      if (by !== USER && task.owner !== by && !(this.d.roles?.[by]?.includes("planner") && this.taskPlanner(task).includes(by)))
+        refuse(`task #${task.id}: only its owner (${task.owner ?? "none"}), its planner or the console user can record a wait; ask the owner, or hub_send the planner`);
+      if (by !== USER && this.d.privateTurn?.(by) && !this.isPii(task)) refuse("a wait on ordinary work is unavailable during a private turn; record it from a public turn");
+      return task;
+    };
+    const before = validate(), revision = before.history.length;
+    const pii = this.isPii(before);
+    const withheld = looksSecret(reason) || this.aboutPrivatePath("", reason, before) || await this.withholds("note", reason, before);
+    if (withheld && !pii) refuse("the reason would be withheld by the privacy screen and a wait is shown in every board view; restate it without names, paths or personal details");
+    const task = validate();
+    if (task.history.length !== revision) refuse(`task #${task.id}: it changed while the reason was screened; read it with hub_task_show and record the wait again`);
+    const next = this.d.board.update(task.id, by, "wait recorded", {}, reason, { wait: { until, owner: task.owner! }, ...(pii || withheld ? { withheld: true as const } : {}) }, revision);
+    this.d.notify(`task ${this.publicTitle(next)}: wait recorded by ${by} until ${new Date(until).toISOString()}`);
+    return next;
+  }
+
   /** A validated snapshot takes effect on the next sweep, never halfway through one. */
   configureSweep(config: TaskSweepConfig): void {
     this.sweepConfig = taskSweepConfig(config);
@@ -1382,13 +1421,15 @@ export class Tasks {
       ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields, ...(h.planning.split ? { children: h.planning.split.children.map(child => child.id) } : {}) } } : {}),
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
+      ...(h.wait ? { wait: { until: h.wait.until, owner: h.wait.owner } } : {}),
       ...(h === currentSpecEntry && currentSpecReport ? { specReport: currentSpecReport } : {}),
     }));
     const sets = this.reviewFindingSets(task), current = findingsForHead(sets, this.findingHead(task));
     const symbolRepository = codeSymbols && this.codeSymbolsRepository(task);
     const publicSymbols = codeSymbols && symbolRepository ? publicTaskCodeSymbols(codeSymbols, this.reviewHead(task), symbolRepository.key, this.publicMetadataText) : undefined;
     const handedOff = this.d.board.handoffOrigin(task.id);   // #604: where another project's handoff came from; two ids, never text
-    return { ...rest, ...(claimBindings ? { claims: claimBindings } : {}), ...(currentSpecReport ? { specReport: currentSpecReport } : {}), ...(approvalBinding(task) ? { approval: approvalBinding(task) } : {}), ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
+    const wait = taskWait(task), waitEntry = wait ? history.findLast(h => h.wait) : undefined;
+    return { ...rest, ...(wait && waitEntry ? { wait: { until: wait.until, by: wait.by, at: wait.at, passed: wait.until <= (this.d.now?.() ?? Date.now()), ...(waitEntry.note ? { reason: screenHistoryText(waitEntry.note, "wait reason", waitEntry.withheld) } : {}) } } : {}), ...(claimBindings ? { claims: claimBindings } : {}), ...(currentSpecReport ? { specReport: currentSpecReport } : {}), ...(approvalBinding(task) ? { approval: approvalBinding(task) } : {}), ...(handedOff ? { handoffOrigin: { projectId: handedOff.projectId, peer: handedOff.peer, ...(handedOff.originTask === null ? {} : { task: handedOff.originTask }) } } : {}), ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */

@@ -12,7 +12,7 @@ import { NOTE_KINDS } from "./envelope.ts";
 
 /** Restricted to the fixed current-child tools server, never an ordinary peer tool. */
 /** The fixed MCP surface of a current owned implementer child; independent of broader project roles. */
-export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_evidence_read", "hub_lineage_show", "hub_lineage_link", "hub_guidance_create", "hub_guidance_list", "hub_guidance_show", "hub_guidance_withdraw"]);
+export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_task_wait", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_evidence_read", "hub_lineage_show", "hub_lineage_link", "hub_guidance_create", "hub_guidance_list", "hub_guidance_show", "hub_guidance_withdraw"]);
 
 export const IMPLEMENTER_PERMISSION_TOOL = {
   name: "hub_permission_request",
@@ -171,6 +171,13 @@ export const SURVEY_REPORT_TOOL = tool("hub_survey_report", "Report findings on 
     id: { type: "string", minLength: 1, maxLength: 96 }, verdict: { type: "string", enum: ["vetted", "rejected"] }, reason: { type: "string", minLength: 1, maxLength: 2048 }
   } } }
 }, ["id"]);
+/**
+ * #1454: published only while the idle sweep is on (`profileTaskTools(..., wait)`), so a project without a sweep keeps every tool list byte for byte.
+ * The owner of an in_progress task, its planner or the person records a bounded wait; the daemon enforces who and when.
+ */
+export const WAIT_TOOL = tool("hub_task_wait", "Record a bounded wait on an in_progress task you own (or, as its planner, on one you plan): the idle-owner sweep stays quiet until `until`, then restarts from it. Use it only when the task waits for a dated event (a CI or release window, a scheduled live leg, a quota reset), never to avoid work. until: absolute time with a zone (for example 2026-11-18T09:00:00+09:00), in the future and at most 14 days ahead. reason: one public line (200 characters at most), no names or paths. It never silences review, unaccepted-assignment or ready-unassigned notices, and done, decline, return or reassignment ends it. A refusal names its cause and the next step.", {
+  id: { type: "integer", minimum: 1 }, until: { type: "string", description: "RFC 3339 time with a zone" }, reason: { type: "string", minLength: 1, maxLength: 200 },
+}, ["id", "until", "reason"]);
 /**
  * #1403 A4, A5: the security audit's one report tool. Not in `TASK_TOOLS`: `profileTaskTools` adds it only when the lifecycle is enabled (the `criteria` flag), exactly like the security
  * finding fields, so off keeps every tool list byte for byte. The auditor reports `units` and `findings`; a second reviewer-role peer sends `verify`; `show: true` reads the ledger.
@@ -353,7 +360,7 @@ TASK_TOOLS.push(
   tool("hub_supervision_accept", "Accept one pending supervision proposal: the existing action it names runs under that action's own authority, and its intent, receipt and the task's own result stay separate records. An escalate proposal is accepted by the conductor or the person only; any other acceptance is refused and the proposal stays pending. Refuses a stale revision or generation, a reading that no longer holds, another actor's task, a private task and an owner's needs_review hold.", { id: str }, ["id"]),
   tool("hub_supervision_dismiss", "Dismiss one pending supervision proposal. Same fences as accept, and it records the decision; nothing runs.", { id: str }, ["id"]),
 );
-export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name, EVIDENCE_READ_TOOL.name, AUDIT_REPORT_TOOL.name, SURVEY_REPORT_TOOL.name]);
+export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name, EVIDENCE_READ_TOOL.name, AUDIT_REPORT_TOOL.name, SURVEY_REPORT_TOOL.name, WAIT_TOOL.name]);
 
 /** Separately published: serving a schema grants no authority, only the daemon's explicit role does. */
 export const CONDUCTOR_TOOLS: HubTool[] = [
@@ -427,12 +434,12 @@ export function roleContract(peer: string, roles: Record<string, string[]> = DEF
 
 /** Profile schemas are data over the existing tools; dev retains the exact existing definitions. */
 /** `criteria`: an enabled lifecycle, whose receipts take the #481 S8 checklist whatever its stage list. `audit` (#1403 A4): an enabled lifecycle that also configures `[security]`, the only place a security audit can run, so `hub_audit_report` is listed there and nowhere else. */
-export function profileTaskTools(profile: ProfileSelection = "dev", stages?: readonly string[], criteria = false, audit = false, survey = false): HubTool[] {
+export function profileTaskTools(profile: ProfileSelection = "dev", stages?: readonly string[], criteria = false, audit = false, survey = false, wait = false): HubTool[] {
   const customStages = stages && (stages.length !== SDLC_STAGES.length || stages.some((s, i) => s !== SDLC_STAGES[i]));
   const customProfile = !(profile === "dev" || profileData(profile) === projectProfile("dev"));
-  if (!customStages && !customProfile && !criteria && !audit && !survey) return TASK_TOOLS;
+  if (!customStages && !customProfile && !criteria && !audit && !survey && !wait) return TASK_TOOLS;
   const data = profileData(profile);
-  const tools = [...(data.name === "research" ? [...TASK_TOOLS, EVIDENCE_RECORD_TOOL, EVIDENCE_READ_TOOL] : TASK_TOOLS), ...(audit ? [AUDIT_REPORT_TOOL] : []), ...(survey ? [SURVEY_REPORT_TOOL] : [])];
+  const tools = [...(data.name === "research" ? [...TASK_TOOLS, EVIDENCE_RECORD_TOOL, EVIDENCE_READ_TOOL] : TASK_TOOLS), ...(audit ? [AUDIT_REPORT_TOOL] : []), ...(survey ? [SURVEY_REPORT_TOOL] : []), ...(wait ? [WAIT_TOOL] : [])];
   return tools.map(tool => {
     const properties = { ...tool.inputSchema.properties };
     if ((customStages || criteria) && tool.name === "hub_sdlc_record") {
