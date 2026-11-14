@@ -798,6 +798,17 @@ Every Pi start (headless, TUI, console or auto start) first runs the configured
 version, or one that cannot be read, is refused before Pi starts, unless the
 person trusts that exact version with `ahub agents trust pi <version>`.
 
+`pi.max_continuations` sets the number of extra turns after the initial tool-step
+ceiling stop (#1447). Its default is `2`, with an integer range of `0..10`.
+Each continuation asks Pi to checkpoint its completed work and next steps before
+continuing. With the default, the third consecutive ceiling stop escalates the
+task with `step_limit`; `0` escalates on the first ceiling stop. Model or transport
+failures still use `inference_failed`. This key is config-only: set it in
+`.agenthub/config.json` or override it in `.agenthub/config.local.json`, then reload
+configuration and start or restart the Pi peer. It is sampled at the next Pi
+start, without changing the running owner's continuation allowance or
+`pi.max_steps` ceiling, and has no `ahub settings` row.
+
 ```bash
 ahub models setup       # prepare bounded Qwen3.5 4B MLX in an existing Ollama service
 ahub models start       # verify loopback Ollama/model readiness (no daemon spawn)

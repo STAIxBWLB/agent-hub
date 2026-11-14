@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { PiPeer } from "../src/adapters/pi.ts";
+import { PiPeer, type PiOptions } from "../src/adapters/pi.ts";
 import { piToolStepCeiling, type PiToolStepCeiling } from "../src/pi/ceiling.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
+import type { DeliveryReceipt } from "../src/hub/peers.ts";
 
 // #179: the extension's tool-step ceiling is a structured bridge signal, validated and bound by the
 // adapter, carried through onTurnFailure; the real extension emits it at the actual rejection boundary.
@@ -79,6 +80,145 @@ test("#179 the adapter carries only a session/turn-bound ceiling signal into onT
     await runTurn(6);
     expect(turns[5]!.ceiling).toBeUndefined();
   } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+}, 30_000);
+
+
+async function settlementFixture(executeTool: PiOptions["executeTool"] = async () => "ok") {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-ceiling-settlement-"));
+  const failures: { reason: string; ceiling?: PiToolStepCeiling; settledCeiling?: boolean }[] = [];
+  const aborted: string[][] = [], successes: string[][] = [], receipts: DeliveryReceipt[] = [];
+  const peer = new PiPeer("pi", {
+    cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [], executeTool,
+    onTurnFailure: async (_envs, reason, ceiling, settledCeiling) => { failures.push({ reason, ceiling, settledCeiling }); },
+    onTurnAborted: envs => { aborted.push(envs.map(env => env.id)); },
+    onTurnSuccess: envs => { successes.push(envs.map(env => env.id)); },
+  });
+  peer.onDelivery = receipt => { receipts.push(receipt); };
+  const close = async () => { try { await peer.stop(); } finally { rmSync(stateDir, { recursive: true, force: true }); } };
+  try { await peer.start(); } catch (error) { await close(); throw error; }
+  const sessionId = String(peer.recoveryMetadata().sessionId), launch = peer.tuiLaunch!;
+  const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+  const post = (path: string, body: unknown) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+  const event = (body: object) => post("/event", body);
+  const start = async (generation: number) => {
+    const env = newEnvelope("user", `turn ${generation}`, { to: ["pi"] });
+    await peer.deliver([env], `delivery-${generation}`);
+    await event({ type: "agent_start", generation });
+    return env;
+  };
+  const ceiling = (generation: number) => event({ type: "ceiling", kind: "tool-step-ceiling", unit: "tool-step", count: 101, limit: 100, sessionId, generation });
+  const end = async (generation: number, fields: object = {}) => {
+    await event({ type: "agent_end", generation, ...fields });
+    await event({ type: "agent_settled", generation });
+  };
+  return { peer, post, event, start, ceiling, end, close, sessionId, failures, aborted, successes, receipts };
+}
+
+test("#1447 a settled ceiling completes its delivery as a limit, never as success; model errors stay held", async () => {
+  const f = await settlementFixture();
+  try {
+    await f.start(1); await f.ceiling(1);
+    await f.end(1, { failed: true, error: "Operation aborted" });
+    expect(f.failures).toHaveLength(1);
+    expect(f.failures[0]).toMatchObject({ reason: "Operation aborted", settledCeiling: true, ceiling: { count: 101, limit: 100 } });
+    expect(f.receipts.at(-1)).toEqual({ id: "delivery-1", state: "completed", reason: "ceiling steps 101/100" });
+    expect(f.successes).toEqual([]); expect(f.aborted).toEqual([]);
+    await f.start(2); await f.end(2, { failed: true, error: "provider failed" });
+    expect(f.failures[1]).toMatchObject({ reason: "provider failed", settledCeiling: false });
+    expect(f.failures[1]?.ceiling).toBeUndefined();
+    expect(f.receipts.at(-1)?.state).toBe("needs_review");
+    expect(f.successes).toEqual([]); expect(f.aborted).toEqual([]);
+  } finally { await f.close(); }
+  expect(f.aborted).toEqual([]); // Failure teardown must not add a second aborted class.
+}, 30_000);
+
+test("#1447 duplicate terminal events do not report the same logical turn twice", async () => {
+  const f = await settlementFixture();
+  try {
+    await f.start(1); await f.ceiling(1); await f.end(1, { failed: true, error: "Operation aborted" });
+    expect(f.failures).toHaveLength(1);
+    const receipts = f.receipts.length;
+    await f.end(1, { failed: true, error: "duplicate failure" });
+    expect(f.failures).toHaveLength(1); expect(f.receipts).toHaveLength(receipts);
+    const next = newEnvelope("user", "next prompt before native start", { to: ["pi"] });
+    await f.peer.deliver([next], "delivery-next-pending");
+    // The new prompt legitimately adds its accepted receipt; only the stale event must add nothing.
+    const pendingReceipts = f.receipts.length;
+    await f.end(1, { failed: true, error: "old failure after new delivery" });
+    expect(f.failures).toHaveLength(1); expect(f.receipts).toHaveLength(pendingReceipts);
+    await f.event({ type: "agent_start", generation: 2 }); await f.end(2, { text: "done" });
+    expect(f.successes).toHaveLength(1);
+    await f.end(2, { failed: true, error: "late error after success" });
+    expect(f.failures).toHaveLength(1); expect(f.successes).toHaveLength(1);
+    await f.start(3); await f.end(3, { failed: true, error: "new generation" });
+    expect(f.failures).toHaveLength(2);
+  } finally { await f.close(); }
+}, 30_000);
+
+test("#1447 internal failure teardown reports one failure without an aborted observation", async () => {
+  const f = await settlementFixture();
+  try {
+    await f.start(1);
+    await f.peer.stop(undefined, undefined, "failure");
+    expect(f.failures).toHaveLength(1);
+    expect(f.failures[0]?.ceiling).toBeUndefined();
+    expect(f.receipts.at(-1)?.state).toBe("needs_review");
+    expect(f.aborted).toEqual([]); expect(f.successes).toEqual([]);
+  } finally { await f.close(); }
+  expect(f.failures).toHaveLength(1); expect(f.aborted).toEqual([]);
+}, 30_000);
+
+test("#1447 a tool pending when the ceiling lands remains unsafe even if it settles before agent_settled", async () => {
+  let entered!: () => void, release!: () => void;
+  const began = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const f = await settlementFixture(async () => { entered(); await held; return "ok"; });
+  try {
+    await f.start(1);
+    const tool = f.post("/tool", { name: "read", args: {}, toolCallId: "pending", sessionId: f.sessionId, generation: 1 }).then(response => response.json());
+    await began; await f.ceiling(1); release(); await tool;
+    await f.end(1, { failed: true, error: "Operation aborted" });
+    expect(f.failures[0]).toMatchObject({ settledCeiling: false, ceiling: { count: 101, limit: 100 } });
+    expect(f.receipts.at(-1)?.state).toBe("needs_review");
+    expect(f.successes).toEqual([]);
+  } finally { release(); await f.close(); }
+}, 30_000);
+
+test("#1447 explicit cancellation is observed once and prevents a ceiling continuation", async () => {
+  const f = await settlementFixture();
+  try {
+    const cancelled = await f.start(1); await f.ceiling(1);
+    await f.end(1, { failed: true, error: "Operation aborted", cancelled: true });
+    await f.event({ type: "agent_settled", generation: 1 });
+    expect(f.aborted).toEqual([[cancelled.id]]);
+    expect(f.failures).toEqual([]); expect(f.successes).toEqual([]);
+    expect(f.receipts.at(-1)?.state).toBe("needs_review");
+    const success = await f.start(2); await f.end(2, { text: "finished" });
+    expect(f.successes).toEqual([[success.id]]);
+    const next = await f.start(3); await f.end(3, { cancelled: true });
+    expect(f.aborted).toEqual([[cancelled.id], [next.id]]);
+  } finally { await f.close(); }
+  expect(f.aborted).toHaveLength(2);
+}, 30_000);
+
+test("#1447 stop concurrent with a ceiling holds the delivery and observes aborted only once", async () => {
+  let entered!: () => void, release!: () => void;
+  const began = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const f = await settlementFixture(async () => { entered(); await held; return "ok"; });
+  try {
+    const env = await f.start(1); await f.ceiling(1);
+    const tool = f.post("/tool", { name: "read", args: {}, toolCallId: "pending-stop", sessionId: f.sessionId, generation: 1 }).then(response => response.json());
+    await began;
+    const stopping = f.peer.stop("recovery");
+    await f.end(1, { failed: true, error: "Operation aborted" });
+    expect(f.receipts.at(-1)?.state).toBe("needs_review");
+    expect(f.aborted).toEqual([[env.id]]); expect(f.failures).toEqual([]); expect(f.successes).toEqual([]);
+    release(); await tool; await stopping;
+    await f.peer.stop("recovery");
+    expect(f.aborted).toEqual([[env.id]]); expect(f.failures).toEqual([]);
+  } finally { release(); await f.close(); }
 }, 30_000);
 
 test("#179 the real extension emits the validated signal at the ceiling, and refused calls never execute", async () => {

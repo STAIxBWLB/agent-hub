@@ -65,6 +65,13 @@ The task board is the shared record of work and its authority, not a transcript 
 
 ## Authority and state
 
+Pi's bounded step-ceiling continuations (#1447 T1/T2) preserve task ownership
+until their configured allowance is exhausted. Exhaustion records `step_limit`
+with the ceiling class, steps and continuations used; ordinary model/transport
+failures retain `inference_failed`. A stop or recovery abort only logs its class
+and never escalates a task. An accepted-owner history binding, rather than every
+metadata revision, scopes the continuation counter.
+
 Visual attachments (#1058) annotate public work without changing a task's state,
 outcome or evidence authority. Publication checks current role, turn, task and
 privacy admission before record/bus effects and after awaited file reads. A PII

@@ -360,6 +360,47 @@ External adapter modules are an explicit, person-owned, machine-local opt-in. Th
 
 Kimi 2.5.2's own TUI also earns completions, but only through the `ahub kimi` launcher's ephemeral `native_hook_launch` and local plugin (#1282). The plugin record binds the launch to its owner pid and process signature. A different launch may replace it only when that owner is proven gone; an active or unknown owner, including one from another project sharing the native home, is left unchanged. Replacement and cleanup share one fail-closed lock per native home, with no automatic stale-lock deletion. If begin or setup fails, the launcher reports the cause and starts the plain TUI without completion receipts. Quiet background/final-turn re-reads back off from 250 ms to 1 s, and the 2 s Stop deadline also arms them. A hook is a candidate observation, never proof. The daemon admits only the exact `kimi-tui` compat version and binds the observation to daemon, launch, native home, native session, project and current socket generation. The transcript's `turn.prompt` supplies the origin and turn id; its final `turn.ended` supplies the outcome. `prompt.completed` and `prompt.aborted`, when present, must agree with that turn; a notification may omit both id forms, so the native notification id or turn id is the fallback identity. A blocked Stop has no final row, so it cannot settle. StopFailure needs `failed`, Interrupt stays quiet with no result, and launcher loss or daemon reconstruction creates at most one `interrupted`. Every native-person result is private because the hook path cannot prove it is public. Headless ACP keeps `prompt-response`; an unverified TUI version or a launch without these readbacks keeps the old no-completion behavior. Native background task files supply the count or an explicit unknown; work or an unreadable inventory never settles. A 250 ms re-read covers missing TaskStarted/Notification hooks without turning elapsed time into evidence. No prompt, answer, error, task command or title reaches completion rows, events, logs or memory. The exact-version receipt is `docs/verification/2026-11-08-kimi-tui-completion-1282.md`.
 
+## Pi ceiling settlement and continuation evidence (#1447)
+
+The extension's structured tool-step ceiling is evidence only for its current
+native session and turn generation. The adapter retains the first valid signal
+and latches whether any managed tool was unsettled when it arrived. A later
+`agent_settled` with an error completes the delivery with
+`ceiling steps <count>/<limit>` only when neither that latch nor a current tool,
+cancellation, stop/recovery, roster/personal withdrawal, approval stop or shared
+execution-budget stop makes settlement uncertain. The failure callback retains
+the ceiling and reports `settledCeiling: true` for this case. It is a limit,
+not success. The host may then offer its separately bounded continuation; the
+adapter never replays an existing delivery or changes a previously held row.
+Unsafe ceiling and ordinary error deliveries remain `needs_review`.
+
+The host grants `pi.max_continuations` extra turns after the first safe ceiling
+stop (default 2, range 0..10, sampled at peer start). The stop after the last
+continuation escalates with task move reason `step_limit`, the same `ceiling`
+class, steps and continuations used. Model/transport failures retain
+`inference_failed` with class `model_error`. Continuation state is scoped to the
+current accepted owner binding and native session and resets on a turn without
+a ceiling stop, task movement or session replacement. Every per-task effect
+rechecks ownership, privacy, stop/recovery and turn identity after awaited work.
+Private or uncertain turns never continue. The new prompt requests a checkpoint
+and inspection of prior effects without replaying uncertain writes. Logs emit
+one failure class per turn; public diagnostics are screened before clipping and
+PII/private turns carry only the class.
+
+Observation-only `onTurnAborted` reports explicit stop/recovery, withdrawal or
+cancelled settlement once per active logical turn. These paths do not invoke
+failure handoff. Internal model-error teardown retains its failure class and
+suppresses a second aborted observation. Internal failure teardown and unexpected
+session shutdown may hand a model/transport failure back after going offline,
+while tool admission remains fenced. A later explicit stop revokes that handoff
+synchronously and dominates later failure/shutdown signals. Only an actual nonerror, noncancelled
+settlement calls `onTurnSuccess`, allowing the host to reset continuation state.
+Numbered terminal events for a settled generation cannot be observed again or
+settle a newly delivered prompt before its next native start. Legacy unnumbered
+failure observations also remain once per logical turn.
+These source/fake receipt checks do not establish the person-run live acceptance
+leg in #1447.
+
 ## Session title slots
 
 Only fixed Pi and local definitions opt into `title: "hub"` (#1055). Their

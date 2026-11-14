@@ -1031,7 +1031,8 @@ export class Tasks {
     }
   }
 
-  private ownerAcceptance(task: Task, first = false): { index: number; at: number } | undefined {
+  /** Host-only acceptance binding, shared by owner-turn evidence and bounded native continuations. */
+  ownerAcceptance(task: Task, first = false): { index: number; at: number } | undefined {
     if (!task.owner) return undefined;
     const boundary = task.history.findLastIndex(entry => OWNERSHIP_EVENTS.has(entry.event) || entry.owner !== undefined && entry.owner !== task.owner);
     const accepted = (entry: Task["history"][number], index: number) => index > boundary && entry.event === "accepted" && (entry.by === task.owner || entry.by === USER);

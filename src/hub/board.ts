@@ -252,7 +252,7 @@ export type TaskPlan = Partial<Record<(typeof ALL_PLAN_KEYS)[number], string[]>>
 /** Task outcomes older than this are pruned: demotion (issue #36) reads one week, seven half-lives. */
 export const OUTCOMES_KEPT_MS = 7 * 24 * 3_600_000;
 
-export const TASK_MOVE_REASONS = ["manual", "budget", "offline", "idle", "rejections", "declined", "inference_failed", "delivery_failed"] as const;
+export const TASK_MOVE_REASONS = ["manual", "budget", "offline", "idle", "rejections", "declined", "inference_failed", "delivery_failed", "step_limit"] as const;
 export type TaskMoveReason = (typeof TASK_MOVE_REASONS)[number];
 export type InvocationHistory = Pick<InvocationRow, "id" | "caller" | "target" | "capability" | "digest" | "class" | "approval" | "argsSha256" | "outcome">;
 

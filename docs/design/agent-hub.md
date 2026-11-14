@@ -25,6 +25,11 @@ The core loop is to propose and assign work, exchange addressed messages while p
 
 The hub also owns a local worker and optional model calls for its own inference. It does not replace every native agent with that loop, pool subscription credentials, or make native behavior identical across vendors. Native adapters preserve those differences behind explicit contracts ([#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
+Managed Pi step-ceiling stops can continue within a configured allowance before
+escalation, preserving held-delivery uncertainty and distinguishing limits from
+model failures. The receipt and privacy boundaries live in [[adapters]] (#1447
+T1/T2); this adds no sandbox or native-account authority.
+
 Bounded local visual attachments let ordinary peers explain public work with a
 diagram, comparison, table or before/after view. The hub stores and screens the
 record while acon renders it; recipients receive a text stub, and the standalone
