@@ -243,6 +243,10 @@ test("the hub logs no sync failure for a missing remote in either agent-mem word
   const { quietSyncError } = await import("../src/hub/daemon.ts");
   expect(quietSyncError("no sync remote: a person sets one with ahub memory sync --remote <private git url>")).toBe(true);
   expect(quietSyncError("no generation sync remote configured")).toBe(true);
+  expect(quietSyncError("no shard sync remote configured")).toBe(true);
+  // the other shard and generation wordings are real failures, never quiet
+  expect(quietSyncError("shard sync remote is invalid")).toBe(false);
+  expect(quietSyncError("shard sync requires positively verified private remote visibility")).toBe(false);
   expect(quietSyncError("stopped")).toBe(true);
   expect(quietSyncError("fetch failed: remote unreachable")).toBe(false);
   expect(quietSyncError("generation sync remote is invalid")).toBe(false);

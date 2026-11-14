@@ -115,12 +115,14 @@ test("missing remote and stopped sync results are neutral status outcomes and ne
   const errors = [
     "no sync remote: a person sets one with ahub memory sync --remote <private git url>",
     "no generation sync remote configured",
+    "no shard sync remote configured",
     "stopped",
   ];
   const h = await hub(f, { sync_interval_min: 10 }, {
     memorySync: async () => ({ ok: false, pushed: false, entries: 0, error: errors.shift()! }),
   });
   for (const [errorState, nextStep] of [
+    ["not-configured", "configure a private sync remote"],
     ["not-configured", "configure a private sync remote"],
     ["not-configured", "configure a private sync remote"],
     ["stopped", "retry after hub restart"],
@@ -133,6 +135,7 @@ test("missing remote and stopped sync results are neutral status outcomes and ne
   const log = readFileSync(join(f.stateDir, "hub.log"), "utf8");
   expect(log).not.toContain("hub memory sync failed:");
   expect(log).not.toContain("no generation sync remote configured");
+  expect(log).not.toContain("no shard sync remote configured");
   expect(log).not.toContain("private git url");
   const snapshot = await h.person.request({ t: "ui_snapshot", after: 0, view: "memory" });
   expect(snapshot.memorySync).toMatchObject({ state: "stopped", nextStep: "retry after hub restart" });

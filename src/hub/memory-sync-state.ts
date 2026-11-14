@@ -124,6 +124,7 @@ export function classifyMemorySyncFailure(error: unknown): { cause: "declined"; 
   if (text === "stopped") return { cause: "stopped" };
   if (text === "no sync remote: a person sets one with `amem sync --remote <private git url>`"
     || text === "no generation sync remote configured"
+    || text === "no shard sync remote configured"
     || text === "the sync remote is public; memory syncs only to a private remote"
     || text === "generation sync remote is invalid"
     || text === "generation sync requires positively verified private remote visibility"
