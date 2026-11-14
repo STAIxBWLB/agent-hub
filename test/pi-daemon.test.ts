@@ -1,3 +1,4 @@
+import { PiToolReceipts } from "../src/pi/tool-receipts.ts";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Board } from "../src/hub/board.ts";
@@ -1580,6 +1581,39 @@ test("a fake Pi transport process exit still requests inference_failed after goi
   await h.wait(() => h.escalations.length === 1, "transport failure escalates even after offline");
   expect(h.escalations[0]!.reason).toBe("inference_failed"); expect(h.escalations[0]!.note).toContain("model_error");
   expect(h.failureLines()).toHaveLength(1); expect(h.failureLines()[0]).toContain("model_error"); expect(h.continuations).toEqual([]);
+}, 20_000);
+
+test("Pi failure handoff survives internal failure teardown while tools remain fenced (#1447)", async () => {
+  const h = await continuationPi(); await h.publish();
+  await h.pi.stop(undefined, undefined, "failure");
+  await h.wait(() => h.failureLines().length === 1, "the internal failure was classified");
+  expect(h.pi.acceptingTools).toBe(false);
+  expect(h.escalations).toHaveLength(1); expect(h.escalations[0]!.reason).toBe("inference_failed");
+  expect(h.failureLines()[0]).toContain("model_error"); expect(h.continuations).toEqual([]);
+}, 20_000);
+
+test("Pi failure handoff survives an unexpected native session shutdown (#1447)", async () => {
+  const h = await continuationPi(); await h.publish(); await h.event({ type: "session_shutdown" });
+  await h.wait(() => h.failureLines().length === 1, "the unexpected shutdown was classified");
+  expect(h.pi.acceptingTools).toBe(false);
+  expect(h.escalations).toHaveLength(1); expect(h.escalations[0]!.reason).toBe("inference_failed");
+  expect(h.failureLines()[0]).toContain("model_error"); expect(h.continuations).toEqual([]);
+}, 20_000);
+
+test("Pi failure handoff is revoked by an explicit stop while receipt drain waits (#1447)", async () => {
+  const h = await continuationPi(); await h.publish();
+  const original = PiToolReceipts.prototype.drain;
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const began = new Promise<void>(resolve => { entered = resolve; });
+  PiToolReceipts.prototype.drain = async function () { entered(); await held; await original.call(this); };
+  try {
+    await h.fail("model failed before the person stopped Pi", false); await began;
+    await h.pi.stop("fixture person stopped Pi"); release();
+    await h.wait(() => h.failureLines().length === 1, "the failed turn was observed after drain");
+    expect(h.escalations).toEqual([]); expect(h.continuations).toEqual([]);
+    expect(h.failureLines()).toHaveLength(1);
+  } finally { release(); PiToolReceipts.prototype.drain = original; }
 }, 20_000);
 
 for (const classification of ["model_error", "ceiling"] as const) test(`private Pi ${classification} logs class only and no diagnostic or counter (#1447)`, async () => {
