@@ -13,6 +13,8 @@ import type { CheckRequest, RunReceipt } from "../src/hub/check-runner.ts";
 import { randomUUID } from "node:crypto";
 import { hubGitSync } from "../src/hub/git.ts";
 import { DEFAULT_CONFIG, startDaemon, type DaemonOptions } from "../src/hub/daemon.ts";
+import { PI_CEILING_KIND, PI_CEILING_UNIT } from "../src/pi/ceiling.ts";
+import { piFailureText } from "../src/hub/pi-failure.ts";
 
 // Emulated native peers probe no real account; isolated runner availability remains real and disabled.
 const fakeSpecTools = () => ({
@@ -1455,3 +1457,148 @@ test("a Pi bridge client that drops a waiting hub_ask leaves the question open f
   for (let i = 0; i < 300 && !seen.length; i++) { await Bun.sleep(10); for (const row of daemon.bus.queueList("pi")) for (const env of row.originals) if (env.kind === "answer") seen.push(env.id); }
   expect(seen).toEqual([`answer-${set}`]);
 }, 30_000);
+
+/** #1447: real Bus/adapter/daemon callbacks, fake Pi only; routing is spied at the escalation boundary. */
+async function continuationPi(maxContinuations = DEFAULT_CONFIG.pi.max_continuations) {
+  const dir = mkdtempSync(join(tmpdir(), "pi-continuation-fake-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const config = { ...DEFAULT_CONFIG, batch_ms: 0,
+    pi: { ...DEFAULT_CONFIG.pi, enabled: true, max_continuations: maxContinuations, cmd: [process.execPath, fakePi(dir)] },
+    inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
+    specs: { ...DEFAULT_CONFIG.specs, enabled: false }, pii: { paths: ["private-data/"] } };
+  const h = await hub(config, false, { commit: true });
+  cleanup.push(async () => { await h.daemon.stop(); rmSync(h.stateDir, { recursive: true, force: true }); });
+  const board = new Board(join(h.stateDir, "hub.db")); cleanup.push(() => board.close());
+  const task = board.propose("user", { title: "Pi continuation fixture", class: "implement" });
+  board.update(task.id, "pi", "accepted", { owner: "pi", reviewer: "user", state: "in_progress" });
+  expect((await h.console_.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx" } })).ok).toBe(true);
+  const pi = h.daemon.bus.peers.get("pi") as PiPeer;
+  const native = pi as unknown as { tuiLaunch: { env: Record<string, string> }; proc: { pid: number; kill(signal: string): void }; opts: { onTurnFailure: NonNullable<ConstructorParameters<typeof PiPeer>[1]["onTurnFailure"]> } };
+  const launch = native.tuiLaunch, metadata = pi.recoveryMetadata();
+  const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+  const event = async (body: Record<string, unknown>) => {
+    const response = await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers, body: JSON.stringify({ sessionId: metadata.sessionId, ...body }) });
+    expect(response.status).toBe(200);
+  };
+  await event({ type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: native.proc.pid, signature: processSignature(native.proc.pid), sessionFile: metadata.sessionFile });
+  const wait = async (ready: () => boolean, label: string) => {
+    const deadline = performance.now() + 5000;
+    while (!ready() && performance.now() < deadline) await Bun.sleep(10);
+    expect(ready(), label).toBe(true);
+  };
+  const continuations: ReturnType<typeof newEnvelope>[] = [];
+  h.daemon.bus.tap(value => { if (value.t === "envelope" && value.env.from === "hub" && value.env.body.includes("Continuation ")) continuations.push(value.env); });
+  const escalations: { by: string; id: unknown; note: string; reason: unknown }[] = [], escalate = Tasks.prototype.escalate;
+  Tasks.prototype.escalate = async function (by, id, note = "by hand", reason) {
+    if (id !== task.id) return escalate.call(this, by, id, note, reason);
+    escalations.push({ by, id, note, reason }); return board.get(task.id)!;
+  };
+  cleanup.push(() => { Tasks.prototype.escalate = escalate; });
+  let generation = 0;
+  const start = async (env: ReturnType<typeof newEnvelope>) => {
+    await wait(() => h.daemon.bus.lastDeliveredTo("pi").some(item => item.id === env.id), "the Bus delivered the actual envelope");
+    await event({ type: "agent_start", generation: ++generation });
+    expect(pi.budgetEnvelopes.some(item => item.refs?.task === String(task.id))).toBe(true);
+  };
+  const publish = async () => {
+    const env = newEnvelope("user", "Continue the owned fixture task", { to: ["pi"], kind: "task", refs: { task: String(task.id) } });
+    expect(h.daemon.bus.publish(env)).toContain("pi"); await start(env); return env;
+  };
+  const fail = async (reason = "Operation aborted", ceiling = true) => {
+    if (ceiling) await event({ type: "ceiling", generation, kind: PI_CEILING_KIND, unit: PI_CEILING_UNIT, count: 31, limit: 30 });
+    await event({ type: "agent_end", generation, failed: true, error: reason });
+    await event({ type: "agent_settled", generation });
+  };
+  const settle = async (cancelled = false) => {
+    await event({ type: "agent_end", generation, ...(cancelled ? { cancelled: true } : { text: "Successful fixture turn" }) });
+    await event({ type: "agent_settled", generation });
+    await wait(() => pi.state === "idle", "the logical turn settled");
+  };
+  const failureLines = () => readFileSync(join(h.stateDir, "hub.log"), "utf8").split("\n").filter(line => line.includes("Pi turn failed:"));
+  return { ...h, board, task, pi, native, metadata, event, start, publish, fail, settle, wait, continuations, escalations, failureLines };
+}
+
+test("two real-Bus Pi ceiling continuations precede step_limit escalation on the third stop (#1447)", async () => {
+  const h = await continuationPi(); await h.publish();
+  for (let index = 0; index < 2; index++) {
+    await h.fail(); await h.wait(() => h.continuations.length === index + 1, "a new continuation was published");
+    const continuation = h.continuations[index]!;
+    expect(continuation.body).toContain(`Continuation ${index + 1}/2`);
+    expect(continuation.body).toContain("steps 31/30"); expect(continuation.body).toContain("hub_checkpoint");
+    expect(continuation.body).toContain("what is done and what is next"); expect(continuation.body).toContain("outcome is uncertain");
+    expect(h.escalations).toEqual([]); await h.start(continuation);
+  }
+  expect(h.continuations[0]!.id).not.toBe(h.continuations[1]!.id);
+  await h.fail(); await h.wait(() => h.escalations.length === 1, "the exhausted continuation requests escalation");
+  expect(h.escalations[0]).toMatchObject({ by: "hub", id: h.task.id, reason: "step_limit" });
+  expect(h.escalations[0]!.note).toContain("steps 31/30"); expect(h.escalations[0]!.note).toContain("continuations used 2/2");
+  expect(h.continuations).toHaveLength(2);
+  expect(h.failureLines()).toHaveLength(3); expect(h.failureLines().every(line => line.includes("ceiling steps 31/30"))).toBe(true);
+}, 20_000);
+
+test("zero Pi continuations escalates the first ceiling with its distinct reason (#1447)", async () => {
+  const h = await continuationPi(0); await h.publish(); await h.fail();
+  await h.wait(() => h.escalations.length === 1, "the first ceiling escalates");
+  expect(h.continuations).toEqual([]); expect(h.escalations[0]!.reason).toBe("step_limit");
+  expect(h.escalations[0]!.note).toContain("continuations used 0/0"); expect(h.failureLines()).toHaveLength(1);
+}, 20_000);
+
+test("successful turns and renewed owner acceptance each reset Pi continuation scope (#1447)", async () => {
+  const h = await continuationPi(1); await h.publish(); await h.fail();
+  await h.wait(() => h.continuations.length === 1, "first continuation"); await h.start(h.continuations[0]!); await h.settle();
+  await h.publish(); await h.fail(); await h.wait(() => h.continuations.length === 2, "success reset the count");
+  expect(h.continuations[1]!.body).toContain("Continuation 1/1"); await h.start(h.continuations[1]!);
+  h.board.update(h.task.id, "pi", "accepted", {});
+  await h.fail(); await h.wait(() => h.continuations.length === 3, "new acceptance reset the scope");
+  expect(h.continuations[2]!.body).toContain("Continuation 1/1"); expect(h.escalations).toEqual([]);
+}, 20_000);
+
+test("an explicitly aborted Pi turn is observed without escalation and resets continuation scope (#1447)", async () => {
+  const h = await continuationPi(1); await h.publish(); await h.fail();
+  await h.wait(() => h.continuations.length === 1, "first continuation"); await h.start(h.continuations[0]!); await h.settle(true);
+  expect(h.failureLines().filter(line => line.endsWith("Pi turn failed: aborted"))).toHaveLength(1);
+  expect(h.escalations).toEqual([]);
+  // Cancellation stays held; only this fixture's console person settles that uncertainty before new work.
+  const held = h.daemon.bus.queueList("pi").filter(row => row.state === "needs_review");
+  expect(held.length).toBeGreaterThan(0);
+  for (const row of held) expect((await h.console_.request({ t: "queue", op: "resolve", id: row.id, revision: row.revision, action: "discard", reason: "fixture person inspected cancelled work" })).ok).toBe(true);
+  await h.publish(); await h.fail(); await h.wait(() => h.continuations.length === 2, "aborted turn reset the count");
+  expect(h.continuations[1]!.body).toContain("Continuation 1/1"); expect(h.escalations).toEqual([]);
+}, 20_000);
+
+test("a real Pi model error keeps inference_failed with one bounded production diagnostic (#1447)", async () => {
+  const h = await continuationPi(); await h.publish();
+  const reason = "MODEL_FAILURE_CANARY " + "diagnostic ".repeat(50);
+  await h.fail(reason, false); await h.wait(() => h.escalations.length === 1, "model failure escalates");
+  expect(h.escalations[0]!.reason).toBe("inference_failed"); expect(h.escalations[0]!.note).toContain("model_error");
+  expect(h.escalations[0]!.note).toContain(piFailureText(reason)); expect(h.continuations).toEqual([]);
+  expect(h.failureLines()).toHaveLength(1); expect(h.failureLines()[0]).toContain(`model_error ${JSON.stringify(piFailureText(reason))}`);
+}, 20_000);
+
+test("a fake Pi transport process exit still requests inference_failed after going offline (#1447)", async () => {
+  const h = await continuationPi(); await h.publish(); h.native.proc.kill("SIGKILL");
+  await h.wait(() => h.pi.state === "offline", "the fake native transport exited");
+  await h.wait(() => h.escalations.length === 1, "transport failure escalates even after offline");
+  expect(h.escalations[0]!.reason).toBe("inference_failed"); expect(h.escalations[0]!.note).toContain("model_error");
+  expect(h.failureLines()).toHaveLength(1); expect(h.failureLines()[0]).toContain("model_error"); expect(h.continuations).toEqual([]);
+}, 20_000);
+
+for (const classification of ["model_error", "ceiling"] as const) test(`private Pi ${classification} logs class only and no diagnostic or counter (#1447)`, async () => {
+  const h = await continuationPi(); await h.publish();
+  h.board.update(h.task.id, "hub", "private fixture", { signals: ["pii_path"] });
+  await h.fail("PII_MODEL_REASON_CANARY", classification === "ceiling");
+  await h.wait(() => h.failureLines().length === 1, "private failure classification was recorded");
+  expect(h.failureLines()[0]!.endsWith(`Pi turn failed: ${classification}`)).toBe(true);
+  expect(h.failureLines()[0]).not.toContain("PII_MODEL_REASON_CANARY"); expect(h.failureLines()[0]).not.toContain("31/30");
+  expect(h.continuations).toEqual([]); expect(h.escalations).toEqual([]);
+}, 20_000);
+
+for (const unsafe of ["secret", "private-path"] as const) test(`Pi screens raw ${unsafe} content beyond the clipping bound before any failure diagnostic (#1447)`, async () => {
+  const h = await continuationPi(); await h.publish();
+  const tail = unsafe === "secret" ? `ghp_${"A".repeat(36)}` : "private-data/CASE_PRIVATE_CANARY.txt";
+  const reason = "PUBLIC_PREFIX_CANARY ".repeat(20) + tail;
+  await h.fail(reason, false); await h.wait(() => h.escalations.length === 1, "unsafe diagnostic was screened");
+  expect(h.failureLines()[0]!.endsWith("Pi turn failed: model_error")).toBe(true);
+  expect(h.failureLines()[0]).not.toContain("PUBLIC_PREFIX_CANARY"); expect(h.failureLines()[0]).not.toContain(tail);
+  expect(h.escalations[0]!.note).toContain("model_error"); expect(h.escalations[0]!.note).toContain("Inspect");
+  expect(h.escalations[0]!.note).not.toContain("PUBLIC_PREFIX_CANARY"); expect(h.escalations[0]!.note).not.toContain(tail);
+}, 20_000);

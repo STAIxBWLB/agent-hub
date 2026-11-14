@@ -1037,8 +1037,8 @@ export class PiPeer extends BasePeer {
       // whole delivery here, steered additions included.
       const reply = { inReplyTo: this.currentReply, to: replyAudience(this.activeEnvs) };
       if (cancelled) { this.observeTurn("aborted"); this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply); }
-      else if (error?.startsWith("execution budget")) this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
-      else if (approvalStopReason) this.onMessage?.(approvalStopReason, reply);
+      else if (error?.startsWith("execution budget")) { this.observeTurn("aborted"); this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply); }
+      else if (approvalStopReason) { this.observeTurn("aborted"); this.onMessage?.(approvalStopReason, reply); }
       else if (error) { this.turnObserved = true; void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling, settledCeiling); }
       else { this.observeTurn("success"); if (text) this.finalAnswer(text, reply); }
       for (const id of this.activeDeliveryIds) this.delivery({ id, state: approvalStopReason || settledCeiling ? "completed" : error || cancelled ? "needs_review" : "completed", ...(ceilingReason ? { reason: ceilingReason } : error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });

@@ -11627,11 +11627,13 @@ var init_pi = __esm(() => {
         if (cancelled) {
           this.observeTurn("aborted");
           this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply);
-        } else if (error?.startsWith("execution budget"))
+        } else if (error?.startsWith("execution budget")) {
+          this.observeTurn("aborted");
           this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
-        else if (approvalStopReason)
+        } else if (approvalStopReason) {
+          this.observeTurn("aborted");
           this.onMessage?.(approvalStopReason, reply);
-        else if (error) {
+        } else if (error) {
           this.turnObserved = true;
           this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling, settledCeiling);
         } else {

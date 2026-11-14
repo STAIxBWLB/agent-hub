@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { nativeConfigurationDefaults, mergeNativeConfiguration } from "../src/adapters/definitions/native-config-defaults.ts";
 import { PI_SETTINGS } from "../src/adapters/definitions/native-config-policy.ts";
-import { configApply, validateRawConfig } from "../src/hub/config-apply.ts";
+import { configApply, validateRawConfig, validateEffectiveConfig } from "../src/hub/config-apply.ts";
 import { DEFAULT_CONFIG, loadConfig } from "../src/hub/daemon.ts";
 
 const roots: string[] = [];
@@ -26,7 +26,7 @@ test("Pi continuation policy accepts the disabled setting, default and ruled upp
     expect(() => validateRawConfig({ pi: { max_continuations: value } })).toThrow("pi.max_continuations");
 });
 
-test("shared and local continuation settings merge without losing zero, and invalid masked source values refuse", () => {
+test("shared and local continuation settings merge valid overrides without losing zero", () => {
   const cwd = project();
   expect(loadConfig(cwd).pi.max_continuations).toBe(2);
   const changed = loadConfig(cwd, [
@@ -35,10 +35,12 @@ test("shared and local continuation settings merge without losing zero, and inva
   ]);
   expect(changed.pi.max_continuations).toBe(0);
   expect(changed.pi.max_steps).toBe(DEFAULT_CONFIG.pi.max_steps);
-  expect(() => loadConfig(cwd, [
-    { name: "config.json", raw: { pi: { max_continuations: 11 } } },
+  // #1447 conductor ruling: loadConfig tests valid precedence; schema ports own native validation.
+  expect(loadConfig(cwd, [
+    { name: "config.json", raw: { pi: { max_continuations: 5 } } },
     { name: "config.local.json", raw: { pi: { max_continuations: 2 } } },
-  ])).toThrow("pi.max_continuations");
+  ]).pi.max_continuations).toBe(2);
+  expect(() => validateEffectiveConfig({ ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, max_continuations: 11 } })).toThrow("pi.max_continuations");
 });
 
 test("Pi continuations retain config-only next-use application like the existing step ceiling", () => {

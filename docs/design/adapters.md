@@ -374,6 +374,19 @@ not success. The host may then offer its separately bounded continuation; the
 adapter never replays an existing delivery or changes a previously held row.
 Unsafe ceiling and ordinary error deliveries remain `needs_review`.
 
+The host grants `pi.max_continuations` extra turns after the first safe ceiling
+stop (default 2, range 0..10, sampled at peer start). The stop after the last
+continuation escalates with task move reason `step_limit`, the same `ceiling`
+class, steps and continuations used. Model/transport failures retain
+`inference_failed` with class `model_error`. Continuation state is scoped to the
+current accepted owner binding and native session and resets on a turn without
+a ceiling stop, task movement or session replacement. Every per-task effect
+rechecks ownership, privacy, stop/recovery and turn identity after awaited work.
+Private or uncertain turns never continue. The new prompt requests a checkpoint
+and inspection of prior effects without replaying uncertain writes. Logs emit
+one failure class per turn; public diagnostics are screened before clipping and
+PII/private turns carry only the class.
+
 Observation-only `onTurnAborted` reports explicit stop/recovery, withdrawal or
 cancelled settlement once per active logical turn. These paths do not invoke
 failure handoff. Internal model-error teardown retains its failure class and
