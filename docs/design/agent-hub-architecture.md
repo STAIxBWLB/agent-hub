@@ -29,6 +29,8 @@ tags: [agent-hub, dogfood]
 
 # Agent Hub Architecture
 
+The [roadmap module](roadmap.md) owns additive milestone/link records and computed public progress through Tasks. Its R1 tools and CLI reuse source-issue identity, cached issue metadata, spec freshness and release trains; they add no GitHub writes, model calls or UI and keep private membership count-only.
+
 The [design ledger](../specs/2026-09-19-agent-hub-design.md) records history; current operational rules live in the [AGENTS.md area notes](../../AGENTS.md#area-notes), including the [task](../agent-notes/tasks.md), [bus](../agent-notes/bus.md), [adapter](../agent-notes/adapters.md), [daemon](../agent-notes/daemon.md), [model](../agent-notes/models.md), and [local-worker](../agent-notes/local-worker.md) notes.
 
 ## Runtime and peer boundary

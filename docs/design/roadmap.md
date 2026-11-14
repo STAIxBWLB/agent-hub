@@ -3,7 +3,8 @@ id: roadmap
 type: module
 title: Roadmap Milestones
 status: active
-parent: task-board
+parent: agent-hub-architecture
+depends-on: [task-board]
 paths:
   - src/hub/roadmap.ts
   - src/hub/roadmap-view.ts
