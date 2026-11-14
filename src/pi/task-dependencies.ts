@@ -89,7 +89,7 @@ export async function preparePiDependencies(cwd: string, options: PiDependencyOp
     if (rootInfo.dev !== stagedInfo.dev) return { ready: false, reason: "different filesystem" };
     const git = (args: string[], limit: number): Buffer => {
       check();
-      const timeout = deadline - now(); if (timeout <= 0) fail("install timed out");
+      const timeout = Math.ceil(deadline - now()); if (timeout <= 0) fail("install timed out");
       const result = hubGitSync(["-C", repository, ...args], { env: hubGitEnv({}, { repositoryIsolation: true }), timeout, maxBuffer: limit });
       check(); if (result.error || result.status !== 0) fail("unsupported install inputs");
       const data = typeof result.stdout === "string" ? Buffer.from(result.stdout, "utf8") : Buffer.from(result.stdout ?? []);
