@@ -49,7 +49,7 @@ for (const checkpoint of ["context", "quota"] as const) for (const move of ["ass
     const f = await fixture(checkpoint === "context" ? 0.8 : 0, false, undefined, {
       roles: { ...DEFAULT_CONFIG.roles, other: ["implementer", "reviewer"] }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false },
     });
-    const accepted = await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } }); expect(accepted.ok, accepted.error).toBe(true);
+    const accepted = await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } }); expect(accepted.ok === true, String(accepted.error ?? "")).toBe(true);
     const peer = f.daemon.bus.peers.get("claude");
     if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
     // Emulate a busy transport without native steering: stop notices must remain pending, not pause the session.
@@ -63,7 +63,7 @@ for (const checkpoint of ["context", "quota"] as const) for (const move of ["ass
     expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
     const changed = await f.console_.request({ t: "task", op: move === "assign" ? "task_assign" : "hub_task_cancel",
       args: move === "assign" ? { id: 1, peer: "other", role: "owner" } : { id: 1, reason: "Stop the fixture task" } });
-    expect(changed.ok, changed.error).toBe(true);
+    expect(changed.ok === true, String(changed.error ?? "")).toBe(true);
     const current = JSON.parse((await f.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
     if (move === "assign") expect(current.owner).toBe("other"); else expect(current.state).toBe("cancelled");
     const pending = f.daemon.bus.pendingEnvelopes("claude").filter(env => env.refs?.task === "1"
@@ -94,7 +94,7 @@ test("#1447 a taskless busy-peer context checkpoint still follows its valid peer
   f.reading(); await until(() => !!request(f.pushes));
   const id = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1], marker = "TASKLESS_VALID_CHECKPOINT_CANARY";
   const saved = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: id } });
-  expect(saved.ok, saved.error).toBe(true);
+  expect(saved.ok === true, String(saved.error ?? "")).toBe(true);
   expect(JSON.parse(readFileSync(join(f.cwd, "context-checkpoint-claude.json"), "utf8")).summary).toBe(marker);
   expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(true);
   expect(JSON.parse((await f.console_.request({ t: "task", op: "hub_task_list", args: {} })).text)).toEqual([]);
