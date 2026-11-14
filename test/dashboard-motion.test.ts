@@ -222,7 +222,9 @@ test("an empty view says what fills it and the command that does it (#469 R6 AC9
   // Every command named is a real one in `ahub help`. Read the rendered help, not help.ts: the native commands are derived from the
   // adapter definitions (#625), so their words are not in that source file.
   const help = renderHelp(100, false);
-  for (const command of ["ahub task propose", "ahub say", "ahub permit", "ahub remember", "ahub goal new", "ahub claude", "ahub codex"]) expect(help, command).toContain(command);
+  // the overview names each command; the usage forms (`ahub task propose`, `ahub goal new`) are in `ahub help <command>`
+  for (const command of ["task", "say", "permit", "remember", "goal", "claude", "codex"]) expect(help, command).toMatch(new RegExp(`^  ${command}\\s`, "m"));
+  for (const [command, form] of [["task", "ahub task propose"], ["goal", "ahub goal new"]] as const) expect(renderHelp(100, false, command), form).toContain(form);
 });
 
 test("a lost connection dims the content, keeps it readable and says when the last snapshot came and that polling continues (#469 R6 AC9)", () => {

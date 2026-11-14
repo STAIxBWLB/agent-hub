@@ -1048,7 +1048,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const color = resolveColor(undefined, streamEnv(!!process.stdout.isTTY)) === true;
     const topic = asksHelp(args[0]) ? undefined : args[0];
     const text = topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.permission.genericAcp !== undefined
-      ? configuredAcpHelp(topic) : renderHelp(process.stdout.columns ?? 80, color, topic);
+      ? configuredAcpHelp(topic) : renderHelp(process.stdout.columns ?? 80, color, topic, undefined, asciiMarkers(process.env, args.includes("--ascii")));
     if (!text) fail(`unknown command "${topic}"; run ahub help`);
     console.log(text);
   },
