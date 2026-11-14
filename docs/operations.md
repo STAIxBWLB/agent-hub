@@ -5935,6 +5935,43 @@ public stub; legend entries contain ids/counts, never task prose. Planning prior
 are described below. Native planner-cycle evidence remains unverified.
 
 
+## Roadmap milestones (#1479 R1)
+
+`ahub roadmap` (or `roadmap list`) reads board-backed milestones. `show <id>`
+adds public links, task placement and computed progress. Reads print for a person;
+`--json` returns the same public record. Unknown issue/spec evidence remains
+unknown, and private task membership is a count without task ids or titles.
+
+```sh
+ahub roadmap new --title "Reliable releases" --outcome "Every release has verified delivery evidence" --horizon now
+ahub roadmap link 1 issue owner/repo#42
+ahub roadmap link 1 spec task-board
+ahub roadmap show 1 --json
+ahub roadmap edit 1 --revision 2 --target 2026-12-01
+ahub roadmap order 1 10
+ahub roadmap state 1 active
+```
+
+Use the revision actually returned by `show`; the numbers above are examples.
+New/edit also accept `--order` and `--parent`; `--target none` or `--parent none`
+clears that field. `unlink <id> <kind> <ref>` removes a link. The configured
+planners, current unique conductor and the person may edit. Only the person
+records `state <id> done|dropped`; live-test delegation cannot write milestone
+content. Terminal milestones are final.
+
+Explicit task links take precedence over issue inheritance across all milestones.
+Otherwise GitHub-import `Task.external` or the canonical plan issue identity
+places a task in its issue's milestone, labelled inherited from #N. Issue states
+come from matching persisted plan-review metadata and include their cache time;
+no GitHub lookup runs. Specs use the current complete spec graph; missing,
+nonancestor or incomplete proof stays unknown. Trains keep their delivery rules.
+Parent milestones are one-level organization, without automatic child membership.
+
+A retained milestone requires a target advertising `roadmap` for controlled
+recovery; its row/link digest is part of the recovery proof. Empty databases
+retain the old format and integrity shape. R1 creates no GitHub milestone or issue,
+model answer, export, dashboard view or console panel. See [the module contract](design/roadmap.md).
+
 ## Planning and phased releases (#263)
 
 Use `ahub backlog list` to read public staged work (a table by rank with the reserved owner, dependencies and cut titles, then a count by reserved owner; `--full` and piped output keep whole titles and `--json` prints the raw listing), then `ahub backlog plan <id>

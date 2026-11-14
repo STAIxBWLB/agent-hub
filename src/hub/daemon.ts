@@ -436,7 +436,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_evidence_read", "hub_status", "hub_specs", "hub_supervision_list"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_roadmap_list", "hub_roadmap_show", "hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_evidence_read", "hub_status", "hub_specs", "hub_supervision_list"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -2371,6 +2371,13 @@ export async function startDaemon(opts: DaemonOptions) {
     if (restored?.integrity && (expected ? expected.count !== retainedExecutionReferences.count || expected.digest !== retainedExecutionReferences.digest : retainedExecutionReferences.count !== 0)) throw new Error("changed recovery binding");
   } catch {
     guidanceProbeStore.close(); board.close(); throw new Error("execution reference state or recovery binding is unavailable; restore trusted project state and choose a compatible recovery target before retrying");
+  }
+  try {
+    const retained = board.roadmapIntegrity(), expected = restored?.integrity?.roadmap;
+    if (restored && (expected ? expected.milestones !== retained.milestones || expected.links !== retained.links || expected.digest !== retained.digest
+      : retained.milestones !== 0 || retained.links !== 0)) throw new Error("changed recovery binding");
+  } catch {
+    guidanceProbeStore.close(); board.close(); throw new Error("roadmap state or recovery binding is unavailable; restore trusted project state and choose a roadmap-compatible target before retrying");
   }
   try {
     const retainedGuidance = board.guidanceVariantsIntegrity(), expected = restored?.integrity?.guidanceVariants;
@@ -5708,7 +5715,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // shared memory and a new task could be routed to a cloud peer without matching any pattern.
     if (op === "hub_experiment_record" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     if (op === "hub_evidence_record" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("evidence recording is unavailable in a private or PII context; keep private work on-prem and record only public evidence outside that context");
-    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new" || op === "hub_study_draft" || op === "hub_study_revise")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_roadmap_edit" || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new" || op === "hub_study_draft" || op === "hub_study_revise")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and shared memory. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && (a.plan != null || a.refs != null)))) {
@@ -5884,6 +5891,26 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "hub_backlog_list":
         return JSON.stringify(tasks.backlogList(by));
+      case "hub_roadmap_list":
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).length) throw new PreEffectToolRefusal("roadmap list takes no fields; use hub_roadmap_list with an empty object");
+        return JSON.stringify({ milestones: tasks.milestoneList(by) });
+      case "hub_roadmap_show":
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "id")) throw new PreEffectToolRefusal("roadmap show takes id only; use ahub roadmap show with a milestone id");
+        return JSON.stringify(tasks.milestoneShow(by, a.id));
+      case "hub_roadmap_edit": {
+        const fields: Record<string, readonly string[]> = { new: ["op", "fields"], edit: ["op", "id", "revision", "fields"], link: ["op", "id", "kind", "ref"], unlink: ["op", "id", "kind", "ref"], order: ["op", "id", "order"], state: ["op", "id", "state"] };
+        if (!a || typeof a !== "object" || Array.isArray(a) || typeof a.op !== "string" || !Object.hasOwn(fields, a.op)) throw new PreEffectToolRefusal("unknown roadmap operation; use new, edit, link, unlink, order or state with hub_roadmap_edit");
+        if (Object.keys(a).some(key => !fields[a.op]!.includes(key))) throw new PreEffectToolRefusal("roadmap operation has unknown fields; inspect hub_roadmap_show and use the documented operation fields");
+        switch (a.op) {
+          case "new": return JSON.stringify(await tasks.milestoneNew(by, a.fields));
+          case "edit": return JSON.stringify(await tasks.milestoneEdit(by, a.id, a.revision, a.fields));
+          case "link": return JSON.stringify(tasks.milestoneLink(by, a.id, a.kind, a.ref));
+          case "unlink": return JSON.stringify(tasks.milestoneUnlink(by, a.id, a.kind, a.ref));
+          case "order": return JSON.stringify(tasks.milestoneOrder(by, a.id, a.order));
+          case "state": return JSON.stringify(tasks.milestoneState(by, a.id, a.state));
+        }
+        throw new PreEffectToolRefusal("unknown roadmap operation; use ahub roadmap list");
+      }
       case "hub_release_new":
         return JSON.stringify(tasks.publicRelease(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order })));
       case "hub_release_report":
@@ -6271,6 +6298,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return `Codex's conversation no longer holds turn ${turn.id}`;
       }
     }
+    if (op.startsWith("hub_roadmap_")) throw new PreEffectToolRefusal("unknown roadmap operation; use hub_roadmap_list or ahub roadmap list");
     throw new Error(`unknown task operation ${op}`);
   }
   function recoveryTaskPreface(peer: PeerId): void {
@@ -7109,6 +7137,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const reviewerQuotaIntegrity = () => ({ ...reviewerAccountingIntegrity(reviewerJournalRows, reviewerJournalComplete),
     waits: board.list().filter(task => task.history.some(row => row.reviewerQuotaWait !== undefined)).length });
   const integrity = (older = 0) => {
+    const roadmap = board.roadmapIntegrity();
     const queues = Object.fromEntries(Object.keys(bus.snapshot(false).queues).sort().map((id) => [id, bus.queueIds(id)]));
     const boardState = board.list().sort((a, b) => a.id - b.id).map((t) => {
       const row: Record<string, unknown> = { ...t };
@@ -7132,7 +7161,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const visualIntegrity = visuals.integrity();
     if (!Number.isSafeInteger(visualIntegrity.count) || visualIntegrity.count < 0 || !/^[a-f0-9]{64}$/.test(visualIntegrity.digest))
       throw new Error("visual recovery integrity unavailable; inspect the retained store before recovery");
-    return { ...(reviewerQuota.rows || !reviewerQuota.complete || reviewerQuota.waits ? { reviewerQuota } : {}), queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(advisorSurveys.surveys || advisorSurveys.findings || advisorSurveys.considered ? { advisorSurveys } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(guidanceProbes.experiments || guidanceProbes.sessions ? { guidanceProbes } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    return { ...(roadmap.milestones || roadmap.links ? { roadmap } : {}), ...(reviewerQuota.rows || !reviewerQuota.complete || reviewerQuota.waits ? { reviewerQuota } : {}), queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(advisorSurveys.surveys || advisorSurveys.findings || advisorSurveys.considered ? { advisorSurveys } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(guidanceProbes.experiments || guidanceProbes.sessions ? { guidanceProbes } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -10698,6 +10727,10 @@ export async function startDaemon(opts: DaemonOptions) {
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
     const incompatibleRecoveryTarget = () => {
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("roadmap")) {
+        try { if (board.hasMilestoneState()) return "target lacks roadmap; retained milestones require a supporting daemon; choose a target advertising roadmap"; }
+        catch { return "roadmap compatibility is unknown; inspect retained milestone state or choose a supporting target"; }
+      }
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_quota")) {
         const proof = reviewerQuotaIntegrity();
         let explicit = config.review.gate !== undefined && config.review.gate !== DEFAULT_REVIEW_GATE || config.review.max_minutes !== undefined && config.review.max_minutes !== DEFAULT_REVIEW_MAX_MINUTES || config.review.unknown_quota !== undefined && config.review.unknown_quota !== DEFAULT_REVIEW_UNKNOWN_QUOTA;

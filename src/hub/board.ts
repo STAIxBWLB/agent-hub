@@ -1,3 +1,4 @@
+import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { GUIDANCE_VARIANT_LIMITS, GUIDANCE_PAGE_MAX_RECORDS, GUIDANCE_HASH_HEX_LENGTH, parseGuidanceVariantV1, parseGuidanceExperiment, parseGuidanceStoredRecord, validateGuidanceVariantV1, type GuidanceVariantV1, type GuidanceExperimentRecord, type GuidanceStoredRecord, type GuidanceWriteFence } from "./guidance-variants.ts";
 import { ExecutionLinkError, EXECUTION_LINK_LIMITS, executionLinkActor, executionLinkInteger, executionLinkId, executionLinkReferences, executionReferenceDigest, parseExecutionLinkInput, parseExecutionLinkRecord, type ExecutionLinkInput, type ExecutionLinkRecord, type ExecutionLinkFence } from "./execution-links.ts";
 import { executionReferenceKey, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
@@ -19,6 +20,7 @@ import type { Database } from "./db-schema.ts";
 import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
+import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry } from "./roadmap.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { AuditFinding, AuditProfile, AuditUnit } from "./security-audit.ts";
 import type { ReviewFinding } from "./review-findings.ts";
@@ -622,6 +624,15 @@ export class Board {
     if (!(this.db.query("PRAGMA table_info(releases)").all() as { name: string }[]).some(row => row.name === "planner")) this.db.run("ALTER TABLE releases ADD COLUMN planner TEXT");
     this.db.run("CREATE INDEX IF NOT EXISTS releases_planner_present ON releases(planner) WHERE planner IS NOT NULL");
     if (!(this.db.query("PRAGMA table_info(releases)").all() as { name: string }[]).some(row => row.name === "train")) this.db.run("ALTER TABLE releases ADD COLUMN train TEXT");
+
+    this.db.run(`CREATE TABLE IF NOT EXISTS milestones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, outcome TEXT NOT NULL,
+      state TEXT NOT NULL, horizon TEXT NOT NULL, milestone_order INTEGER NOT NULL,
+      target TEXT, parent INTEGER, revision INTEGER NOT NULL DEFAULT 0, history TEXT NOT NULL,
+      created INTEGER NOT NULL, updated INTEGER NOT NULL)`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS milestone_links (
+      milestone INTEGER NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, by TEXT NOT NULL, at INTEGER NOT NULL,
+      PRIMARY KEY(milestone,kind,ref))`);
 
     this.db.run(`CREATE TABLE IF NOT EXISTS research_campaigns (
       id TEXT NOT NULL, project TEXT NOT NULL, parent_task_id INTEGER NOT NULL, revision INTEGER NOT NULL,
@@ -2904,6 +2915,105 @@ export class Board {
     });
   }
 
+  /** Raw roadmap storage. Every external writer is admitted by Tasks. */
+  newMilestone(input: MilestoneInput, by: string, now = Date.now()): Milestone {
+    const value = parseMilestoneInput(input), actor = milestoneActor(by), at = milestoneId(now);
+    return this.db.transaction(() => {
+      this.milestoneParent(undefined, value.parent);
+      const history = milestoneHistory([{ at, by: actor, event: "created" }]);
+      const inserted = this.db.query("INSERT INTO milestones(title,outcome,state,horizon,milestone_order,target,parent,history,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .run(value.title, value.outcome, value.state, value.horizon, value.order, value.target, value.parent, JSON.stringify(history), at, at);
+      return this.milestone(Number(inserted.lastInsertRowid))!;
+    })();
+  }
+
+  milestone(id: number): Milestone | undefined {
+    milestoneId(id);
+    const row = this.db.query("SELECT * FROM milestones WHERE id=?").get(id) as Record<string, unknown> | null;
+    return row ? parseMilestone(row) : undefined;
+  }
+
+  milestones(): Milestone[] {
+    return (this.db.query("SELECT * FROM milestones ORDER BY milestone_order,id").all() as Record<string, unknown>[]).map(parseMilestone);
+  }
+
+  milestoneLinks(id?: number): MilestoneLink[] {
+    if (id !== undefined) milestoneId(id);
+    const rows = (id === undefined
+      ? this.db.query("SELECT * FROM milestone_links ORDER BY milestone,kind,ref").all()
+      : this.db.query("SELECT * FROM milestone_links WHERE milestone=? ORDER BY kind,ref").all(id)) as Record<string, unknown>[];
+    return rows.map(row => ({ milestone: milestoneId(row.milestone), kind: row.kind as MilestoneLinkKind,
+      ref: milestoneLinkRef(row.kind as MilestoneLinkKind, row.ref), by: milestoneActor(row.by), at: milestoneId(row.at) }));
+  }
+
+  hasMilestoneState(): boolean {
+    const row = this.db.query("SELECT EXISTS(SELECT 1 FROM milestones) OR EXISTS(SELECT 1 FROM milestone_links) AS present").get() as { present: number };
+    return row.present === 1;
+  }
+
+  roadmapIntegrity(): { milestones: number; links: number; digest: string } {
+    return this.db.transaction(() => {
+      const milestones = this.milestones().sort((a, b) => a.id - b.id), links = this.milestoneLinks();
+      return { milestones: milestones.length, links: links.length, digest: createHash("sha256").update(JSON.stringify({ milestones, links })).digest("hex") };
+    })();
+  }
+
+  /** Parent shape and compare-and-set are checked under the same write transaction. */
+  updateMilestone(id: number, patch: MilestonePatch, revision: number, event: MilestoneHistoryEntry): Milestone {
+    const fields = parseMilestonePatch(patch), entry = milestoneHistory([event])[0]!;
+    return this.db.transaction(() => this.writeMilestone(id, fields, revision, entry))();
+  }
+
+  linkMilestone(id: number, kind: MilestoneLinkKind, ref: string, by: string, revision: number, now = Date.now()): Milestone {
+    const key = milestoneLinkRef(kind, ref), actor = milestoneActor(by), at = milestoneId(now);
+    return this.db.transaction(() => {
+      const before = this.currentMilestone(id, revision);
+      if (this.db.query("SELECT 1 FROM milestone_links WHERE milestone=? AND kind=? AND ref=?").get(id, kind, key)) return before;
+      const updated = this.writeMilestone(id, {}, revision, { at, by: actor, event: "linked", kind });
+      this.db.query("INSERT INTO milestone_links(milestone,kind,ref,by,at) VALUES(?,?,?,?,?)").run(id, kind, key, actor, at);
+      return updated;
+    })();
+  }
+
+  unlinkMilestone(id: number, kind: MilestoneLinkKind, ref: string, by: string, revision: number, now = Date.now()): Milestone {
+    const key = milestoneLinkRef(kind, ref), actor = milestoneActor(by), at = milestoneId(now);
+    return this.db.transaction(() => {
+      const before = this.currentMilestone(id, revision);
+      if (!this.db.query("SELECT 1 FROM milestone_links WHERE milestone=? AND kind=? AND ref=?").get(id, kind, key)) return before;
+      const updated = this.writeMilestone(id, {}, revision, { at, by: actor, event: "unlinked", kind });
+      this.db.query("DELETE FROM milestone_links WHERE milestone=? AND kind=? AND ref=?").run(id, kind, key);
+      return updated;
+    })();
+  }
+
+  private currentMilestone(id: number, revision: number): Milestone {
+    milestoneRevision(revision);
+    const row = this.milestone(id);
+    if (!row || row.revision !== revision) throw new PreEffectToolRefusal("roadmap revision changed; reload ahub roadmap show before retrying");
+    return row;
+  }
+
+  private milestoneParent(id: number | undefined, parent: number | null): void {
+    if (parent === null) return;
+    if (parent === id) throw new PreEffectToolRefusal("roadmap milestone cannot parent itself; choose another parent with ahub roadmap edit");
+    const ancestor = this.milestone(parent);
+    if (!ancestor || ancestor.parent !== null) throw new PreEffectToolRefusal("roadmap parent must exist at the top level; inspect ahub roadmap list");
+    if (id !== undefined && this.db.query("SELECT 1 FROM milestones WHERE parent=? LIMIT 1").get(id)) throw new PreEffectToolRefusal("roadmap nesting is limited to one level; move child milestones first");
+  }
+
+  private writeMilestone(id: number, patch: MilestonePatch, revision: number, event: MilestoneHistoryEntry): Milestone {
+    const current = this.currentMilestone(id, revision), next = { ...current, ...patch };
+    this.milestoneParent(id, next.parent);
+    const settling = current.state !== next.state && (next.state === "done" || next.state === "dropped");
+    if (current.history.length >= MILESTONE_HISTORY_LIMIT - 1 && !settling)
+      throw new PreEffectToolRefusal(`roadmap history reserves its last slot for settlement; ask the person to run ahub roadmap state ${id} done or ahub roadmap state ${id} dropped`);
+    const history = milestoneHistory([...current.history, event]);
+    const result = this.db.query("UPDATE milestones SET title=?,outcome=?,state=?,horizon=?,milestone_order=?,target=?,parent=?,history=?,updated=?,revision=revision+1 WHERE id=? AND revision=?")
+      .run(next.title, next.outcome, next.state, next.horizon, next.order, next.target, next.parent, JSON.stringify(history), event.at, id, revision);
+    if (result.changes !== 1) throw new PreEffectToolRefusal("roadmap revision changed; reload ahub roadmap show before retrying");
+    return this.milestone(id)!;
+  }
+
   newRelease(name: string, goal: string, order: number, planner?: PeerId | null): Release {
     const now = Date.now(), selected = plannerValue(planner);
     const result = this.db.query("INSERT INTO releases(name,goal,release_order,created,updated,planner) VALUES(?,?,?,?,?,?)").run(name, goal, order, now, now, selected);
@@ -3032,6 +3142,11 @@ function parse(row: Record<string, unknown>): Task {
   for (const key of ["rank", "priority", "release", "due"]) if (out[key] == null) delete out[key];
   out.planner = row.planner ?? null;
   return out as unknown as Task;
+}
+
+function parseMilestone(row: Record<string, unknown>): Milestone {
+  return { ...parseMilestoneInput({ title: row.title, outcome: row.outcome, state: row.state, horizon: row.horizon, order: row.milestone_order, target: row.target, parent: row.parent }),
+    id: milestoneId(row.id), revision: milestoneRevision(row.revision), history: milestoneHistory(JSON.parse(String(row.history))), created: milestoneId(row.created), updated: milestoneId(row.updated) };
 }
 
 function parseRelease(row: Record<string, unknown>): Release {

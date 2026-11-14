@@ -88,7 +88,10 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   Claude Code instances can implement in their own worktree, in a terminal or
   headless with one session per task. `ahub sdlc metrics` reads lead times,
   rework and stalls from board history, and
-  optional control bands turn a breach into a backlog card. Work that belongs to
+  optional control bands turn a breach into a backlog card. `ahub roadmap` groups
+  work into board-backed milestones with computed task, cached issue, spec and
+  train progress; private tasks appear only as counts. Planner/conductor edits
+  are separate from the person's done/dropped decisions ([roadmap](docs/design/roadmap.md)). Work that belongs to
   another project running agent-hub on this machine goes onto that project's board
   with `ahub task handoff` (agents: `hub_task_handoff`), and its state changes come
   back as task messages.

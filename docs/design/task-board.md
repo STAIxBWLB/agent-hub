@@ -451,3 +451,7 @@ and no background scanner, timer or model judge is introduced. Live pilots
 require the person's separate instruction.
 
 Survey reports accept at most 64 candidates and 64 KiB per normalized request. A candidate has at most 64 literal paths (512 bytes each) and 2048-byte narrative fields. Generated card detail, including any reopening reason, is at most 8 KiB; oversized combinations refuse with a shortening next step. Historical readback returns at most 16 reasons per key; a 1000-row history window that cannot be read completely remains unknown and suppressed. The bounded 32-key/3072-byte brief is a summary, not a complete rejection inventory. `advisor_surveys` advertises parser/recovery support independently of lifecycle mode, but survey tools and task metadata are published only when enabled. Persisted survey or considered state requires that feature and its conditional integrity proof on recovery; empty legacy stores keep their existing format floor.
+
+## Roadmap milestones (#1479)
+
+The [roadmap module](roadmap.md) defines additive milestone storage, Tasks-only writes, inherited membership, public count-only private scope and computed task/issue/spec/train progress. It adds no GitHub writes or model calls and changes no release train or routing rules.
