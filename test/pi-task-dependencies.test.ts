@@ -38,6 +38,14 @@ const installed: DependencyRunner = async request => {
 };
 const cleanStage = (cwd: string) => expect(readdirSync(projects.get(cwd)!.stagingParent)).toEqual([]);
 
+for (const inputs of [{ workspaces: ["../mutable"] }, { dependencies: { fixture: "file:../../mutable" } }, { devDependencies: { fixture: "link:/mutable" } }, { patchedDependencies: { "fixture@1": "../mutable.patch" } },
+  { overrides: { fixture: "file:../../mutable" } }, { resolutions: { fixture: "../mutable" } }, { catalogs: { shared: { fixture: "file:../../mutable" } } }, { peerDependencies: { fixture: "link:../../mutable" } }])
+  test(`reviewed path references cannot escape the immutable install snapshot: ${JSON.stringify(inputs)}`, async () => {
+    const cwd = fixture(), manifest = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({ ...manifest, ...inputs })); reviewed(cwd);
+    expect(await prepare(cwd, { run: neverRun })).toEqual({ ready: false, reason: "unsupported install inputs" }); cleanStage(cwd);
+  });
+
 test("Pi installs exact argv in private same-volume staging with only fake HOME and explicit shared cache", async () => {
   const cwd = fixture(), manifest = readFileSync(join(cwd, "package.json"), "utf8"); let observed: DependencyInstallRequest | undefined, modulesInode: number | undefined;
   const result = await prepare(cwd, { run: async request => {

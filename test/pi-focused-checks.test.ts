@@ -158,6 +158,21 @@ test("#1447 T5 moved ownership while preparing cannot return a stale accepted ta
   expect(f.tasks.dependencyNotes("pi")).toBeUndefined();
 });
 
+test("#1447 T5 a concurrent accept prepares under its own acceptance rather than adopting the superseded run", async () => {
+  const f = await taskFixture(), started = barrier(), release = barrier(); let calls = 0;
+  f.worktrees.registerDependencyPreparation("pi", async (_cwd, current) => {
+    if (++calls === 1) { started.release(); await release.reached; expect(current()).toBe(false); }
+    else expect(current()).toBe(true);
+    return { ready: true };
+  });
+  const task = f.offer(), first = f.tasks.acceptReviewed("pi", task.id);
+  await started.reached; const second = f.tasks.acceptReviewed("pi", task.id);
+  release.release(); await expect(first).rejects.toThrow("changed owner, session or privacy");
+  const accepted = await second;
+  expect(calls).toBe(2); expect(accepted.state).toBe("in_progress");
+  expect(f.tasks.worktreeNote(accepted, "pi")).toContain("dependencies prepared");
+});
+
 test("#1447 T5 self-claim awaits the same preparation and reports failure without undoing the claim", async () => {
   const f = await taskFixture(), started = barrier(), release = barrier();
   f.worktrees.registerDependencyPreparation("pi", async () => { started.release(); await release.reached; return { ready: false, reason: "missing bun.lock" }; });

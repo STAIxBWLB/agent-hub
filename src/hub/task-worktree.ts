@@ -98,7 +98,10 @@ export class TaskWorktrees implements TaskWorktreePort {
     const { peer, task, current } = input, prepare = this.dependencyPreparers.get(peer), entry = this.describe(peer, task);
     if (!prepare || !entry || !current()) return Promise.resolve();
     const key = this.key(peer, task), running = this.dependencyRuns.get(key);
-    if (running) return running;
+    // A repeated accept may supersede the running request's authority. Serialize
+    // installs, then prepare under this caller instead of adopting its stale run.
+    if (running) return running.then(() => current() ? this.prepareDependencies(input) : undefined);
+    this.dependencyStates.delete(key);
     const run = (async () => {
       let state: DependencyPreparation;
       try { state = await prepare(entry.path, current, entry.base); }

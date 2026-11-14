@@ -8795,7 +8795,16 @@ export async function startDaemon(opts: DaemonOptions) {
       mkdirSync(nativeRoot, { recursive: true });
       const piReceipts = piReceiptLedgers.get(peer) ?? new PiToolReceipts(join(nativeRoot, "hub.db"));
       piReceiptLedgers.set(peer, piReceipts);
-      taskWorktree.registerDependencyPreparation(peer, (cwd, current, base) => preparePiDependencies(cwd, { current, base, repositoryRoot: opts.cwd, stagingParent: nativeRoot, publish: publishPiDependencies }));
+      taskWorktree.registerDependencyPreparation(peer, async (cwd, current, base) => {
+        const parent = join(hubHome(), "state", "dependency-preparation");
+        try {
+          const held = canonicalPath(parent), roots = [opts.cwd, executionCwd, ...executionRoots.values(), ...Object.values(config.instances ?? {}).flatMap(instance => instance.worktree ? [resolve(opts.cwd, instance.worktree)] : [])];
+          if (!current() || roots.some(root => insideRoot(relative(canonicalPath(root), held)))) return { ready: false, reason: "staging unavailable" };
+          mkdirSync(parent, { recursive: true, mode: 0o700 });
+          if (realPath(parent) !== held) return { ready: false, reason: "staging unavailable" };
+          return preparePiDependencies(cwd, { current, base, repositoryRoot: opts.cwd, stagingParent: parent, publish: publishPiDependencies });
+        } catch { return { ready: false, reason: "staging unavailable" }; }
+      });
       let piReply: Envelope | undefined;
       const piMaxContinuations = config.pi.max_continuations;
       const piContinuations = new Map<number, { created: number; acceptance: number; owner: string | undefined; used: number }>();

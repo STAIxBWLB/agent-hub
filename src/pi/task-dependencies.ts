@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { constants, fstatSync, lstatSync, mkdtempSync, rmSync } from "node:fs";
 import { lstat, mkdir, opendir, open, stat, writeFile, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, posix } from "node:path";
 import { realPath } from "../hub/project.ts";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { InstallPolicyError, parseInstallManifest } from "../hub/install-policy.ts";
@@ -136,6 +136,27 @@ export async function preparePiDependencies(cwd: string, options: PiDependencyOp
       if (name.endsWith("package.json")) {
         const manifest = parseInstallManifest(data);
         if (Object.hasOwn(manifest, "trustedDependencies")) return { ready: false, reason: "unsupported install inputs" };
+        // No reviewed path reference may re-enter mutable files outside the snapshot.
+        const contained = (value: string) => {
+          const normalized = posix.normalize(posix.join(posix.dirname(name), value));
+          return !value.includes("\\") && !posix.isAbsolute(value) && !/^[a-z]:/i.test(value)
+            && normalized !== ".." && !normalized.startsWith("../");
+        };
+        const workspaces = Array.isArray(manifest.workspaces) ? manifest.workspaces
+          : manifest.workspaces && typeof manifest.workspaces === "object" ? (manifest.workspaces as Record<string, unknown>).packages : undefined;
+        if (manifest.workspaces !== undefined && (!Array.isArray(workspaces) || workspaces.some(value => typeof value !== "string" || !contained(value.replace(/^!/, ""))))) return { ready: false, reason: "unsupported install inputs" };
+        const escapingReference = (value: unknown): boolean => {
+          if (typeof value === "string") {
+            const local = /^(file|link):/.test(value) ? value.slice(value.indexOf(":") + 1)
+              : /^(\.\.?\/|\/|~\/|[a-z]:[\\/])/i.test(value) ? value : undefined;
+            return local !== undefined && (!contained(local) || local.startsWith("~/"));
+          }
+          return !!value && typeof value === "object" && Object.values(value).some(escapingReference);
+        };
+        if ([manifest.dependencies, manifest.devDependencies, manifest.optionalDependencies, manifest.peerDependencies,
+          manifest.overrides, manifest.resolutions, manifest.catalog, manifest.catalogs, manifest.workspaces].some(escapingReference)) return { ready: false, reason: "unsupported install inputs" };
+        if (manifest.patchedDependencies && typeof manifest.patchedDependencies === "object"
+          && Object.values(manifest.patchedDependencies).some(value => typeof value !== "string" || !contained(value))) return { ready: false, reason: "unsupported install inputs" };
       } else if (name.endsWith("bunfig.toml")) {
         const config = Bun.TOML.parse(data.toString("utf8")) as Record<string, unknown>;
         const installKeysUnsafe = (value: unknown): boolean => !!value && typeof value === "object" && Object.entries(value).some(([key, item]) => /preload|lifecycle|script|trustedDependencies/i.test(key) || installKeysUnsafe(item));
