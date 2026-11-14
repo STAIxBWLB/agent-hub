@@ -67,6 +67,7 @@ test("real roadmap control ops preserve caller authority, CAS, reply unknown ops
   }
   const unknown = await f.op(f.person, "hub_roadmap_future", {});
   expect(unknown.ok).toBe(false);
+  expect(unknown.rid).toBeGreaterThan(0); expect(String(unknown.error)).toContain("unknown roadmap operation");
   const imported = f.board.propose("user", { title: "Inherited task", class: "plan", external: { provider: "github", repo: "example/repo", issue: 42, url: "https://github.com/example/repo/issues/42" } });
   const privateTask = f.board.propose("user", { title: "ROADMAP_DAEMON_PRIVATE_CANARY", detail: "ROADMAP_DAEMON_SECRET_DETAIL", class: "plan", signals: ["pii_path"] });
   expect((await f.op(f.planner, "hub_roadmap_edit", { op: "link", id: milestone.id, kind: "issue", ref: "example/repo#42" })).ok).toBe(true);
