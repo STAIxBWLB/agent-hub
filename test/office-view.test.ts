@@ -82,6 +82,7 @@ const snapshot = {
 function startOfficeRuntime(view: () => string, measurement?: (text:string,font:string)=>number,nativeMove=false) {
   const board = html.slice(html.indexOf("let boardViewState ="),html.indexOf("function render(snapshot)"));
   const scope = ["canMutate", "context"].map(name=>html.split("\n").find(line=>line.startsWith("function "+name+"("))!).join("\n");
+  const instructedAnswers = html.slice(html.indexOf("function renderInstructedAnswers("), html.indexOf("function renderApprovals("));
   const renderSlice = html.slice(html.indexOf("function render(snapshot)"), html.indexOf("async function poll("));
   const focusState:{activeElement:Node|null}={activeElement:null};
   const create=(tag="div")=>{const node=new Node();node.tag=tag;node.focusState=focusState;if(nativeMove)node.moveBefore=(moving,before)=>{const active=focusState.activeElement;node.insertBefore(moving,before);focusState.activeElement=active};return node;};
@@ -110,6 +111,7 @@ function startOfficeRuntime(view: () => string, measurement?: (text:string,font:
     ${scope}
     ${board}
     ${scene}
+    ${instructedAnswers}
     ${renderSlice}
     ({
       draw(snap){ lastSnapshot=snap; render(snap); },

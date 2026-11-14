@@ -18,7 +18,7 @@ export interface FlowStep { flow?: QuestionFlow; answers?: FlowAnswer[]; notice?
 export function questionRows(raw: unknown): QuestionView[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap<QuestionView>(row => {
-    if (!row || typeof row !== "object" || typeof row.set !== "string" || typeof row.peer !== "string" || !Array.isArray(row.questions) || !row.questions.length) return [];
+    if (!row || typeof row !== "object" || (row.state !== undefined && row.state !== "open") || typeof row.set !== "string" || typeof row.peer !== "string" || !Array.isArray(row.questions) || !row.questions.length) return [];
     return [{ set: row.set, peer: row.peer, created: Number.isSafeInteger(row.created) ? row.created : 0, ...(row.private === true ? { private: true } : {}), questions: row.questions as AskQuestion[] }];
   }).sort((a, b) => a.created - b.created || a.set.localeCompare(b.set));
 }

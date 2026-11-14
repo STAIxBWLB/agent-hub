@@ -78,10 +78,10 @@ export type HubEvent =
   | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null; model?: string; modelEvidence?: ModelEvidence } & Partial<TaskAttribution>)
   | { type: "native_turn_end"; peer: string; id?: string; reason?: "user_canceled" | "error" | "max_invocations" | "max_forced_invocations" | "max_token_budget_exceeded" | "terminal_step_type" | "terminal_custom_hook" }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
-  | ({ type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true } & Partial<TaskAttribution>)
+  | ({ type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true; instructed?: true } & Partial<TaskAttribution>)
   | ({ type: "permission"; id: string; peer: string; event: "requested" | "answered" | "expired" | "cancelled"; latencyMs?: number; surface?: "console" | "dashboard" | "terminal"; option?: "allow_once" | "allow_always" | "reject_once" | "reject_always" } & Partial<TaskAttribution>)
   /** #1053: one question a peer asked the person, and how it ended. Counts, ids and a closed reason only: never a prompt, an option, an answer or other text. */
-  | ({ type: "question"; set: string; peer: string; event: "asked" | "answered" | "pending" | "superseded" | "cancelled" | "expired" | "unavailable"; latencyMs?: number; surface?: "terminal" | "console" | "dashboard" | "acon"; person?: string; reason?: "superseded" | "stopped" | "turn_aborted" | "session_changed" | "expired" | "unattended"; questions?: number; private?: boolean } & Partial<TaskAttribution>)
+  | ({ type: "question"; set: string; peer: string; event: "asked" | "answered" | "pending" | "superseded" | "cancelled" | "expired" | "unavailable"; latencyMs?: number; surface?: "terminal" | "console" | "dashboard" | "acon" | "conductor"; person?: string; reason?: "superseded" | "stopped" | "turn_aborted" | "session_changed" | "expired" | "unattended"; questions?: number; private?: boolean } & Partial<TaskAttribution>)
   /** Completed native turns that received supervision, not feed enqueues or inferred costs. */
   | { type: "supervision_turn"; peer: string; turn: string; tokens?: number; ms?: number }
   /** #1054: a run a person started settled (or a restart cut it short). Ids, a closed outcome and a duration only: never the prompt or the reply. */

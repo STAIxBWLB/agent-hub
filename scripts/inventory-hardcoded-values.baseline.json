@@ -624,8 +624,6 @@
   "src/hub/questions.ts:list:inline:limit=200#0",
   "src/hub/questions.ts:result:inline:this.db.query(UPDATE questions SET state = ?, settled = ?, reason = ?, envelope = ? WHERE set_id = ? AND state = open).run=0#0",
   "src/hub/questions.ts:result:inline:this.db.query(UPDATE questions SET state = ?, settled = ?, reason = ?, envelope = ? WHERE set_id = ? AND state = open).run=1#0",
-  "src/hub/questions.ts:result:inline:this.db.query(UPDATE questions SET state = answered, settled = ?, surface = ?, person = ?, answers = ?, envelope = ? WHERE set_id = ? AND state = open) .run=0#0",
-  "src/hub/questions.ts:result:inline:this.db.query(UPDATE questions SET state = answered, settled = ?, surface = ?, person = ?, answers = ?, envelope = ? WHERE set_id = ? AND state = open) .run=1#0",
   "src/hub/questions.ts:set:inline:randomUUID().replaceAll(-, ).slice=12#0",
   "src/hub/queue-backpressure.ts:max_queued:inline:max_queued=0#0",
   "src/hub/queue-backpressure.ts:max_queued:inline:max_queued=10_000#0",

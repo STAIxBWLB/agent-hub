@@ -54,3 +54,8 @@ export function personEvidence(features: readonly string[] | undefined, meta: Ac
     return { ok: false, error: "The person's identity and the target come from the console; remove those fields and retry." };
   return { ok: true, identity: value.identity.trim().slice(0, 200) };
 }
+
+/** Settled instructed answers are read-only provenance, never another answer form or the stored quote. */
+export function instructedAnswerItem(row: { set: string; peer: string; created: number; person: string; provenance: string }, project: { id: string; name: string }): QuestionItem {
+  return { id: questionItemId(project.id, row.set), group: "decision", kind: "decision", title: `${flat(row.set, 64)}: ${flat(row.provenance, 240)}`, actor: row.person, project: project.name, at: new Date(row.created).toISOString(), chip: { text: "answered", tone: "warn" }, verbs: [{ id: "open", label: "Open Agents" }], link: { panel: "agents", params: { project: project.id } } };
+}

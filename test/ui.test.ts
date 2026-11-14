@@ -418,6 +418,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
   const sync = /function syncStarts\(snapshot\) \{[\s\S]*?\n\}/.exec(html)![0];
   const controls = /function syncMutationControls\(\) \{[^\n]*\}/.exec(html)![0];
   const board = html.slice(html.indexOf("let boardViewState ="), html.indexOf("function render(snapshot)"));
+  const instructedAnswers = html.slice(html.indexOf("function renderInstructedAnswers("), html.indexOf("function renderApprovals("));
   const render = html.slice(html.indexOf("function render(snapshot)"), html.indexOf("async function poll("));
   class Node {
     textContent = ""; className = ""; type = ""; value = ""; checked = false; disabled = false; dataset: Record<string, string> = {}; children: Node[] = [];
@@ -467,6 +468,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
     ${sync}
     ${starts}
     ${board}
+    ${instructedAnswers}
     ${render}
     ({post,action,
       draw(starts){lastSnapshot={status:{peers:{}},starts,tasks:[],permissions:[],budget:{},events:[]};render(lastSnapshot);return get('peers')},
