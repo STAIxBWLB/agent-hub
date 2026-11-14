@@ -35,7 +35,7 @@ The table is generated from `roleEligibility` (`src/adapters/role-eligibility.ts
 
 - **Conductor**: claude, codex, jcode and pi, in their interactive (`tui`) form only. kimi's tui is pull-only (no pushes), qwen's tui has no case that drives it as a conductor yet, local is headless only and agy is pull-only; a kind stays `no` until a case proves it. claude has no headless form at all.
 - **Planner**: a kind with `plannerEligible`. **pi stays implementer-only**: its tool bridge carries the planner tools (`hub_backlog_*`, `hub_plan_review`), so tool admission is not the gap; the gap is a receipt that a Pi model plans a backlog, which no fixture can give. `plannerEligible` is not flipped without a live receipt (T5).
-- **Reviewer**: any kind that can receive `hub_review` (all but agy), or the person (`--reviewer person`).
+- **Reviewer**: any kind that can receive `hub_review` (all but agy), or the person (`--reviewer person`). A reviewer from the review pool (`review.pool`, by default the native claude, codex and kimi reviewers) is also admitted by quota: it is skipped while its known usage is at or above `review.gate` (default 0.8) or its quota is unknown (`review.unknown_quota`, default `skip`), and the task takes the existing fallback ([reviewer quota admission](operations.md#reviewer-quota-admission-and-review-caps-1446)).
 
 ## Evidence grades
 

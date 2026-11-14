@@ -52,7 +52,7 @@ it; other projects keep their version. It then names the `bun add -g` and
 
 ## Upgrading to 0.39.0
 
-TODO(agent): say what changes for a person who upgrades, or that nothing does until they use something new.
+Reviewers are now admitted by quota: `review.gate` defaults to 0.8 and `review.unknown_quota` to `skip`, so a reviewer whose account usage is at or above 80%, or unknown, is skipped and the task takes the existing fallback, and `review.max_minutes` (default 20) caps each native review. To admit unknown readings run `ahub settings set review.unknown_quota pass`, or turn the floor off with `ahub settings set review.gate off`, from a person terminal ([reviewer quota admission](operations.md#reviewer-quota-admission-and-review-caps-1446), #1446, #1467). The conductor must run interactively: a project whose `roles` give `conductor` to kimi, qwen, local or agy, or to a peer that starts headless, loses that role on upgrade with a notice naming the fix, and the person conducts from `ahub console` meanwhile; `ahub doctor` gains a `roles` row and a `shared config` row, which warns with the fixing command when `.agenthub/config.json` is not committed although the AGENTS.md block points at it (#1408, #1411). The `@staix/agent-mem` pin moves from 0.24.0 to 0.26.0: the curated index moves to `index-v4.db` and non-Claude Records spool as `hook-v4-`, which a 0.38.0 hub sharing the home leaves pending, so upgrade every hub and `amem` CLI sharing a home together, and raise its curated format floor to 0.25.0 (needed only for `preference` notes) after that. Nothing else changes until you use it: `ahub init --conductor|--planner|--reviewer` and `--track-config`, `ahub roles`, `ahub sdlc audit`, `[security]` paths in `sdlc.toml` and `ahub sdlc configure` ([roles](roles.md#choosing-who-conducts-plans-and-reviews), [lifecycle](sdlc.md)). N-1 is published 0.38.0 and control remains 16 through 17.
 
 `ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.39.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
@@ -288,7 +288,7 @@ ahub console       # use in another terminal if up used --no-console; Tab opens 
 ahub kimi          # Kimi in its own pull-only TUI; --mode headless for the hub-driven peer
 ```
 
-On a new project at a terminal, `ahub init` first asks each main setting (profile, agents, specs, SDLC mode, coordination, memory, snapshots and the rest) with its default in brackets. Enter keeps a default, and nothing is written until you answer y to the plan. `ahub init --yes` takes every default without asking.
+On a new project at a terminal, `ahub init` first asks each main setting (profile, agents, who conducts, plans and reviews, whether to commit the shared hub config, specs, SDLC mode, coordination, memory, snapshots and the rest) with its default in brackets. Enter keeps a default, and nothing is written until you answer y to the plan. `ahub init --yes` takes every default without asking.
 
 `ahub up` also starts a default set of agents, `claude` and `codex` unless you choose others, each in a terminal the hub opens (`terminal.open`, or Orca). It prints one line per agent, and an agent it cannot open is named with the command to run yourself (`ahub claude`, `ahub codex`). Choose the set once with `ahub setup --agents kimi,codex` (or answer the question in `ahub setup`), change one project with `ahub settings set start.agents <a,b>`, and skip it for a run with `ahub up --no-agents`. Without a terminal provider nothing is opened and the hub keeps running; start them by hand:
 
@@ -351,7 +351,9 @@ writes.
 
 Review `git status --short` and `git diff`, then commit `AGENTS.md`,
 `.agenthub/config.json`, `.agenthub/routing.toml`, `.agenthub/sdlc.toml` and other
-shared init changes such as `.gitignore` as applicable. Keep
+shared init changes such as `.gitignore` as applicable. With `--no-track-config`
+(or answering off) the three `.agenthub` files stay ignored instead, and each
+checkout holds its own roles; `ahub roles` prints them. Keep
 `.agenthub/config.local.json`, `.agenthub/routing.local.toml` and runtime state
 untracked. Start through `ahub up` or the dedicated launchers such as
 `ahub claude` and `ahub codex`, as in [First session](#first-session), so the
@@ -439,6 +441,7 @@ or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes
 | `ahub task propose [--class <c>] <title>` | put work on the board; the hub picks an owner and a reviewer, and the class if you name none |
 | `ahub board` | who has what, one line per task at a terminal width; `--full` for whole titles and SDLC advice, `ahub task show <id>` for one task |
 | `ahub task cancel <id> --reason <text>` | close obsolete work without approving it or stopping a native turn |
+| `ahub roles` | who conducts, plans, implements, verifies and reviews, as the running hub settled them, and who reviews when no reviewer can run |
 | `ahub settings set planner <peer>[,<peer>...]` | pin up to eight planners; status reports whether they came from settings, roles or the automatic choice |
 | `ahub settings reload` | apply edited config files without a restart; guarded values wait for your `y` in this terminal, and restart-only keys stay pending |
 | `ahub settings edit <file> set <path> <json>` | change an instance, the review block or the `sdlc.toml` lifecycle with a validated diff and a backup; `ahub settings backups` lists the backups |

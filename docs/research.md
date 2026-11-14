@@ -30,9 +30,10 @@ When a task reaches a terminal board state (a review approves it, its owner repo
 until no open turn is attributed to the task (the turn that approved it ends after the approval, and its usage arrives
 later still), checking every 10 s for at most 30 minutes, then appends one task record built from that project's
 events and the board. A hub that stops first writes it once its peers have stopped. A terminal state is final on the
-board, so each task has one record, and the first record written for a task is final with one exception: the guarded merge
+board, so each task has one record, and the first record written for a task is final with two exceptions: the guarded merge
 writes its receipt after the approval, so a later pass appends the same task once more when it brings merge figures the
-held record lacked (readers keep the latest row of a task). A v2 row also replaces a held v1 row of the same task. A failing write is one `hub.log` line per hub run and
+held record lacked, and a held v2 row written before `ownerModels` existed (#1402) is appended again when a later pass or
+`ahub research backfill` can prove an owner model from the surviving events (readers keep the latest row of a task). A v2 row also replaces a held v1 row of the same task. A failing write is one `hub.log` line per hub run and
 never changes the task flow.
 
 `ahub research backfill` builds the same records from a project's existing `events.jsonl` (marked
