@@ -52,7 +52,7 @@ export const AGY_DEFINITION: AdapterDefinition = {
     recoveryRefusal: () => "Antigravity session continuity and resume are unavailable until native behavior is verified",
   },
   turnEnd: "native-hook",
-  cli: { command: "agy", entry: { lifecycleAdmission: true, execute: runAgyEntry }, usage: [["ahub agy [--print-command | --dry-run] [args...]", "optional Antigravity CLI 1.4.x TUI (1.4.2 verified) in this terminal (roster.agy, default off): pull-only via hub_inbox, implementer/verifier only; native permissions unmanaged, no hub sandbox"]], authority: "person", startWords: () => ["agy"] },
+  cli: { command: "agy", entry: { lifecycleAdmission: true, execute: runAgyEntry }, summary: "start optional Antigravity CLI in this terminal", usage: [["ahub agy [--print-command | --dry-run] [args...]", "optional Antigravity CLI 1.4.x TUI (1.4.2 verified) in this terminal (roster.agy, default off): pull-only via hub_inbox, implementer/verifier only; native permissions unmanaged, no hub sandbox"]], authority: "person", startWords: () => ["agy"] },
   display: DISPLAY,
   routing: { allowedRoles: ["implementer", "verifier"] },
   reviewer: { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" },

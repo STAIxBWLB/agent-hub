@@ -348,6 +348,8 @@ export interface AdapterDefinition {
     entry?: Readonly<Omit<BuiltinCliEntry, "command">>;
     preview?: NativePreviewBuilder;
     usage?: readonly (readonly [usage: string, description: string])[];
+    /** #1504: the one-line overview summary of this kind's row in `ahub help` (three or more words, at most 56 cells); fixed builtins only, like `usage`. */
+    summary?: string;
     /** Configuration leaves that select this peer's next native launch command or provider profile. */
     launchConfigKeys?: readonly string[];
     /** Restrictions only; core identity remains authoritative. */

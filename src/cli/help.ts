@@ -4,7 +4,7 @@ import { ROADMAP_FORMS } from "./roadmap.ts";
 import { paint, wrap, Report as LayoutReport, type Span } from "./console-state.ts";
 
 /** One usage form of `ahub help`: the usage starts with `ahub <command>`, alternatives joined by `|`. */
-export interface HelpEntry { section: string; usage: string; description: string }
+export interface HelpEntry { section: string; usage: string; description: string; /** #1504: the overview row of a native agent, from its adapter definition (`cli.summary`); never a table in this file that names a peer. */ summary?: string }
 
 /** #1405: one source for the probe usage, read by `ahub help` and by the refusal of a malformed probe command. */
 export const GUIDANCE_PROBE_USAGE = {
@@ -218,12 +218,12 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
 export function helpEntries(definitions: readonly AdapterDefinition[] = ADAPTERS): readonly HelpEntry[] {
   const byKind = new Map(definitions.map(definition => [definition.kind, definition]));
   const order = deriveAdapterLists(definitions).HELP_ORDER;
-  const native = order.flatMap(kind => byKind.get(kind)?.cli.usage ?? []);
+  const native: readonly (readonly [string, string, string?])[] = order.flatMap(kind => (byKind.get(kind)?.cli.usage ?? []).map(([usage, description], index) => [usage, description, index === 0 ? byKind.get(kind)?.cli.summary : undefined] as const));
   const instanceKinds = order.filter(kind => byKind.get(kind)?.instances !== undefined);
   const instances: readonly [string, string] = [`ahub ${instanceKinds.join("|")} --as <instance> [options...]`, "start an extra instance of that kind declared under instances in .agenthub/config.local.json"];
   return SECTIONS.flatMap(([section, rows]) => {
-    const entries: readonly (readonly [string, string])[] = section === "Agents" ? [rows[0]!, ...native, ...(instanceKinds.length ? [instances] : []), ...rows.slice(1)] : rows;
-    return entries.map(([usage, description]) => ({ section, usage, description }));
+    const entries: readonly (readonly [string, string, string?])[] = section === "Agents" ? [rows[0]!, ...native, ...(instanceKinds.length ? [instances] : []), ...rows.slice(1)] : rows;
+    return entries.map(([usage, description, summary]) => ({ section, usage, description, ...(summary ? { summary } : {}) }));
   });
 }
 export const HELP = helpEntries();
@@ -289,7 +289,7 @@ export function helpOverviewRows(entries: readonly HelpEntry[] = HELP): Overview
     if (!fresh.length) continue;
     fresh.forEach(word => seen.add(word));
     const own = (word: string) => SUMMARIES[`${entry.section}/${word}`] ?? SUMMARIES[word];
-    const summary = own(fresh[0]!) ?? firstClause(entry.description, SUMMARY_MAX);
+    const summary = own(fresh[0]!) ?? entry.summary ?? firstClause(entry.description, SUMMARY_MAX);
     rows.push({ section: entry.section, name: fresh.join("|").replace(/^version\|--version$/, "version|--version"), summary: Bun.stringWidth(summary) > SUMMARY_MAX ? firstClause(summary, SUMMARY_MAX) : summary });
   }
   return rows;
@@ -343,7 +343,8 @@ function renderOverview(width: number, color: boolean, ascii: boolean, entries: 
     for (const more of summary.slice(1)) report.append([[{ text: " ".repeat(2 + column) + more }]]);
   }
   report.section("More").note("ahub help <command> shows every usage form and flag of one command; ahub --help and ahub -h print this overview", "value");
-  return [...out, ...report.lines()].map(line => paint(line, color)).join("\n");
+  // #1504 AC1: every section title, the first included, follows one blank line. The report only blanks between its own sections, so the gap after the intro lines is added here.
+  return [...out, [], ...report.lines()].map(line => paint(line, color)).join("\n");
 }
 
 /** Split a usage at its top-level " | " only: a pipe inside [...] or <...> belongs to one alternative (`[--class <c> | <class>]`). */

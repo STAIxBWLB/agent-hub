@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ADAPTERS } from "../src/adapters/registry.ts";
 import { HELP, helpCommands, helpOverviewRows, renderHelp } from "../src/cli/help.ts";
 import { ROLE_SGR } from "../src/cli/output-standard.ts";
 import { initialConsoleState, paint, PALETTE, renderConsole, wrap } from "../src/cli/console-state.ts";
@@ -86,11 +87,40 @@ describe("ahub help (#212)", () => {
         for (const word of entry.description.split(/\s+/).filter(Boolean)) expect(detail, `${command}: ${word}`).toContain(word);
       }
     }
-    // every flag the usages name is still in the help text of its command
-    const flags = new Set(HELP.flatMap(entry => entry.usage.match(/--[a-z][a-z-]*/g) ?? []));
-    expect(flags.size).toBeGreaterThan(40);
-    const all = HELP.map(entry => `${entry.usage} ${entry.description}`).join(" ");
-    for (const flag of flags) expect(all, flag).toContain(flag);
+    // #1504: every flag a command's usages name is in the text `ahub help <command>` renders for that command. This reads the rendered text; the old check compared HELP with itself and could not fail.
+    let checked = 0;
+    for (const command of commands) {
+      const rendered = renderHelp(100, false, command);
+      for (const entry of HELP.filter(entry => helpCommands(entry).includes(command))) {
+        for (const flag of entry.usage.match(/--[a-z][a-z0-9-]*/g) ?? []) { expect(rendered, `${command} ${flag}`).toContain(flag); checked++; }
+      }
+    }
+    expect(checked).toBeGreaterThan(300);
+    // and the check can fail: a rendering that drops a flag is caught
+    expect(renderHelp(100, false, "kill")).not.toContain("--json");
+  });
+
+  test("#1504 AC1: every section title of the overview, the first included, follows one blank line", () => {
+    const lines = renderHelp(80, false).split("\n");
+    const titles = lines.flatMap((line, index) => line.startsWith("▸ ") ? [index] : []);
+    expect(titles.length).toBeGreaterThan(5);
+    for (const index of titles) expect(lines[index - 1], lines[index]).toBe("");
+    expect(lines[titles[0]! - 2]).toStartWith("Usage: ahub");
+    for (let index = 1; index < lines.length; index++) if (lines[index] === "") expect(lines[index - 1], `no double blank at ${index}`).not.toBe("");
+  });
+
+  test("#1504 AC2: every native agent row says what the command does, from its adapter definition", () => {
+    const agents = helpOverviewRows().filter(row => row.section === "Agents");
+    const natives = ["claude", "codex", "kimi", "jcode", "agy", "qwen", "pi", "local"];
+    for (const name of natives) {
+      const row = agents.find(row => row.name === name);
+      expect(row, name).toBeDefined();
+      expect(row!.summary.split(/\s+/).length, `${name}: ${row!.summary}`).toBeGreaterThanOrEqual(3);
+      expect(Bun.stringWidth(row!.summary)).toBeLessThanOrEqual(56);
+    }
+    // the words come from the definition, not from a peer-keyed table in help.ts
+    for (const definition of ADAPTERS.filter(definition => definition.cli.usage?.length)) expect(agents.find(row => row.name === definition.kind)?.summary, definition.kind).toBe(definition.cli.summary);
+    expect(readFileSync(join(import.meta.dir, "../src/cli/help.ts"), "utf8")).not.toMatch(/\b(?:jcode|pi|qwen|agy|local|kimi):\s*"/);
   });
 
   test("the overview names where the long text lives and has no hidden command", () => {
