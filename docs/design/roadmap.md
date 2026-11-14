@@ -28,8 +28,13 @@ paths:
 
 R1 implements [#1479](https://github.com/STAIxBWLB/agent-hub/issues/1479) of the
 [#1478 roadmap](https://github.com/STAIxBWLB/agent-hub/issues/1478). The board is
-the source of truth. This slice adds no GitHub writes, model calls, export,
+the source of truth. This slice adds no GitHub writes, roadmap model calls, export,
 automatic task assignment, dashboard or console UI.
+
+R1 adds no generation, triage or decomposition call; those belong to R2 and R3.
+The existing mandatory privacy screen on planner-written text stays exactly as
+`Tasks.newRelease` applies it, including on milestone title and outcome. It fails
+closed where newRelease does and is never bypassed.
 
 ## Storage and writes
 
