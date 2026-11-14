@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
-import { realPath } from "../hub/project.ts";
+import { hubHome, realPath } from "../hub/project.ts";
 import type { ReviewerBackend, ReviewerCauseClass, ReviewerLaunch, ReviewerPrepareContext } from "./reviewer-print.ts";
 
 const TOOLS = ["hub_review", "hub_task_show"];
@@ -49,6 +49,58 @@ export function codexCoreDenyGlobs(names: readonly string[] = DENY_NAMES, segmen
 }
 
 const inside = (file: string, root: string) => { const part = relative(root, file); return part === "" || part !== ".." && !part.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(part); };
+/**
+ * #1493: the proof's public canary lives in a fresh fixture root. A deny entry that contains the directory the root is made in puts the canary under
+ * a denied tree, the proof's own read fails, and the leg reads as `sandbox_proof` with nothing naming the entry. This asks the same question the
+ * sandbox will: does any deny pattern match a directory on the chain from `/` to the candidate base (a match denies everything below it)?
+ * `*` stays inside one path segment, `**` crosses segments, `?` is one non-separator character, and a closed `[...]` class is kept.
+ */
+function globRegExp(pattern: string): RegExp {
+  let source = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i]!;
+    if (char === "*") { if (pattern[i + 1] === "*") { source += ".*"; i++; } else source += "[^/]*"; }
+    else if (char === "?") source += "[^/]";
+    else if (char === "[" && pattern.indexOf("]", i + 2) > 0) { const close = pattern.indexOf("]", i + 2); source += pattern.slice(i, close + 1); i = close; }
+    else source += char.replace(/[\\^$.|+(){}\[\]]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`);
+}
+export function denyCoversDirectory(patterns: readonly string[], directory: string): boolean {
+  const chain: string[] = [];
+  for (let current = directory; ; current = dirname(current)) { chain.push(current); if (dirname(current) === current) break; }
+  return patterns.some(pattern => { let matcher: RegExp; try { matcher = globRegExp(pattern); } catch { return true; } return chain.some(part => matcher.test(part)); });
+}
+/** A fixture base no deny pattern covers: the system temp directory, else the hub's own per-user directory, else a refusal that names no entry. */
+class FixtureRootError extends Error { constructor() { super("fixture root denied"); } }
+function fixtureBase(patterns: readonly string[]): string {
+  const temp = realPath(tmpdir());
+  if (!denyCoversDirectory(patterns, temp)) return temp;
+  const own = join(hubHome(), "reviewer-proof");
+  mkdirSync(own, { recursive: true, mode: 0o700 });
+  const canonical = realPath(own);
+  if (denyCoversDirectory(patterns, canonical)) throw new FixtureRootError();
+  return canonical;
+}
+/** The expanded deny patterns for `ctx.privatePaths`, exactly as the proof's filesystem policy names them (with and without a resolved form). */
+function privatePathPatterns(entries: readonly string[], cwd: string): string[] {
+  const out = new Set<string>();
+  for (const entry of entries) {
+    if (typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry)) throw new Error("invalid private path policy");
+    // Native Seatbelt supports *, ?, and closed character classes, not brace alternatives.
+    if (/[{}]/.test(entry)) throw new Error("unverified private path pattern");
+    const homePath = entry === "~" || entry.startsWith("~/");
+    const absolute = homePath ? resolve(homedir(), entry.slice(2)) : isAbsolute(entry) ? entry : resolve(cwd, entry);
+    out.add(absolute);
+    if (!/[?*\[\]]/.test(absolute) && existsSync(absolute)) out.add(realPath(absolute));
+    if (!isAbsolute(entry) && !homePath && entry !== "." && entry !== "..") {
+      out.add(join(cwd, "**", entry));
+      // ctx combines PII path patterns and local substring denies: broadening is safer than omission.
+      if (!/[?*\[\]]/.test(entry)) out.add(join(cwd, "**", `*${entry.replace(/^\.\//, "").replace(/\/$/, "")}*`));
+    }
+  }
+  return [...out];
+}
 const object = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid metadata");
   return value as Record<string, unknown>;
@@ -243,7 +295,11 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
     if (observedTransport.type !== "stdio" || observedTransport.command !== hub.command || JSON.stringify(observedTransport.args ?? []) !== JSON.stringify(hub.args) || Object.keys(observedEnv).length !== Object.keys(intendedEnv).length || Object.entries(intendedEnv).some(([key, value]) => observedEnv[key] !== value)) throw new Error("hub transport changed");
     // A real native sandbox probes a fresh private fixture: the model never sees these files.
     leg = "sandbox_proof";
-    root = realPath(mkdtempSync(join(tmpdir(), "ahub-codex-review-isolation-")));
+    const privatePatterns = privatePathPatterns(ctx.privatePaths, cwd);
+    // The credential roots are checked again, strictly, below; a root that cannot be resolved here is left to that check and its own cause class.
+    const credentialPatterns: string[] = [];
+    try { for (const { path, label } of hostCredentialRoots(env, cwd)) credentialPatterns.push(path, canonicalLabelled(path, label)); } catch { /* reported by denyCredentialRoots below */ }
+    root = realPath(mkdtempSync(join(fixtureBase([...privatePatterns, ...codexCoreDenyGlobs(), ...credentialPatterns]), "ahub-codex-review-isolation-")));
     const privateFile = join(root, "private.env"), publicFile = join(root, "public.txt"), writeFile = join(root, "write-proof");
     const coreName = join(root, ".env"), coreStateDir = join(root, ".agenthub", "state"), coreState = join(coreStateDir, "private.txt");
     const fixtureHome = join(root, "host-home"), hostConfig = join(fixtureHome, ".config", "gh", "hosts.yml"), hostKube = join(fixtureHome, ".kube", "config"), hostDocker = join(fixtureHome, ".docker", "config.json"), hostAlias = join(root, "host-alias.yml");
@@ -260,21 +316,7 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
     for (const glob of codexCoreDenyGlobs()) filesystem[glob] = "deny";
     denyCredentialRoots(filesystem, [...hostCredentialRoots(env, cwd), ...hostCredentialRoots({ HOME: fixtureHome }, cwd)], cwd);
     leg = "sandbox_proof";
-    for (const entry of ctx.privatePaths) {
-      if (typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry)) throw new Error("invalid private path policy");
-      // Native Seatbelt supports *, ?, and closed character classes, not brace alternatives.
-      if (/[{}]/.test(entry)) throw new Error("unverified private path pattern");
-      const homePath = entry === "~" || entry.startsWith("~/");
-      const absolute = homePath ? resolve(homedir(), entry.slice(2)) : isAbsolute(entry) ? entry : resolve(cwd, entry);
-      const patterns = new Set([absolute]);
-      if (!/[?*\[\]]/.test(absolute) && existsSync(absolute)) patterns.add(realPath(absolute));
-      if (!isAbsolute(entry) && !homePath && entry !== "." && entry !== "..") {
-        patterns.add(join(cwd, "**", entry));
-        // ctx combines PII path patterns and local substring denies: broadening is safer than omission.
-        if (!/[?*\[\]]/.test(entry)) patterns.add(join(cwd, "**", `*${entry.replace(/^\.\//, "").replace(/\/$/, "")}*`));
-      }
-      for (const pattern of patterns) { filesystem[pattern] = "deny"; filesystem[`${pattern.replace(/\/$/, "")}/**`] = "deny"; }
-    }
+    for (const pattern of privatePatterns) { filesystem[pattern] = "deny"; filesystem[`${pattern.replace(/\/$/, "")}/**`] = "deny"; }
     const profile = { filesystem, network: { enabled: false } }, permissions = ["-c", `permissions=${toml({ "ahub-review": profile })}`, "-c", 'default_permissions="ahub-review"'];
     // ponytail: drain the pinned catalog without retaining it, capped at 4 MiB; replace with quiet config validation when the native CLI provides it.
     await run(["debug", "models", "--bundled", ...policy, ...permissions], false, 4 * 1024 * 1024);
@@ -294,6 +336,8 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
     if (root) { try { rmSync(root, { recursive: true, force: true }); } catch { /* unavailable remains refused */ } }
     // Name only the path class of an unusable credential root so a stale ~/.docker link is fixable; never a path or contents.
     if (error instanceof VersionRefusal) return { unavailable: error.message, causeClass: "version" };
+    // #1493: no directory the proof could use for its fixture is outside every deny pattern. The entry is never echoed; the person narrows it or moves TMPDIR.
+    if (error instanceof FixtureRootError) return { unavailable: "Codex reviewer isolation receipt unavailable (a local.deny or pii.paths entry contains the system temp directory and the hub directory; move TMPDIR or narrow the entry)", causeClass: "fixture_root_denied" };
     if (error instanceof CredentialRootError) {
       const why = { dangling: "a dangling link", unreadable: "an unreadable path", unsupported: "unsupported syntax or overlapping the checkout" }[error.kind];
       return { unavailable: `Codex reviewer isolation receipt unavailable (credential root ${error.label} is ${why}; remove or repair it)`, causeClass: "credential_root", detail: `${error.label}: ${why}` };
