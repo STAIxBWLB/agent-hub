@@ -4,6 +4,7 @@ var __create = Object.create;
 var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 function __accessProp(key) {
   return this[key];
@@ -32,7 +33,37 @@ var __toESM = (mod, isNodeMode, target) => {
     cache.set(mod, to);
   return to;
 };
+var __toCommonJS = (from) => {
+  var entry = (__moduleCache ??= new WeakMap).get(from), desc;
+  if (entry)
+    return entry;
+  entry = __defProp({}, "__esModule", { value: true });
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (var key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(entry, key))
+        __defProp(entry, key, {
+          get: __accessProp.bind(from, key),
+          enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable
+        });
+  }
+  __moduleCache.set(from, entry);
+  return entry;
+};
+var __moduleCache;
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
 var __esm = (fn, res, err) => () => {
   if (fn)
     try {
@@ -1849,6 +1880,10 @@ var init_review_budget = __esm(() => {
 });
 
 // src/adapters/reviewer-print.ts
+var exports_reviewer_print = {};
+__export(exports_reviewer_print, {
+  ReviewerPrintPeer: () => ReviewerPrintPeer
+});
 import { randomUUID as randomUUID2 } from "crypto";
 function reviewerNoVerdictLine(peer, diagnostic, safeRefusal, withheld = false) {
   const prefix = `[${peer}] review of task #${diagnostic.task}: no verdict exit=${diagnostic.exitCode ?? "unknown"}; `;
@@ -2572,6 +2607,11 @@ ${facts}` : ""}`;
 });
 
 // src/adapters/claude-print.ts
+var exports_claude_print = {};
+__export(exports_claude_print, {
+  ClaudePrintPeer: () => ClaudePrintPeer,
+  claudeReviewerBackend: () => claudeReviewerBackend
+});
 function claudePrintArgs(sessionId, mcpConfig, systemPrompt, privatePaths = []) {
   return [
     "-p",
@@ -4790,6 +4830,11 @@ var init_acp_session_model = __esm(() => {
 });
 
 // src/adapters/acp.ts
+var exports_acp = {};
+__export(exports_acp, {
+  ACTION_BUDGET_OPTION: () => ACTION_BUDGET_OPTION,
+  AcpPeer: () => AcpPeer
+});
 import { spawn as spawn5 } from "child_process";
 import { createInterface } from "readline";
 import { randomUUID as randomUUID3 } from "crypto";
@@ -5832,6 +5877,10 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
 });
 
 // src/adapters/codex-appserver.ts
+var exports_codex_appserver = {};
+__export(exports_codex_appserver, {
+  CodexPeer: () => CodexPeer
+});
 import { spawn as spawn6 } from "child_process";
 function confirmsReadOnlySandbox(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -6967,6 +7016,11 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
 });
 
 // src/adapters/jcode.ts
+var exports_jcode = {};
+__export(exports_jcode, {
+  JCODE_HEADLESS_AFTER_RECOVERY: () => JCODE_HEADLESS_AFTER_RECOVERY,
+  JcodePeer: () => JcodePeer
+});
 import { spawn as spawn7, spawnSync as spawnSync2 } from "child_process";
 import { createConnection } from "net";
 import { closeSync as closeSync4, constants as constants3, existsSync as existsSync5, fstatSync as fstatSync4, lstatSync as lstatSync8, mkdtempSync as mkdtempSync3, openSync as openSync4, readSync as readSync2, rmSync as rmSync3 } from "fs";
@@ -7377,6 +7431,10 @@ var init_process_signature = __esm(() => {
 });
 
 // src/adapters/qwen-dual.ts
+var exports_qwen_dual = {};
+__export(exports_qwen_dual, {
+  QwenDualPeer: () => QwenDualPeer
+});
 import { closeSync as closeSync5, constants as constants4, fstatSync as fstatSync5, lstatSync as lstatSync9, mkdirSync as mkdirSync5, openSync as openSync5, readSync as readSync3, realpathSync as realpathSync2, renameSync as renameSync3, writeFileSync as writeFileSync5, writeSync } from "fs";
 import { join as join10 } from "path";
 function qwenDualNamesStateDir(input, stateDir) {
@@ -10245,6 +10303,12 @@ function stateModelId(state) {
 var init_pi_state_model = () => {};
 
 // src/adapters/pi.ts
+var exports_pi = {};
+__export(exports_pi, {
+  PiPeer: () => PiPeer,
+  PiVersionRefusal: () => PiVersionRefusal,
+  piVersionAsync: () => piVersionAsync
+});
 import { randomUUID as randomUUID5 } from "crypto";
 import { existsSync as existsSync8, mkdirSync as mkdirSync10 } from "fs";
 import { join as join17, resolve as resolve12 } from "path";
@@ -13350,7 +13414,7 @@ var init_package = __esm(() => {
       test: "bun test"
     },
     engines: {
-      bun: ">=1.4.2"
+      bun: ">=1.4.4"
     },
     dependencies: {
       "@staix/agent-mem": "0.26.0"
@@ -18544,6 +18608,10 @@ var init_probe_sandbox = __esm(() => {
 });
 
 // src/adapters/local-worker.ts
+var exports_local_worker = {};
+__export(exports_local_worker, {
+  LocalPeer: () => LocalPeer
+});
 import { createHash as createHash11, randomUUID as randomUUID7 } from "crypto";
 function safeParse(json) {
   try {
@@ -19524,6 +19592,10 @@ function formatClaudeFailure(evidence, privateTurn) {
 var WITHHELD = "Claude implementer turn failed (details withheld)";
 
 // src/adapters/claude-implementer.ts
+var exports_claude_implementer = {};
+__export(exports_claude_implementer, {
+  ClaudeImplementerPeer: () => ClaudeImplementerPeer
+});
 import { randomUUID as randomUUID9 } from "crypto";
 import { lstatSync as lstatSync18, mkdtempSync as mkdtempSync6, rmSync as rmSync7, writeFileSync as writeFileSync9 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
@@ -20026,7 +20098,7 @@ function createCodex(ctx) {
     throw new Error("Codex requires its Codex transport options");
   if (ctx.permission === "read-only")
     throw new Error("Codex has no verified read-only permission mapping");
-  init_codex_appserver();
+  const { CodexPeer } = (init_codex_appserver(), __toCommonJS(exports_codex_appserver));
   return new CodexPeer(ctx.instance, ctx.daemon.codex);
 }
 function createKimi(ctx) {
@@ -20034,7 +20106,7 @@ function createKimi(ctx) {
     throw new Error("Kimi requires its ACP transport options");
   if (ctx.permission === "read-only")
     throw new Error("Kimi has no verified read-only permission mapping");
-  init_acp();
+  const { AcpPeer } = (init_acp(), __toCommonJS(exports_acp));
   return new AcpPeer(ctx.instance, ctx.daemon.acp);
 }
 function createJcode(ctx) {
@@ -20042,7 +20114,7 @@ function createJcode(ctx) {
     throw new Error("Jcode requires its Jcode transport options");
   if (ctx.permission === "read-only")
     throw new Error("Jcode has no verified read-only permission mapping");
-  init_jcode();
+  const { JcodePeer } = (init_jcode(), __toCommonJS(exports_jcode));
   return new JcodePeer(ctx.daemon.jcode);
 }
 function createQwenDual(ctx) {
@@ -20050,7 +20122,7 @@ function createQwenDual(ctx) {
     throw new Error("Qwen TUI requires its dual-output transport options");
   if (ctx.permission === "read-only")
     throw new Error("Qwen has no verified read-only permission mapping");
-  init_qwen_dual();
+  const { QwenDualPeer } = (init_qwen_dual(), __toCommonJS(exports_qwen_dual));
   return new QwenDualPeer(ctx.instance, ctx.daemon.qwenDual);
 }
 function createPi(ctx) {
@@ -20058,7 +20130,7 @@ function createPi(ctx) {
     throw new Error("Pi requires its Pi transport options");
   if (ctx.permission === "read-only")
     throw new Error("Pi has no verified read-only permission mapping");
-  init_pi();
+  const { PiPeer, PiVersionRefusal } = (init_pi(), __toCommonJS(exports_pi));
   const options = ctx.daemon.pi;
   return new PiPeer(ctx.instance, options, async () => {
     const verdict = await piVersionAsync(options.cmd ?? ["pi"], options.cwd);
@@ -20073,17 +20145,17 @@ function createLocal(ctx) {
     throw new Error("Local worker requires its local transport options");
   if (ctx.permission === "read-only")
     throw new Error("Local worker has no verified read-only permission mapping");
-  init_local_worker();
+  const { LocalPeer } = (init_local_worker(), __toCommonJS(exports_local_worker));
   return new LocalPeer(ctx.instance, ctx.daemon.local);
 }
 function createClaudeReviewer(ctx) {
   if ("reviewerPrint" in ctx.daemon) {
-    init_claude_print();
+    const { ClaudePrintPeer } = (init_claude_print(), __toCommonJS(exports_claude_print));
     return new ClaudePrintPeer(ctx.instance, ctx.daemon.reviewerPrint);
   }
   if (!("claudePrint" in ctx.daemon))
     throw new Error("Claude reviewer requires its print transport options");
-  init_claude_print();
+  const { ClaudePrintPeer } = (init_claude_print(), __toCommonJS(exports_claude_print));
   return new ClaudePrintPeer(ctx.instance, ctx.daemon.claudePrint);
 }
 function createCodexReviewer(ctx) {
@@ -20095,7 +20167,7 @@ function createCodexReviewer(ctx) {
 function createReviewer(ctx) {
   if (!("reviewerPrint" in ctx.daemon))
     throw new Error("Reviewer requires its fresh print transport options");
-  init_reviewer_print();
+  const { ReviewerPrintPeer } = (init_reviewer_print(), __toCommonJS(exports_reviewer_print));
   return new ReviewerPrintPeer(ctx.instance, ctx.daemon.reviewerPrint);
 }
 function createClaudeImplementer(ctx) {
@@ -20103,7 +20175,7 @@ function createClaudeImplementer(ctx) {
     throw new Error("Claude implementer requires its per-task transport options");
   if (ctx.permission !== "ask" && ctx.permission !== "ask-when-needed")
     throw new Error("Claude implementer requires ask or ask-when-needed");
-  init_claude_implementer();
+  const { ClaudeImplementerPeer } = (init_claude_implementer(), __toCommonJS(exports_claude_implementer));
   return new ClaudeImplementerPeer(ctx.instance, ctx.daemon.claudeImplementer);
 }
 var DAEMON_PORTS;
