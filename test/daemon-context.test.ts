@@ -12,6 +12,7 @@ import { readEvents } from "../src/hub/events.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { WsPeer } from "../src/adapters/channel-peer.ts";
 import { Budget } from "../src/hub/budget.ts";
+import { Board } from "../src/hub/board.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -98,6 +99,55 @@ test("#1447 a taskless busy-peer context checkpoint still follows its valid peer
   expect(JSON.parse(readFileSync(join(f.cwd, "context-checkpoint-claude.json"), "utf8")).summary).toBe(marker);
   expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(true);
   expect(JSON.parse((await f.console_.request({ t: "task", op: "hub_task_list", args: {} })).text)).toEqual([]);
+}, 20_000);
+
+test("#1447 checkpoint owner binding permits ordinary metadata and an explicit same-owner patch", async () => {
+  const f = await fixture();
+  expect((await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1"); f.reading(); await until(() => !!request(f.pushes));
+  const id = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1];
+  const board = new Board(join(f.cwd, "hub.db")); cleanup.push(() => board.close());
+  const before = board.get(1)!;
+  board.update(1, "hub", "fixture progress", {}, "ordinary progress metadata");
+  board.update(1, "hub", "fixture same owner", { owner: "claude" });
+  expect(board.get(1)?.history).toHaveLength(before.history.length + 2);
+  expect(board.get(1)?.owner).toBe("claude");
+  const marker = "VALID_METADATA_CHECKPOINT_CANARY";
+  const saved = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: id } });
+  expect(saved.ok === true, String(saved.error ?? "")).toBe(true);
+  expect(JSON.parse(readFileSync(join(f.cwd, "context-checkpoint-claude.json"), "utf8")).summary).toBe(marker);
+  expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(true);
+}, 20_000);
+
+for (const move of ["unassign", "away-back"] as const) test(`#1447 ${move} invalidates the captured checkpoint ownership epoch while the notice is pending`, async () => {
+  const f = await fixture(0.8, false, undefined, { roles: { ...DEFAULT_CONFIG.roles, other: ["implementer", "reviewer"] }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false } });
+  expect((await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1"); f.reading(); await until(() => !!request(f.pushes));
+  const requestId = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1];
+  const task = JSON.parse((await f.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
+  if (move === "unassign") {
+    const changed = await f.console_.request({ t: "task", op: "task_unassign", args: { id: 1, role: "owner", revision: task.flowRevision } });
+    expect(changed.ok === true, String(changed.error ?? "")).toBe(true);
+  } else {
+    for (const owner of ["other", "claude"]) {
+      const changed = await f.console_.request({ t: "task", op: "task_assign", args: { id: 1, peer: owner, role: "owner" } });
+      expect(changed.ok === true, String(changed.error ?? "")).toBe(true);
+    }
+  }
+  const current = JSON.parse((await f.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
+  expect(current.owner).toBe(move === "unassign" ? null : "claude");
+  expect(f.daemon.bus.pendingEnvelopes("claude").some(env => env.refs?.task === "1" && /no longer assigned/.test(env.body))).toBe(true);
+  const marker = `LATE_${move}_CHECKPOINT_CANARY`;
+  const rejected = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: requestId } });
+  expect(rejected.ok).toBe(false);
+  expect(String(rejected.error)).toContain("task #1"); expect(String(rejected.error)).toContain("moved");
+  expect(String(rejected.error)).toMatch(/notice/); expect(String(rejected.error)).toContain("hub_task_list");
+  expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
+  expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(false);
 }, 20_000);
 
 test("native context checkpoint saves a non-private note without pausing or moving tasks, and never broadcasts its body", async () => {

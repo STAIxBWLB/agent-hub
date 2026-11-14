@@ -66,6 +66,13 @@ The latest pulled input is kept separately from the last pushed delivery. Observ
 
 Push peers receive bounded batches. Condensation is optional, excludes important, remote, and invocation messages, and keeps `originals` separate from `out` so replies, safe failures, and recovery still refer to what the peer was actually given. On an eligible safe retry, a failed batch falls back to individual envelopes, and a previously failed envelope goes alone so a poison item cannot block its neighbors. These bounds preserve queue progress when summarization or one recipient fails ([#713](https://github.com/STAIxBWLB/agent-hub/issues/713), [#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
+An important envelope queued while an ordinary digest is awaiting condensation is
+part of the next take, before the next host turn. When one arrived, the bus
+discards the prepared condensed view before it hands the batch to the adapter
+and reselects the queue; it restores the volatile originals and preface only,
+leaves durable queued rows intact, and records no attempt or receipt for the
+abandoned preparation (#1447 T4).
+
 Pull-only peers catch up oldest-first under a byte budget, but the first envelope always goes even when it exceeds that budget so one oversized item cannot starve the queue; push peers use the digest batch limit. Pull records returned envelopes as completed at handout because the tool result is the readback, not a later native receipt. A busy Claude channel can also pull its own messages through `hub_inbox`; that avoids making a long-running turn an unbounded queue lock ([#493](https://github.com/STAIxBWLB/agent-hub/issues/493), [#713](https://github.com/STAIxBWLB/agent-hub/issues/713)).
 
 Delivery uncertainty normally holds the original and is never an automatic replay. The narrow exception is a hub-authored presence or workflow notice proven moot by current task evidence; mixed, unknown, or requested-stop rows remain held. This removes stale notices without treating arbitrary peer messages as seen ([#434](https://github.com/STAIxBWLB/agent-hub/issues/434)). Safe pre-acceptance failures may retry within a bounded attempt policy; uncertain results remain `needs_review` until an explicit resolution. A peer may retry only its own eligible row and only once per immutable retry lineage; an invocation uses its own ledger and is not replayed as an ordinary message retry ([#37](https://github.com/STAIxBWLB/agent-hub/issues/37), [#991](https://github.com/STAIxBWLB/agent-hub/issues/991)).

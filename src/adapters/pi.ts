@@ -786,6 +786,8 @@ export class PiPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason });
       throw new Error(reason);
     }
+    // ponytail: host turn starts at busy before async model preflight. Later workflow
+    // notices wait for the following turn; closing that window needs an ACK-safe prepare/commit port.
     this.turnObserved = false;
     this.setState("busy"); this.activeEnvs = envs; this.currentReply = replyParent(envs); this.settledText = "";
     const rosterEpoch = this.rosterEpoch;

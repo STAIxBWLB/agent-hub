@@ -72,6 +72,14 @@ failures retain `inference_failed`. A stop or recovery abort only logs its class
 and never escalates a task. An accepted-owner history binding, rather than every
 metadata revision, scopes the continuation counter.
 
+Pressure checkpoints remain peer/session operations, including for taskless peers.
+A host waiter additionally captures its owned-work task ids, creation identities
+and actual owner-history epochs (#1447 T4). Move, unassign, cancellation or a
+move-away/back expires that scope before budget/context-file/memory effects;
+metadata updates naming the same owner do not. The refusal names the task/cause
+and directs the former owner to read the notice and `hub_task_list`. No task-id
+parameter or mandatory task ownership is added to the checkpoint tool.
+
 Visual attachments (#1058) annotate public work without changing a task's state,
 outcome or evidence authority. Publication checks current role, turn, task and
 privacy admission before record/bus effects and after awaited file reads. A PII
