@@ -403,3 +403,18 @@ test("guidance preserves the authenticated peer and refuses live-test promotion 
   expect(classifyPeerCommand("guidance", ["activate"])).toBe("console");
   for (const operation of ["create", "withdraw"]) expect(liveTestRefusal("guidance", [operation])).toBe(true);
 });
+
+// #1403 A4, hub task 933: the daemon admits the one configured conductor for `sdlc audit start|show` exactly as for `sdlc survey`, so the CLI must classify them the same way.
+test("sdlc audit start and show are conductor forms like sdlc survey, live-test refuses start only, and unknown audit forms stay person-only", () => {
+  for (const kind of ["survey", "audit"]) {
+    for (const args of [[kind, "start"], [kind, "start", "--json"], [kind, "show"], [kind, "show", "3", "--json"]]) expect(classifyPeerCommand("sdlc", args), args.join(" ")).toBe("conductor");
+    expect(liveTestRefusal("sdlc", [kind, "start"])).toBe(true);
+    expect(liveTestRefusal("sdlc", [kind, "show"])).toBe(false);
+    expect(cliCommandLabel("sdlc", [kind, "start", "--since", "SECRET_CANARY"])).toBe(`sdlc ${kind} start`);
+    expect(cliCommandLabel("sdlc", [kind, "show", "SECRET_CANARY"])).toBe(`sdlc ${kind} show`);
+  }
+  expect(classifyPeerCommand("sdlc", ["audit", "start", "--as-user"])).toBe("console");
+  expect(classifyPeerCommand("sdlc", ["audit"])).toBe("console");
+  expect(classifyPeerCommand("sdlc", ["audit", "delete"])).toBe("console");
+  expect(cliCommandLabel("sdlc", ["audit", "delete", "SECRET_CANARY"])).toBe("sdlc audit");
+});
