@@ -71,9 +71,10 @@ function withoutSharedIgnoreBlock(text: string): string {
   return lines.join("\n");
 }
 /** Git evaluates planned project rules in a disposable worktree; the real index/config are never written. */
-function verifySharedIgnores(cwd: string, text: string, tracked: readonly string[]): void {
-  const git = hubGitSync(["rev-parse", "--absolute-git-dir", "--show-toplevel"], { cwd, encoding: "utf8", timeout: 3000 });
-  if (git.status !== 0) throw new Error("--track-config: git could not locate the repository for ignore verification; run git status and retry ahub init; nothing was written");
+function verifySharedIgnores(cwd: string, text: string, tracked: readonly string[], unknown = false): void {
+  const git = hubGitSync(["rev-parse", "--absolute-git-dir", "--show-toplevel"], { cwd, env: { ...process.env, LC_ALL: "C" }, encoding: "utf8", timeout: 3000 });
+  if (git.status !== 0 && git.stderr?.startsWith("fatal: not a git repository")) return; // Preserve init in a positively identified non-Git folder.
+  if (git.status !== 0 || unknown) throw new Error("--track-config: git could not determine repository ignore rules; run git status and retry ahub init; nothing was written");
   const [gitDir, root] = git.stdout.trim().split("\n");
   if (!gitDir || !root || realPath(root) !== realPath(cwd)) throw new Error("--track-config: ignore preview requires the project repository root; run ahub init from git rev-parse --show-toplevel; nothing was written");
   const excludes = hubGitSync(["config", "--path", "--get", "core.excludesFile"], { cwd, encoding: "utf8", timeout: 3000 });
@@ -100,7 +101,10 @@ function verifySharedIgnores(cwd: string, text: string, tracked: readonly string
     // File/read errors may contain private paths; only git verdicts above expose the existing rule location.
     if (error instanceof Error && (error.message.startsWith(".agenthub/") || error.message.startsWith("git could not"))) throw new Error(`--track-config: ${error.message}; nothing was written`);
     throw new Error("--track-config: could not prepare the disposable ignore preview; check temporary-directory and project ignore-file permissions, then retry ahub init; nothing was written");
-  } finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); }
+  } finally {
+    if (scratch) try { rmSync(scratch, { recursive: true, force: true }); }
+    catch { throw new Error("--track-config: could not remove the disposable ignore preview; check temporary-directory permissions before retrying ahub init; nothing was written"); }
+  }
 }
 /** #1411 (owner comment): `hub_routes` keys that name this machine's endpoints; routing.local.toml cannot hold them yet, so a routing.toml that sets one stays untracked. */
 function routingMachineKeys(cwd: string): string[] {
@@ -365,14 +369,17 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
     const tracked = SHARED_CONFIG.filter(name => !(name === "routing.toml" && routingMachineKeys(cwd).length));
     const rules = tracked.map(name => ignoreRule(cwd, `.agenthub/${name}`));
     if (rules.some(Boolean) || lines.includes(SHARED_IGNORE_BEGIN)) {
-      lines = withoutSharedIgnoreBlock(lines);
       const entries = ["!/.agenthub/", "/.agenthub/*", ...tracked.map(name => `!/.agenthub/${name}`)];
-      lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${SHARED_IGNORE_BEGIN}\n${entries.join("\n")}\n${SHARED_IGNORE_END}\n`;
+      const block = `${SHARED_IGNORE_BEGIN}\n${entries.join("\n")}\n${SHARED_IGNORE_END}`;
+      const start = lines.indexOf(SHARED_IGNORE_BEGIN), end = lines.indexOf(SHARED_IGNORE_END, start);
+      lines = start !== -1 && end > start
+        ? lines.slice(0, start) + block + lines.slice(end + SHARED_IGNORE_END.length)
+        : `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${block}\n`;
       const ruleClass = rules.some(rule => rule?.includes("/info/exclude:")) ? "repository info/exclude"
         : rules.some(rule => rule && !rule.startsWith(".gitignore:") && !rule.startsWith(".agenthub/")) ? "global excludes" : "project ignore";
       ignoreReason = `re-include shared config over ${ruleClass} rules in project .gitignore: ${entries.join(", ")}`;
     } else if (routingMachineKeys(cwd).length) add(".agenthub/routing.toml");
-    if (rules.every(rule => rule !== undefined)) verifySharedIgnores(cwd, lines, tracked);
+    verifySharedIgnores(cwd, lines, tracked, rules.some(rule => rule === undefined));
   } else if (track === false) {
     const owned = lines.includes(SHARED_IGNORE_BEGIN);
     lines = withoutSharedIgnoreBlock(lines);

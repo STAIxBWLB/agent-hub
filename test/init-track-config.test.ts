@@ -207,6 +207,80 @@ exec ${quote(realGit)} "$@"
   expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
 });
 
+test("an unknown preliminary shared-config verdict cannot skip verification of a nested machine-file exposure (#1496)", () => {
+  const p = fixture(), external = outsideRule(p, "global excludes");
+  mkdirSync(join(p.cwd, ".agenthub"));
+  // These user-owned rules already reinclude the other shared files. Only config.json's verdict is unknown.
+  writeFileSync(join(p.cwd, ".gitignore"), "!/.agenthub/\n/.agenthub/*\n!/.agenthub/routing.toml\n!/.agenthub/sdlc.toml\n");
+  writeFileSync(join(p.cwd, ".agenthub/.gitignore"), "!config.local.json\n");
+  expect(p.ignored(".agenthub/config.json")).toBe(true);
+  expect(p.ignored(".agenthub/config.local.json")).toBe(false);
+  const before = filesUnder(p.cwd), bin = join(p.root, "bin"), trace = join(p.root, "preliminary-ignore-failure"); mkdirSync(bin);
+  const realGit = Bun.which("git", { PATH: p.env.PATH });
+  if (!realGit) throw new Error("fixture requires Git");
+  writeFileSync(join(bin, "git"), `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+let input = "inherit";
+if (args.includes("check-ignore") && args.includes("--stdin") && !args.some(arg => arg.startsWith("--work-tree="))) {
+  input = Buffer.from(await Bun.stdin.arrayBuffer());
+  if (input.toString() === ".agenthub/config.json\\0") {
+    appendFileSync(${JSON.stringify(trace)}, "preliminary config.json refused\\n");
+    process.exit(128);
+  }
+}
+const result = Bun.spawnSync([${JSON.stringify(realGit)}, ...args], { stdin: input, stdout: "inherit", stderr: "inherit" });
+process.exit(result.exitCode);
+`, { mode: 0o700 });
+  p.env.PATH = `${bin}:${p.env.PATH ?? ""}`;
+  expect(p.git(["--version"]).status).toBe(0);
+  const refused = p.run(["--track-config", "--yes"]);
+  expect(refused.code).toBe(1);
+  expect(existsSync(trace)).toBe(true);
+  expect(refused.out).toContain("nothing was written");
+  expect(refused.out).toContain("git status");
+  expect(refused.out).toContain("ahub init");
+  expect(filesUnder(p.cwd)).toEqual(before);
+  expect(readdirSync(p.scratch)).toEqual([]);
+  expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+  expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+});
+
+test("a user rule appended after the owned reinclude block remains authoritative on refresh (#1496)", () => {
+  const p = fixture(), external = outsideRule(p, "global excludes");
+  const first = p.run(["--track-config", "--yes"]);
+  expect(first.code, first.out).toBe(0);
+  const ignore = `${p.text(".gitignore")}.agenthub/config.json\n`;
+  writeFileSync(join(p.cwd, ".gitignore"), ignore);
+  const ruleLine = ignore.trimEnd().split("\n").length, before = filesUnder(p.cwd);
+  expect(p.ignored(".agenthub/config.json")).toBe(true);
+  const refused = p.run(["--track-config", "--yes"]);
+  expect(refused.code).toBe(1);
+  expect(refused.out).toContain(`.gitignore:${ruleLine}:.agenthub/config.json`);
+  expect(refused.out).toContain("nothing was written");
+  expect(refused.out).toContain("ahub init");
+  expect(filesUnder(p.cwd)).toEqual(before);
+  expect(p.text(".gitignore")).toBe(ignore);
+  expect(readdirSync(p.scratch)).toEqual([]);
+  expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+  expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+});
+
+test("a nested negation exposing config.local.json refuses the real planned ignore preview (#1496)", () => {
+  const p = fixture(), external = outsideRule(p, "global excludes");
+  mkdirSync(join(p.cwd, ".agenthub"));
+  writeFileSync(join(p.cwd, ".agenthub/.gitignore"), "!config.local.json\n");
+  const before = filesUnder(p.cwd), refused = p.run(["--track-config", "--yes"]);
+  expect(refused.code).toBe(1);
+  expect(refused.out).toContain(".agenthub/config.local.json would be exposed");
+  expect(refused.out).toContain("nothing was written");
+  expect(refused.out).toContain("ahub init");
+  expect(filesUnder(p.cwd)).toEqual(before);
+  expect(readdirSync(p.scratch)).toEqual([]);
+  expect(readFileSync(external.location, "utf8")).toBe(external.contents);
+  expect(readFileSync(p.globalConfig, "utf8")).toBe(external.global);
+});
+
 test("a ! rule that re-includes a file is not an ignore rule; a directory rule is", () => {
   const p = fixture();
   mkdirSync(join(p.cwd, ".agenthub"));
