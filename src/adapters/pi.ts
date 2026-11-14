@@ -195,6 +195,7 @@ export class PiPeer extends BasePeer {
   private turnObserved = false;
   private readonly idleBashReservations = new Map<string, { generation: number; expiresAt: number; deadlineAt?: number }>();
   private budgetGeneration = 0;
+  private settledGeneration: number | undefined;
   private modelStep = 0;
   private readonly observationScope = randomUUID();
   private emptyResumeVerified = false;
@@ -502,6 +503,7 @@ export class PiPeer extends BasePeer {
     this.observedTitle = undefined; this.titleRevision = -1; this.nativeTitleEpoch = undefined; this.onDoing?.("reset");
     this.rosterDetached = false; this.rosterUnownedRun = false;
     this.requestedStopReason = undefined;
+    this.settledGeneration = undefined;
     this.approvalTurnAbort = false;
     this.fencedPrompt = false; this.hubPromptId = undefined; this.hubPromptGeneration = undefined; this.pendingPromptId = undefined;
     this.exitReported = false; this.started = false; this.lastToolName = undefined; this.shutdownExit = undefined;
@@ -948,6 +950,8 @@ export class PiPeer extends BasePeer {
       return;
     }
     if (this.stopping && ["agent_start", "agent_end", "agent_settled"].includes(event.type)) return;
+    // Settled generation replay cannot become a failure of the next delivered prompt.
+    if (["agent_end", "agent_settled"].includes(event.type) && Number.isSafeInteger(event.generation) && event.generation === this.settledGeneration) return;
     if (event.type === "session_start") {
       if (!this.ownerClaimed) { this.ownerClaimed = true; this.ownerToken = String(event.ownerToken ?? ""); }
       this.approvalTurnAbort = event.approvalTurnAbort === true;
@@ -1020,6 +1024,7 @@ export class PiPeer extends BasePeer {
     }
     if (event.type === "agent_settled") {
       if (Number.isSafeInteger(event.generation) && event.generation !== this.budgetGeneration) return;
+      this.settledGeneration = this.budgetGeneration;
       clearTimeout(this.executionBudgetTimer); this.executionBudgetTimer = undefined;
       this.agentRunning = false;
       if (typeof event.text === "string" && event.text.trim()) this.settledText = event.text;
@@ -1039,7 +1044,8 @@ export class PiPeer extends BasePeer {
       if (cancelled) { this.observeTurn("aborted"); this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply); }
       else if (error?.startsWith("execution budget")) { this.observeTurn("aborted"); this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply); }
       else if (approvalStopReason) { this.observeTurn("aborted"); this.onMessage?.(approvalStopReason, reply); }
-      else if (error) { this.turnObserved = true; void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling, settledCeiling); }
+      else if (error && !this.turnObserved) { this.turnObserved = true; void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling, settledCeiling); }
+      else if (error) { /* This logical turn was already observed, including legacy unnumbered replays. */ }
       else { this.observeTurn("success"); if (text) this.finalAnswer(text, reply); }
       for (const id of this.activeDeliveryIds) this.delivery({ id, state: approvalStopReason || settledCeiling ? "completed" : error || cancelled ? "needs_review" : "completed", ...(ceilingReason ? { reason: ceilingReason } : error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
       this.activeDeliveryIds.clear();

@@ -141,7 +141,11 @@ test("#1447 duplicate terminal events do not report the same logical turn twice"
     const receipts = f.receipts.length;
     await f.end(1, { failed: true, error: "duplicate failure" });
     expect(f.failures).toHaveLength(1); expect(f.receipts).toHaveLength(receipts);
-    await f.start(2); await f.end(2, { text: "done" });
+    const next = newEnvelope("user", "next prompt before native start", { to: ["pi"] });
+    await f.peer.deliver([next], "delivery-next-pending");
+    await f.end(1, { failed: true, error: "old failure after new delivery" });
+    expect(f.failures).toHaveLength(1); expect(f.receipts).toHaveLength(receipts);
+    await f.event({ type: "agent_start", generation: 2 }); await f.end(2, { text: "done" });
     expect(f.successes).toHaveLength(1);
     await f.end(2, { failed: true, error: "late error after success" });
     expect(f.failures).toHaveLength(1); expect(f.successes).toHaveLength(1);
