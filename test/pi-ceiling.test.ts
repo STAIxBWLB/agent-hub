@@ -133,6 +133,23 @@ test("#1447 a settled ceiling completes its delivery as a limit, never as succes
   expect(f.aborted).toEqual([]); // Failure teardown must not add a second aborted class.
 }, 30_000);
 
+test("#1447 duplicate terminal events do not report the same logical turn twice", async () => {
+  const f = await settlementFixture();
+  try {
+    await f.start(1); await f.ceiling(1); await f.end(1, { failed: true, error: "Operation aborted" });
+    expect(f.failures).toHaveLength(1);
+    const receipts = f.receipts.length;
+    await f.end(1, { failed: true, error: "duplicate failure" });
+    expect(f.failures).toHaveLength(1); expect(f.receipts).toHaveLength(receipts);
+    await f.start(2); await f.end(2, { text: "done" });
+    expect(f.successes).toHaveLength(1);
+    await f.end(2, { failed: true, error: "late error after success" });
+    expect(f.failures).toHaveLength(1); expect(f.successes).toHaveLength(1);
+    await f.start(3); await f.end(3, { failed: true, error: "new generation" });
+    expect(f.failures).toHaveLength(2);
+  } finally { await f.close(); }
+}, 30_000);
+
 test("#1447 internal failure teardown reports one failure without an aborted observation", async () => {
   const f = await settlementFixture();
   try {
