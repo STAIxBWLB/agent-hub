@@ -203,7 +203,7 @@ test("stop CLI validates its peer, prints the result and guides an older hub upg
   try {
     for (const args of [["stop"], ["stop", "pi", "extra"], ["stop", "--unknown"], ["stop", "bad peer"]]) {
       const result = await cli(root, args);
-      expect(result.code).toBe(1); expect(result.stderr).toContain("usage: ahub stop <peer>");
+      expect(result.code).toBe(2); expect(result.stderr).toContain("usage: ahub stop <peer>");
       expect(hellos).toHaveLength(0); expect(requests).toHaveLength(0);
     }
     const stopped = await cli(root, ["stop", "pi"]);
@@ -242,7 +242,7 @@ test("peer takeover CLI is person-only and reports only the requested handoff", 
   try {
     for (const args of [["peer"], ["peer", "takeover"], ["peer", "takeover", "bad peer"], ["peer", "takeover", "pi", "extra"]]) {
       const result = await cli(root, args);
-      expect(result.code).toBe(1); expect(result.stderr).toContain("usage: ahub peer takeover");
+      expect(result.code).toBe(2); expect(result.stderr).toContain("usage: ahub peer takeover");
     }
     expect(requests).toHaveLength(0); expect(hellos).toHaveLength(0);
     const selected = await cli(root, ["peer", "takeover", "claude", standbyId]);
@@ -445,9 +445,10 @@ test("permission CLI validates confirmation, lists and shows modes, and guides a
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
   writeFileSync(join(stateDir, "control-token"), "fixture-token");
   try {
-    for (const args of [["permission", "pi", "never-ask"], ["permission", "pi", "invalid-mode"], ["permission", "--unknown"]]) {
-      const result = await cli(root, args);
-      expect(result.code).toBe(1); expect(requests).toHaveLength(0);
+    // a bad mode or flag is a usage error (exit 2); never-ask without --yes is a refusal that changed nothing (exit 1)
+    for (const [args, code] of [[["permission", "pi", "never-ask"], 1], [["permission", "pi", "invalid-mode"], 2], [["permission", "--unknown"], 2]] as const) {
+      const result = await cli(root, [...args]);
+      expect(result.code, args.join(" ")).toBe(code); expect(requests).toHaveLength(0);
     }
     const list = await cli(root, ["permission"]);
     expect(list.code, list.stderr).toBe(0); expect(list.stdout).toContain("pi: ask-when-needed");

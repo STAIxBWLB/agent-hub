@@ -543,7 +543,7 @@ test("AC8: ahub settings list, get, set, undo and ahub ui --settings work from a
   for (const args of [["settings", "set", "research.enabled"], ["settings", "get"], ["settings", "list", "extra"], ["settings", "frobnicate"], ["settings", "set", "research.enabled", "true", "--force"], ["settings", "undo", "now"],
     ["settings", "undo", "--preview"], ["settings", "undo", "--yes"], ["settings", "list", "--yes"], ["settings", "set", "research.enabled", "true", "--json"]]) { // a flag of another subcommand is refused, not ignored
     const bad = await cli(rig.cwd, args);
-    expect(bad.code).toBe(1); expect(bad.stderr).toContain("usage: ahub settings");
+    expect(bad.code).toBe(2); expect(bad.stderr).toContain("usage: ahub settings");
   }
   expect((await cli(rig.cwd, ["settings", "set", "kimi_cmd", "sh"])).stderr).toContain("never editable from settings");
   expect((await cli(rig.cwd, ["settings", "set", "research.enabled", "maybe"])).stderr).toContain("true or false");

@@ -566,7 +566,7 @@ test("the real CLI as the person: list, accept and reject round-trip against a d
   const usage = "usage: ahub learn list [--all] | accept <id> | reject <id>";
   for (const args of [["learn"], ["learn", "bogus"], ["learn", "accept"], ["learn", "accept", "0"], ["learn", "accept", "x"], ["learn", "accept", "1", "2"], ["learn", "list", "--nope"], ["learn", "reject"]]) {
     const result = await cli(f.cwd, args);
-    expect(result.code, args.join(" ")).toBe(1);
+    expect(result.code, args.join(" ")).toBe(2); // a usage error (#1484)
     expect(result.stderr, args.join(" ")).toContain(usage);
   }
   const listed = await cli(f.cwd, ["learn", "list"]);

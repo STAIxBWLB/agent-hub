@@ -137,7 +137,7 @@ test("queue discard requires the configured conductor or person, stays validated
   expect((await f.person.request({ t: "queue", op: "discard", peer: "claude", state: "completed" })).error).toContain("state is queued or needs_review");
   expect((await f.person.request({ t: "queue", op: "discard", peer: "claude", confirmed: true })).error).toContain("needs a reason");
   for (const args of [["queue", "discard"], ["queue", "discard", "--peer"], ["queue", "discard", "--peer", "claude", "--state", "nope"], ["queue", "discard", "--peer", "claude", "stray"]]) {
-    const out = await cli(f.root, args); expect(out.code).toBe(1);
+    const out = await cli(f.root, args); expect(out.code, args.join(" ")).toBe(2); // usage errors (#1484)
   }
 });
 

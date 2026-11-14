@@ -99,7 +99,7 @@ test("ahub answer lists the open questions, answers one through the real CLI, an
   const missing = await f.cli(["answer", set, "db=pg"]);
   expect(missing.code).toBe(1); expect(missing.stderr).toContain("question 2 has no answer");
   const bad = await f.cli(["answer", "db=pg"]);
-  expect(bad.code).toBe(1); expect(bad.stderr).toContain("usage: ahub answer");
+  expect(bad.code).toBe(2); expect(bad.stderr).toContain("usage: ahub answer");
   const done = await f.cli(["answer", set, "db=sqlite", "extras=a,b", "--other", "extras=and more"]);
   expect(done.code, done.stderr).toBe(0);
   expect(done.stdout).toContain(`answered ${set}`);

@@ -385,7 +385,7 @@ test("CLI sends the exact task/PR request, prints approval and refuses invalid o
     expect(accepted.code, accepted.stderr).toBe(0); expect(accepted.stdout).toContain("merged outside the hub; approved");
     expect(calls).toHaveLength(1); expect(calls[0]).toMatchObject({ t: "sdlc", op: "adopt-merge", id: 1, pr: 7 });
     const invalid = await run(["sdlc", "adopt-merge", "1", "--pr", "bad"]);
-    expect(invalid.code).toBe(1); expect(invalid.stderr).toContain("usage:"); expect(calls).toHaveLength(1);
+    expect(invalid.code).toBe(2); expect(invalid.stderr).toContain("usage:"); expect(calls).toHaveLength(1);
     const delegated = await run(["--live-test", "sdlc", "adopt-merge", "1", "--pr", "7"], true);
     expect(delegated.code).toBe(1); expect(delegated.stderr).toContain("live-test"); expect(calls).toHaveLength(1);
     for (const reason of ["unknown SDLC operation", 'this hub does not know "sdlc"', "SDLC readback is console only; task owners record ids through hub_sdlc_record"]) {

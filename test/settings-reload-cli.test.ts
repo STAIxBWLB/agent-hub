@@ -83,7 +83,7 @@ test("#439 reload CLI preserves safe reload output without prompting", async () 
 });
 
 test("#439 reload CLI refuses --yes and inherited agent identity before any connection", async () => {
-  const auto = await cli({ args: ["settings", "reload", "--yes"] }); expect(auto.code).toBe(1); expect(auto.connections).toEqual([]); expect(auto.requests).toEqual([]);
+  const auto = await cli({ args: ["settings", "reload", "--yes"] }); expect(auto.code).toBe(2); /* a usage error (#1484) */ expect(auto.connections).toEqual([]); expect(auto.requests).toEqual([]);
   const agent = await cli({ tty: true, markers: { AGENTHUB_PEER_ID: "codex" } }); expect(agent.code).toBe(1); expect(agent.err).toContain("codex cannot run"); expect(agent.connections).toEqual([]); expect(agent.requests).toEqual([]);
 });
 

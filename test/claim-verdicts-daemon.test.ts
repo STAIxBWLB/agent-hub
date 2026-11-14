@@ -82,7 +82,7 @@ test("ahub task claim refuses a bad slot, a bad word, a stray operand and a miss
   const id = Number(/task #(\d+)/.exec(proposed.text!)![1]);
   for (const args of [[String(id), "1"], [String(id), "1", "true"], ["x", "1", "supported"], [String(id), "0", "supported"], [String(id), "1", "supported", "extra"]]) {
     const r = await f.cli("task", "claim", ...args);
-    expect(r.code, args.join(" ")).toBe(1); expect(r.err, args.join(" ")).toContain("usage: ahub task claim");
+    expect(r.code, args.join(" ")).toBe(2); expect(r.err, args.join(" ")).toContain("usage: ahub task claim");
   }
   const refused = await f.cli("task", "claim", String(id), "5", "supported");        // slot 5 of 1 declared claim: the daemon refuses
   expect(refused.code).toBe(1); expect(refused.err).toContain("declared claim");

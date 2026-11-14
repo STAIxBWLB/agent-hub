@@ -315,7 +315,7 @@ test("the real ahub process lists, marks read, marks all read and relights, prin
   const json = await f.cli(["results", "--unread", "--json"]);
   expect(JSON.parse(json.stdout)).toHaveLength(1);
   const usage = await f.cli(["results", "--read", "nope"]);
-  expect(usage.code).toBe(1); expect(usage.stderr).toContain("usage: ahub results");
+  expect(usage.code).toBe(2); expect(usage.stderr).toContain("usage: ahub results");
   // an agent shell is refused before it reaches the hub, and nothing it passed is written
   const before = JSON.stringify((await f.person.request({ t: "results" })).results);
   const refused = await f.cli(["results", "--read-all"], { AGENTHUB_PEER_ID: "codex" });

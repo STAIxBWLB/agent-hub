@@ -252,7 +252,7 @@ test("role-declined operational CLI records only refused audit and retains exact
 
 test("later operational parser refusal retains refused audit after accepted pre-effect authorization",async()=>{
   const f=await operationalFixture();try {
-    const result=await runOperationalCli(f.root,["settings","set","research.enabled","true","--unknown"]);expect(result.code).toBe(1);
+    const result=await runOperationalCli(f.root,["settings","set","research.enabled","true","--unknown"]);expect(result.code).toBe(2); // a parser refusal is a usage error (#1484); the audit assertions below are what this test is about
     const events=readEvents(join(f.stateDir,"events.jsonl")).filter(e=>e.type==="agent_cli" && e.peer==="codex" && e.command==="settings set");
     const queued=drainCliAudits(f.stateDir).filter(e=>e.peer==="codex" && e.command==="settings set");
     expect(events.some(e=>e.type==="agent_cli" && e.refused)||queued.some(e=>e.outcome==="refused")).toBe(true);expect(queued.some(e=>e.outcome==="run")).toBe(false);

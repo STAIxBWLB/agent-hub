@@ -7,7 +7,7 @@ import { definitionOf } from "../adapters/registry.ts";
 import { windowKind } from "../hub/window-kind.ts";
 import { boardColumns, type BoardPeerInput } from "../ui/task-board.ts";
 import { peerStyle } from "../ui/peer-palette.ts";
-import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
+import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, Report as LayoutReport, type MarkerName, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { backendLabel, memorySyncLine, reviewInputHealthLine, roomsUnavailableLine } from "./status-lines.ts";
 import { ownerIsolationText } from "./role-holders.ts";
@@ -556,17 +556,39 @@ export function renderBoardColumns(tasks: any[], peers: Record<string, BoardPeer
   return out;
 }
 
-export function renderDoctor(checks: DoctorCheck[], columns?: number, _now = Date.now(), _full = false): Span[][] {
-  const out: Span[][] = [];
-  const tone = { ok: "success", warn: "attention", fail: "failure", unknown: "muted" } as const;
+/** The standard's cap for every non-flexible text column (docs/design/cli-output.md, Layout grammar: Table). */
+const COLUMN_CAP = 32;
+/** A text longer than `cells` keeps its start and its end and drops the middle: `~/Library/.../home`. Never cuts inside a grapheme. */
+export function shortenMiddle(text: string, cells: number): string {
+  const value = flat(text);
+  if (width(value) <= cells || cells < 5) return value;
+  const units = [...graphemes.segment(value)].map(part => part.segment), room = cells - 3;
+  let head = "", tail = "", front = 0, back = units.length;
+  const headRoom = Math.ceil(room / 2), tailRoom = room - headRoom;
+  for (; front < units.length && width(head + units[front]!) <= headRoom; front++) head += units[front]!;
+  for (; back > front && width(units[back - 1]! + tail) <= tailRoom; back--) tail = units[back - 1]! + tail;
+  return `${head}...${tail}`;
+}
+const DOCTOR_ORDER: Record<DoctorCheck["level"], number> = { fail: 0, warn: 1, unknown: 2, ok: 3 };
+const DOCTOR_MARKER: Record<DoctorCheck["level"], MarkerName> = { fail: "fail", warn: "warn", unknown: "unknown", ok: "ok" };
+/**
+ * `ahub doctor` as standard v1 reads: per section a marker, the check (capped at 32 cells, a long path shortened in the middle) and its finding;
+ * failures first, then warnings, unknowns and oks; one summary line last. The word of each state stays in the row, so it reads without color.
+ */
+export function renderDoctor(checks: DoctorCheck[], columns?: number, _now = Date.now(), _full = false, ascii = false): Span[][] {
+  const report = new LayoutReport(columns, ascii);
   for (const section of ["Tools", "Hub", "Config", "Models", "Memory"] as const) {
     const group = checks.filter(check => check.section === section); if (!group.length) continue;
-    if (out.length) out.push([]); out.push([span(section, "strong")]);
-    out.push(...rows(["LEVEL", "CHECK", "FINDING"], group.map(check => [span(check.level, tone[check.level]), span(check.name), span(check.detail || "finding unknown")]), columns));
+    const worst = group.filter(check => check.level !== "ok").length;
+    report.section(section, worst ? `${worst} of ${group.length} need a look` : `${group.length} ok`);
+    for (const check of [...group].sort((x, y) => DOCTOR_ORDER[x.level] - DOCTOR_ORDER[y.level])) {
+      const name = shortenMiddle(check.name, COLUMN_CAP), finding = flat(check.detail) || "finding unknown";
+      report.bullet(DOCTOR_MARKER[check.level], `${check.level === "ok" ? "" : `${check.level} `}${name}: ${finding}`);
+    }
   }
   const count = (level: DoctorCheck["level"]) => checks.filter(c => c.level === level).length;
-  out.push([], ...lines(`${count("fail")} failure${count("fail") === 1 ? "" : "s"}, ${count("warn")} warning${count("warn") === 1 ? "" : "s"}, ${count("ok")} ok, ${count("unknown")} unknown`, columns));
-  return out;
+  report.summary({ failed: count("fail"), warnings: count("warn"), unknown: count("unknown"), ok: count("ok") });
+  return report.lines();
 }
 
 export function renderProjects(projects: any[], columns?: number, _now = Date.now()): Span[][] {

@@ -61,7 +61,7 @@ describe("#1433 subcommand help", () => {
   test("ahub task propose refuses an option-like title word before it contacts the hub, and names the word and the usage", async () => {
     for (const args of [["task", "propose", "--frobnicate", "fix", "it"], ["task", "propose", "fix", "it", "--frobnicate"], ["task", "propose", "fix", "-h", "now"], ["task", "propose", "--owner", "codex", "--bogus", "x"]]) {
       const result = await cli(args);
-      expect(result.code, args.join(" ")).toBe(1);
+      expect(result.code, args.join(" ")).toBe(2); // an unknown option is a usage error (#1484)
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain("unknown option");
       expect(result.stderr).toContain("nothing was filed");
@@ -83,7 +83,7 @@ describe("#1433 subcommand help", () => {
   test("ahub goal new and ahub task handoff refuse an option-like title the same way; a goal flag's value is not a stray option", async () => {
     for (const args of [["goal", "new", "--bogus", "title"], ["goal", "new", "-h", "later"], ["goal", "new", "title", "--milestone", "m1", "--frobnicate"]]) {
       const result = await cli(args);
-      expect(result.code, args.join(" ")).toBe(1);
+      expect(result.code, args.join(" ")).toBe(2); // an unknown option is a usage error (#1484)
       expect(result.stderr).toContain("unknown option");
       expect(result.stderr).toContain("Usage: ahub goal new");
     }

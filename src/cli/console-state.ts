@@ -237,7 +237,12 @@ export function wrapStreamTokens(value: string, columns: number, tone?: Tone, ki
  */
 export class Report {
   private readonly out: Span[][] = [];
-  constructor(readonly columns = 80, readonly ascii = false) {}
+  /** `columns` undefined means no wrap width: standard v1 wraps on a pipe only when COLUMNS is set, so a script reading `ahub doctor | grep` gets whole lines. */
+  constructor(readonly columns: number | undefined = undefined, readonly ascii = false) {}
+  /** The text as lines at most `room` cells wide, or as one line per source line when there is no wrap width. */
+  private fit(text: string, room: number): string[] {
+    return this.columns === undefined ? terminalText(text).split("\n").map(line => line.replace(/\t/g, " ")) : wrap(text, Math.max(10, room), 0);
+  }
   private push(line: Span[]) { this.out.push(line); }
   /** ` <tool> <Report>` in `header`, then one line of context in `hint` on the same line. At most one per report. */
   header(tool: string, name: string, context?: string): this {
@@ -262,11 +267,11 @@ export class Report {
       const value = (line: string): Span => text ? { text: line, role: "value" } : { text: "(unset)", role: "hint" };
       if (keys[index]! > 28) {
         this.push([{ text: `  ${label}`, role: "key" }]);
-        for (const line of text ? wrap(text, this.columns - 4, 0) : [""]) this.push([{ text: "    " }, value(line)]);
+        for (const line of text ? this.fit(text, (this.columns ?? 0) - 4) : [""]) this.push([{ text: "    " }, value(line)]);
         continue;
       }
-      const gap = " ".repeat(pad - keys[index]! + 2), room = this.columns - 2 - pad - 2;
-      const lines = text ? wrap(text, Math.max(10, room), 0) : [""];
+      const gap = " ".repeat(pad - keys[index]! + 2), room = (this.columns ?? 0) - 2 - pad - 2;
+      const lines = text ? this.fit(text, room) : [""];
       this.push([{ text: "  " }, { text: label, role: "key" }, { text: gap }, value(lines[0]!)]);
       for (const line of lines.slice(1)) this.push([{ text: " ".repeat(2 + pad + 2) }, value(line)]);
     }
@@ -275,7 +280,7 @@ export class Report {
   /** `  <marker> <text>`; a nested detail line uses four spaces. The text carries the state word, so meaning survives without color. */
   bullet(name: MarkerName, text: string, nested = false): this {
     const indent = nested ? "    " : "  ", lead = indent.length + MARKER_COLUMN + 1;
-    const lines = wrap(text, Math.max(10, this.columns - lead), 0);
+    const lines = this.fit(text, (this.columns ?? 0) - lead);
     this.push([{ text: indent }, { text: markerCell(name, this.ascii), role: MARKERS[name].role }, { text: " " }, { text: lines[0]! }]);
     for (const line of lines.slice(1)) this.push([{ text: " ".repeat(lead) + line }]);
     return this;

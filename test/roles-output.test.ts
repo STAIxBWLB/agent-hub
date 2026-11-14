@@ -67,7 +67,7 @@ test("ahub roles prints each rostered peer's settled roles for a person, and --j
   expect(json.stdout).toBe(JSON.stringify(rolesView({ ...STATUS }), null, 2) + "\n");
   expect(JSON.parse(json.stdout).peers.map((row: { peer: string }) => row.peer)).toEqual(["claude", "codex", "codex-review"]);
   for (const columns of ["80", "200"]) for (const line of (await f.run(["--color=never"], f.project, { COLUMNS: columns })).stdout.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(Number(columns));
-  expect((await f.run(["claude"])).code).toBe(1);
+  expect((await f.run(["claude"])).code).toBe(2); // a stray operand is a usage error (#1484)
 });
 
 test("ahub roles run from a task worktree without .agenthub prints what the project root prints (AC4)", async () => {

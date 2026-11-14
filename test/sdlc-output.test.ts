@@ -195,7 +195,7 @@ for (const [name, { view, code, must }] of Object.entries(mergeViews)) {
 test("sdlc merge refuses an invalid --color before any request, and --json is read wherever it stands", async () => {
   const f = fixture(); (f as any).serve({ reply: mergeViews["dry-run"].view });
   const bad = await f.run(["sdlc", "merge", "7", "--dry-run", "--color=bad"]);
-  expect(bad.code).toBe(1); expect(bad.stderr).toContain("usage: ahub sdlc");
+  expect(bad.code).toBe(2); expect(bad.stderr).toContain("usage: ahub sdlc");
   expect(f.requests.some(r => r.t === "sdlc")).toBe(false);
   const leading = await f.run(["sdlc", "merge", "--json", "7", "--dry-run"]);
   expect(leading.code, leading.stderr).toBe(0);

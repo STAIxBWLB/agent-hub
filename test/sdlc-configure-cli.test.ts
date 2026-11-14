@@ -56,7 +56,7 @@ test("CLI configure makes only the explicit cooperative claim and prints human o
 test("malformed and protected command forms refuse before any SDLC request", async () => {
   await fixture(async f => {
     for (const args of [[], ["--mode", "enforce"], ["--mode", "advise", "--mode", "off"], ["--required-checks"], ["--mode", "advise", "--security", "{}"], ["--mode", "advise", "unexpected"]]) {
-      const result = await f.cli(["sdlc", "configure", ...args]); expect(result.code).toBe(1); expect(result.stdout).toBe("");
+      const result = await f.cli(["sdlc", "configure", ...args]); expect(result.code, args.join(" ")).toBe(2); expect(result.stdout).toBe(""); // every one is a usage error (#1484)
     }
     expect(f.requests).toEqual([]);
   });

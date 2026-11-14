@@ -265,9 +265,9 @@ test("the real ahub process hands a task to another project, shows it in the tar
     return { code: await proc.exited, stdout, stderr };
   };
   const usage = await cli(a, "task", "handoff", "--project", b.id);                                             // no title: usage, nothing sent
-  expect(usage.code).toBe(1); expect(usage.stderr).toContain("usage: ahub task handoff");
+  expect(usage.code).toBe(2); expect(usage.stderr).toContain("usage: ahub task handoff");
   const badIssue = await cli(a, "task", "handoff", "--project", b.id, "--issue", "x", "A chore");
-  expect(badIssue.code).toBe(1); expect(badIssue.stderr).toContain("--issue is the target repository's issue number");
+  expect(badIssue.code).toBe(2); expect(badIssue.stderr).toContain("--issue is the target repository's issue number"); // usage text on its own line: a usage error (#1484)
   const sent = await cli(a, "task", "handoff", "--project", b.id, "implement", "Raise", "the", "pin", "--path", "package.json", "--issue", "12", "--detail", "to 0.18.0");
   expect(sent.code, sent.stderr).toBe(0); expect(sent.stdout).toContain(`Handed off to project ${b.id}`); expect(sent.stdout).toContain("#1");
   const readB = boardOf(b);
@@ -447,7 +447,7 @@ test("#1175 the real ahub process passes --duplicate-ok, refuses a duplicate nam
   expect(refused.code).toBe(1); expect(refused.stderr).toContain(`#${first.task}`); expect(refused.stderr).toContain("--duplicate-ok");
   expect(rowsOf(b)).toHaveLength(1);                                                                              // the refusal wrote nothing
   const missing = await cli("Spec", "--issue", "5001", "--duplicate-ok");
-  expect(missing.code).toBe(1); expect(missing.stderr).toContain("usage: ahub task handoff");
+  expect(missing.code).toBe(2); expect(missing.stderr).toContain("usage: ahub task handoff");
   const admitted = await cli("Spec", "--issue", "5001", "--duplicate-ok", "separate leg");
   expect(admitted.code, admitted.stderr).toBe(0); expect(admitted.stdout).toContain(`Handed off to project ${b.id}`);
   expect(rowsOf(b)).toHaveLength(2);
@@ -883,7 +883,7 @@ test("#734 the real ahub process shows --list with age and reachability and a ca
   expect(synced.code, synced.stderr).toBe(0); expect(synced.stdout).toContain("Handoffs (1)"); expect(synced.stdout).toMatch(/reachable/);
   for (const args of [["--list", "--sync"], ["--list", "--project", b.id], ["--sync", "a title"]]) {
     const mixed = await cli(a, "task", "handoff", ...args);
-    expect(mixed.code, args.join(" ")).toBe(1); expect(mixed.stderr).toContain("usage: ahub task handoff --list | --sync");
+    expect(mixed.code, args.join(" ")).toBe(2); expect(mixed.stderr).toContain("usage: ahub task handoff --list | --sync"); // a usage error (#1484)
   }
   // an agent shell cannot run either view: `task handoff` is the person's, whatever the flag
   const agent = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", a.root, "task", "handoff", "--sync"], { cwd: a.root, env: { ...process.env, AGENTHUB_PEER_ID: "codex" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });

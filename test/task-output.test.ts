@@ -97,12 +97,15 @@ for (const c of cases) {
   test(`AC1 ${c.name}: the default is for a person, --json is the hub's text byte for byte, and no presentation flag reaches the hub`, async () => {
     const f = fixture(); f.serve(c.text);
     const human = await f.run(c.argv);
-    expect(human.code, human.stderr).toBe(0);
+    // #1484: a lookup that finds nothing exits 1 and says so on stderr; every other case is a successful view
+    const absent = c.name.includes("does not exist");
+    expect(human.code, human.stderr).toBe(absent ? 1 : 0);
+    if (absent) { expect(human.stdout).toBe(""); expect(human.stderr).toContain("ahub: no task #99"); }
     if (!c.name.includes("does not exist")) expect(parses(human.stdout), "default output must not parse as JSON").toBe(false);
     expect(human.stdout).not.toMatch(/^\s*[{[]/); expect(human.stdout).not.toMatch(/"[A-Za-z_]+":/); expect(human.stdout).not.toMatch(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/);
-    for (const needle of c.must) expect(flat(human.stdout).toLowerCase(), needle).toContain(needle.toLowerCase());
+    for (const needle of c.must) expect(flat(human.stdout + human.stderr).toLowerCase(), needle).toContain(needle.toLowerCase());
     const json = await f.run([...c.argv, "--json"]);
-    expect(json.code, json.stderr).toBe(0);
+    expect(json.code, json.stderr).toBe(absent ? 1 : 0); // the document is the hub's text either way; only the exit code follows the standard
     expect(json.stdout).toBe(c.text + "\n");
     // the hub saw the same operation with the same arguments every time
     expect(taskCalls(f).map(r => ({ op: r.op, args: r.args }))).toEqual([{ op: c.op, args: c.args }, { op: c.op, args: c.args }]);
@@ -112,7 +115,8 @@ for (const c of cases) {
     const f = fixture(); f.serve(c.text);
     const narrow = await f.run([...c.argv, "--color=never"], { COLUMNS: "80" });
     const wide = await f.run([...c.argv, "--color=never"], { COLUMNS: "200" });
-    expect(narrow.code, narrow.stderr).toBe(0); expect(wide.code, wide.stderr).toBe(0);
+    const absentCase = c.name.includes("does not exist"); // exit 1, nothing on stdout (#1484)
+    expect(narrow.code, narrow.stderr).toBe(absentCase ? 1 : 0); expect(wide.code, wide.stderr).toBe(absentCase ? 1 : 0);
     for (const line of narrow.stdout.split("\n")) expect(Bun.stringWidth(line), line).toBeLessThanOrEqual(80);
     for (const line of wide.stdout.split("\n")) expect(Bun.stringWidth(line), line).toBeLessThanOrEqual(200);
     expect(narrow.stdout).not.toContain("\x1b"); expect(wide.stdout).not.toContain("\x1b");
@@ -131,7 +135,7 @@ test("an invalid --color refuses BEFORE any request is sent, so a mutation never
   for (const c of cases) {
     const before = taskCalls(f).length;
     const result = await f.run([...c.argv, "--color=invalid"]);
-    expect(result.code, c.name).toBe(1); expect(result.stderr, c.name).toContain("usage:");
+    expect(result.code, c.name).toBe(2); expect(result.stderr, c.name).toContain("usage:");
     expect(taskCalls(f).length - before, `${c.name} sent a request before refusing`).toBe(0);
   }
 });
@@ -142,7 +146,7 @@ test("a repeated or conflicting --color refuses BEFORE any request is sent, for 
   for (const c of cases) for (const extra of [["--color=never", "--color=always"], ...(c.argv[0] === "backlog" ? [] : [["--color=never", "--color", "always"]])]) {
     const before = taskCalls(f).length;
     const result = await f.run([...c.argv, ...extra]);
-    expect(result.code, `${c.name} ${extra.join(" ")}`).toBe(1); expect(result.stderr, c.name).toMatch(/usage:|invalid .* command/);
+    expect(result.code, `${c.name} ${extra.join(" ")}`).toBe(2); expect(result.stderr, c.name).toMatch(/usage:|invalid .* command/);
     expect(taskCalls(f).length - before, `${c.name} sent a request before refusing`).toBe(0);
   }
 });

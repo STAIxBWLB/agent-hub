@@ -36,8 +36,11 @@ async function doctor(
     env.AGENTHUB_OMNIROUTE_URL = `http://127.0.0.1:${gateway.port}/v1`;
     const child = Bun.spawn([process.execPath, wrapper, "doctor", "--json"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    expect(code, stderr).toBe(0);
-    return JSON.parse(stdout) as { name: string; level: string; section: string; detail: string }[];
+    const rows = JSON.parse(stdout) as { name: string; level: string; section: string; detail: string }[];
+    // #1484: a check command exits 1 exactly when a row failed (warnings and unknowns change nothing), --json included; stderr stays empty either way
+    expect(code, stderr).toBe(rows.some(row => row.level === "fail") ? 1 : 0);
+    expect(stderr).toBe("");
+    return rows;
   } finally { gateway.stop(true); rmSync(root, { recursive: true, force: true }); }
 }
 const aliases = ["base", "class-only", "fast", "coding", "efficient", "capable", "judge"];
