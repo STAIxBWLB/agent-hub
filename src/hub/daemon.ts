@@ -8742,7 +8742,7 @@ export async function startDaemon(opts: DaemonOptions) {
       piReceiptLedgers.set(peer, piReceipts);
       let piReply: Envelope | undefined;
       const piMaxContinuations = config.pi.max_continuations;
-      const piContinuations = new Map<number, { created: number; acceptance: number; used: number }>();
+      const piContinuations = new Map<number, { created: number; acceptance: number; owner: string | undefined; used: number }>();
       let piContinuationEpoch = 0;
       const resetPiContinuations = () => { piContinuationEpoch++; piContinuations.clear(); };
       const publicPiFailureText = (reason: string): string | undefined => {
@@ -8928,7 +8928,11 @@ export async function startDaemon(opts: DaemonOptions) {
           const detail = isPrivate ? "" : ceiling ? ` steps ${ceiling.count}/${ceiling.limit}` : publicReason === undefined ? "" : ` ${JSON.stringify(publicReason)}`;
           log(`Pi turn failed: ${failureClass}${detail}`);
           if (drainFailed) { notify("Pi tool receipts could not be drained; inspect ahub status before continuing"); return; }
-          const currentFailure = () => !stopping && !recoveryActive() && bus.peers.get(peer) === pi && pi.acceptingTools && piContinuationEpoch === epoch && (!turns.get(peer) || turns.get(peer)!.id === turn);
+          const currentFailure = () => {
+            const nativeOwner = pi.sessionGeneration;
+            return !stopping && !recoveryActive() && !starting.has(peer) && bus.peers.get(peer) === pi && pi.failureHandoffAllowed
+              && (!nativeOwner || nativeOwner === owner) && piContinuationEpoch === epoch && (!turns.get(peer) || turns.get(peer)!.id === turn);
+          };
           if (!currentFailure()) return;
           for (const id of ids) {
             if (!currentFailure()) return;
@@ -8938,12 +8942,12 @@ export async function startDaemon(opts: DaemonOptions) {
             const acceptance = tasks.ownerAcceptance(task)?.index;
             if (acceptance !== accepted.get(id)) { piContinuations.delete(id); continue; }
             const previous = piContinuations.get(id);
-            const used = previous?.created === task.created && previous.acceptance === acceptance ? previous.used : 0;
-            if (ceiling && settledCeiling === true && !privateNow && pi.state !== "offline" && pi.sessionGeneration === owner && acceptance !== undefined && used < piMaxContinuations) {
+            const used = previous?.created === task.created && previous.acceptance === acceptance && previous.owner === owner ? previous.used : 0;
+            if (ceiling && settledCeiling === true && !privateNow && pi.acceptingTools && pi.state !== "offline" && pi.sessionGeneration === owner && acceptance !== undefined && used < piMaxContinuations) {
               const next = used + 1;
               const prompt = `Pi turn stopped at the step limit: ceiling steps ${ceiling.count}/${ceiling.limit}. Continuation ${next}/${piMaxContinuations} for task ${id}. First call hub_checkpoint with what is done and what is next, then continue. Inspect effects already made before continuing; do not repeat writes or commands whose outcome is uncertain.`;
               if (bus.publish(newEnvelope(HUB, prompt, { to: [peer], kind: "task", priority: "important", refs: { task: String(id) } })).includes(peer)) {
-                piContinuations.set(id, { created: task.created, acceptance, used: next });
+                piContinuations.set(id, { created: task.created, acceptance, owner, used: next });
                 continue;
               }
             }

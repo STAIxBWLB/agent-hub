@@ -215,6 +215,7 @@ export class PiPeer extends BasePeer {
   private approvalAbortSent = false;
   private approvalStopReason = "";
   private requestedStopReason: string | undefined;
+  private stopCause: "aborted" | "failure" | undefined;
   private owner = randomUUID();
   private _tuiLaunch?: PiTuiLaunch;
   private requestedModel = "";
@@ -257,6 +258,11 @@ export class PiPeer extends BasePeer {
     return { sessionId: this.opts.sessionId, sessionFile: this.opts.sessionFile };
   }
   get acceptingTools(): boolean { return !this.stopping && !this.rosterDetached && !this.rosterUnownedRun; }
+  /** Failure handoff may follow a verified internal teardown; it never grants tool execution. */
+  get failureHandoffAllowed(): boolean {
+    return !this.rosterDetached && !this.rosterUnownedRun && this.stopCause !== "aborted"
+      && (!this.stopping || this.state === "offline" && this.stopCause === "failure");
+  }
   /** Idle verified owners can be stopped; uncertain live owners and pending launches stay fenced. */
   get recoveryReady(): boolean {
     if (this.state === "busy" || this.starting || this.activeTools) return false;
@@ -503,6 +509,7 @@ export class PiPeer extends BasePeer {
     this.observedTitle = undefined; this.titleRevision = -1; this.nativeTitleEpoch = undefined; this.onDoing?.("reset");
     this.rosterDetached = false; this.rosterUnownedRun = false;
     this.requestedStopReason = undefined;
+    this.stopCause = undefined;
     this.settledGeneration = undefined;
     this.approvalTurnAbort = false;
     this.fencedPrompt = false; this.hubPromptId = undefined; this.hubPromptGeneration = undefined; this.pendingPromptId = undefined;
@@ -692,6 +699,7 @@ export class PiPeer extends BasePeer {
   }
 
   async stop(reason?: string, failureCause?: DeliveryFailureCause, cause: "aborted" | "failure" = "aborted"): Promise<void> {
+    if (cause === "aborted" || this.stopCause === undefined) this.stopCause = cause;
     if (cause === "aborted") this.observeTurn("aborted");
     if (reason !== undefined) this.requestedStopReason = reason;
     this.rosterEpoch++;
@@ -968,6 +976,7 @@ export class PiPeer extends BasePeer {
     if ((event.type === "session_title" || event.type === "agent_start" && Object.hasOwn(event, "sessionName")) && event.sessionId === this.sessionId && this.verifiedOwner()) this.observeTitle(event.sessionName, event.titleRevision, event.titleEpoch);
     if (event.type === "session_shutdown") {
       this.observedTitle = undefined; this.titleRevision = -1; this.nativeTitleEpoch = undefined; this.onDoing?.("reset");
+      if (this.stopCause === undefined) this.stopCause = "failure";
       const exit = this.exitMetadata("session_shutdown");
       this.shutdownExit ??= exit; // headless waits for the OS exit, retaining the pre-cleanup turn and stop facts
       this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined;
