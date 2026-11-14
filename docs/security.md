@@ -33,6 +33,12 @@ necessary. The local worker and wrappers keep their existing closed-loopback
 profile, and external egress, Mach-service grants and filesystem guards do not
 widen.
 
+Seatbelt also admits wildcard bind addresses through its localhost bind matcher.
+The boundary is reachability: only remote loopback peers may be accepted. A
+native fixture must prove non-loopback requests cannot reach the handler, with
+an unrestricted positive control on the same host interface. The grant is not
+shipped without that proof.
+
 Preparation is a host operation after guarded acceptance and before the tool
 reply. Its immutable input snapshot comes from the recorded task-worktree base
 commit through hardened Git object reads. A changed task input is not installed.

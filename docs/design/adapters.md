@@ -363,6 +363,11 @@ Kimi 2.5.2's own TUI also earns completions, but only through the `ahub kimi` la
 ## Pi focused checks and dependency preparation (#1447 T5)
 
 Only the Pi shell context opts into localhost bind, inbound and outbound rules.
+Seatbelt's localhost bind matcher also admits wildcard bind addresses. The
+contract is localhost-only reachability: inbound acceptance uses a remote
+localhost matcher. Native proof includes a reachable non-loopback interface
+positive control and denial at the restricted fixture, including no request
+reaching its application handler. A bind-address-only assertion is insufficient.
 The local worker and host wrappers retain their existing network profile.
 External egress and Mach-service grants are unchanged. Pi's proxy environment
 bypasses the proxy for localhost addresses so local test servers remain usable.

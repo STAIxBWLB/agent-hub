@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
+import { createConnection } from "node:net";
 import { profile, proxyEnv, sandboxAvailable, sandboxedExec, type SandboxNetwork } from "../src/local/sandbox.ts";
 import { realPath } from "../src/hub/project.ts";
 import { Board } from "../src/hub/board.ts";
@@ -27,12 +28,12 @@ for (const network of [false, { proxyPort: 4321 }] satisfies SandboxNetwork[]) {
     expect(ordinary).not.toContain('(allow network-bind (local ip "localhost:*"))');
     expect(ordinary).not.toContain('(allow network-outbound (remote ip "localhost:*"))');
     expect(pi).toContain('(allow network-bind (local ip "localhost:*"))');
-    expect(pi).toContain('(allow network-inbound (local ip "localhost:*"))');
+    expect(pi).toContain('(allow network-inbound (remote ip "localhost:*"))');
     expect(pi).toContain('(allow network-outbound (remote ip "localhost:*"))');
     expect(pi).not.toContain('(allow network*)');
     expect(pi).not.toContain('(allow network-outbound (local ip');
     expect(pi).not.toContain('(allow network-bind (local ip "*:*"))');
-    const added = new Set(['(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (local ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))']);
+    const added = new Set(['(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (remote ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))']);
     expect(pi.split("\n").filter(line => !added.has(line)).join("\n")).toBe(ordinary);
     if (typeof network === "object") expect(pi).toContain('(allow network-outbound (remote ip "localhost:4321"))');
     expect(pi).toContain('(deny file-write*');
@@ -70,29 +71,68 @@ try { const response=await fetch("http://"+(host.includes(":")?"["+host+"]":host
   }, 10_000);
 
 for (const loopback of [false, true]) test.skipIf(!sandboxAvailable())(`#1447 T5 native Seatbelt keeps non-loopback egress closed, Pi=${loopback}`, async () => {
-  const cwd = root(), script = join(cwd, "deny.ts");
+  const cwd = root(), script = join(cwd, "deny.py");
   // TEST-NET has no service to probe. Only an immediate kernel policy refusal is evidence.
-  writeFileSync(script, `import {createConnection} from "node:net";
-const socket=createConnection({host:"192.0.2.1",port:9});
-const timer=setTimeout(()=>{socket.destroy();console.error("no kernel refusal");process.exitCode=1},500);
-socket.once("error",error=>{clearTimeout(timer);if(!["EPERM","EACCES"].includes(error.code)){console.error(error.code);process.exitCode=1}else console.log("kernel-denied")});
-socket.once("connect",()=>{clearTimeout(timer);socket.destroy();console.error("unexpected external connect");process.exitCode=1});
+  writeFileSync(script, `import errno, socket, sys
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+    connection.settimeout(0.5)
+    try:
+        connection.connect(("192.0.2.1", 9))
+    except OSError as error:
+        if error.errno not in (errno.EPERM, errno.EACCES):
+            print("no kernel policy refusal", error.errno)
+            sys.exit(1)
+        print("kernel-denied")
+    else:
+        print("unexpected external connect")
+        sys.exit(1)
 `);
-  const result = await sandboxedExec([process.execPath, script], { cwd, profile: profile(cwd, false, [], [], [], loopback), env: { HOME: cwd }, timeoutMs: 5000 });
+  const result = await sandboxedExec(["/usr/bin/python3", "-I", "-S", script], { cwd, profile: profile(cwd, false, [], [], [], loopback), env: { HOME: cwd }, timeoutMs: 5000 });
   expect(result.code, result.output).toBe(0); expect(result.output).toContain("kernel-denied");
 }, 10_000);
 
-test.skipIf(!sandboxAvailable())("#1447 T5 native Pi localhost permission does not allow a wildcard listener", async () => {
-  const cwd = root(), script = join(cwd, "bind-deny.ts");
-  writeFileSync(script, `import {createServer} from "node:net";
-const server=createServer(socket=>socket.destroy());
-server.once("error",error=>{if(!["EPERM","EACCES"].includes(error.code)){console.error(error.code);process.exitCode=1}else console.log("kernel-denied")});
-server.once("listening",()=>{server.close();console.error("unexpected wildcard bind");process.exitCode=1});
-server.listen({host:"0.0.0.0",port:0});
+function fixtureRequest(host: string, port: number, token: string, external: boolean): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = createConnection({ host, port, ...(external ? { localAddress: host } : {}) }); let text = "", done = false;
+    const finish = (ok: boolean) => { if (!done) { done = true; socket.destroy(); resolve(ok); } };
+    socket.setTimeout(700, () => finish(false)); socket.once("error", () => finish(false));
+    socket.once("connect", () => socket.write(`GET / HTTP/1.1\r\nHost: fixture\r\nAuthorization: Bearer ${token}\r\nX-Fixture-Case: ${external ? "external" : "loopback"}\r\nConnection: close\r\n\r\n`));
+    socket.on("data", data => { text += data.toString(); if (text.includes("fixture-reachable")) finish(true); });
+    socket.once("end", () => finish(text.includes("fixture-reachable")));
+  });
+}
+
+for (const network of [false, { proxyPort: 4321 }] satisfies SandboxNetwork[])
+  test.skipIf(!sandboxAvailable())(`#1447 T5 native wildcard listener accepts only loopback peers, proxy=${typeof network === "object"}`, async () => {
+    const address = Object.values(networkInterfaces()).flat().find(item => item && item.family === "IPv4" && !item.internal)?.address;
+    if (!address) throw new Error("native proof requires a fixture-owned non-loopback IPv4 interface");
+    const exercise = async (mode: SandboxNetwork, loopback: boolean, externalAllowed: boolean) => {
+      const cwd = root(), script = join(cwd, "ingress.ts"), token = crypto.randomUUID();
+      writeFileSync(script, `import {writeFileSync} from "node:fs";
+const server=Bun.serve({hostname:"0.0.0.0",port:0,fetch(request){
+ if(request.headers.has("origin")||request.headers.get("authorization")!==${JSON.stringify(`Bearer ${token}`)})return new Response("refused",{status:403});
+ if(request.headers.get("x-fixture-case")==="external")writeFileSync("accepted-external","fixture-only");
+ return new Response("fixture-reachable");
+}});writeFileSync("port",String(server.port));setTimeout(()=>server.stop(true),2500);
 `);
-  const result = await sandboxedExec([process.execPath, script], { cwd, profile: profile(cwd, false, [], [], [], true), env: { HOME: cwd }, timeoutMs: 5000 });
-  expect(result.code, result.output).toBe(0); expect(result.output).toContain("kernel-denied");
-}, 10_000);
+      const running = sandboxedExec([process.execPath, script], { cwd, profile: profile(cwd, mode, [], [], [], loopback), env: { HOME: cwd, ...proxyEnv(mode, loopback) }, timeoutMs: 5000 });
+      const deadline = performance.now() + 2000;
+      while (!existsSync(join(cwd, "port")) && performance.now() < deadline) await Bun.sleep(10);
+      const port = existsSync(join(cwd, "port")) ? Number(readFileSync(join(cwd, "port"), "utf8")) : undefined;
+      let local = false, external = false;
+      try {
+        if (port) { local = await fixtureRequest("127.0.0.1", port, token, false); external = await fixtureRequest(address, port, token, true); }
+      } finally {
+        const result = await running; expect(result.code, result.output).toBe(0);
+      }
+      expect(port).toBeDefined(); expect(local).toBe(true);
+      expect(external).toBe(externalAllowed);
+      expect(existsSync(join(cwd, "accepted-external"))).toBe(externalAllowed);
+    };
+    // Positive control proves this host/interface can reach the same fixture app.
+    await exercise(true, false, true);
+    await exercise(network, true, false);
+  }, 15_000);
 
 class FixturePeer extends BasePeer {
   async start() { this.setState("idle"); }

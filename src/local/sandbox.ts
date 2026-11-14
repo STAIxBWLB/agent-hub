@@ -172,7 +172,9 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
     `(allow file-read* (literal "/") ${subpaths([...SYSTEM_READABLE, "/dev"])} ${subpaths(readable)})`,
     '(allow file-ioctl (regex #"^/dev/"))',
     ...(proxy ? [proxy] : network ? ["(allow network*)"] : []),
-    ...(loopback ? ['(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (local ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))'] : []),
+    // ponytail: Seatbelt's localhost bind also admits wildcard addresses; only
+    // loopback remote peers may connect. Keep native non-loopback ingress proof.
+    ...(loopback ? ['(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (remote ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))'] : []),
   ];
   const places = `${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
   return [
