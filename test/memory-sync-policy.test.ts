@@ -12,7 +12,14 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-memory-sync-policy-")); dirs.push(dir); return dir; };
-const privateRemote = { visibility: async (): Promise<Visibility> => "private" };
+const git = (cwd: string, ...args: string[]) => { const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(r.stderr.toString()); return r.stdout.toString().trim(); };
+// agent-mem 0.26.0 reads the configured transport before outbound screening, so a real private remote keeps the decline reachable.
+// The screening runs before any fetch or push, so the bare repository is created but never contacted.
+const privateRemote = (home: string): { remote: string; visibility: () => Promise<Visibility> } => {
+  const remote = join(home, "remote.git");
+  git(home, "init", "-q", "--bare", remote);
+  return { remote, visibility: async (): Promise<Visibility> => "private" };
+};
 const note = (text: string, over: Partial<NoteInput> = {}): NoteInput => ({ op: "note", project: "work/app", scope: "project", tier: "long", kind: "decision", peer: "codex", text, about: [], source: "hub", ...over });
 
 test("outbound projection excludes only agent-mem generated fields and keeps every content field", () => {
@@ -43,7 +50,7 @@ test("policy matches configured sync rules for forgotten physical originals and 
   store.prunePort = originalPrunePort;
   expect(JSON.stringify(inspected)).not.toContain("decline-me");
   expect(inspected.declinedIdsFingerprint).toMatch(/^[a-f0-9]{64}$/);
-  const synced = await syncMemory(store, { ...privateRemote, screen: row => policy.screen(row).ok });
+  const synced = await syncMemory(store, { ...privateRemote(home), screen: row => policy.screen(row).ok });
   expect(synced).toMatchObject({ ok: false, pushed: false, error: expect.stringContaining("configured privacy policy declines") });
 });
 
