@@ -1122,21 +1122,37 @@ file and never changes `.planning/`. Preview, declined prompt and
 refusal paths print no success next steps.
 
 Whether the repository commits its shared hub config is a choice made at init
-(#1411). `--track-config` keeps `.agenthub/config.json`, `routing.toml` and
-`sdlc.toml` visible to git and lists them to commit; a rule that ignores one of
-them (in `.gitignore`, `.git/info/exclude` or the person's global ignore file) is
-named as `git check-ignore -v` reports it, and init writes nothing until that line
-changes. A `routing.toml` whose `hub_routes` set `adec_endpoint` stays ignored and
+(#1411, amended by #1496). `--track-config` keeps `.agenthub/config.json`,
+`routing.toml` and `sdlc.toml` visible to git and lists them to commit. For a
+project at the Git repository root, init handles outside rules
+(`core.excludesFile` or `.git/info/exclude`) and earlier root `.gitignore`
+rules by appending a managed project `.gitignore`
+block: `!/.agenthub/`, `/.agenthub/*`, then `!/.agenthub/<name>` for each shared
+file to track. This also ignores other `.agenthub/` entries; teams sharing
+project packs, `.agenthub/ignore` or other files add their own `!` lines after
+the block. Projects below the repository root retain the earlier behavior:
+track-config succeeds when shared files are visible, and an ignoring rule is
+named with manual re-include guidance rather than changing that project.
+Dry-run and confirmation show those lines; apply names the rule
+class and project re-inclusion, and a second run changes nothing. Before project
+writes, Git verifies the planned rules in a disposable private temporary directory
+containing only the root and existing `.agenthub/.gitignore` text, using the real
+repository Git directory read-only. The scratch directory is removed on success
+or failure. Shared files must be visible and runtime state and local config must
+stay ignored. A project rule that still wins (such as a nested
+`.agenthub/.gitignore` rule) refuses with its location and the next step, without
+project writes. User-level configuration, excludes files and the index are never
+changed. A `routing.toml` whose `hub_routes` set `adec_endpoint` stays ignored and
 is reported, because that endpoint is this machine's and `routing.local.toml` can
 hold only class keys. Machine-local values in `config.json` are listed with the
 move to `config.local.json` before the first commit. `--no-track-config` ignores
-the three files, and each checkout holds its own roles. The AGENTS.md block's role
+the three files, removes only the managed re-include block init wrote, verifies
+the result, and each checkout holds its own roles. The AGENTS.md block's role
 sentence follows the choice: tracked, it points at `.agenthub/config.json`
 `roles`; untracked, it says the checkout's hub holds the roles. A new project is
 asked at the prompt; with neither flag an existing project keeps its ignore state
-and its block sentence. Every `.gitignore` line init adds is checked with
-`git check-ignore` first, so init adds no line for a path a broader rule already
-ignores.
+and its block sentence. Outside the managed re-include block, init avoids redundant ignore lines for
+paths a broader rule already ignores.
 
 `ahub roles [--json]` prints each rostered peer's flow roles as the running hub
 settled them (defaults, overrides and ceilings applied), the planner with how it

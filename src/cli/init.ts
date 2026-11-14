@@ -3,7 +3,8 @@ import { initShadow, repoOf } from "../hub/snapshots.ts";
 import { PROFILE_NAMES, profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "../hub/profiles.ts";
 import { canonicalJson, loadPacks, packOverrides, type DomainPack } from "../hub/packs.ts";
 import { JCODE_MCP_FILE } from "./jcode-mcp.ts";
-import { closeSync, constants, fstatSync, openSync, readSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, readFileSync, statSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Stats } from "node:fs";
@@ -59,6 +60,68 @@ export function ignoreRule(cwd: string, path: string): string | null | undefined
   if (r.status !== 0) return undefined;
   const [source, line, pattern] = r.stdout.split("\0");
   return pattern === undefined || pattern.startsWith("!") ? null : `${source}:${line}:${pattern}`;
+}
+const SHARED_IGNORE_BEGIN = "# agent-hub shared config (managed by ahub init)";
+const SHARED_IGNORE_END = "# end agent-hub shared config";
+/** One exact-line parser for replacement and removal; malformed ownership is never guessed. */
+function sharedIgnoreBlock(text: string): { start: number; end: number; eol: string; newline: boolean } | undefined {
+  let start: number | undefined, end: number | undefined, offset = 0;
+  let eol = "\n", newline = false;
+  const malformed = () => new Error("--track-config: incomplete or duplicate managed shared-config ignore markers; repair the marker pair in the project .gitignore and retry ahub init; nothing was written");
+  for (const line of text.match(/[^\n]*(?:\n|$)/g) ?? []) {
+    const value = line.replace(/\r?\n$/, "");
+    if (value === SHARED_IGNORE_BEGIN) {
+      if (start !== undefined) throw malformed();
+      start = offset; eol = line.endsWith("\r\n") ? "\r\n" : "\n";
+    } else if (value === SHARED_IGNORE_END) {
+      if (start === undefined || end !== undefined) throw malformed();
+      end = offset + line.length; newline = line.endsWith("\n");
+    }
+    offset += line.length;
+  }
+  if ((start === undefined) !== (end === undefined)) throw malformed();
+  return start === undefined || end === undefined ? undefined : { start, end, eol, newline };
+}
+function sharedIgnoreRepository(cwd: string, unknown = false): { gitDir: string; root: string } | undefined {
+  const git = hubGitSync(["rev-parse", "--absolute-git-dir", "--show-toplevel"], { cwd, env: { ...process.env, LC_ALL: "C" }, encoding: "utf8", timeout: 3000 });
+  if (git.status !== 0 && git.stderr?.startsWith("fatal: not a git repository")) return;
+  if (git.status !== 0 || unknown) throw new Error("--track-config: git could not determine repository ignore rules; run git status and retry ahub init; nothing was written");
+  const [gitDir, root] = git.stdout.trim().split("\n");
+  if (!gitDir || !root) throw new Error("--track-config: git did not identify the repository paths; run git status and retry ahub init; nothing was written");
+  return { gitDir, root: realPath(root) };
+}
+/** Git evaluates planned project rules in a disposable worktree; the real index/config are never written. */
+function verifySharedIgnores(cwd: string, text: string, tracked: readonly string[], repository: ReturnType<typeof sharedIgnoreRepository>): void {
+  if (!repository || repository.root !== realPath(cwd)) return;
+  const { gitDir } = repository;
+  const excludes = hubGitSync(["config", "--path", "--get", "core.excludesFile"], { cwd, encoding: "utf8", timeout: 3000 });
+  if (excludes.status !== 0 && excludes.status !== 1) throw new Error("--track-config: git could not read the excludes-file setting; run git config --get core.excludesFile and retry ahub init; nothing was written");
+  const excludeArgs = excludes.status === 0 ? ["-c", `core.excludesFile=${resolve(cwd, excludes.stdout.trim())}`] : [];
+  let scratch: string | undefined;
+  try {
+    scratch = mkdtempSync(join(tmpdir(), "ahub-init-ignore-"));
+    scratch = realPath(scratch);
+    writeFileSync(join(scratch, ".gitignore"), text);
+    mkdirSync(join(scratch, ".agenthub"));
+    const nested = join(cwd, ".agenthub", ".gitignore");
+    if (existsSync(nested)) writeFileSync(join(scratch, ".agenthub", ".gitignore"), readFileSync(nested, "utf8"));
+    const protectedPaths = [".agenthub/state/", ".agenthub/config.local.json", ".agenthub/routing.local.toml", ...SHARED_CONFIG.filter(name => !tracked.includes(name)).map(name => `.agenthub/${name}`)];
+    for (const path of [...tracked.map(name => `.agenthub/${name}`), ...protectedPaths]) {
+      const verdict = hubGitSync([...excludeArgs, `--git-dir=${gitDir}`, `--work-tree=${scratch}`, "check-ignore", "-v", "-z", "--no-index", "--stdin"], { cwd: scratch, encoding: "utf8", timeout: 3000, input: `${path}\0` });
+      if (verdict.status !== 0 && verdict.status !== 1) throw new Error("git could not evaluate the planned ignore rules; run git status and retry ahub init");
+      const [source, line, pattern] = verdict.stdout.split("\0");
+      const ignored = verdict.status === 0 && pattern !== undefined && !pattern.startsWith("!");
+      if (tracked.includes(path.slice(".agenthub/".length)) ? ignored : !ignored)
+        throw new Error(`${path} ${ignored ? `is ignored by ${source}:${line}:${pattern}` : "would be exposed by the planned rules"}; change the project ignore rule and retry ahub init`);
+    }
+  } catch (error) {
+    // File/read errors may contain private paths; only git verdicts above expose the existing rule location.
+    if (error instanceof Error && (error.message.startsWith(".agenthub/") || error.message.startsWith("git could not"))) throw new Error(`--track-config: ${error.message}; nothing was written`);
+    throw new Error("--track-config: could not prepare the disposable ignore preview; check temporary-directory and project ignore-file permissions, then retry ahub init; nothing was written");
+  } finally {
+    if (scratch) try { rmSync(scratch, { recursive: true, force: true }); }
+    catch { throw new Error("--track-config: could not remove the disposable ignore preview; check temporary-directory permissions before retrying ahub init; nothing was written"); }
+  }
 }
 /** #1411 (owner comment): `hub_routes` keys that name this machine's endpoints; routing.local.toml cannot hold them yet, so a routing.toml that sets one stays untracked. */
 function routingMachineKeys(cwd: string): string[] {
@@ -316,18 +379,46 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
     for (const entry of tracked.size ? AGY_PLUGIN_FILES.filter(file => !tracked.has(file)) : [agyPlugin]) add(entry);
   }
   if (existsSync(join(cwd, JCODE_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", JCODE_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0) add(JCODE_MCP_FILE);
-  // #1411: the shared config. Tracked: a rule that ignores one of the files is named and nothing is written (AC3), except a routing.toml that names a machine endpoint,
-  // which stays ignored until the local overlay can hold it. Untracked: each file is ignored unless git already ignores it.
+  // #1496: append owned re-inclusions instead of changing project or outside ignore rules.
   const track = settings?.values[TRACK_CONFIG];
+  let ignoreReason = track === false ? "ignore runtime state, machine-local configuration and the per-checkout hub config" : "ignore runtime state and machine-local configuration";
   if (track === true) {
-    for (const name of SHARED_CONFIG) {
-      const path = `.agenthub/${name}`;
-      if (name === "routing.toml" && routingMachineKeys(cwd).length) { add(path); continue; }
-      const rule = ignoreRule(cwd, path);
-      if (rule) throw new Error(`--track-config: ${path} is ignored by ${rule}; change that line so git sees the file (after a directory rule such as .agenthub/, add !/.agenthub/, /.agenthub/* and !/${path}), then run ahub init again; nothing was written`);
+    const tracked = SHARED_CONFIG.filter(name => !(name === "routing.toml" && routingMachineKeys(cwd).length));
+    const rules = tracked.map(name => ignoreRule(cwd, `.agenthub/${name}`));
+    const repository = sharedIgnoreRepository(cwd, rules.some(rule => rule === undefined));
+    if (repository && repository.root !== realPath(cwd)) {
+      for (const [index, rule] of rules.entries()) if (rule) {
+        const path = `.agenthub/${tracked[index]}`;
+        throw new Error(`--track-config: ${path} is ignored by ${rule}; change that line so git sees the file (after a directory rule such as .agenthub/, add !/.agenthub/, /.agenthub/* and !/${path}), then run ahub init again; nothing was written`);
+      }
+      if (routingMachineKeys(cwd).length) add(".agenthub/routing.toml");
+    } else {
+      const owned = sharedIgnoreBlock(lines);
+      if (rules.some(Boolean) || owned) {
+        const entries = ["!/.agenthub/", "/.agenthub/*", ...tracked.map(name => `!/.agenthub/${name}`)];
+        const eol = owned?.eol ?? (lines.includes("\r\n") ? "\r\n" : "\n");
+        const block = [SHARED_IGNORE_BEGIN, ...entries, SHARED_IGNORE_END].join(eol);
+        lines = owned
+          ? lines.slice(0, owned.start) + block + (owned.newline ? eol : "") + lines.slice(owned.end)
+          : `${lines}${lines && !lines.endsWith("\n") ? eol : ""}${block}${eol}`;
+        const ruleClass = rules.some(rule => rule?.includes("/info/exclude:")) ? "repository info/exclude"
+          : rules.some(rule => rule && !rule.startsWith(".gitignore:") && !rule.startsWith(".agenthub/")) ? "global excludes" : "project ignore";
+        ignoreReason = `re-include shared config over ${ruleClass} rules in project .gitignore: ${entries.join(", ")}`;
+      } else if (routingMachineKeys(cwd).length) add(".agenthub/routing.toml");
+      verifySharedIgnores(cwd, lines, tracked, repository);
     }
-  } else if (track === false) for (const name of SHARED_CONFIG) add(`.agenthub/${name}`);
-  if (lines || existsSync(ignore)) write(ignore, lines, track === false ? "ignore runtime state, machine-local configuration and the per-checkout hub config" : "ignore runtime state and machine-local configuration");
+  } else if (track === false) {
+    const owned = sharedIgnoreBlock(lines);
+    if (owned) lines = lines.slice(0, owned.start) + lines.slice(owned.end);
+    for (const name of SHARED_CONFIG) {
+      const entry = `.agenthub/${name}`;
+      // Existing owned negations must not suppress a new ignore line before the block is removed.
+      if (owned && !lines.split("\n").includes(entry)) lines += `${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
+      else add(entry);
+    }
+    if (owned) verifySharedIgnores(cwd, lines, [], sharedIgnoreRepository(cwd));
+  }
+  if (lines || existsSync(ignore)) write(ignore, lines, ignoreReason);
   // #1065 T1: the settings table. config.json is the text it will have after the template and pack writes above; the rest is what is on disk.
   let settingRows: InitSettingRow[] = [];
   if (settings && (Object.keys(settings.values).length)) {
@@ -434,6 +525,8 @@ export function initNextSteps(cwd: string, settings?: InitSettingsRequest): stri
     untrack(committed(SHARED_CONFIG));
   } else if (track === true) {
     // #1411: the files to commit, and what must not go in with them.
+    const ignorePlan = planInit(cwd, undefined, false, false, settings).find(change => change.path === join(cwd, ".gitignore") && change.reason.startsWith("re-include"));
+    if (ignorePlan) lines.push(`- ${ignorePlan.reason}.`);
     const endpoints = routingMachineKeys(cwd);
     const files = SHARED_CONFIG.filter(name => !(name === "routing.toml" && endpoints.length) && (name !== "sdlc.toml" || existsSync(join(cwd, ".agenthub", name)) || mode !== "off"));
     lines.push(`- Review and commit AGENTS.md and ${files.map(name => `.agenthub/${name}`).join(", ")}; keep config.local.json untracked.`);
