@@ -51,7 +51,7 @@ import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
 import { NativeHookLaunches, type NativeHookLaunch } from "./native-hook-launch.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
-import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
+import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunnerState, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
 import { isDenied, sbplString } from "../local/deny.ts";
 import { hostShellPath } from "./host-executable.ts";
@@ -957,6 +957,9 @@ function capturedRecoverySourceDigest(): string | undefined {
   }
   return recoverySourcePackageDigest ?? undefined;
 }
+
+/** #1445 step 2: how long startup waits for the first runner probe before it goes on; the probe itself keeps running. */
+const STARTUP_RUNNER_WAIT_MS = 500;
 
 export async function startDaemon(opts: DaemonOptions) {
   const startupTimings = new StartupTimings();
@@ -2875,23 +2878,31 @@ export async function startDaemon(opts: DaemonOptions) {
   const checkRunner = opts.boundedTools?.runner?.(checkOptions) ?? (config.checks.runner === "remote" ? new RemoteRunner(checkOptions) : new ContainerRunner(checkOptions));
   const runnerRefreshAbort = new AbortController();
   startupCleanup.push(() => { runnerRefreshAbort.abort(); void checkRunner.stopAll(); });
-  let runnerState = await checkRunner.available(runnerRefreshAbort.signal);
+  // #1445 step 2: the first runner probe (a remote runner takes about 8 s: ssh, docker version, image inspect, a launched and torn down
+  // probe container) no longer holds startup. It runs single-flight beside the orphan sweep and the spec probe, and startup waits for it
+  // only STARTUP_RUNNER_WAIT_MS. A probe that is not done yet leaves `runnerState` unavailable with a fixed reason, and every reader that
+  // needs the answer (`check_run` awaits `refreshRunner()`) joins the same promise, so the settled state equals the one a blocking start gives.
+  let runnerState: RunnerState = { available: false, reason: "runner probe in progress" };
+  let runnerStateAt = 0, refreshingRunner: Promise<void> | undefined;
+  // `stopping` is declared far below and a probe can settle during startup, so the runner keeps its own closed flag, set where `stopping` is.
+  let runnerClosed = false;
+  const settleRunner = (probe: Promise<RunnerState>): Promise<void> => probe.then(value => {
+    if (runnerClosed || runnerRefreshAbort.signal.aborted) return;
+    runnerState = value; runnerStateAt = value.checkedAt ?? Date.now();
+  }, () => {
+    if (runnerClosed || runnerRefreshAbort.signal.aborted) return;
+    runnerState = { available: false, reason: config.checks.runner === "remote" ? "remote runner unavailable" : "container unavailable" }; runnerStateAt = Date.now();
+  }).finally(() => { refreshingRunner = undefined; });
   const orphanChecks = (await checkRunner.sweep()).map(line => boundedSafe(line) ? sanitize(line) : "orphan check: details withheld by privacy policy");
+  const firstRunnerProbe = refreshingRunner = settleRunner(checkRunner.available(runnerRefreshAbort.signal));
   if (opts.boundedTools?.specAvailable || !opts.config && (config.pi.enabled || config.checks.runner === "container" || config.checks.runner === "remote")) await ensureSpec();
+  await Promise.race([firstRunnerProbe, new Promise<void>(resolve => { const timer = setTimeout(resolve, STARTUP_RUNNER_WAIT_MS); timer.unref?.(); void firstRunnerProbe.finally(() => clearTimeout(timer)); })]);
   startupTimings.mark("task_checks");
-  let runnerStateAt = runnerState.checkedAt ?? Date.now(), refreshingRunner: Promise<void> | undefined;
   const refreshRunner = (): Promise<void> => {
     if (stopping || runnerRefreshAbort.signal.aborted) return Promise.resolve();
     if (Date.now() - runnerStateAt < 60_000) return Promise.resolve();
     if (refreshingRunner) return refreshingRunner;
-    refreshingRunner = checkRunner.available(runnerRefreshAbort.signal).then(value => {
-      if (stopping || runnerRefreshAbort.signal.aborted) return;
-      runnerState = value; runnerStateAt = value.checkedAt ?? Date.now();
-    }, () => {
-      if (stopping || runnerRefreshAbort.signal.aborted) return;
-      runnerState = { available: false, reason: config.checks.runner === "remote" ? "remote runner unavailable" : "container unavailable" }; runnerStateAt = Date.now();
-    }).finally(() => { refreshingRunner = undefined; });
-    return refreshingRunner;
+    return refreshingRunner = settleRunner(checkRunner.available(runnerRefreshAbort.signal));
   };
   // #1115: the hub makes, commits and clears the task worktree of a hub-sandboxed peer. The sandbox profile is unchanged; the record file lives in the hub's state dir, which no sandbox root contains.
   const taskWorktree = new TaskWorktrees({
@@ -13044,7 +13055,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return shutdown;
   }
   async function stopOnce(): Promise<void> {
-    stopping = true;
+    stopping = true; runnerClosed = true;
     // A failed bounded probe drain must return before teardown/finalization. The retained DB, owned fixture handles and retryable shutdown remain available.
     await tasks.stopGuidanceProbes();
     kimiUsage.stop();
