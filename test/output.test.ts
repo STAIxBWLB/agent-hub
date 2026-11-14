@@ -359,8 +359,10 @@ describe("one-shot output", () => {
   });
   test("doctor groups levels and always states a finding", () => {
     const doctor = text(renderDoctor(outputFixture.doctor, 80, now));
-    expect(doctor).toContain("Tools\n"); expect(doctor).toContain("Models\n"); expect(doctor).toContain("Memory\n");
-    expect(doctor).toContain("1 failure, 1 warning, 1 ok, 1 unknown");
+    expect(doctor).toContain("▸ Tools"); expect(doctor).toContain("▸ Models"); expect(doctor).toContain("▸ Memory");
+    // failures, then warnings, unknowns and oks within a section; the summary is the last line (#1484)
+    expect(doctor.indexOf("fail local fixed_model")).toBeLessThan(doctor.indexOf("warn pi mlx"));
+    expect(doctor.trimEnd().split("\n").at(-1)).toBe("✗ 1 failed  ⚠ 1 warning  ? 1 unknown  ✓ 1 ok");
     expect(text(renderDoctor([{ section: "Hub", level: "unknown", name: "hub", detail: "" }]))).toContain("finding unknown");
   });
 });

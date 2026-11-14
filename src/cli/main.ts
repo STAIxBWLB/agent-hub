@@ -133,7 +133,8 @@ import { agentShellCause, classifyPeerCommand, cliCommandLabel, detectCliIdentit
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { installedVersions } from "./console-versions.ts";
-import { paint, permissionBoundary, resolveColor, streamEnv, wrap, type Span } from "./console-state.ts";
+import { errorLines, failureExitCode } from "./error-format.ts";
+import { asciiMarkers, paint, permissionBoundary, resolveColor, streamEnv, wrap, type Span } from "./console-state.ts";
 import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp, guidanceProbeUsage, listsSubcommand, subcommandUsage } from "./help.ts";
@@ -566,12 +567,17 @@ function startupDiagnostic(error: unknown): string {
   return message.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 512) || "invalid startup configuration";
 }
 
-function fail(message: string, refusalAudited=false, authorityRefused?:boolean): never {
+/**
+ * CLI output standard v1, Messages: `ahub: <what failed>: <why>` on stderr; with a terminal on stderr it leads with the fail marker, and a piped line
+ * keeps the plain `ahub: ` form so a script or agent matching it still works. `next` is a complete, copyable command printed on a second line (ASCII
+ * `->` when the locale is not UTF-8); a caller passes it only where the fix is known, and a daemon refusal is passed through without one.
+ * A usage error exits 2, any other failure 1; a usage error is one whose text starts with `usage:` (the form every call site already uses) or names an unknown command.
+ */
+function fail(message: string, refusalAudited=false, authorityRefused?:boolean, next?: string): never {
   if(operationalAuditReady && authorityRefused!==false){if(refusalAudited)operationalRefusalRecorded=true;if(!operationalRefusalRecorded)audit("refused");}
-  console.error(`ahub: ${message}`);
-  process.exit(1);
+  console.error(errorLines(message, next, !!process.stderr.isTTY, asciiMarkers(process.env, process.argv.includes("--ascii"))).join("\n"));
+  process.exit(failureExitCode(message));
 }
-
 function operationalIncomplete(result: {complete?:boolean;incompleteReason?:unknown;truncated?:boolean}, history: "log"|"event"): void {
   if(result.complete===false)console.error(`ahub: operational output is incomplete: ${typeof result.incompleteReason==="string"?terminalText(result.incompleteReason).replace(/[\r\n]+/g," ").slice(0,200):"public privacy or history coverage unavailable"}`);
   else if(result.truncated)console.error(`ahub: operational ${history} history is truncated`);
@@ -910,6 +916,8 @@ const contract = (file: string, kind: "contract" | "manifest" = "contract"): unk
 const consoleInstalled = () => installedVersions(join(import.meta.dir, "..", ".."));
 /** `ahub goal new` options: those that take a value, and all it knows. The words they leave are the title. */
 const GOAL_NEW_VALUE_FLAGS = ["--milestone", "--depends"], GOAL_NEW_FLAGS = [...GOAL_NEW_VALUE_FLAGS, "--shared", "--json"];
+/** `ahub doctor` exits 1 on a failed row; `ahub setup` runs the same function and keeps its own exit behavior. */
+let doctorSetsExit = true;
 const commands: Record<string, () => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
@@ -1141,7 +1149,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const acon = registerAconPlugin(hubHome(), join(root, "src", "ui", "plugin.ts"));
     console.log("error" in acon ? `acon plugin not registered: ${acon.error}` : acon.changed ? `acon plugin registered: ${acon.path}` : `acon plugin up to date: ${acon.path}`);
     if (recoveryLauncherCurrent) recoveryLauncherCurrent();
-    else await commands.doctor!();
+    else { doctorSetsExit = false; await commands.doctor!(); }
   },
 
   init: async () => {
@@ -2184,7 +2192,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "show") {
       // a stray operand (for example the value of a `--color always` that is not the `--color=` form) is a usage error, never silently ignored
       if (rest.length !== 1) fail("usage: ahub task show <id> [--json] [--full] [--color=auto|always|never]");
-      return shownTask(renderTaskShow)(taskOp("task_show", { id: rest[0] }));
+      // CLI output standard v1: a lookup that finds nothing is a failure (stderr, exit 1), not a successful print. The daemon answers a missing id with a JSON string
+      // (`"no task #N"`) while a found task is an object. The failure holds with `--json` too: a script gets exit 1 and an empty stdout, not a JSON string that reads as success.
+      const shown = await taskOp("task_show", { id: rest[0] });
+      const missing = (() => { try { const value: unknown = JSON.parse(shown); return typeof value === "string" && /^no task #\d+$/.test(value) ? value : undefined; } catch { return undefined; } })();
+      if (missing !== undefined) return fail(missing, false, undefined, "ahub board");
+      return shownTask(renderTaskShow)(Promise.resolve(shown));
     }
     if (sub === "claim") {
       // #901: a person's verdict on one declared plan claim. The claim is named by its 1-based slot and its text is never typed, stored or printed here.
@@ -3365,7 +3378,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally {
       // Preserve findings already collected if a later probe (for example config parsing) throws.
       if (options.json) console.log(JSON.stringify(checks, null, 2));
-      else printOutput(renderDoctor(checks, options.columns, Date.now(), options.full), options.color);
+      else printOutput(renderDoctor(checks, options.columns, Date.now(), options.full, asciiMarkers(process.env, args.includes("--ascii"))), options.color);
+      // CLI output standard v1: a check command exits 1 when any row is a failure (warnings and unknowns change nothing), `--json` included; the document is unchanged.
+      // `ahub setup` prints the same report but keeps its own exit code (`doctorSetsExit` is cleared there).
+      if (doctorSetsExit && checks.some(check => check.level === "fail")) process.exitCode = 1;
     }
   },
 };

@@ -106,7 +106,7 @@ test("#689 backups lists, an old hub is named, and a hub refusal is shown as the
 
 test("#689 a bad command line prints usage and never connects", async () => {
   const result = await cli({ args: ["settings", "edit", "routing.toml", "set", "x", "1"] });
-  expect(result.code).toBe(1); expect(result.err).toContain("usage: ahub settings edit");
+  expect(result.code).toBe(2); expect(result.err).toContain("usage: ahub settings edit");
   expect(result.connections).toEqual([]);
 });
 
