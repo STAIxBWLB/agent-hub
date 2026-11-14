@@ -1,4 +1,5 @@
 import { EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
+import { MILESTONE_LIMITS, MILESTONE_STATES, MILESTONE_HORIZONS, MILESTONE_LINK_KINDS } from "./roadmap.ts";
 import { EXECUTION_LINK_LIMITS } from "./execution-links.ts";
 import { GUIDANCE_ROLE_MAX_BYTES, GUIDANCE_RECORD_MAX_BYTES, GUIDANCE_RATIONALE_MAX_BYTES, GUIDANCE_EVIDENCE_MAX_REFS, GUIDANCE_CURSOR_MAX_BYTES, GUIDANCE_HASH_HEX_LENGTH } from "./guidance-variants.ts";
 import { redFirstSchema } from "./test-integrity.ts";
@@ -227,6 +228,17 @@ export const BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "
 export const CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
 
 export const TASK_TOOLS: HubTool[] = [
+  tool("hub_roadmap_list", "Read public milestones with computed task/issue/spec/train progress. Private work is a count only; unknown evidence stays unknown. Read only, with no GitHub or model call.", {}),
+  tool("hub_roadmap_show", "Read a milestone's public links, inherited membership and computed progress. Inspect this before editing and copy its current revision. Private tasks are counts only.", { id: { type: "integer", minimum: 1 } }, ["id"]),
+  tool("hub_roadmap_edit", "Create or change a milestone. Configured planner or unique conductor only; done/dropped are person-only. new/edit take fields; edit also needs the current revision. Link kinds are spec/issue/task/release; issue refs are owner/repo#N. No GitHub write, task assignment or model call. On refusal inspect hub_roadmap_show and correct the named input.", {
+    op: { type: "string", enum: ["new", "edit", "link", "unlink", "order", "state"] }, id: { type: "integer", minimum: 1 }, revision: { type: "integer", minimum: 0 },
+    fields: { type: "object", additionalProperties: false, properties: {
+      title: { type: "string", minLength: 1, maxLength: MILESTONE_LIMITS.title }, outcome: { type: "string", minLength: 1, maxLength: MILESTONE_LIMITS.outcome },
+      state: { type: "string", enum: MILESTONE_STATES }, horizon: { type: "string", enum: MILESTONE_HORIZONS }, order: { type: "integer", minimum: 0 },
+      target: { type: ["string", "null"], description: "valid YYYY-MM-DD or null" }, parent: { type: ["integer", "null"], minimum: 1 },
+    } }, kind: { type: "string", enum: MILESTONE_LINK_KINDS }, ref: { type: "string", minLength: 1, maxLength: MILESTONE_LIMITS.issue },
+    order: { type: "integer", minimum: 0 }, state: { type: "string", enum: MILESTONE_STATES },
+  }, ["op"]),
   tool("hub_lineage_show", "Read bounded execution lineage from exactly one taskId, attemptId or root with optional owning task identity. Explicit recorded relationships only; missing native observations remain unknown. Hidden and absent roots share unavailable. Never probes, fetches, executes or writes memory. Keep cursor and limits bound to the same query.", lineageShow),
   tool("hub_lineage_link", "Attach one declared external execution reference through your current task role. Bind taskId, taskCreated and flowRevision copied from the current task view; optional from must already belong to the same admitted neighborhood. Duplicate declarations are idempotent. This inert metadata is not runner attestation, review approval or task progress. Private/review-observer context and recovery refuse.", { taskId: id, taskCreated: { type: "integer", minimum: 0 }, flowRevision: { type: "integer", minimum: 0 }, reference: executionReference, from: executionReference }, ["taskId", "taskCreated", "flowRevision", "reference"]),
   tool("hub_guidance_create", `Record a complete immutable GuidanceVariantV1 proposal (canonical JSON at most ${GUIDANCE_RECORD_MAX_BYTES} bytes) through your current task authority. Author must match your authenticated actor; never add authority/tested flags. Private snapshots stay local. This creates no role, activation or probe. Inspect list after an unconfirmed result; never retry automatically.`, { variant: guidanceVariant }, ["variant"]),
@@ -385,7 +397,7 @@ export function configuredToolContext(status: unknown, peer: string): ProjectToo
   return { startPeers, readOnly: readOnlyPeers.includes(peer) };
 }
 
-const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_roadmap_list", "hub_roadmap_show", "hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 /** Publication restricts exposure only; server-side authority remains mandatory for every call. */
 export function projectToolList<T extends { name: string }>(tools: T[], readOnly = false): T[] {
   return readOnly ? tools.filter(tool => READ_ONLY_PROJECT_TOOLS.includes(tool.name) || tool.name === EVIDENCE_READ_TOOL.name) : tools;

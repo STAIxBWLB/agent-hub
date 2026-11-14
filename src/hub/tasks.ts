@@ -1,4 +1,6 @@
 import { requireConductor } from "./conductor.ts";
+import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState } from "./roadmap.ts";
+import { milestoneViews, type MilestoneView } from "./roadmap-view.ts";
 import { pathCandidates } from "@staix/agent-mem";
 import { renderGuidanceVariantV1 } from "./guidance-variants.ts";
 import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-probe-store.ts";
@@ -3349,6 +3351,127 @@ export class Tasks {
     }
     return notified.size;
   }
+  private roadmapReadAuthority(by: PeerId): void {
+    requireLocalTaskPeer(by);
+    if (this.d.privateTurn?.(by) || this.observerExcluded(by) || this.reviewObserverTurn(by)) throw new PreEffectToolRefusal("roadmap is unavailable during private or review-observer input; use ahub roadmap list after that turn");
+  }
+
+  private roadmapWriteAuthority(by: PeerId): () => void {
+    const check = this.requestCheck(by, () => this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError ? "roadmap writes are held by recovery, shutdown or storage; retry ahub roadmap list after recovery" : undefined);
+    const current = () => {
+      check(); this.roadmapReadAuthority(by);
+      if (by !== USER && (!this.d.bus.isRostered(by) || !this.isConfiguredPlanner(by) && !this.configuredManualConductor(by)))
+        throw new PreEffectToolRefusal("roadmap writes require a configured planner or the unique conductor; ask the person to run ahub roadmap");
+    };
+    current(); return current;
+  }
+
+  private roadmapParsed<T>(read: () => T): T {
+    try { return read(); }
+    catch (error) { throw new PreEffectToolRefusal(`${error instanceof Error ? error.message : "invalid roadmap input"}; check ahub roadmap show and correct the fields`); }
+  }
+
+  private roadmapCurrent(id: unknown, state?: MilestoneState): Milestone {
+    const row = this.d.board.milestone(this.roadmapParsed(() => milestoneId(id)));
+    if (!row) throw new PreEffectToolRefusal("roadmap milestone does not exist; use ahub roadmap list");
+    if (["done", "dropped"].includes(row.state) && state !== row.state) throw new PreEffectToolRefusal("a settled milestone is final; create new work with ahub roadmap new");
+    return row;
+  }
+
+  private roadmapStateAuthority(by: PeerId, state: MilestoneState | undefined): void {
+    if (state !== undefined && !(MILESTONE_STATES as readonly string[]).includes(state)) throw new PreEffectToolRefusal("invalid milestone state; use proposed, planned, active, done or dropped with ahub roadmap state");
+    if (by !== USER && (state === "done" || state === "dropped")) throw new PreEffectToolRefusal("done and dropped require the person; ask them to run ahub roadmap state");
+  }
+
+  private roadmapTextCurrent(fields: MilestonePatch): string {
+    const text = [fields.title, fields.outcome].filter((value): value is string => value !== undefined).join("\n");
+    if (text && !this.publicMetadataText(text))
+      throw new PreEffectToolRefusal("milestone text was not cleared for public planning; remove private content before ahub roadmap new or edit");
+    return text;
+  }
+
+  private async roadmapScreen(fields: MilestonePatch): Promise<void> {
+    const text = this.roadmapTextCurrent(fields);
+    if (text && this.screenOn() && (await this.screenCall(text)).label !== "clear")
+      throw new PreEffectToolRefusal("milestone text was not cleared for public planning; remove private content before ahub roadmap new or edit");
+    this.roadmapTextCurrent(fields);
+  }
+
+  async milestoneNew(by: PeerId, raw: unknown): Promise<MilestoneView> {
+    const current = this.roadmapWriteAuthority(by), fields = this.roadmapParsed(() => parseMilestoneInput(raw));
+    this.roadmapStateAuthority(by, fields.state);
+    await this.roadmapScreen(fields); current(); this.roadmapStateAuthority(by, fields.state); this.roadmapTextCurrent(fields);
+    const row = this.d.board.newMilestone(fields, by, this.d.now?.() ?? Date.now());
+    return this.milestoneShow(by, row.id);
+  }
+
+  async milestoneEdit(by: PeerId, id: number, revision: number, raw: unknown): Promise<MilestoneView> {
+    const current = this.roadmapWriteAuthority(by), fields = this.roadmapParsed(() => parseMilestonePatch(raw));
+    this.roadmapParsed(() => milestoneRevision(revision)); this.roadmapStateAuthority(by, fields.state);
+    const validate = () => {
+      current(); this.roadmapStateAuthority(by, fields.state);
+      const row = this.roadmapCurrent(id);
+      if (row.revision !== revision) throw new PreEffectToolRefusal("roadmap revision changed; reload ahub roadmap show before editing");
+      return row;
+    };
+    validate(); await this.roadmapScreen(fields); const row = validate(); this.roadmapTextCurrent(fields);
+    if (Object.entries(fields).every(([key, value]) => row[key as keyof Milestone] === value)) return this.milestoneShow(by, id);
+    this.d.board.updateMilestone(id, fields, revision, { by, at: this.d.now?.() ?? Date.now(), event: "edited", fields: Object.keys(fields) });
+    return this.milestoneShow(by, id);
+  }
+
+  milestoneLink(by: PeerId, id: number, kind: MilestoneLinkKind, raw: string): MilestoneView {
+    this.roadmapWriteAuthority(by);
+    const row = this.roadmapCurrent(id), ref = this.roadmapParsed(() => milestoneLinkRef(kind, raw));
+    if (!this.publicMetadataText(ref)) throw new PreEffectToolRefusal("roadmap reference is private; use a public reference with ahub roadmap link");
+    if (kind === "task" && !this.d.board.get(Number(ref)) || kind === "release" && !this.d.board.release(Number(ref)))
+      throw new PreEffectToolRefusal("roadmap target does not exist; inspect ahub board or ahub release list before linking");
+    this.d.board.linkMilestone(id, kind, ref, by, row.revision, this.d.now?.() ?? Date.now());
+    return this.milestoneShow(by, id);
+  }
+
+  milestoneUnlink(by: PeerId, id: number, kind: MilestoneLinkKind, raw: string): MilestoneView {
+    this.roadmapWriteAuthority(by);
+    const row = this.roadmapCurrent(id), ref = this.roadmapParsed(() => milestoneLinkRef(kind, raw));
+    this.d.board.unlinkMilestone(id, kind, ref, by, row.revision, this.d.now?.() ?? Date.now());
+    return this.milestoneShow(by, id);
+  }
+
+  milestoneOrder(by: PeerId, id: number, order: number): MilestoneView {
+    this.roadmapWriteAuthority(by);
+    const row = this.roadmapCurrent(id), fields = this.roadmapParsed(() => parseMilestonePatch({ order }));
+    if (row.order !== order) this.d.board.updateMilestone(id, fields, row.revision, { by, at: this.d.now?.() ?? Date.now(), event: "ordered", fields: ["order"] });
+    return this.milestoneShow(by, id);
+  }
+
+  milestoneState(by: PeerId, id: number, state: MilestoneState): MilestoneView {
+    this.roadmapWriteAuthority(by); this.roadmapStateAuthority(by, state);
+    this.roadmapParsed(() => parseMilestonePatch({ state }));
+    const row = this.roadmapCurrent(id, state);
+    if (row.state !== state) this.d.board.updateMilestone(id, { state }, row.revision, { by, at: this.d.now?.() ?? Date.now(), event: "state", fields: ["state"] });
+    return this.milestoneShow(by, id);
+  }
+
+  milestoneList(by: PeerId): MilestoneView[] {
+    this.roadmapReadAuthority(by);
+    let freshness: SpecsCheckReport["freshness"] | undefined;
+    try { const report = this.d.specsRead?.("check", []); if (report && "freshness" in report && !report.truncated && report.errors === 0)
+      freshness = report.freshness.filter(row => this.publicMetadataText(row.path) && (row.id === undefined || this.publicMetadataText(row.id))); } catch { /* unavailable evidence stays unknown */ }
+    const views = milestoneViews({ milestones: this.d.board.milestones(), links: this.d.board.milestoneLinks(), tasks: this.d.board.list(), releases: this.d.board.releases(), freshness,
+      issueOf: task => { try { const source = this.planIssueIdentity(task); return source ? `${source.repo.toLowerCase()}#${source.issue}` : undefined; } catch { return undefined; } },
+      privateTask: task => this.isPii(task) || task.signals.includes("pii") || task.state === "backlog" && by !== USER && !this.isConfiguredPlanner(by),
+      publicText: text => this.publicMetadataText(text),
+    });
+    this.roadmapReadAuthority(by); return views;
+  }
+
+  milestoneShow(by: PeerId, id: number): MilestoneView {
+    this.roadmapParsed(() => milestoneId(id));
+    const row = this.milestoneList(by).find(row => row.id === id);
+    if (!row) throw new PreEffectToolRefusal("roadmap milestone does not exist; use ahub roadmap list");
+    return row;
+  }
+
   releaseList(by: PeerId): Record<string, unknown>[] {
     this.planningAuthority(by);
     const scopes = new Map<number, { id: number; state: Task["state"]; deps: number[] }[]>();

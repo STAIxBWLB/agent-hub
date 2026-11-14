@@ -4,6 +4,7 @@ import { runtimePruneHealth } from "../hub/runtime-prune-health.ts";
 import { conductorLocalOperation, conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
 import { sayRecipients } from "./say-input.ts";
 import { parseAnswerArgs } from "./answer-args.ts";
+import { parseRoadmapArgs, renderRoadmap } from "./roadmap.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
@@ -1648,6 +1649,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     return shown((data, columns, now) => renderBacklogResult(sub === "person" ? "plan" : sub as "plan" | "pin", data, columns, now))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
   },
 
+  roadmap: async () => {
+    let options;
+    try { options = parseRoadmapArgs(args); } catch (error) { return fail(error instanceof Error ? error.message : "invalid roadmap arguments; use ahub help roadmap"); }
+    const text = await taskOp(options.op, options.args);
+    if (options.json) console.log(text);
+    else console.log(renderRoadmap(text, outputOptions().columns));
+  },
   release: async () => {
     const split = splitPresentation(args, { edges: true }), operands = split.operands;
     const [sub, name, revision, value] = operands;

@@ -15,6 +15,8 @@ export const LIVE_TEST_PERSON_REFUSAL = "live-test cannot write person-attribute
 
 /** Person verdicts and user-authored workflow content are never delegated. */
 export function liveTestRefusal(command: string, args: readonly string[], context: { repairedFresh?: boolean } = {}): boolean {
+  if (command === "roadmap" && ![undefined, "list", "show", "--json"].includes(args[0])) return true;
+  if (command === "roadmap" && args[0] === "--json" && ![undefined, "list", "show"].includes(args[1])) return true;
   if (command === "sdlc" && args[0] === "configure") return true;
   if (command === "lineage" && args[0] === "link") return true;
   if (command === "guidance" && ["create", "withdraw"].includes(args[0] ?? "")) return true;
@@ -158,6 +160,11 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (native?.cli.personOnlyFlags?.some(flag => args.includes(flag))) return "console";
   if (command === "permission" || command === "watch") return "console";
   if (args.some((arg) => arg === "--as-user" || arg.startsWith("--as-user="))) return "console";
+  if (command === "roadmap") {
+    const sub = args[0] === "--json" ? args[1] : args[0];
+    if (sub === "state" && ["done", "dropped"].includes(args[2] ?? "")) return "console";
+    return [undefined, "--json", "list", "show", "new", "edit", "link", "unlink", "order", "state"].includes(sub) ? "allowed" : "console";
+  }
   if (command === "answer" && args.includes("--instructed")) return "conductor";
   if (command === "pet" && (args.includes("--window") || args.includes("--palette"))) return "allowed";
   if (conductorOperation(command,args)) return "conductor";

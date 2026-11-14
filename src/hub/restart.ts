@@ -47,6 +47,7 @@ export interface RestartSnapshot {
     boardDigest: string;
     budgetDigest: string;
     modelOverrides?: { count: number; digest: string };
+    roadmap?: { milestones: number; links: number; digest: string };
     guidanceVariants?: { experiments: number; variants: number; digest: string };
     guidanceProbes?: { experiments: number; sessions: number; digest: string };
     executionReferences?: { count: number; digest: string };
@@ -118,6 +119,12 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     const value = s.integrity.modelOverrides;
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "count,digest"
       || !Number.isSafeInteger(value.count) || value.count < 0 || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "roadmap")) {
+    const value = s.integrity.roadmap;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "digest,links,milestones"
+      || !Number.isSafeInteger(value.milestones) || value.milestones < 0 || !Number.isSafeInteger(value.links) || value.links < 0
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (s.integrity && Object.hasOwn(s.integrity, "guidanceVariants")) {
     const value = s.integrity.guidanceVariants;
