@@ -29,14 +29,15 @@ test("T3 the real extension rejects attempt 101 before its tool effect at the co
   } });
   let proc: ReturnType<typeof Bun.spawn> | undefined;
   try {
-    proc = Bun.spawn([process.execPath, join(import.meta.dir, "fakes/pi-ceiling-driver.ts"), join(import.meta.dir, "../src/pi/extension.ts"), String(limit + 1)], {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "fakes/pi-ceiling-driver.ts"), join(import.meta.dir, "../src/pi/extension.ts"), String(limit + 1)], {
       stdout: "pipe", stderr: "pipe", env: { ...process.env,
         AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${server.port}`, AGENTHUB_PI_BRIDGE_TOKEN: "fixture-token",
         AGENTHUB_PI_MAX_STEPS: String(limit),
         AGENTHUB_PI_TOOLS: JSON.stringify([{ name: "read", description: "read", parameters: { type: "object", properties: { path: { type: "string" } } } }]),
       },
     });
-    const [output, error, exit] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    proc = child;
+    const [output, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(exit, error).toBe(0); expect(error).toBe("");
     const results = output.trim().split("\n").map(line => JSON.parse(line));
     expect(results).toHaveLength(101);
