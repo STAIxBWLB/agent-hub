@@ -20,6 +20,8 @@ for (const network of [false, { proxyPort: 4321 }] satisfies SandboxNetwork[]) {
     expect(pi).not.toContain('(allow network*)');
     expect(pi).not.toContain('(allow network-outbound (local ip');
     expect(pi).not.toContain('(allow network-bind (local ip "*:*"))');
+    const added = new Set(['(allow network-bind (local ip "localhost:*"))', '(allow network-inbound (local ip "localhost:*"))', '(allow network-outbound (remote ip "localhost:*"))']);
+    expect(pi.split("\n").filter(line => !added.has(line)).join("\n")).toBe(ordinary);
     if (typeof network === "object") expect(pi).toContain('(allow network-outbound (remote ip "localhost:4321"))');
     expect(pi).toContain('(deny file-write*');
   });

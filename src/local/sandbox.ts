@@ -166,7 +166,7 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
     "(allow signal (target same-sandbox))",
     "(allow process-info* (target same-sandbox))",
     "(allow sysctl-read)",
-    `(allow mach-lookup ${globals([...MACH_SERVICES, ...(proxy ? PROXY_MACH_SERVICES : network || loopback ? NETWORK_MACH_SERVICES : [])])})`,
+    `(allow mach-lookup ${globals([...MACH_SERVICES, ...(proxy ? PROXY_MACH_SERVICES : network ? NETWORK_MACH_SERVICES : [])])})`,
     '(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata (ipc-posix-name "apple.shm.notification_center"))',
     "(allow file-read-metadata)",
     `(allow file-read* (literal "/") ${subpaths([...SYSTEM_READABLE, "/dev"])} ${subpaths(readable)})`,
