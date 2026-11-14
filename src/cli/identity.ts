@@ -163,7 +163,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (command === "roadmap") {
     const sub = args[0] === "--json" ? args[1] : args[0];
     if (sub === "state" && ["done", "dropped"].includes(args[2] ?? "")) return "console";
-    return [undefined, "--json", "list", "show", "new", "edit", "link", "unlink", "order", "state"].includes(sub) ? "allowed" : "console";
+    return "allowed";
   }
   if (command === "answer" && args.includes("--instructed")) return "conductor";
   if (command === "pet" && (args.includes("--window") || args.includes("--palette"))) return "allowed";

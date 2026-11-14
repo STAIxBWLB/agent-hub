@@ -1,3 +1,4 @@
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -71,6 +72,7 @@ test("one-level parents refuse self, missing parent, cycles and subtree moves at
   expect(() => board.updateMilestone(parent.id, { parent: child.id }, parent.revision, edit())).toThrow("top level");
   expect(() => board.updateMilestone(parent.id, { parent: other.id }, parent.revision, edit())).toThrow("one level");
   expect(() => board.updateMilestone(child.id, { parent: 9999 }, child.revision, edit())).toThrow("top level");
+  for (const target of [child.id, 9999, parent.id]) expect(() => board.updateMilestone(parent.id, { parent: target }, parent.revision, edit())).toThrow(PreEffectToolRefusal);
   expect(board.milestones()).toEqual([parent, other, child]);
   const moved = board.updateMilestone(child.id, { parent: other.id }, child.revision, edit());
   expect(moved.parent).toBe(other.id);
@@ -83,6 +85,7 @@ test("history ceiling refuses a link and metadata edit together with their side 
   milestone = board.updateMilestone(milestone.id, { state: "done" }, milestone.revision, { at: 2000, by: "user", event: "state", fields: ["state"] });
   expect(milestone.history).toHaveLength(MILESTONE_HISTORY_LIMIT);
   expect(() => board.linkMilestone(milestone.id, "task", "1", "user", milestone.revision)).toThrow("history");
+  expect(() => board.linkMilestone(milestone.id, "task", "1", "user", milestone.revision)).toThrow(PreEffectToolRefusal);
   expect(() => board.updateMilestone(milestone.id, { title: "Too late" }, milestone.revision, edit())).toThrow("history");
   expect(board.milestone(milestone.id)).toEqual(milestone);
   expect(board.milestoneLinks()).toEqual([]);

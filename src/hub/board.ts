@@ -1,3 +1,4 @@
+import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { GUIDANCE_VARIANT_LIMITS, GUIDANCE_PAGE_MAX_RECORDS, GUIDANCE_HASH_HEX_LENGTH, parseGuidanceVariantV1, parseGuidanceExperiment, parseGuidanceStoredRecord, validateGuidanceVariantV1, type GuidanceVariantV1, type GuidanceExperimentRecord, type GuidanceStoredRecord, type GuidanceWriteFence } from "./guidance-variants.ts";
 import { ExecutionLinkError, EXECUTION_LINK_LIMITS, executionLinkActor, executionLinkInteger, executionLinkId, executionLinkReferences, executionReferenceDigest, parseExecutionLinkInput, parseExecutionLinkRecord, type ExecutionLinkInput, type ExecutionLinkRecord, type ExecutionLinkFence } from "./execution-links.ts";
 import { executionReferenceKey, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
@@ -2988,16 +2989,16 @@ export class Board {
   private currentMilestone(id: number, revision: number): Milestone {
     milestoneRevision(revision);
     const row = this.milestone(id);
-    if (!row || row.revision !== revision) throw new Error("roadmap revision changed; reload ahub roadmap show before retrying");
+    if (!row || row.revision !== revision) throw new PreEffectToolRefusal("roadmap revision changed; reload ahub roadmap show before retrying");
     return row;
   }
 
   private milestoneParent(id: number | undefined, parent: number | null): void {
     if (parent === null) return;
-    if (parent === id) throw new Error("roadmap milestone cannot parent itself; choose another parent with ahub roadmap edit");
+    if (parent === id) throw new PreEffectToolRefusal("roadmap milestone cannot parent itself; choose another parent with ahub roadmap edit");
     const ancestor = this.milestone(parent);
-    if (!ancestor || ancestor.parent !== null) throw new Error("roadmap parent must exist at the top level; inspect ahub roadmap list");
-    if (id !== undefined && this.db.query("SELECT 1 FROM milestones WHERE parent=? LIMIT 1").get(id)) throw new Error("roadmap nesting is limited to one level; move child milestones first");
+    if (!ancestor || ancestor.parent !== null) throw new PreEffectToolRefusal("roadmap parent must exist at the top level; inspect ahub roadmap list");
+    if (id !== undefined && this.db.query("SELECT 1 FROM milestones WHERE parent=? LIMIT 1").get(id)) throw new PreEffectToolRefusal("roadmap nesting is limited to one level; move child milestones first");
   }
 
   private writeMilestone(id: number, patch: MilestonePatch, revision: number, event: MilestoneHistoryEntry): Milestone {
@@ -3005,11 +3006,11 @@ export class Board {
     this.milestoneParent(id, next.parent);
     const settling = current.state !== next.state && (next.state === "done" || next.state === "dropped");
     if (current.history.length >= MILESTONE_HISTORY_LIMIT - 1 && !settling)
-      throw new Error(`roadmap history reserves its last slot for settlement; ask the person to run ahub roadmap state ${id} done or ahub roadmap state ${id} dropped`);
+      throw new PreEffectToolRefusal(`roadmap history reserves its last slot for settlement; ask the person to run ahub roadmap state ${id} done or ahub roadmap state ${id} dropped`);
     const history = milestoneHistory([...current.history, event]);
     const result = this.db.query("UPDATE milestones SET title=?,outcome=?,state=?,horizon=?,milestone_order=?,target=?,parent=?,history=?,updated=?,revision=revision+1 WHERE id=? AND revision=?")
       .run(next.title, next.outcome, next.state, next.horizon, next.order, next.target, next.parent, JSON.stringify(history), event.at, id, revision);
-    if (result.changes !== 1) throw new Error("roadmap revision changed; reload ahub roadmap show before retrying");
+    if (result.changes !== 1) throw new PreEffectToolRefusal("roadmap revision changed; reload ahub roadmap show before retrying");
     return this.milestone(id)!;
   }
 

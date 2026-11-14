@@ -1,16 +1,16 @@
 import type { Task } from "../src/hub/board.ts";
-
-test("roadmap mutations are owner tool effects while roadmap reads are observational", async () => {
-  const { ownerToolEffect } = await import("../src/hub/no-writes.ts");
-  for (const op of ["new", "edit", "link", "unlink", "order", "state"]) expect(ownerToolEffect("hub_roadmap_edit", { op })).toBe(true);
-  for (const op of ["hub_roadmap_list", "hub_roadmap_show"]) expect(ownerToolEffect(op, {})).toBe(false);
-});
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
 import { expect, test } from "bun:test";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig } from "../src/hub/task-sweep.ts";
+
+test("roadmap mutations are owner tool effects while roadmap reads are observational", async () => {
+  const { ownerToolEffect } = await import("../src/hub/no-writes.ts");
+  for (const op of ["new", "edit", "link", "unlink", "order", "state"]) expect(ownerToolEffect("hub_roadmap_edit", { op })).toBe(true);
+  for (const op of ["hub_roadmap_list", "hub_roadmap_show"]) expect(ownerToolEffect(op, {})).toBe(false);
+});
 
 type Observation = { task: number; generation: string; limit: number; changed: boolean | undefined; effect: boolean };
 type Counter = {

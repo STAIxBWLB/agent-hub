@@ -1651,7 +1651,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   roadmap: async () => {
     let options;
-    try { options = parseRoadmapArgs(args); } catch (error) { return fail(error instanceof Error ? error.message : "invalid roadmap arguments; use ahub help roadmap"); }
+    try { options = parseRoadmapArgs(args); } catch (error) { return fail(`${error instanceof Error ? error.message : "invalid roadmap arguments"}; see ahub help roadmap`); }
     const text = await taskOp(options.op, options.args);
     if (options.json) console.log(text);
     else console.log(renderRoadmap(text, outputOptions().columns));

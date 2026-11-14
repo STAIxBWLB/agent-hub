@@ -109,4 +109,8 @@ test("real CLI defaults to human output, offers explicit JSON and blocks agent/d
   expect(f.board.milestone(Number(id))?.state).toBe("proposed");
   const invalid = await f.cli(["roadmap", "edit", id, "--revision", "0", "--title", "Must not save", "--unknown"]);
   expect(invalid.code).not.toBe(0); expect(f.board.milestone(Number(id))?.title).toBe("CLI milestone");
+  for (const operands of [["future"], ["edit", id, "--revision", "0"], ["link", id, "unknown", "ref"]]) {
+    const refused = await f.cli(["roadmap", ...operands], { AGENTHUB_PEER_ID: "codex" });
+    expect(refused.code).not.toBe(0); expect(refused.err).toContain("see ahub help roadmap");
+  }
 }, 20_000);

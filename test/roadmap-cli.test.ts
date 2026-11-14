@@ -18,6 +18,8 @@ test("roadmap audit labels contain only closed command names and person states c
     if (!["list", "show"].includes(op)) expect(liveTestRefusal("roadmap", [op, "42", canary])).toBe(true);
   }
   expect(cliCommandLabel("roadmap", ["future", canary])).toBe("roadmap");
+  expect(classifyPeerCommand("roadmap", ["future", canary])).toBe("allowed");
+  expect(() => parseRoadmapArgs(["future", canary])).toThrow("roadmap");
   expect(classifyPeerCommand("roadmap", ["list", "--as-user"])).toBe("console");
   for (const state of ["done", "dropped"]) expect(classifyPeerCommand("roadmap", ["state", "42", state])).toBe("console");
 });
