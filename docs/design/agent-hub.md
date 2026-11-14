@@ -31,6 +31,11 @@ record while acon renders it; recipients receive a text stub, and the standalone
 dashboard retains a readable source fallback. This adds no renderer, native-agent
 authority or cross-project board to the hub ([#1058](https://github.com/STAIxBWLB/agent-hub/issues/1058)).
 
+Board-backed [roadmap milestones](roadmap.md) group issue contracts, specs, tasks
+and delivery trains by outcome. R1 exposes computed public progress through tools
+and the CLI, preserving unknown evidence and count-only private membership
+([#1479](https://github.com/STAIxBWLB/agent-hub/issues/1479)).
+
 ## Product decisions
 
 | Current rule | Reason and deciding issue |
