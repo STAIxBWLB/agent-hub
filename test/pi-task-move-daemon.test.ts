@@ -34,7 +34,8 @@ test("a real task escalation while Pi chat is queued puts the withdrawal in the 
     const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8");
     const escalation = 'escalate_to = ["codex", "kimi", "claude"]';
     expect(routing).toContain(escalation);
-    writeFileSync(join(root, ".agenthub", "routing.toml"), routing.replace(escalation, 'escalate_to = ["other"]'));
+    writeFileSync(join(root, ".agenthub", "routing.toml"), routing.replace(escalation, 'escalate_to = ["other"]')
+      .replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"'));
     daemon = await startDaemon({ cwd: root, stateDir, projectId: "pi-task-move-fixture", instanceId: "pi-task-move-instance",
       controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, sdlc: sdlcConfig(undefined), memorySyncTrigger: () => {},
       config: { ...DEFAULT_CONFIG, batch_ms: 0, start: { agents: [] },
