@@ -24,20 +24,10 @@ agent-hub connects agents that can each run commands. This page says what the hu
 - **Secrets stay where they are read.** The gateway key and Cloudflare Access values are read inside the gateway client and go only into request headers: never into logs, errors, envelopes, tool output, memory. Subscription logins of Claude, Codex and Kimi are never proxied or pooled.
 - **The hub's own model calls are fenced.** Digest condensation, task triage and the PII screen read agent-written text as data; their output is capped text framed as untrusted, or a value checked against a closed list. It is never used as a route, a peer id, a tool call or an instruction. The hub model's intake split (#511) is JSON that must pass the same parts schema a planner's `hub_backlog_split` takes and may name only the request's own sources; it only writes draft backlog cards that wait for a person's or the conductor's `intake approve`, and a PII request goes only to a model reached on campus, else stays unsplit.
 
-## Pi focused checks and prepared dependencies (#1447 T5)
+## Pi prepared dependencies (#1447 T5)
 
-Pi's managed shell alone allows localhost bind, inbound and outbound sockets;
-proxy variables bypass localhost addresses. This intentionally exposes host
-loopback services to Pi, so their own origin and authentication fences remain
-necessary. The local worker and wrappers keep their existing closed-loopback
-profile, and external egress, Mach-service grants and filesystem guards do not
-widen.
-
-Seatbelt also admits wildcard bind addresses through its localhost bind matcher.
-The boundary is reachability: only remote loopback peers may be accepted. A
-native fixture must prove non-loopback requests cannot reach the handler, with
-an unrestricted positive control on the same host interface. The grant is not
-shipped without that proof.
+The localhost listener leg moved to a follow-up; Pi's network profile and proxy
+environment are unchanged in this slice.
 
 Preparation is a host operation after guarded acceptance and before the tool
 reply. Its immutable input snapshot comes from the recorded task-worktree base
