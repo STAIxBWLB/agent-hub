@@ -137,7 +137,7 @@ import { installedVersions } from "./console-versions.ts";
 import { errorLines, failureExitCode } from "./error-format.ts";
 import { asciiMarkers, paint, permissionBoundary, resolveColor, streamEnv, wrap, type Span } from "./console-state.ts";
 import { queueResolveArgsValid } from "../hub/person-command.ts";
-import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
+import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderStatusDefault, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp, guidanceProbeUsage, listsSubcommand, subcommandUsage } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
 import { SURVEY_FOCUS } from "../hub/advisor-survey.ts";
@@ -352,7 +352,7 @@ function outputOptions(source: readonly string[] = args) {
   if (flags.length > 1 || source.includes("--color")) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
   const color = resolveColor(flags[0]?.slice("--color=".length), streamEnv(!!process.stdout.isTTY));
   if (color instanceof Error) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
-  return { color: color === true, json: source.includes("--json"), full: source.includes("--full"),
+  return { color: color === true, json: source.includes("--json"), full: source.includes("--full"), verbose: source.includes("--verbose"),
     columns: outputWidth({ isTTY: !!process.stdout.isTTY, columns: process.stdout.columns, COLUMNS: process.env.COLUMNS }) };
 }
 /**
@@ -2758,7 +2758,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       const { status } = await hub.request({ t: "status", specs: true });
       if (options.json) return console.log(JSON.stringify(status, null, 2));
       const quota = await hub.request({ t: "budget" });
-      printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
+      // CLI output standard v1: the default view answers "is it OK, and what do I do next"; every detail the older view printed stays behind --verbose (and --full, which adds the long ids).
+      const data = { ...status, budget: quota.budget ?? {} };
+      printOutput(options.verbose || options.full ? renderStatus(data, options.columns, Date.now(), options.full) : renderStatusDefault(data, options.columns, Date.now(), asciiMarkers(process.env, args.includes("--ascii"))), options.color);
       if (status.needs) { const pet = loadPetConfig(cwd); if (pet.enabled) console.log(renderPet(petView(status), false, pet.character)); }
       // #258: open long-term tasks and who holds them, as of this machine's last memory sync.
       if (status.memoryProfile ? status.memoryProfile.state === "ready" : memoryIndexExists(join(hubHome(), "memory"))) {

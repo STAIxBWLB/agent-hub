@@ -259,21 +259,22 @@ export class Report {
    * Key/value rows of one section: two-space indent, `Key:` padded to the widest key, two spaces, value. A key wider than 28 cells
    * puts its value on the next line at a four-space indent. An empty value is `(unset)` in `hint`.
    */
-  kv(rows: readonly (readonly [string, unknown])[]): this {
+  kv(rows: readonly (readonly [string, unknown])[], indent = 2): this {
     const keys = rows.map(([key]) => cellWidth(`${terminalText(key)}:`));
     const pad = Math.max(0, ...keys.filter(width => width <= 28));
     for (const [index, [key, raw]] of rows.entries()) {
       const label = `${terminalText(key)}:`, text = terminalText(raw ?? "").trim();
       const value = (line: string): Span => text ? { text: line, role: "value" } : { text: "(unset)", role: "hint" };
+      const lead = " ".repeat(indent);
       if (keys[index]! > 28) {
-        this.push([{ text: `  ${label}`, role: "key" }]);
-        for (const line of text ? this.fit(text, (this.columns ?? 0) - 4) : [""]) this.push([{ text: "    " }, value(line)]);
+        this.push([{ text: `${lead}${label}`, role: "key" }]);
+        for (const line of text ? this.fit(text, (this.columns ?? 0) - indent - 2) : [""]) this.push([{ text: `${lead}  ` }, value(line)]);
         continue;
       }
-      const gap = " ".repeat(pad - keys[index]! + 2), room = (this.columns ?? 0) - 2 - pad - 2;
+      const gap = " ".repeat(pad - keys[index]! + 2), room = (this.columns ?? 0) - indent - pad - 2;
       const lines = text ? this.fit(text, room) : [""];
-      this.push([{ text: "  " }, { text: label, role: "key" }, { text: gap }, value(lines[0]!)]);
-      for (const line of lines.slice(1)) this.push([{ text: " ".repeat(2 + pad + 2) }, value(line)]);
+      this.push([{ text: lead }, { text: label, role: "key" }, { text: gap }, value(lines[0]!)]);
+      for (const line of lines.slice(1)) this.push([{ text: " ".repeat(indent + pad + 2) }, value(line)]);
     }
     return this;
   }
@@ -283,6 +284,13 @@ export class Report {
     const lines = this.fit(text, (this.columns ?? 0) - lead);
     this.push([{ text: indent }, { text: markerCell(name, this.ascii), role: MARKERS[name].role }, { text: " " }, { text: lines[0]! }]);
     for (const line of lines.slice(1)) this.push([{ text: " ".repeat(lead) + line }]);
+    return this;
+  }
+  /** Lines another renderer built (a table), placed as they are. A section's blank line is still added by `section()`. */
+  append(lines: readonly Span[][]): this { for (const line of lines) this.push([...line]); return this; }
+  /** A free line in one role, indented two cells (a pointer to more detail, a note). */
+  note(text: string, role: Role = "hint"): this {
+    for (const line of this.fit(text, (this.columns ?? 0) - 2)) this.push([{ text: "  " }, { text: line, role }]);
     return this;
   }
   /** `    →  <command>` in `accent`: complete and copyable, never shortened. */
