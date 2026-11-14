@@ -4,7 +4,7 @@ import { webFetchAllow } from "../../local/web-fetch-config.ts";
 
 /** Native config uses the host's checked schema vocabulary, retaining its shape/path introspection. */
 export function piConfigSchema(v: NativeConfigValidators): Record<string, NativeConfigCheck> {
-  return { pi: v.block({ enabled: v.bool, auto_start: v.bool, cmd: v.argv, backend: v.words(["auto", "dgx", "mlx"]), dgx_coding: v.text, dgx_fast: v.text, max_steps: v.number(1, 1_000_000, true) }) };
+  return { pi: v.block({ enabled: v.bool, auto_start: v.bool, cmd: v.argv, backend: v.words(["auto", "dgx", "mlx"]), dgx_coding: v.text, dgx_fast: v.text, max_steps: v.number(1, 1_000_000, true), max_continuations: v.number(0, 10, true) }) };
 }
 export function localConfigSchema(v: NativeConfigValidators): Record<string, NativeConfigCheck> {
   return { local: v.block({ deny: v.strings, bash_network: (value, key) => { if (value !== "direct") v.bool(value, key); }, network_allow: v.strings, max_steps: v.number(1, 1_000_000, true), read_allow: v.strings, doc_read: v.bool, web_fetch: v.block({ allow: (value, key) => { webFetchAllow(value); void key; } }) }) };

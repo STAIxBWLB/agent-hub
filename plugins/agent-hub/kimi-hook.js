@@ -10518,6 +10518,8 @@ var init_pi = __esm(() => {
     executionAbort;
     budgetStops = new Map;
     ceilingStops = new Map;
+    ceilingUnsafe = false;
+    turnObserved = false;
     idleBashReservations = new Map;
     budgetGeneration = 0;
     modelStep = 0;
@@ -11055,9 +11057,21 @@ var init_pi = __esm(() => {
     get form() {
       return this.opts.mode;
     }
+    observeTurn(outcome) {
+      if (this.turnObserved || !this.agentRunning && !this.activeEnvs.length)
+        return;
+      this.turnObserved = true;
+      try {
+        if (outcome === "aborted")
+          this.opts.onTurnAborted?.(this.activeEnvs.slice());
+        else
+          this.opts.onTurnSuccess?.(this.activeEnvs.slice());
+      } catch {}
+    }
     async detachForRoster() {
       if (this.opts.mode !== "tui")
         throw new Error("Pi roster detach requires a personal TUI");
+      this.observeTurn("aborted");
       this.terminalOwnerObservation = undefined;
       this.rosterDetached = true;
       this.rosterEpoch++;
@@ -11118,7 +11132,9 @@ var init_pi = __esm(() => {
       if (!snapshot.idle)
         this.clearWatchdog();
     }
-    async stop(reason, failureCause) {
+    async stop(reason, failureCause, cause = "aborted") {
+      if (cause === "aborted")
+        this.observeTurn("aborted");
       if (reason !== undefined)
         this.requestedStopReason = reason;
       this.rosterEpoch++;
@@ -11240,6 +11256,7 @@ var init_pi = __esm(() => {
           this.delivery({ id: deliveryId, state: "failed_safe", reason });
         throw new Error(reason);
       }
+      this.turnObserved = false;
       this.setState("busy");
       this.activeEnvs = envs;
       this.currentReply = replyParent(envs);
@@ -11427,6 +11444,7 @@ var init_pi = __esm(() => {
             this.hubPromptGeneration = event.generation;
           else {
             if (this.pendingPromptId || this.activeEnvs.length) {
+              this.observeTurn("aborted");
               this.rosterDetached = true;
               this.rosterEpoch++;
               this.clearWatchdog();
@@ -11535,6 +11553,8 @@ var init_pi = __esm(() => {
         if (generation <= this.budgetGeneration)
           return;
         this.modelStep = 0;
+        this.ceilingUnsafe = false;
+        this.turnObserved = false;
         this.approvalExpiries = 0;
         this.approvalAnswerEpoch = undefined;
         this.approvalStopReason = "";
@@ -11554,6 +11574,7 @@ var init_pi = __esm(() => {
         const ceiling = piToolStepCeiling(event);
         if (ceiling && ceiling.sessionId === this.sessionId && ceiling.generation === this.budgetGeneration && this.agentRunning && this.state === "busy" && !this.ceilingStops.has(ceiling.generation)) {
           this.ceilingStops.set(ceiling.generation, ceiling);
+          this.ceilingUnsafe = this.activeTools > 0 || this.pendingToolGenerations.size > 0;
           for (const old of this.ceilingStops.keys())
             if (old < ceiling.generation - 8)
               this.ceilingStops.delete(old);
@@ -11593,26 +11614,33 @@ var init_pi = __esm(() => {
         const approvalStopReason = this.approvalStopReason;
         const text = this.settledText.trim();
         const error = approvalStopReason || this.budgetStops.get(generation) || this.settledError;
-        const cancelled = !error && this.settledCancelled;
+        const cancelled = this.settledCancelled;
         const ceiling = this.ceilingStops.get(generation);
+        const settledCeiling = !!ceiling && !!error && !cancelled && !approvalStopReason && !this.budgetStops.has(generation) && !this.ceilingUnsafe && !this.activeTools && !this.pendingToolGenerations.size && this.acceptingTools;
+        const ceilingReason = settledCeiling && ceiling ? `ceiling steps ${ceiling.count}/${ceiling.limit}` : undefined;
         this.budgetStops.delete(generation);
         this.ceilingStops.delete(generation);
         this.settledText = "";
         this.settledError = "";
         this.settledCancelled = false;
         const reply = { inReplyTo: this.currentReply, to: replyAudience(this.activeEnvs) };
-        if (cancelled)
+        if (cancelled) {
+          this.observeTurn("aborted");
           this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply);
-        else if (error?.startsWith("execution budget"))
+        } else if (error?.startsWith("execution budget"))
           this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
         else if (approvalStopReason)
           this.onMessage?.(approvalStopReason, reply);
-        else if (error)
-          this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling);
-        else if (text)
-          this.finalAnswer(text, reply);
+        else if (error) {
+          this.turnObserved = true;
+          this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling, settledCeiling);
+        } else {
+          this.observeTurn("success");
+          if (text)
+            this.finalAnswer(text, reply);
+        }
         for (const id of this.activeDeliveryIds)
-          this.delivery({ id, state: approvalStopReason ? "completed" : error || cancelled ? "needs_review" : "completed", ...error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {} });
+          this.delivery({ id, state: approvalStopReason || settledCeiling ? "completed" : error || cancelled ? "needs_review" : "completed", ...ceilingReason ? { reason: ceilingReason } : error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {} });
         this.activeDeliveryIds.clear();
         this.currentReply = undefined;
         this.activeEnvs = [];
@@ -11789,7 +11817,8 @@ var init_pi = __esm(() => {
       for (const id of this.activeDeliveryIds)
         this.delivery({ id, state: "needs_review", reason: error.message });
       this.activeDeliveryIds.clear();
-      if (envs.length && !this.requestedStopReason && !this.rosterDetached) {
+      if (envs.length && !this.requestedStopReason && !this.rosterDetached && !this.turnObserved) {
+        this.turnObserved = true;
         this.onMessage?.(approvalStopReason ? `${approvalStopReason} Pi is offline because its extension could not abort the turn; restart with ahub pi and settle the held delivery after inspecting prior work.` : "Pi turn failed; inspect its session and any partial effects before continuing.", { inReplyTo: this.currentReply });
         if (!approvalStopReason && !(error instanceof ApprovalWaitStop))
           this.opts.onTurnFailure?.(envs, error.message).catch(() => this.opts.log?.("Pi failure handoff could not be completed"));
@@ -11859,7 +11888,7 @@ var init_pi = __esm(() => {
       const envs = this.activeEnvs.slice(), reply = this.currentReply;
       this.stopping = true;
       try {
-        await this.stop(undefined, failureCause);
+        await this.stop(undefined, failureCause, "failure");
         if (this.activeEnvs.length)
           this.fail(error);
       } catch (stopError) {
@@ -21557,7 +21586,7 @@ var claudeRecoveryLaunch = (instance) => ({ kind: "claude-channel", peer: instan
 
 // src/adapters/definitions/native-config-policy.ts
 function piConfigSchema(v) {
-  return { pi: v.block({ enabled: v.bool, auto_start: v.bool, cmd: v.argv, backend: v.words(["auto", "dgx", "mlx"]), dgx_coding: v.text, dgx_fast: v.text, max_steps: v.number(1, 1e6, true) }) };
+  return { pi: v.block({ enabled: v.bool, auto_start: v.bool, cmd: v.argv, backend: v.words(["auto", "dgx", "mlx"]), dgx_coding: v.text, dgx_fast: v.text, max_steps: v.number(1, 1e6, true), max_continuations: v.number(0, 10, true) }) };
 }
 function localConfigSchema(v) {
   return { local: v.block({ deny: v.strings, bash_network: (value, key) => {

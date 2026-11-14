@@ -57,7 +57,11 @@ export interface PiOptions {
   /** Reported message usage as increments, before agent_settled releases the turn. */
   onTokens?: (added: number) => void;
   /** `ceiling` is the validated, session/turn-bound tool-step ceiling signal (#179), present only when the trusted extension emitted one for this turn. */
-  onTurnFailure?: (envs: Envelope[], reason: string, ceiling?: PiToolStepCeiling) => Promise<void>;
+  onTurnFailure?: (envs: Envelope[], reason: string, ceiling?: PiToolStepCeiling, settledCeiling?: boolean) => Promise<void>;
+  /** Observation only: cancelled/stopped logical turns never request failure handoff. */
+  onTurnAborted?: (envs: Envelope[]) => void;
+  /** Observation only: a real successful turn resets the host's continuation count. */
+  onTurnSuccess?: (envs: Envelope[]) => void;
   watchdogMs?: number; log?: (line: string) => void;
   /** Once per owner, after it is offline; a TUI owner may have unknown OS exit status. */
   onExit?: (exit: PiExit) => void;
@@ -187,6 +191,8 @@ export class PiPeer extends BasePeer {
   private executionAbort?: AbortController;
   private readonly budgetStops = new Map<number, string>();
   private readonly ceilingStops = new Map<number, PiToolStepCeiling>();
+  private ceilingUnsafe = false;
+  private turnObserved = false;
   private readonly idleBashReservations = new Map<string, { generation: number; expiresAt: number; deadlineAt?: number }>();
   private budgetGeneration = 0;
   private modelStep = 0;
@@ -629,9 +635,19 @@ export class PiPeer extends BasePeer {
   get mode(): "headless" | "tui" { return this.opts.mode; }
   get form(): StartForm { return this.opts.mode; }
 
+  private observeTurn(outcome: "aborted" | "success"): void {
+    if (this.turnObserved || !this.agentRunning && !this.activeEnvs.length) return;
+    this.turnObserved = true;
+    try {
+      if (outcome === "aborted") this.opts.onTurnAborted?.(this.activeEnvs.slice());
+      else this.opts.onTurnSuccess?.(this.activeEnvs.slice());
+    } catch { /* observation cannot change delivery settlement */ }
+  }
+
   /** Withdraw hub admission without shutting down a person's Pi TUI or its bridge. */
   async detachForRoster(): Promise<void> {
     if (this.opts.mode !== "tui") throw new Error("Pi roster detach requires a personal TUI");
+    this.observeTurn("aborted");
     this.terminalOwnerObservation = undefined;
     this.rosterDetached = true; this.rosterEpoch++;
     this.setState("offline");
@@ -673,7 +689,8 @@ export class PiPeer extends BasePeer {
     if (!snapshot.idle) this.clearWatchdog();
   }
 
-  async stop(reason?: string, failureCause?: DeliveryFailureCause): Promise<void> {
+  async stop(reason?: string, failureCause?: DeliveryFailureCause, cause: "aborted" | "failure" = "aborted"): Promise<void> {
+    if (cause === "aborted") this.observeTurn("aborted");
     if (reason !== undefined) this.requestedStopReason = reason;
     this.rosterEpoch++;
     this.terminalOwnerObservation = undefined;
@@ -759,6 +776,7 @@ export class PiPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason });
       throw new Error(reason);
     }
+    this.turnObserved = false;
     this.setState("busy"); this.activeEnvs = envs; this.currentReply = replyParent(envs); this.settledText = "";
     const rosterEpoch = this.rosterEpoch;
     let attempted = false;
@@ -896,6 +914,7 @@ export class PiPeer extends BasePeer {
         else {
           if (this.pendingPromptId || this.activeEnvs.length) {
             // Await the prompt's exact ACK before deciding whether its effect was absent or uncertain.
+            this.observeTurn("aborted");
             this.rosterDetached = true; this.rosterEpoch++; this.clearWatchdog();
             this.activeEnvs = []; this.currentReply = undefined; this.settledText = ""; this.settledError = "";
             this.abortTools();
@@ -967,6 +986,7 @@ export class PiPeer extends BasePeer {
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration + 1;
       if (generation <= this.budgetGeneration) return;
       this.modelStep = 0;
+      this.ceilingUnsafe = false; this.turnObserved = false;
       this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false; this.abortedToolIds.clear(); this.abortIdsOverflow = false;
       this.usageSeen.clear(); this.ceilingStops.clear(); this.abortTools(); this.executionAbort = new AbortController(); this.budgetGeneration = generation; this.noteActivity(); this.agentRunning = true; this.setState("busy");
     }
@@ -977,6 +997,8 @@ export class PiPeer extends BasePeer {
       const ceiling = piToolStepCeiling(event);
       if (ceiling && ceiling.sessionId === this.sessionId && ceiling.generation === this.budgetGeneration && this.agentRunning && this.state === "busy" && !this.ceilingStops.has(ceiling.generation)) {
         this.ceilingStops.set(ceiling.generation, ceiling);
+        // Tools may settle before agent_settled; that cannot erase uncertainty at the ceiling.
+        this.ceilingUnsafe = this.activeTools > 0 || this.pendingToolGenerations.size > 0;
         for (const old of this.ceilingStops.keys()) if (old < ceiling.generation - 8) this.ceilingStops.delete(old);
       }
     }
@@ -1003,20 +1025,23 @@ export class PiPeer extends BasePeer {
       if (typeof event.text === "string" && event.text.trim()) this.settledText = event.text;
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration;
       const approvalStopReason = this.approvalStopReason;
-      const text = this.settledText.trim(); const error = approvalStopReason || this.budgetStops.get(generation) || this.settledError; const cancelled = !error && this.settledCancelled;
+      const text = this.settledText.trim(); const error = approvalStopReason || this.budgetStops.get(generation) || this.settledError; const cancelled = this.settledCancelled;
       const ceiling = this.ceilingStops.get(generation);
+      const settledCeiling = !!ceiling && !!error && !cancelled && !approvalStopReason && !this.budgetStops.has(generation)
+        && !this.ceilingUnsafe && !this.activeTools && !this.pendingToolGenerations.size && this.acceptingTools;
+      const ceilingReason = settledCeiling && ceiling ? `ceiling steps ${ceiling.count}/${ceiling.limit}` : undefined;
       this.budgetStops.delete(generation);
       this.ceilingStops.delete(generation);
       this.settledText = ""; this.settledError = ""; this.settledCancelled = false;
       // Answer the peers this turn was for, not every peer on the bus (issue #29). activeEnvs still holds the
       // whole delivery here, steered additions included.
       const reply = { inReplyTo: this.currentReply, to: replyAudience(this.activeEnvs) };
-      if (cancelled) this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply);
+      if (cancelled) { this.observeTurn("aborted"); this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply); }
       else if (error?.startsWith("execution budget")) this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
       else if (approvalStopReason) this.onMessage?.(approvalStopReason, reply);
-      else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling);
-      else if (text) this.finalAnswer(text, reply);
-      for (const id of this.activeDeliveryIds) this.delivery({ id, state: approvalStopReason ? "completed" : error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
+      else if (error) { this.turnObserved = true; void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling, settledCeiling); }
+      else { this.observeTurn("success"); if (text) this.finalAnswer(text, reply); }
+      for (const id of this.activeDeliveryIds) this.delivery({ id, state: approvalStopReason || settledCeiling ? "completed" : error || cancelled ? "needs_review" : "completed", ...(ceilingReason ? { reason: ceilingReason } : error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
       this.activeDeliveryIds.clear();
       this.currentReply = undefined; this.activeEnvs = [];
       this.hubPromptId = undefined; this.hubPromptGeneration = undefined;
@@ -1093,7 +1118,8 @@ export class PiPeer extends BasePeer {
     const envs = this.activeEnvs; this.activeEnvs = [];
     for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: error.message });
     this.activeDeliveryIds.clear();
-    if (envs.length && !this.requestedStopReason && !this.rosterDetached) {
+    if (envs.length && !this.requestedStopReason && !this.rosterDetached && !this.turnObserved) {
+      this.turnObserved = true;
       this.onMessage?.(approvalStopReason ? `${approvalStopReason} Pi is offline because its extension could not abort the turn; restart with ahub pi and settle the held delivery after inspecting prior work.` : "Pi turn failed; inspect its session and any partial effects before continuing.", { inReplyTo: this.currentReply });
       if (!approvalStopReason && !(error instanceof ApprovalWaitStop)) void this.opts.onTurnFailure?.(envs, error.message).catch(() => this.opts.log?.("Pi failure handoff could not be completed"));
     }
@@ -1137,7 +1163,7 @@ export class PiPeer extends BasePeer {
     const envs = this.activeEnvs.slice(), reply = this.currentReply;
     this.stopping = true;
     try {
-      await this.stop(undefined, failureCause);
+      await this.stop(undefined, failureCause, "failure");
       // The process exit handler may already have reported this failure.
       if (this.activeEnvs.length) this.fail(error);
     } catch (stopError) {
