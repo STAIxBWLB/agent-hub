@@ -427,3 +427,16 @@ test("#1484 ahub task show for a missing id writes to stderr, exits 1 and names 
   const found = await f.run(["task", "show", String(f.tasks[0]!.id)]);
   expect(found.code).toBe(0); expect(found.stdout).not.toBe("");
 }, 20_000);
+
+test("#1484 a piped ahub doctor does not wrap a finding; with COLUMNS set no line exceeds it, and the 32-cell name cap still applies", async () => {
+  const f = fixture();
+  const piped = await f.run(["doctor", "--color=never"]);
+  const long = piped.stdout.split("\n").filter(line => Bun.stringWidth(line) > 120);
+  expect(long.length, "a finding longer than 120 cells must stay on one line on a pipe").toBeGreaterThan(0);
+  // a wrapped continuation of a marker row starts with spaces and no marker: none exists on a pipe
+  for (const line of piped.stdout.split("\n")) if (line.startsWith("  ") && !/^ {2}(✓|✗|⚠|\?|-|~|\*|→|ok|x|!|->) /.test(line) && line.trim()) throw new Error(`wrapped continuation on a pipe: ${line.slice(0, 80)}`);
+  const narrow = await f.run(["doctor", "--color=never"], { COLUMNS: "80" });
+  for (const line of narrow.stdout.split("\n")) expect(Bun.stringWidth(line), line).toBeLessThanOrEqual(80);
+  const names = [...piped.stdout.matchAll(/^ {2}\S+ +(?:fail |warn |unknown )?([^:\n]+):/gm)].map(m => m[1]!);
+  for (const name of names) expect(Bun.stringWidth(name), name).toBeLessThanOrEqual(32 + "unknown ".length);
+}, 30_000);

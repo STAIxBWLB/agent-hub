@@ -575,7 +575,7 @@ const DOCTOR_MARKER: Record<DoctorCheck["level"], MarkerName> = { fail: "fail", 
  * `ahub doctor` as standard v1 reads: per section a marker, the check (capped at 32 cells, a long path shortened in the middle) and its finding;
  * failures first, then warnings, unknowns and oks; one summary line last. The word of each state stays in the row, so it reads without color.
  */
-export function renderDoctor(checks: DoctorCheck[], columns = 80, _now = Date.now(), _full = false, ascii = false): Span[][] {
+export function renderDoctor(checks: DoctorCheck[], columns?: number, _now = Date.now(), _full = false, ascii = false): Span[][] {
   const report = new LayoutReport(columns, ascii);
   for (const section of ["Tools", "Hub", "Config", "Models", "Memory"] as const) {
     const group = checks.filter(check => check.section === section); if (!group.length) continue;

@@ -224,7 +224,7 @@ describe("CLI output standard v1: conformance checks", () => {
     expect(errorLines("x", "cd /p && ahub init\u001b[31m", false, false)[1]).not.toContain("\u001b"); // a next step is sanitized like any text
   });
   test("4: usage errors exit 2 and everything else 1", () => {
-    for (const message of ["usage: ahub stop <peer>", 'unknown command "x"; run ahub help', "--after pages a campaign\nusage: ahub study ...", "--task needs a value", "invalid release command", "ahub research: unknown argument --x (another project)", 'unknown option "--x" for ahub task propose; nothing was filed']) expect(failureExitCode(message), message).toBe(2);
+    for (const message of ["usage: ahub stop <peer>", 'unknown command "x"; run ahub help', "--after pages a campaign\nusage: ahub study ...", "--task needs a value", "invalid release command", "ahub research: unknown argument --x (another project)", "usage: ahub answer ...; unknown flag --x", "unknown flag --x", 'unknown option "--x" for ahub task propose; nothing was filed']) expect(failureExitCode(message), message).toBe(2);
     for (const message of ["no task #9", "never-ask requires --yes; nothing was changed", "no hub running for /p (run: ahub up)", "cannot read the manifest file"]) expect(failureExitCode(message), message).toBe(1);
   });
   test("5: with LANG=C the markers are ASCII and the report keeps its alignment", () => {
@@ -275,4 +275,12 @@ test("#1484 ahub doctor exits 1 on a failed row but ahub setup clears the rule b
   expect(main).toContain("let doctorSetsExit = true;");
   expect(main).toMatch(/else \{ doctorSetsExit = false; await commands\.doctor!\(\); \}/);
   expect(main).toMatch(/if \(doctorSetsExit && checks\.some\(check => check\.level === "fail"\)\) process\.exitCode = 1;/);
+});
+
+test("#1484 a Report with no wrap width keeps every line whole, and one with a width wraps at it", () => {
+  const long = "word ".repeat(60).trim();
+  const free = new Report(undefined).section("S").bullet("warn", long).kv([["note", long]]).render(false);
+  expect(free.filter(line => line.includes("word")).every(line => Bun.stringWidth(line) > 200)).toBe(true);
+  expect(free.some(line => /^ {3,}word/.test(line))).toBe(false);
+  for (const line of new Report(80).section("S").bullet("warn", long).kv([["note", long]]).render(false)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
 });
