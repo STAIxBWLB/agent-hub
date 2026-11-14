@@ -53,7 +53,7 @@ Defines how the agent process is started and commanded:
 * `defaultForm`: The default startup mode.
 * `launch(ctx)`: Generates the `LaunchPlan` (command, argv, environment variables, launch metadata).
 * `create(ctx)`: Factory constructing the `PeerAdapter` instance for driven daemon peers.
-* `conductorStartable`: Boolean indicating if `ahub up` or conductor can spawn this peer automatically.
+* `conductorStartable`: Boolean indicating if `ahub up` or conductor can spawn this peer automatically. The conductor's start refusal and the `hub_peer_start` description name these kinds from this flag and `optional` (`conductorStartText`, `src/adapters/registry.ts`), so a new kind needs no text edit.
 * `ownedFlags`: CLI flags owned by this tool's launcher.
 
 #### `identity`
@@ -77,9 +77,10 @@ Controls session restoration, thread continuity, and crash recovery:
 * `currentId(peer)`: Extracts the active session or thread ID from a running adapter.
 * `resumeArgv(binding, fresh)`: Builds CLI arguments to resume a persisted session.
 * `transcriptPath(binding)`: Resolves local transcript file path for audit/usage tracking.
+* `restoreVersionGate`: the `compat.ts` id whose installed version `ahub upgrade` checks before it restores this kind, so a refused launch is reported before the wait expires. It is an observational preflight only; the native start repeats its own version admission.
 
 #### `projection`
-Where the kind sits in the host's derived lists: `roleRank`, `startRank`, `helpRank` and `plannerEligible`. `KNOWN_PEERS`, `OPTIONAL_PEERS`, `START_MODE_PEERS`, `ROLE_ORDER`, `HELP_ORDER` and `PLANNER_PEERS` are derived from `ADAPTERS` and these ranks (`deriveAdapterLists`). The only hand-kept lists are the cross-release copies in `src/hub/peer-catalog.ts` (`KNOWN_PEERS`, `OPTIONAL_PEERS`) and `src/hub/start-mode.ts` (`START_MODE_PEERS`, for a dual-form kind): a new native kind is added there too, and `test/registry-guard.test.ts` fails until those copies equal the derived lists. A configured or external definition cannot set `projection`.
+Where the kind sits in the host's derived lists: `roleRank`, `startRank`, `helpRank` and `plannerEligible`. `conductorEligible` (an interactive form that receives hub pushes and holds a writable tools connection) and `reviewerEligible` (the kind can receive `hub_review`) say which flow roles it may hold; absent means false, so a kind not yet proven is not eligible. `roleEligibility` (`src/adapters/role-eligibility.ts`) reads them for the loader, `ahub init` and `ahub doctor`, and the table in [roles](roles.md#who-may-hold-what) is generated from it. `KNOWN_PEERS`, `OPTIONAL_PEERS`, `START_MODE_PEERS`, `ROLE_ORDER`, `HELP_ORDER` and `PLANNER_PEERS` are derived from `ADAPTERS` and these ranks (`deriveAdapterLists`). The only hand-kept lists are the cross-release copies in `src/hub/peer-catalog.ts` (`KNOWN_PEERS`, `OPTIONAL_PEERS`) and `src/hub/start-mode.ts` (`START_MODE_PEERS`, for a dual-form kind): a new native kind is added there too, and `test/registry-guard.test.ts` fails until those copies equal the derived lists. A configured or external definition cannot set `projection`.
 
 #### `cli`
 The `ahub <kind>` surface: `command`, `startWords(form)`, and for a fixed builtin `entry` (the launcher and whether it needs lifecycle admission), `preview`, `usage` (help lines) and `launchConfigKeys`. `builtinCliEntries(definitions)` projects the entries; no configuration or module can register one.
@@ -88,7 +89,7 @@ The `ahub <kind>` surface: `command`, `startWords(form)`, and for a fixed builti
 `instances.mode` is `headless` (needs a headless `start.create` factory) or `external` (a channel instance started from the person's terminal). A kind with no `instances` policy (Jcode) takes no extra instance, and `validateInstances` refuses a declaration of one. `attach` holds the pull-only forms, external-hello admission and the refusal texts for a TUI that attaches without a driven peer.
 
 #### Peer capability members
-The runtime peer (`PeerAdapter`, `src/hub/peers.ts`) exposes optional members that the daemon reads instead of checking its class (#625 phase 6): `sessionGeneration` (native session identity: absent keeps the owner-token fallback, present but undefined is unknown and refuses bounded checks), `checkpointUsesSessionGeneration` (opt out of generation-fenced checkpoints, as Pi does), `permissionModeState` (the effective native approval state, or `unknown` / `unmanaged`) and `setPermissionMode(mode)` (resolves only after the native side acknowledges). A driven peer publishes its turn's final answer through `BasePeer.finalAnswer` rather than `onMessage`, so the bus strips `amem:` Record lines before sharing it (#1320); the Record instruction reaches only the owners the daemon binds (see [memory](memory.md#agent-authored-records-1320)). Native safety proofs (Codex proxy and restoration, Claude launch generation) stay in the daemon.
+The runtime peer (`PeerAdapter`, `src/hub/peers.ts`) exposes optional members that the daemon reads instead of checking its class (#625 phase 6): `sessionGeneration` (native session identity: absent keeps the owner-token fallback, present but undefined is unknown and refuses bounded checks), `checkpointUsesSessionGeneration` (opt out of generation-fenced checkpoints, as Pi does), `permissionModeState` (the effective native approval state, or `unknown` / `unmanaged`) and `setPermissionMode(mode)` (resolves only after the native side acknowledges). `observedModel()` returns the model the native surface reported for the turn that just ended, with its evidence grade (`served`, `session` or `configured`), read once at `turn_end`; return undefined when the surface reports none, so unknown stays unknown. A driven peer publishes its turn's final answer through `BasePeer.finalAnswer` rather than `onMessage`, so the bus strips `amem:` Record lines before sharing it (#1320); the Record instruction reaches only the owners the daemon binds (see [memory](memory.md#agent-authored-records-1320)). Native safety proofs (Codex proxy and restoration, Claude launch generation) stay in the daemon.
 
 #### `budget`
 Defines quota and context window consumption readers:
@@ -212,6 +213,7 @@ bun test test/conformance/agy.test.ts
 3. **Recovery Metadata Hygiene**: No prompt text or credentials leaked into `recoveryMetadata`.
 4. **Watchdog Cancellation & Generation Fencing**: Expiry of the turn watchdog cancels prompts cleanly and generation fences prevent stale late answers from publishing.
 5. **Teardown & Cleanup**: When an adapter is stopped (`peer.stop()`), all owned child processes in the process group stop with it (the peer reaches offline).
+6. **Conductor (`conductor.test.ts`)**: For every kind and form `roleEligibility` admits as conductor, a real daemon accepts its conductor tools and sends it the conductor feed; the headless form of each is refused and fed nothing, and every ineligible kind keeps no conductor role.
 
 ---
 
@@ -225,4 +227,4 @@ When adding or updating an adapter, verify each item before opening a PR:
 - [ ] **PII Safety Verified**: Cloud models have `trust.onPrem: false`; verify PII markers refuse routing to this peer.
 - [ ] **Process Group Teardown**: Daemon-spawned processes use process groups and exit cleanly on stop.
 - [ ] **Conformance Kit Passes**: `bun test test/conformance` passes with zero regressions and no silent skips.
-- [ ] **Documentation Freshness**: Run `node scripts/check-docs.mjs` and update verified stamps in `docs/verified.json`.
+- [ ] **Documentation Freshness**: Run `node scripts/check-docs.mjs` and fix the documents it reports. Do not restamp `docs/verified.json` in a squash-merged PR; stamps are refreshed in the release PR.

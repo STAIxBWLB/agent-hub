@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.38.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.39.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 Inspect bounded task and attempt metadata with `ahub lineage show`; admit external
@@ -44,13 +44,13 @@ to you, questions agents ask you and, where acon supports them, unread results r
 console inbox. The plugin is `@staix/agent-hub/ui-plugin`; it uses the dashboard manager's
 own listing and forwarding, and an answer, a result receipt or a review comment sent from
 acon goes through a manager port of its own that needs acon's verified person.
-The plugin also feeds the console's Space view (Flat, Room and 3D): agents become actors
-at their desks, the task board's columns become zones, and task links and recent messages
-become links. The scene carries labels and states only, never message bodies or details.
+The plugin also feeds the console's Space view (Flat, Room and 3D): each project is its
+own group, agents become actors at their desks, the task board's columns become zones,
+and task links and recent messages become links. The scene carries labels and states only, never message bodies or details.
 
 `ahub init --dry-run --json` shows what init would write. On a new project at a
 terminal, `ahub init` asks each main setting with its default before writing; flags
-such as `--agents`, `--sdlc` or `--no-specs` set them directly, and `--yes` takes the
+such as `--agents`, `--sdlc`, `--conductor` or `--no-specs` set them directly, and `--yes` takes the
 defaults. The
 [Quickstart](docs/quickstart.md) walks through a first session and a working day,
 including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-project-with-sdlc-advise-or-enforce).
@@ -75,6 +75,8 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   exact-version ACP setter receipt; other ACP kinds remain unsupported.
   Active turns stay unchanged;
   [status distinguishes pending and unsupported selection](docs/operations.md#live-peer-model-overrides-1317).
+  When no model is configured, `ahub status` shows the last model a peer's finished
+  turn reported, graded `observed (served)` or `observed (session)`.
 - **A shared task board.** Work is proposed, accepted, done and reviewed through hub
   tools. Roles split planning, implementation and review (up to eight planners,
   each task bound to one), `routing.toml` picks
@@ -90,6 +92,13 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   another project running agent-hub on this machine goes onto that project's board
   with `ahub task handoff` (agents: `hub_task_handoff`), and its state changes come
   back as task messages.
+  Who conducts, plans and reviews is chosen at `ahub init` (`--conductor`,
+  `--planner`, `--reviewer`) and printed by `ahub roles`; the conductor must run
+  interactively, and a project without one is conducted by the person from
+  `ahub console` ([choosing roles](docs/roles.md#choosing-who-conducts-plans-and-reviews)).
+  With the lifecycle on, changes under `[security]` paths need a recorded security
+  pass, and `ahub sdlc audit start|show` runs a read-only security audit with a
+  coverage ledger ([security pass and audit](docs/sdlc.md#security-pass-for-sensitive-paths-hub-task-895-1403-a2)).
   For a PR already merged outside the hub, [merged PR adoption](docs/sdlc.md#adopting-a-pr-merged-outside-the-hub-1328-t3) verifies its recorded head and releases dependents: `ahub sdlc adopt-merge <task> --pr <n>`.
   An explicitly superseding task may [carry existing spec consent](docs/sdlc.md#spec-acceptance-481-s1) for the same repository and issue when the host verifies an unchanged body.
   Fresh Kimi reviews run periodic isolation checks off the hub event loop;
@@ -142,8 +151,9 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   roles: sessions are distinguishable, which is provenance, not authentication.
   Budgets pause an
   agent before it runs out of quota (at 99% of a window by default, the
-  `budget.gate` setting), and recovery never replays an
-  effect whose outcome is unknown.
+  `budget.gate` setting), a reviewer is skipped when its known usage reaches 80% or
+  its quota is unknown (`review.gate`, `review.unknown_quota`), and recovery never
+  replays an effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
   worktree with a machine-wide view, live settings reload, machine-local schedules
   that propose tasks by interval or by a `cron` expression in a time zone

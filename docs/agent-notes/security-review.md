@@ -10,8 +10,10 @@ Scope: the security pass of a review (`REVIEW.md`), and any change under `src/lo
 - Say `needs validation` when the deciding fact is not in the source (a provider setting, a browser behavior, a deployment). Name the missing fact; do not guess either way.
 - Check the control at the last place it is decided, in the file named below. A check at a call site that the shared function does not repeat is the finding.
 - Do not run target code to prove a point outside the hub's sandboxed runners, and never against a live hub, a real account or another project.
+- When the review request says a security pass is required or its applicability is unknown, read the sections below for the companions it names (none configured: the whole checklist) and send `hub_review` `security_pass: {covered: [...], not_covered: [...]}` with the verdict, naming every unit you did not read in `not_covered`. The pass binds to the reviewed head; review a later head again.
+- An important finding the change did not introduce carries `origin: "pre_existing"`: it does not block the approval, and the hub files a backlog card for it.
 
-## Agents and messages
+## Agents and messages (companion `agents`)
 
 - Every body rendered beside a hub-written header passes `sanitize()` (`src/hub/envelope.ts`). A new render path that skips it lets one agent forge another's header.
 - Hub messages stay untrusted in the receiver's instructions: `STANDING_INSTRUCTION` and `HUB_MESSAGE_INSTRUCTION` (`src/hub/envelope.ts`), the channel instructions (`src/adapters/claude-channel.ts`) and `templates/AGENTS.block.md` say the same thing. A change that weakens one of them weakens all peers of that kind.
@@ -19,13 +21,13 @@ Scope: the security pass of a review (`REVIEW.md`), and any change under `src/lo
 - What a model wrote is stored as a model's answer and kept out of later evidence (`src/hub/ask.ts`, `src/hub/inference.ts`). A model label that reaches an event or a record goes through `safeModelLabel` (`src/omniroute/usage.ts`).
 - Review-observer exclusion is one function, `isReviewObserverExcluded` (`src/hub/memory-policy.ts`); a new memory or telemetry path asks it.
 
-## Local servers and the control link
+## Local servers and the control link (companion `local-ipc`)
 
 - The daemon's HTTP and WebSocket listener refuses any request that carries an `Origin` header and requires the control token in `hello` (`src/hub/daemon.ts`). The dashboard accepts only its own origin (`src/hub/ui.ts`). The Pi relay refuses an `Origin` too (`src/adapters/pi.ts`). A new loopback listener needs both the origin refusal and a secret.
 - Every control message with a `rid` is answered, unknown ones included (`src/hub/daemon.ts`); an unanswered one hangs a newer client.
 - A fresh reviewer's MCP endpoint compares its authority in constant time (`src/adapters/reviewer-mcp.ts`). Do not replace it with `===`.
 
-## Data isolation and paths
+## Data isolation and paths (companion `data-isolation`)
 
 - PII is redacted where the envelope and the public view are built: `Tasks.publicTitle` and the task public view (`src/hub/tasks.ts`), event fields through the allowlists in `src/hub/operational-view.ts`. A new log line, notice, tool result or memory call that shows task text uses them; a redaction added at a call site is the finding.
 - PII decisions ask `onCampus()` (`src/omniroute/client.ts`), never `!offCampus()`: unknown is not on campus.
@@ -33,7 +35,7 @@ Scope: the security pass of a review (`REVIEW.md`), and any change under `src/lo
 - A lock is never removed on behalf of a dead holder with a check followed by an unlink. `SourceRegistry.locked` (`src/hub/sources.ts`) is the reference.
 - The gateway key and Access headers are read only under `src/omniroute/`.
 
-## Supply chain and release
+## Supply chain and release (companion `supply-chain`)
 
 - Workflow actions are pinned by commit SHA with the version in a comment; `test/workflow-pins.test.ts` refuses a tag. Workflow `permissions` stay at the minimum each job needs (`.github/workflows/`).
 - The dependency volume key covers everything that decides `node_modules` (`dependencyKey` in `src/hub/check-runner.ts`); a manifest with an install lifecycle script is refused, never keyed. Never add `--ignore-scripts` or a writable shared cache to make a run pass.
@@ -46,6 +48,7 @@ An audit task (`ahub sdlc audit start`, `docs/sdlc.md`) is a review-class task t
 
 - Report every unit you read with `hub_audit_report`: `covered`, `deferred` (say why) or `out_of_scope`. A unit you did not read is `deferred`, never `covered`. Units marked `covered (prior)` are the hub's: do not report them.
 - File findings in the review shape (`pass: security`, a boundary, `confirmed` or `needs_validation`). A `confirmed` important finding is only a candidate until a different reviewer verifies it, so state the evidence a second reader can check at `path:line`, and verify another reviewer's candidate by reading the cited code yourself.
+- Settle a verified finding (`settle: [{finding, disposition: fixed|false_positive}]`) only when you are not its finder, and in a call of its own, never in the call that verifies it. A settled finding no longer withholds its path and boundary.
 - This repository is public: put the boundary and the path of an open important finding in the tool only. Never in a message, a note, a commit or an issue. The person decides what is published.
 - Run target code only inside the hub's sandboxed runners; otherwise the finding is `needs_validation` and names the missing fact.
 

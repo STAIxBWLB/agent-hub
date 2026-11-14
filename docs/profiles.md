@@ -78,7 +78,8 @@ unavailable until an explicit re-registration can bind the same stored bytes and
 text; reads never invent a converter version or page coordinates. An already bound receipt and its stored text remain immutable: re-registering identical bytes does not refresh a changed converter fingerprint. Use the retained matching converter or a genuinely new input snapshot; versioned projection retention is the later upgrade path.
 
 `origins` reports connected groups of overlapping registered origins through
-opaque IDs. Private, unknown or over-bound inventories make that result unknown.
+opaque IDs. Private, unknown or over-bound inventories, or an inventory that
+changed during the read, make that result unknown; damaged evidence storage still fails.
 Repeated copies or a shared origin do not supply another group. These are
 provenance groups, not proof of independent corroboration, semantic support or
 truth. Source revalidation is offline and performs no download. A matching

@@ -85,9 +85,13 @@ minus its four-column indent and remain uncolored.
 
 `ahub help`, `ahub --help` and `ahub -h` print the commands grouped by section;
 `ahub help <command>` prints only that command's entries, and so does
-`ahub <command> -h` (or `--help`) when the flag is the only argument; anywhere else
+`ahub <command> -h` (or `--help`) when the flag is the only argument, and
+`ahub <command> <sub> -h` when the help lists that subcommand (#1433); anywhere else
 it is an ordinary argument, and `ahub claude` and `ahub codex` pass it on to the
-agent. An unknown command
+agent. `ahub task propose`, `ahub goal new` and `ahub task handoff` refuse a
+title word that starts with `--` and is not one of their flags, or is `-h`,
+naming the word and the usage before anything is filed; put a lone `--` before
+text that starts with dashes. An unknown command
 prints `unknown command "<name>"; run ahub help` and exits non-zero. Usages start
 at two spaces and descriptions at one fixed column, wrapped at word boundaries to
 the terminal width, read as at least 80 and at most 100 columns.
@@ -211,7 +215,7 @@ Home/End sequences is that many key presses, so a held key repeats its move. Hom
 or `<` jumps to a panel's first row and End or `>` to its last; the Events tab
 follows new events while the last row is selected and stays on a row you moved to.
 `w` opens the dashboard outside the Peers tab; in Peers it edits the selected
-peer's WIP limit. `:ui --all` works on the command line too. In the Peers tab the planner's row reads `(planner)`, and
+peer's WIP limit. `:ui --all` works on the command line too. In the Peers tab the planner's row reads `(planner)` and the conductor's `(conductor)`, both when one peer holds the two (`claude (conductor, planner)`, #1414), and
 `l` then `y` makes the selected peer the planner (`ahub settings set planner <peer>`). In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
 the stream; only the header is tab-flattened before tokenizing. Body lines retain
@@ -653,6 +657,7 @@ and so is every help entry the gate has no class for yet;
 | `ahub doctor --stale-anchors [--json]` | Allowed | a bounded read-only report of memory symbol anchors at current HEAD |
 | `ahub queue list [--peer <id>] [--json] [--full] [--color=...]` | Allowed | public queue metadata only; inspect your own public held bodies through `hub_inbox`; `ahub queue show` and operator resolution remain person/conductor operations |
 | `ahub roster [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |
+| `ahub roles [--json] [--color=...]` | Allowed | each rostered peer's flow roles as the running hub settled them (#1411 T2); no operand |
 | `ahub settings [list] [--json]`, `ahub settings get <key> [--json]` | Allowed | public registry values; secret-locating values, paths, undo records and config-editor details are withheld |
 | `ahub sdlc status\|explain [<task>] [--json] [--color=...]` | Allowed | public lifecycle status; private tasks stay stubs, without private evidence or receipts |
 | `ahub sdlc queue <owner/repo> [--json] [--color=...]`, `ahub sdlc release <owner/repo> [live-issue...] [--json] [--color=...]` | Allowed | public delivery/release readback for the checkout's GitHub origin, explicit SDLC config repos or person-imported public external records; no release authorization or mutation |
@@ -666,6 +671,7 @@ and so is every help entry the gate has no class for yet;
 | `ahub deliverables [--task <id>] [--approved] [--check] [--json]` | Allowed | only the rows `hub_task_show` would show the caller, through the same public screening (#933) |
 | `ahub room list [--json]`, `ahub room status [<name>] [--json]` | Allowed | room metadata only; every other `room` form, the inbox included, stays Console |
 | `ahub study show [<id> \| --after <id>] [--json] [--color=...]` | Allowed | the same read as `hub_study_show`: a private campaign, task or source shows ids, counts and states only; `study draft\|revise\|approve\|approve-protocol\|close` stay Console (#930) |
+| `ahub study evidence <ev-id> [--revision <n>] [--json] [--color=...]` | Allowed | re-reads one evidence link through current research scope and privacy (#931); `study evidence --task` and `study check` stay Console |
 
 `backlog list`, `release list` and `sdlc costs|metrics` retain their existing
 planner/person policy. Their CLI forms stay Console for ordinary agents; a
@@ -713,7 +719,14 @@ project configuration, then open `ahub console` in a split terminal for approval
 ```
 
 Launch that peer with `ahub claude` for channel pushes, or select `codex` in
-`roles` and launch `ahub codex`. The conductor splits work into owned tasks,
+`roles` and launch `ahub codex`. Only an interactive peer may conduct
+(#1408, [roles](roles.md)): claude, codex, jcode and pi are `conductorEligible`.
+The hub ignores a `conductor` on another kind, or on a peer whose effective
+`peers.<peer>.start_mode` is `headless`, with a notice naming the fix, and gives
+the role to nobody else, so the person conducts from `ahub console`. Setting the
+conductor's start mode to `headless` is refused until the role moves, and
+`ahub doctor`'s `roles` row names the settled holders and warns about an ignored
+conductor. The conductor splits work into owned tasks,
 observes `hub_status`, moves stalled work and obtains review before reporting
 results and open decisions. It does not implement the tasks it handed out.
 `hub_peer_start` starts a peer in the start mode a person set for it (see
@@ -1051,13 +1064,18 @@ plugin stale when the module changed after setup, so run `ahub setup` again afte
 - **Space.** The plugin feeds acon's Space view from the dashboard's office model
   (`src/ui/office-space.ts`): peers are actors (state from condition, approvals and review, with
   approval, queue, paused and mode marks), the office rooms are queue, work, review and done zones,
-  tasks are cards, and overlap, conflict and cohort links and recent message arcs are links. Ids
-  are project-prefixed, every running project's scene is merged within acon's caps (32 actors, 200
-  cards, 64 links, newest links kept), and a project that has not answered within about 3 s is left
+  tasks are cards, and overlap, conflict and cohort links and recent message arcs are links. Each
+  project is one Space group (#1375) that every actor, zone and card names, so actor names stay
+  bare; an actor carries its configured roles and, only while working, `since` (the open turn's
+  start). Ids are project-prefixed, every running project's scene is merged within acon 0.2's caps
+  (96 actors, 200 groups, 200 cards, 128 links, newest links kept; a record whose group is past the
+  group bound loses its group reference), and a project that has not answered within about 3 s is left
   out of that poll (its last scene is kept as the baseline for its next answer). The running-project
   listing is reused for 10 s and then refreshed in the background, concurrent reads share one
   computation, and a viewer that passes back the combined cursor gets `changed: false` while the
-  scene, the per-project cursors and the project set are unchanged (#1380). Only labels and states
+  scene, the per-project cursors and the project set are unchanged (#1380). The manifest
+  declares how stale a reused reply may be: `inboxMaxAgeMs` 1000 and `spaceMaxAgeMs` 2000 (one
+  poll interval). Only labels and states
   reach the scene, never message bodies, task details,
   approval titles or reasons; a PII task's card shows the `[pii]` stub.
 
@@ -1097,7 +1115,10 @@ pushes reach the session. In SDLC `advise` or `enforce`, it names the person's
 spec acceptance (`ahub sdlc accept <task> --issue <n>`), plan-departure consent
 when needed (`ahub sdlc accept-departure <task> <head> <reason...>`) and guarded
 merge (`ahub sdlc merge <task>`) after the owner calls `hub_task_done` on an open
-PR, reviewer approval and green exact-head CI. Preview, declined prompt and
+PR, reviewer approval and green exact-head CI. In those modes, when the project has a GSD
+`.planning/STATE.md` (a `gsd_state_version` in its frontmatter), it also points
+at [moving from GSD](sdlc.md#moving-from-gsd) (#1431); init only reads that
+file and never changes `.planning/`. Preview, declined prompt and
 refusal paths print no success next steps.
 
 Whether the repository commits its shared hub config is a choice made at init
@@ -1146,7 +1167,9 @@ An owned child observed to exit before readiness produces an error; a cancelled
 operation cannot confirm startup.
 
 Each completed daemon startup writes one `startup timings ms:` line to `hub.log`,
-with fixed phase names and durations. The three event-seed consumers share one
+with fixed phase names and durations; the span before `task_runtime` carries
+the sub-phases `task_checks`, `task_ports`, `task_board` and `task_recovery`
+(#1445), and its board reads cover open tasks only. The three event-seed consumers share one
 lossless streaming pass; abandoned snapshot bodies are not read for startup.
 The [startup receipt](verification/2026-11-07-daemon-startup-1232.md) separates
 seed I/O from bounded usage-rollup I/O and records the isolated measurements.
@@ -1918,7 +1941,14 @@ ahub study show [rc-0123456789ab]            # list campaigns (50 per page, --af
 ahub study close rc-0123456789ab 2 --reason "answered"
 ahub study approve-protocol <64-hex hash>    # person only: approve one exact experiment protocol
 ahub study experiments --campaign rc-0123456789ab [--after 50]   # read the recorded attempts (also --attempt ra-... or --plan <hash> --baseline ra-... --variant ra-...)
+ahub study evidence ev-... [--revision 2]    # re-read one evidence link under current privacy (--task <task>: person-only authoring bindings)
+ahub study check 12 manifest.json            # person only: offline synthesis readiness of one manifest; non-ready exits nonzero
 ```
+
+`ahub study evidence`, `ahub study check` and a manifest-bound `ahub task claim ... --manifest <file>
+--disposition resolved|qualified` (#931) need a running hub that advertises `research_synthesis`; the CLI
+refuses before sending to an older hub. What they report, and what `ready` does not mean, is in
+[profiles](profiles.md).
 
 - **Contract.** The JSON names the question, scope, exclusions, registered source ids, 1 to 32 units
   (round, question, perspective, required output, sources, dependencies and a purpose: discovery,
@@ -1979,9 +2009,11 @@ ahub study experiments --campaign rc-0123456789ab [--after 50]   # read the reco
   ids, counts, states and provenance and stubs its text as `[pii]`. Study tool arguments and results are kept out
   of hub-managed memory capture.
 - **Upgrades.** The daemon advertises `research_records`, `research_dispatch`, `research_dropped_offers`,
-  `research_experiments`, `research_comparisons`, `research_runners` and `research_evidence` (#931). While the
+  `research_experiments`, `research_comparisons`, `research_runners`, `research_evidence` and
+  `research_evidence_withdrawal` (#931). While the
   matching rows exist (for `research_runners`, stored runner receipts or any `research.runners` block; for
-  `research_evidence`, stored claim evidence links), a restart, upgrade or recovery onto a release without the
+  `research_evidence`, stored claim evidence links; for `research_evidence_withdrawal`, withdrawn evidence
+  revisions), a restart, upgrade or recovery onto a release without the
   feature is refused.
 
 ## Hub memory
@@ -1999,7 +2031,7 @@ ahub memory forget 1a2b3c4d              # a person's; also promote, demote, sup
 
 `"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
 
-The exact-pinned `@staix/agent-mem` 0.23.1 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
+The exact-pinned `@staix/agent-mem` 0.26.0 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
 
 The daemon checks its selector at hub operation entry and before candidate/counter writes. It does not hot-switch handles or provide an atomic fence against selection changes during an in-flight core call. Quiesce consumers and close their handles before migration or selection changes; reopen through the supported session-preserving lifecycle afterward. Candidate/counter storage remains `M/candidates.db`, independent of `G`; since agent-mem 0.7.0 `amem review` also lists and accepts candidates on a selected generation. Every running hub using this home needs an authenticated receipt: a matching ready binding, or a generation-capable unbound receipt (`disabled` when native memory is off, `unavailable` when opening failed) proving it holds no memory handle. An unbound daemon and zero running hubs are quiesced for memory; a stale bound handle, unreadable registry or unknown runtime is not ready. Existing JSON memory/goal results remain unchanged; the additive binding receipt belongs to daemon status, profile-check and the decay object. This source integration does not authorize installing a new runtime, migrating real memory, restarting sessions or claiming real-machine sync/capture receipts. Migration/deactivation and their limits belong to [agent-mem](https://github.com/STAIxBWLB/agent-mem); see [the hub profile contract](memory.md#selected-memory-profile).
 
@@ -2648,7 +2680,10 @@ it does not recover an earlier model. Raw/pull-only native TUI attachments remai
 unsupported. A retained former override is labelled `native thread default (was override)`;
 a rejected start leaves the next start free to sample a corrected selection.
 The model and its source appear in `ahub status` and JSON output. An unknown native default remains
-unknown. `pending next turn` means the desired value has not been acknowledged
+unknown. When no override, instance, launch or native baseline model is known, the
+last model a finished turn reported is shown with source `observed (served)` or
+`observed (session)` (#1402); a `configured` grade is never shown, and the
+observation is dropped when the peer goes offline or its adapter is replaced. `pending next turn` means the desired value has not been acknowledged
 at an eligible boundary; it does not claim the current turn changed models.
 
 Changing a desired value during a turn leaves that turn unchanged. Steering and
@@ -3346,6 +3381,13 @@ source has not reported yet says which. `--json` carries `kind`, `source`, `supe
 without them and the CLI classifies a window by its source. `ahub doctor` adds the row `kimi usage source` (counting, no ceiling, or unreadable).
 The console's peer detail (Enter on Peers) and the Usage detail, and the dashboard's Usage budgets row, show the same kind and source per window.
 
+While a Codex peer's account is budget-paused (#1440), the hub reads `codex rateLimits` through the attached TUI link every 60 seconds instead of the
+usual `usagePollMs` cadence (ten minutes), so a reset is seen early; it never redeems a credit or resumes a peer, and the existing reset/resume path
+still decides. For a paused peer `ahub budget` adds the account diagnostics that read allows: reset credits available with their earliest expiry
+(or `expiry unknown`), whether ordinary usage is allowed, `credits available` and `unlimited credits` (yes, no or unknown), `stale snapshot` when old,
+and `turns would use paid credits` when ordinary usage is not allowed but paid credits are. These fields change no admission, pause or resume, are
+held in memory only, and read unknown after a restart until the next native read; balances and account or credit identifiers are never kept.
+
 Kimi Code CLI 2.1.1's observed 5-hour usage-limit refusal creates a hard budget reading (`kimi ACP usage-limit refusal`). `ahub status` shows a budget pause and `ahub budget` shows its source and reset estimate. The refusal gives no reset timestamp, so the hub estimates the reset at five hours after it was observed and resumes on the next budget tick after the existing one-minute grace. With `budget.wait_max_min` below that estimate, the existing budget relay automatically hands open tasks to an attached eligible peer; routing skips Kimi while paused. No checkpoint is requested from an exhausted agent.
 `ahub budget resume kimi` overrides the reading so the provider can be tried early. A new provider refusal ends that override and pauses it again; a pending soft checkpoint cannot postpone this hard pause.
 During one hub run, an early override followed by the same window's refusal keeps its earlier future reset bound; a provider's explicit reset remains authoritative. A restored pause without a per-window reading cannot identify that earlier window, so its next refusal starts a new estimate.
@@ -4010,7 +4052,7 @@ or the plugin is older than the daemon it installed (#1179). It prints nothing w
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
-| 0.26.0 through 0.36.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.26.0 through 0.39.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The protocol window remains 16
 through 17, so the published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -4018,7 +4060,10 @@ capabilities still require their own labels. A disjoint window refuses with 4426
 The compatibility-floor `protocol` field remains readable by old clients.
 
 Release N-1 is counted in minor versions, separately from this protocol window
-(#1164, family contract entelecheia/ai-workspace#70). For 0.38.x, N-1 is 0.37.0,
+(#1164, family contract entelecheia/ai-workspace#70). For 0.39.x, N-1 is 0.38.0,
+the latest published patch of 0.38.x (exact `@staix/agent-mem` 0.24.0, control
+protocol 17 with descriptor floor 16). Every patch on 0.39.x keeps that release
+baseline. For 0.38.x, N-1 is 0.37.0,
 the latest published patch of 0.37.x (exact `@staix/agent-mem` 0.24.0, control
 protocol 17 with descriptor floor 16). Every patch on 0.38.x keeps that release
 baseline. For 0.37.x, N-1 is 0.36.0,
@@ -5585,7 +5630,7 @@ that the file is untracked; a dropped value is reported by the settings result.
 
 ## SDLC artifact receipts and gates
 
-The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). A PR merged outside the hub is recorded with `ahub sdlc adopt-merge <task> --pr <n>` (person or current conductor), which approves the task and releases dependents only at its recorded head with green required checks ([adoption](sdlc.md#adopting-a-pr-merged-outside-the-hub-1328-t3)). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). `ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]` (the planner tool `hub_sdlc_metrics`, planner or person, read-only) reports lead times, first-pass approval and check rates, rework rounds, stale-head re-reviews and open stalls from board history, with `unknown` counted and never 0; optional `[bands.<metric>]` in `sdlc.toml` add control bands that the daemon checks every five minutes in advise or enforce, writing a hub notice (`log`), a read-only `triage` backlog task (`diagnose`) or a `plan` backlog card (`propose`), one per breach episode and never a GitHub issue (S7, see [metrics](sdlc.md#sdlc-metrics-and-control-bands-481-s7)). With the lifecycle on, a task's issue identity is linked when it is proposed or accepted, from the one issue it names (an imported GitHub issue, or a `#N`, `owner/repo#N` or issue URL in its title); a title that names a sibling repository (`agent-mem#13`) links only when `refs.repo` names it, and without `refs.repo` the propose result says to set it. `ahub backlog groom` also backfills up to 32 links per call, within 1 s (#723). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S3 structured review findings (an open Important finding blocks approval in enforce; `max_nits` in `sdlc.toml` caps nits) and S2 literal-path plan conformance with the person-only `ahub sdlc accept-departure <task> <head> <reason...>` are in source; see [findings](sdlc.md#structured-review-findings-481-s3) and [plan conformance](sdlc.md#plan-conformance-481-s2). S4 [test integrity](sdlc.md#test-integrity-481-s4) and S6 [release authorization](#release-approval-and-optional-tag-guard) are in source too. S5 is in source as an [eval gate mechanism](sdlc.md#eval-gate-for-agent-configuration-481-s5) with no suite chosen, and S7 adds merge-time readback, [release metrics](sdlc.md#release-metrics-481-ac12) and an opt-in security baseline; a full live advise/release cycle and the per-release gates-run record remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
+The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). A PR merged outside the hub is recorded with `ahub sdlc adopt-merge <task> --pr <n>` (person or current conductor), which approves the task and releases dependents only at its recorded head with green required checks ([adoption](sdlc.md#adopting-a-pr-merged-outside-the-hub-1328-t3)). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). `ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]` (the planner tool `hub_sdlc_metrics`, planner or person, read-only) reports lead times, first-pass approval and check rates, rework rounds, stale-head re-reviews and open stalls from board history, with `unknown` counted and never 0; optional `[bands.<metric>]` in `sdlc.toml` add control bands that the daemon checks every five minutes in advise or enforce, writing a hub notice (`log`), a read-only `triage` backlog task (`diagnose`) or a `plan` backlog card (`propose`), one per breach episode and never a GitHub issue (S7, see [metrics](sdlc.md#sdlc-metrics-and-control-bands-481-s7)). With the lifecycle on, a task's issue identity is linked when it is proposed or accepted, from the one issue it names (an imported GitHub issue, or a `#N`, `owner/repo#N` or issue URL in its title); a title that names a sibling repository (`agent-mem#13`) links only when `refs.repo` names it, and without `refs.repo` the propose result says to set it. `ahub backlog groom` also backfills up to 32 links per call, within 1 s (#723). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S3 structured review findings (an open Important finding blocks approval in enforce; `max_nits` in `sdlc.toml` caps nits) and S2 literal-path plan conformance with the person-only `ahub sdlc accept-departure <task> <head> <reason...>` are in source; see [findings](sdlc.md#structured-review-findings-481-s3) and [plan conformance](sdlc.md#plan-conformance-481-s2). S4 [test integrity](sdlc.md#test-integrity-481-s4) and S6 [release authorization](#release-approval-and-optional-tag-guard) are in source too. S5 is in source as an [eval gate mechanism](sdlc.md#eval-gate-for-agent-configuration-481-s5) with no suite chosen, and S7 adds merge-time readback, [release metrics](sdlc.md#release-metrics-481-ac12) and an opt-in security baseline; a full live advise/release cycle and the per-release gates-run record remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged. #1403 adds a `[security]` table whose paths need a recorded `security_pass` on the approving review ([security pass](sdlc.md#security-pass-for-sensitive-paths-hub-task-895-1403-a2)), `ahub sdlc audit start|show` with a hub-written coverage ledger ([audit](sdlc.md#security-audit-with-a-coverage-ledger-hub-task-896-1403-a4-a5)), plan intent fields with advisory base drift on accept and done, and `ahub sdlc survey start|show` ([surveys](sdlc.md#advisor-surveys-and-considered-findings-1403-t7)); while survey or considered-finding state exists, a restart, upgrade or recovery onto a target without `advisor_surveys` is refused. The person may instruct the configured conductor in its own session to run `ahub sdlc configure` for `off`/`advise` and required checks ([#1432](sdlc.md#instructed-conductor-configuration-1432)).
 ## Supervision proposals
 
 `supervision.mode` is off by default and machine-local (`ahub settings set supervision.mode advisory`); a committed
@@ -5693,7 +5738,7 @@ Known ceiling (#559): jcode 0.98.1's top-level TUI spawns a shared server, witho
 
 TUI input may interleave with an ACP turn; there is no single-writer guard. Closing the TUI leaves the owned ACP session running, and native policy remains unmanaged. The isolated 0.98.1 transport receipt is [recorded separately](verification/2026-10-20-jcode-tui-0.98.1.md); it is not personal account or real provider verification.
 
-After upgrading to the recipient-retry release, a Jcode project MCP entry written before `AGENTHUB_DELIVERY_ONLY` was added is intentionally stale. Once per project, the person runs `ahub jcode --mode headless` before using conductor/dashboard starts. The launcher rewrites only the owned entry with the delivery-only marker, preserving foreign entries and refusing collisions; recovery relaunches already use this CLI path. Readiness checks never rewrite the file, and an explicit false marker or any other drift remains refused. Until that rewrite, daemon starts keep their actionable stale-entry refusal rather than advertising a retry tool Jcode cannot use.
+After upgrading to the recipient-retry release, a Jcode project MCP entry written before `AGENTHUB_DELIVERY_ONLY` was added is intentionally stale. Once per project, the person runs `ahub jcode --mode headless` before using conductor/dashboard starts. The launcher rewrites only the owned entry with the delivery-only marker, preserving foreign entries and refusing collisions; recovery relaunches already use this CLI path. Readiness checks never rewrite the file, and an explicit false marker or any other drift remains refused. Until that rewrite, daemon starts keep their actionable stale-entry refusal rather than advertising a retry tool Jcode cannot use. `ahub jcode` and `ahub agy` compare the entry's `AGENTHUB_PROJECT_DIR` (and agy's `AGENTHUB_STATE_DIR`) by real path (#1423), so after a project directory is renamed with its old path left as a symlink, the hub's own entry is recognised and rewritten with the new paths. An entry for another project or peer, or a path that no longer resolves, is refused with the differing field: remove the `agent-hub-jcode` (or agy's `agent-hub`) key and run the command again.
 
 
 Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or runtime mode mapping is invented. Quota and consumption remain unknown. Supported versions run from 0.98.0 up to, not including, 1.0.0 (#529); another version is refused before the owned daemon starts, with the version named and the trust command (#691). Every owned jcode process (version probe, daemon, ACP and TUI) runs with `JCODE_NO_TELEMETRY=1`. Native session/load (verified on 0.94.0, 0.98.1 and 0.99.1) cannot prove identity, so attached Jcode blocks controlled recovery before effects and crash recovery asks for deliberate native reopening. A requested load without an echoed identity refuses; no fresh session is presented as restored. Provider/tool/native teardown receipts remain unverified in the pinned contract report.
@@ -5956,7 +6001,12 @@ in the same write and sends it a fresh owner offer, so it can accept at once. A
 reserved peer that cannot take it (offline, paused, excluded, at its WIP limit)
 refuses the pull before any change, naming the peer and its reason; it is not
 passed over to another peer. `ahub route explain` previews the same reserved-only
-choice. An unreserved pull keeps reserving a slot as above. A reserved offer that
+choice. An unreserved pull keeps reserving a slot as above. A refused pull
+(#1430) names each owner refusal routing recorded (peer and reason, never task
+text) beside the WIP or hold detail, and ends with the next step: reserve a
+peer with `hub_backlog_plan` `fields.reserved` and pull again, or, when a
+person's reservation is retained, ask the person to change it. A conductor's
+`hub_task_assign` on a backlog card names the same route. A reserved offer that
 was never started can return untouched. Omitting planning fields retains its
 reservation, so `tasks.auto_pull` can offer it again as soon as the slot is free.
 
@@ -6331,7 +6381,7 @@ Default-branch capture runs only at daemon startup when a Claude implementer is 
 
 Project Git retains the core policy that clears credential.helper and core.askpass; an HTTPS push needing those helpers may fail, rather than importing credentials or relaxing that policy. Task branch/config proof reads are bounded synchronous reads (1.5 seconds per reader); slow or unknown evidence asks. The existing sandbox profile discovery is also synchronous; moving it to an asynchronous inventory proof with a shared deadline remains a follow-up. The nonce is visible in a permission response, so it proves a bounded grant rather than native-dispatch provenance.
 
-The [native permission receipt](verification/2026-10-23-headless-claude-permissions.md) covers Claude Code 2.1.309, and the [2.1.310 receipt](verification/2026-10-26-claude-implementer-2.1.310.md) repeats it on 2.1.310 (with 2.1.309 as a control), and the [2.1.314 receipt](verification/2026-10-31-claude-implementer-2.1.314.md) repeats it and the host-wrapper procedure on 2.1.314 (with 2.1.310 as a control), and the [2.1.316 receipt](verification/2026-10-31-claude-implementer-2.1.316.md) repeats both on 2.1.316 (with 2.1.314 as a control), and the [2.1.318 receipt](verification/2026-11-05-claude-implementer-2.1.318.md) repeats both on 2.1.318 (with 2.1.316 as a control), and the [2.1.319 receipt](verification/2026-11-06-claude-implementer-2.1.319.md) repeats both on 2.1.319 (with 2.1.318 as a control), and the [2.1.322 receipt](verification/2026-11-10-claude-implementer-2.1.322.md) repeats both on 2.1.322 (with 2.1.319 as a control), each with a deterministic loopback fixture and no real account/model call. It is not sandbox proof or a runtime receipt gate. The real account/model/person interaction remains a separate live leg.
+The [native permission receipt](verification/2026-10-23-headless-claude-permissions.md) covers Claude Code 2.1.309, and the [2.1.310 receipt](verification/2026-10-26-claude-implementer-2.1.310.md) repeats it on 2.1.310 (with 2.1.309 as a control), and the [2.1.314 receipt](verification/2026-10-31-claude-implementer-2.1.314.md) repeats it and the host-wrapper procedure on 2.1.314 (with 2.1.310 as a control), and the [2.1.316 receipt](verification/2026-10-31-claude-implementer-2.1.316.md) repeats both on 2.1.316 (with 2.1.314 as a control), and the [2.1.318 receipt](verification/2026-11-05-claude-implementer-2.1.318.md) repeats both on 2.1.318 (with 2.1.316 as a control), and the [2.1.319 receipt](verification/2026-11-06-claude-implementer-2.1.319.md) repeats both on 2.1.319 (with 2.1.318 as a control), and the [2.1.322 receipt](verification/2026-11-10-claude-implementer-2.1.322.md) repeats both on 2.1.322 (with 2.1.319 as a control), and the [2.1.323 receipt](verification/2026-11-13-claude-implementer-2.1.323.md) repeats both on 2.1.323 (with 2.1.322 as a control), each with a deterministic loopback fixture and no real account/model call. It is not sandbox proof or a runtime receipt gate. The real account/model/person interaction remains a separate live leg.
 
 A headless Claude reviewer is run by the hub instead (task 223): declare
 `"claude-review": { "kind": "claude", "roles": ["reviewer"], "start_mode": "headless" }`
@@ -6537,6 +6587,7 @@ The selected project's configured conductor may run the commands below through i
 | doctor --orphans --kill | Selected project's positively identified hub-owned process only; no cross-project registrations or unsigned process files. Prints the stopped pids for a person; `--json` prints the hub's reply |
 | logs / export | Bounded daemon projections, with unsupported/private records withheld; logs -f ends when authority ends |
 | settings set | Only the thirteen existing live registry keys listed below |
+| sdlc configure [--mode off\|advise] [--required-checks <names>] | Only on the person's direct instruction in the conductor's own session (#1432); stages `off`/`advise` and the required check names for the next hub start, never `enforce` or while running or file mode is `enforce` ([contract](sdlc.md#instructed-conductor-configuration-1432)) |
 
 The exact settings keys are `task_sweep.enabled`, `task_sweep.auto_reassign`, `task_sweep.no_writes_turns`, `task_sweep.interval_s`, `task_sweep.unaccepted_min`, `task_sweep.idle_min`, `task_sweep.review_min`, `task_sweep.ready_min`, `task_sweep.ladder_min`, `snapshots.enabled`, `research.enabled`, `approvals.notify` and `tasks.escalate_after`. New keys receive no authority by prefix. Generic roster setting writes still use the dedicated roster lifecycle. Conductor setting records name the initiating peer, and conductor writes preserve the person's pending undo record. An intervening write can still invalidate that undo through the existing file-digest guard; preserving the record does not bypass that guard. Permission modes, roles, `models start|stop`, arbitrary configuration reload and undo remain person commands. `task cancel` remains a separate own-task `hub_task_cancel` permission, not a conductor operation.
 
@@ -7103,13 +7154,13 @@ Corrupt or unreadable provenance stays unknown and held. The status next step di
 
 ## Memory sync diagnosis (#1173)
 
-A ready memory profile does not prove a successful sync. Read the separate automatic-sync result and timestamp in `ahub status` or Memory. It resets to not run after daemon restart; it is not a machine-global record of manual CLI attempts. Missing remote configuration is the neutral `not-configured` state; an interrupted/stopped attempt is neutral `stopped`. Both keep their safe next step and produce no failure log under `quietSyncError`.
+A ready memory profile does not prove a successful sync. Read the separate automatic-sync result and timestamp in `ahub status` or Memory. It resets to not run after daemon restart; it is not a machine-global record of manual CLI attempts. Missing remote configuration (shared v1, generation and sharded homes alike) is the neutral `not-configured` state; an interrupted/stopped attempt is neutral `stopped`. Both keep their safe next step and produce no failure log under `quietSyncError`.
 
-For policy-declined rows, a person runs `ahub memory declined --json` to inspect IDs and safe rule categories, never note text. The pinned agent-mem 0.23.1 public `inspectSyncPolicy` API bounds physical outbound inspection for shared-v1 and generation profiles. A complete result supplies the declined IDs and rules; `complete:false` means the scan is unavailable, stale or over its diagnostic bound, not zero declined rows. The command stays read-only and rechecks its profile binding. No migration or policy edit is performed automatically.
+For policy-declined rows, a person runs `ahub memory declined --json` to inspect IDs and safe rule categories, never note text. The pinned agent-mem 0.26.0 public `inspectSyncPolicy` API bounds physical outbound inspection for shared-v1 and generation profiles. A complete result supplies the declined IDs and rules; `complete:false` means the scan is unavailable, stale or over its diagnostic bound, not zero declined rows. The command stays read-only and rechecks its profile binding. No migration or policy edit is performed automatically.
 
 The hub projects verified withheld/exported counts when a trusted SDK sync returns a successful placement result. That projection is covered by an injected-result fixture, not an activated-store sync. Agent-mem requires a fresh `placementAttestation` even for an already active v3 store; since 0.35.0 the daemon builds one with the package's own `createPlacementAttestation` on every sync pass and supplies no writer facts of its own, so no attestation is fabricated. A refused attestation is the closed cause `writer` in status, the dashboard and the log: its category, its cause class (`missing`, `changed`, `unavailable`) and the next step (repair the amem install and its host pin, then a person runs `amem migrate --sync-placement --dry-run`). Activation remains a person-run action. A nonzero withheld count in a successful result is not a transport failure and does not mean those rows were deleted, rewritten or published. Inspect the IDs and rules before deliberately changing any source or approved policy; a forget operation does not remove its original text from physical history.
 
-A legacy store without active per-row placement still blocks a sync containing declined rows. Status names inactive placement and the person-only `amem migrate --sync-placement --dry-run` preview, which requires every local writer installation through repeatable `--writer-root` flags. It keeps `ahub memory declined` as the safe inspection step. The native CLI supports activation from 0.22.0; the pinned core is 0.23.1. See the [activation preview and prerequisites](memory.md#automatic-sync-health-1173) before any separately authorized apply. Preview writes nothing, and activation does not migrate layouts, change policy or automatically raise a format floor. The hub does not invoke it or fabricate its proof.
+A legacy store without active per-row placement still blocks a sync containing declined rows. Status names inactive placement and the person-only `amem migrate --sync-placement --dry-run` preview, which requires every local writer installation through repeatable `--writer-root` flags. It keeps `ahub memory declined` as the safe inspection step. The native CLI supports activation from 0.22.0; the pinned core is 0.26.0. See the [activation preview and prerequisites](memory.md#automatic-sync-health-1173) before any separately authorized apply. Preview writes nothing, and activation does not migrate layouts, change policy or automatically raise a format floor. The hub does not invoke it or fabricate its proof.
 
 The bounded diagnostic addresses #1173 AC4; AC5 has result projection and the host attestation. Whether an activated store syncs on a person's machine is not established by the isolated fixtures.
 
@@ -7260,7 +7311,7 @@ real-home policy change is performed by posting a visual.
 
 Headless Record handling follows amem's effective machine and repository policy. Set `records: false` in the amem configuration to disable instruction, capture and Record preference; repository policy can only narrow machine policy. There is no hub-only override. Private or unverified contexts fail closed for capture without preventing ordinary answer routing.
 
-Upgrade every amem consumer sharing a memory home together, including native CLI hooks and embedded hub/plugin copies. A 0.22.1 hook drain silently discards Record format-3 spool entries without a counted loss, and its config parser refuses the `records` key even when false, so set `records: false` only after every consumer is upgraded. The hub exact-pins 0.23.1 and uses its public `recordsEnabled` accessor for the active home and execution repository; it does not upgrade the other consumers automatically. No real home is migrated by the feature's fixtures.
+Upgrade every amem consumer sharing a memory home together, including native CLI hooks and embedded hub/plugin copies. A 0.22.1 hook drain silently discards Record format-3 spool entries without a counted loss, and its config parser refuses the `records` key even when false, so set `records: false` only after every consumer is upgraded. The hub exact-pins 0.26.0 and uses its public `recordsEnabled` accessor for the active home and execution repository; it does not upgrade the other consumers automatically. No real home is migrated by the feature's fixtures.
 
 Count-only `records capture`, `records forwarded`, `records brief` and `records recall` diagnostics report accepted/dropped rows or before/after UTF-8 bytes. Record text, anchors, native session IDs and credentials are absent from these diagnostics. An absent registry proof or an unavailable Record source preserves old note content; a privacy or policy change during a read withholds the stale block.
 
