@@ -150,6 +150,31 @@ for (const move of ["unassign", "away-back"] as const) test(`#1447 ${move} inval
   expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(false);
 }, 20_000);
 
+test("#1447 ownership refusal guidance survives host cleanup until the original checkpoint timeout", async () => {
+  const f = await fixture(0.8, false, undefined, {
+    roles: { ...DEFAULT_CONFIG.roles, other: ["implementer", "reviewer"] },
+    budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 30 },
+    inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false },
+  });
+  expect((await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture requires the attached WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1"); f.reading(); await until(() => !!request(f.pushes));
+  const ask = request(f.pushes), requestId = /request_id: "([^"]+)"/.exec(ask.body)![1];
+  expect((await f.console_.request({ t: "task", op: "task_assign", args: { id: 1, peer: "other", role: "owner" } })).ok).toBe(true);
+  const pending = () => f.daemon.bus.pendingEnvelopes("claude").some(env => env.id === ask.id);
+  const deadline = performance.now() + 10_000;
+  while (pending() && performance.now() < deadline) await Bun.sleep(10);
+  expect(pending(), "host maintenance withdrew the invalid request before its 30-second deadline").toBe(false);
+  expect(f.daemon.bus.pendingEnvelopes("claude").some(env => env.refs?.task === "1" && /no longer assigned/.test(env.body))).toBe(true);
+  const marker = "AFTER_HOST_CLEANUP_CHECKPOINT_CANARY";
+  const rejected = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: requestId } });
+  expect(rejected.ok).toBe(false); expect(String(rejected.error)).toContain("task #1");
+  expect(String(rejected.error)).toContain("moved"); expect(String(rejected.error)).toContain("hub_task_list");
+  expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
+  expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(false);
+}, 20_000);
+
 test("native context checkpoint saves a non-private note without pausing or moving tasks, and never broadcasts its body", async () => {
   const f = await fixture(); f.reading(); await until(() => !!request(f.pushes));
   const ask = request(f.pushes), id = /request_id: "([^"]+)"/.exec(ask.body)![1];

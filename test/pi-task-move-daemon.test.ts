@@ -38,7 +38,7 @@ test("a real task escalation while Pi chat is queued puts the withdrawal in the 
     daemon = await startDaemon({ cwd: root, stateDir, projectId: "pi-task-move-fixture", instanceId: "pi-task-move-instance",
       controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, sdlc: sdlcConfig(undefined), memorySyncTrigger: () => {},
       config: { ...DEFAULT_CONFIG, batch_ms: 0, start: { agents: [] },
-        roster: { claude: false, codex: false, kimi: false, qwen: false, jcode: false, local: false, pi: true, other: true },
+        roster: { claude: false, codex: false, kimi: false, qwen: false, jcode: false, local: false, pi: true },
         roles: { pi: ["implementer"], other: ["implementer", "reviewer"] },
         pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] },
         memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
@@ -47,10 +47,12 @@ test("a real task escalation while Pi chat is queued puts the withdrawal in the 
         task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
     const running = daemon;
     person = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
+    // Like daemon-context fixtures, this attached legacy external WS peer is absent
+    // from roster declarations; explicit unknown roster keys are intentionally refused.
     other = await ControlClient.connect(stateDir, { role: "peer", peer: "other", projectRoot: root });
     await currentState(() => running.bus.stateOf("other") === "idle", "the attached fixture recipient is ready for real assignment");
     const started = await person.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx" } });
-    expect(started.ok, String(started.error ?? "")).toBe(true);
+    expect(started.ok === true, String(started.error ?? "")).toBe(true);
     const pi = running.bus.peers.get("pi");
     if (!(pi instanceof PiPeer)) throw new Error("fixture requires the real Pi adapter with its existing native fake");
     await currentState(() => pi.state === "idle", "the existing fake Pi completed native startup");
@@ -82,7 +84,7 @@ test("a real task escalation while Pi chat is queued puts the withdrawal in the 
     expect(pi.state).toBe("idle"); expect(prompts).toEqual([]);
     // The console/CLI form invokes Tasks.escalate; no task-flow method is replaced or spied.
     const moved = await person.request({ t: "task", op: "task_escalate", args: { id: task.id } });
-    expect(moved.ok, String(moved.error ?? "")).toBe(true);
+    expect(moved.ok === true, String(moved.error ?? "")).toBe(true);
     expect(board.get(task.id)?.owner).toBe("other");
     const withdrawal = running.bus.pendingEnvelopes("pi").find(env => env.from === HUB && env.kind === "task"
       && env.refs?.task === String(task.id) && env.body.includes("moved to other") && env.body.includes("Stop working on it."));
