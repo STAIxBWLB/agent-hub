@@ -120,18 +120,23 @@ function canonicalPath(path) {
   return canonical(path);
 }
 function realPath(path) {
-  try {
-    return realpathSync(path);
-  } catch (error) {
-    if (!resolve(path).includes("\\"))
-      throw error;
-    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
-    const r = childProcess().spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
-    if (r.status !== 0 || !r.stdout.endsWith(`
-`))
-      throw error;
-    return r.stdout.slice(0, -1);
+  const hasParent = path.split(sep).includes("..");
+  let error;
+  if (!hasParent) {
+    try {
+      return realpathSync(path);
+    } catch (caught) {
+      if (!resolve(path).includes("\\"))
+        throw caught;
+      error = caught;
+    }
   }
+  const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
+  const r = childProcess().spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
+  if (r.status !== 0 || !r.stdout.endsWith(`
+`))
+    throw error ?? new Error(`Cannot resolve existing path: ${path}`);
+  return r.stdout.slice(0, -1);
 }
 function isDenied(path, extra = []) {
   const norm = path.split(sep).join("/");
@@ -13513,7 +13518,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.4"
     },
     dependencies: {
-      "@staix/agent-mem": "0.26.0"
+      "@staix/agent-mem": "0.26.1"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
