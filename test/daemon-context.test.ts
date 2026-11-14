@@ -171,6 +171,11 @@ test("#1447 ownership refusal guidance survives host cleanup until the original 
   const rejected = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: requestId } });
   expect(rejected.ok).toBe(false); expect(String(rejected.error)).toContain("task #1");
   expect(String(rejected.error)).toContain("moved"); expect(String(rejected.error)).toContain("hub_task_list");
+  const wrong = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: "another-request" } });
+  expect(wrong.ok).toBe(false); expect(String(wrong.error)).not.toContain("task #1");
+  f.session("native-replacement", "replacement-launch");
+  const replacement = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: marker, request_id: requestId } });
+  expect(replacement.ok).toBe(false); expect(String(replacement.error)).not.toContain("task #1");
   expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
   expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes(marker))).toBe(false);
 }, 20_000);

@@ -3642,6 +3642,11 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   // ---- budget relay -------------------------------------------------------------------------------------------
   const checkpointWaits = new Map<PeerId, { reason: "quota" | "context"; requestId: string; session: string | undefined; valid: () => boolean; ownershipFailure?: () => string | undefined; done: (summary: string | undefined) => void }>();
+  // One body-free invalidation per peer, retained only to its original request deadline.
+  const checkpointOwnershipRefusals = new Map<PeerId, { requestId: string; reason: "quota" | "context"; current: () => boolean; cause: string; timer: ReturnType<typeof setTimeout> }>();
+  const checkpointRefusalMessage = (cause?: string) => cause
+    ? `checkpoint refused because ${cause}; read the move or cancel notice and call hub_task_list before answering a fresh checkpoint request`
+    : "checkpoint request expired or absent; read pending notices and wait for a fresh checkpoint request";
   const contextSession = (peer: PeerId): string | undefined => {
     const p = bus.peers.get(peer);
     if (isWsPeer(p) && p.claiming) return undefined;
@@ -3944,15 +3949,18 @@ export async function startDaemon(opts: DaemonOptions) {
       if (reason === "quota") log(`budget ${peer}: no open work, no checkpoint`);
       return Promise.resolve(undefined);
     }
+    const previousRefusal = checkpointOwnershipRefusals.get(peer);
+    if (previousRefusal) { clearTimeout(previousRefusal.timer); checkpointOwnershipRefusals.delete(peer); }
     const requestId = randomUUID();
     const body = reason === "quota"
       ? "Checkpoint request: your quota window is almost used up and the hub is about to pause you. Finish the step you are on, write what you were doing, what is half done and what whoever continues must know to .agenthub/checkpoint.md, then call hub_checkpoint {summary} with the same text. Your open tasks will be handed to another peer; you will be resumed when the window resets."
       : `Checkpoint request: your native context window is near the configured threshold. Finish the step you are on and call hub_checkpoint {summary, request_id: "${requestId}"} with what you were doing, what is half done and what a fresh session would need. This only saves a checkpoint; keep your tasks and session. The operator decides whether to continue or restart. Do not include private task text.`;
     const ask = newEnvelope(HUB, body, { to: [peer], kind: "budget", priority: "important" });
     return new Promise((resolve) => {
-      const peerCurrent = () => !stopping && !recoveryActive() && bus.peers.get(peer) === owner && (!generationFenced || owner.sessionGeneration === generation) && ["idle", "busy"].includes(bus.stateOf(peer)) && contextSession(peer) === session;
+      const identityCurrent = () => !stopping && !recoveryActive() && bus.peers.get(peer) === owner && (!generationFenced || owner.sessionGeneration === generation) && contextSession(peer) === session;
+      const peerCurrent = () => identityCurrent() && ["idle", "busy"].includes(bus.stateOf(peer));
       const ownershipFailure = (): string | undefined => {
-        if (!peerCurrent()) return undefined; // A changed session learns no prior request's task ids.
+        if (!identityCurrent()) return undefined; // A changed session learns no prior request's task ids.
         for (const binding of ownedWork) {
           try {
             const task = board.get(binding.id);
@@ -3964,13 +3972,20 @@ export async function startDaemon(opts: DaemonOptions) {
         return undefined;
       };
       const valid = () => peerCurrent() && ownershipFailure() === undefined;
-      const done = (summary: string | undefined) => {
-        clearTimeout(timer);
-        checkpointWaits.delete(peer);
+      const done = (summary: string | undefined, expired = false) => {
+        const cause = !expired && summary === undefined ? ownershipFailure() : undefined;
+        const current = checkpointWaits.get(peer);
+        if (cause && (!current || current.requestId === requestId)) {
+          checkpointOwnershipRefusals.set(peer, { requestId, reason, current: identityCurrent, cause, timer });
+        } else {
+          clearTimeout(timer);
+          if (checkpointOwnershipRefusals.get(peer)?.requestId === requestId) checkpointOwnershipRefusals.delete(peer);
+        }
+        if (current?.requestId === requestId) checkpointWaits.delete(peer);
         if (summary === undefined) bus.withdraw(ask.id);
         resolve(summary);
       };
-      const timer = setTimeout(() => done(undefined), config.budget.checkpoint_timeout_s * 1000);
+      const timer = setTimeout(() => done(undefined, true), config.budget.checkpoint_timeout_s * 1000);
       checkpointWaits.set(peer, { reason, requestId, session, valid, ownershipFailure, done });
       bus.publish(ask);
     });
@@ -6100,11 +6115,16 @@ export async function startDaemon(opts: DaemonOptions) {
         const summary = String(a.summary ?? "").trim();
         if (!summary) throw new Error("summary is required");
         const pending = checkpointWaits.get(by);
-        if (!pending) throw new PreEffectToolRefusal("checkpoint request expired or absent; read pending notices and wait for a fresh checkpoint request");
+        if (!pending) {
+          const refusal = checkpointOwnershipRefusals.get(by);
+          const matches = refusal && (refusal.reason === "context" ? a.request_id === refusal.requestId : !a.request_id || a.request_id === refusal.requestId);
+          const cause = matches && refusal.current() ? refusal.cause : undefined;
+          throw new PreEffectToolRefusal(checkpointRefusalMessage(cause));
+        }
         if (!pending.valid()) {
           const cause = pending.ownershipFailure?.();
           pending.done(undefined);
-          throw new Error(cause ? `checkpoint refused because ${cause}; read the move or cancel notice and call hub_task_list before answering a fresh checkpoint request` : "checkpoint request expired or its peer/session changed, or task ownership changed; read the move or cancel notice and call hub_task_list before answering a fresh checkpoint request");
+          throw new Error(cause ? checkpointRefusalMessage(cause) : "checkpoint request expired or its peer/session changed; read pending notices and wait for a fresh checkpoint request");
         }
         if (pending.reason === "context") {
           if (a.request_id !== pending.requestId) throw new Error("context checkpoint request_id does not match");
@@ -13217,6 +13237,8 @@ export async function startDaemon(opts: DaemonOptions) {
     tasks.stopCiWatchers(); // #785 P1b: no per-head CI watcher outlives the hub
     for (const i of intervals) clearInterval(i);
     for (const pending of checkpointWaits.values()) pending.done(undefined);
+    for (const refusal of checkpointOwnershipRefusals.values()) clearTimeout(refusal.timer);
+    checkpointOwnershipRefusals.clear();
     for (const p of permissions.values()) p.done(undefined);
     questionDesk.close(); // #1053: waiting calls end `pending`; every row stays open for the late path after the restart
     try {
