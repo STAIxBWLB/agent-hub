@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assessVersion, COMPAT, readTrust, trustFile, VERSION_REFUSAL, writeTrust, type CompatId } from "../src/adapters/compat.ts";
@@ -15,7 +15,7 @@ test("a verified version passes, a contract gate admits its line as untested, an
   if (!refused.ok) {
     expect(refused.reason.startsWith(VERSION_REFUSAL)).toBe(true);
     expect(refused.reason).toContain("0.165.0");
-    expect(refused.reason).toContain("verified 0.146.0, 0.163.0, 0.164.0, 0.166.0");
+    expect(refused.reason).toContain("verified 0.146.0, 0.163.0, 0.164.0, 0.166.0, 0.169.0");
     expect(refused.reason).toContain("ahub agents trust codex-review 0.165.0");
   }
   // An isolation gate has no line: a newer minor is refused, not assumed compatible.
@@ -220,7 +220,7 @@ test("Codex reviewer 0.163.0 is receipt-verified without machine trust (#371)", 
 
 test("Codex reviewer 0.164.0 is receipt-verified without machine trust, and its neighbours are not (#757)", () => {
   expect(assessVersion("codex-review", "0.164.0", [])).toMatchObject({ ok: true, state: "verified", version: "0.164.0" });
-  expect(COMPAT["codex-review"].verified).toEqual(["0.146.0", "0.163.0", "0.164.0", "0.166.0"]);
+  expect(COMPAT["codex-review"].verified).toEqual(["0.146.0", "0.163.0", "0.164.0", "0.166.0", "0.169.0"]);
   for (const near of ["0.164.1", "0.165.0", "0.164.0-rc.1", "0.164", "codex-cli 0.164.0"]) expect(assessVersion("codex-review", near, []).ok).toBe(false);
   expect(COMPAT["codex-review"].parse("codex-cli 0.164.0\n")).toBe("0.164.0");
 });
@@ -228,8 +228,17 @@ test("Codex reviewer 0.164.0 is receipt-verified without machine trust, and its 
 
 test("Codex reviewer 0.166.0 is receipt-verified without machine trust, and nearby versions stay refused (#888)", () => {
   expect(assessVersion("codex-review", "0.166.0", [])).toMatchObject({ ok: true, state: "verified", version: "0.166.0" });
-  expect(COMPAT["codex-review"].verified).toEqual(["0.146.0", "0.163.0", "0.164.0", "0.166.0"]);
+  expect(COMPAT["codex-review"].verified).toEqual(["0.146.0", "0.163.0", "0.164.0", "0.166.0", "0.169.0"]);
   for (const near of ["0.165.0", "0.166.1", "0.167.0", "0.166.0-rc.1", "codex-cli 0.166.0"]) expect(assessVersion("codex-review", near, []).ok).toBe(false);
+});
+
+test("Codex reviewer 0.169.0 is receipt-verified without machine trust, and 0.167.x and neighbours stay refused (#888)", () => {
+  expect(assessVersion("codex-review", "0.169.0", [])).toMatchObject({ ok: true, state: "verified", version: "0.169.0" });
+  expect(COMPAT["codex-review"].verified).toEqual(["0.146.0", "0.163.0", "0.164.0", "0.166.0", "0.169.0"]);
+  expect(COMPAT["codex-review"].parse("codex-cli 0.169.0\n")).toBe("0.169.0");
+  for (const near of ["0.167.0", "0.167.2", "0.168.0", "0.169.1", "0.170.0", "0.169.0-rc.1", "0.169", "codex-cli 0.169.0 extra"]) expect(assessVersion("codex-review", near, []).ok).toBe(false);
+  expect(COMPAT["codex-review"].receipt).toBe("docs/verification/2026-11-14-codex-0169-reviewer-isolation.md");
+  for (const file of ["2026-11-14-codex-0169-reviewer-isolation.md", "2026-11-14-codex-0169-reviewer-tool-call.md"]) expect(existsSync(join(import.meta.dir, "..", "docs", "verification", file))).toBe(true);
 });
 
 test("Kimi 2.3.0 and Qwen 0.26.0 are receipt-verified without machine trust (#373)", () => {
