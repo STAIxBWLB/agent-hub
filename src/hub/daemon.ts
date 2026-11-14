@@ -5753,7 +5753,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // shared memory and a new task could be routed to a cloud peer without matching any pattern.
     if (op === "hub_experiment_record" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     if (op === "hub_evidence_record" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("evidence recording is unavailable in a private or PII context; keep private work on-prem and record only public evidence outside that context");
-    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_roadmap_edit" || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new" || op === "hub_study_draft" || op === "hub_study_revise")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_roadmap_edit" || op === "hub_backlog_return_untouched" || op === "hub_task_wait" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new" || op === "hub_study_draft" || op === "hub_study_revise")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and shared memory. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && (a.plan != null || a.refs != null)))) {
@@ -6070,6 +6070,10 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason, a.capacity === true));
+      case "hub_task_wait":
+        // #1454: the reason is public text the owner wrote; a private or PII turn never records one (it would reach every board view and the planner).
+        if (piiTurn || turns.get(by)?.private || contextPii(by)) throw new PreEffectToolRefusal("a wait is unavailable in a private or PII turn; record it from a public turn on the task");
+        return line(await tasks.wait(by, { id: a.id, until: a.until, reason: a.reason }));
       case "hub_task_done": {
         // #1115: a hub-sandboxed peer's worktree is staged, committed and pushed by the hub first, so the done carries the real head and branch.
         const handed = await tasks.worktreeHandoff(by, a.id, a.refs);
@@ -7318,6 +7322,8 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
     ...(lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined ? { lifecycleAudit: true } : {}),
     ...(lifecycleConfig.mode !== "off" ? { lifecycleSurvey: true } : {}),
+    // #1454: `hub_task_wait` is published only while the idle sweep is on; off keeps every tool list as it was.
+    ...(taskSweepConfig(config.task_sweep).enabled ? { taskWait: true } : {}),
     // Every supported peer's membership, for launchers that run outside the console role (#484).
     roster: [...KNOWN_PEERS, ...OPTIONAL_PEERS].map(peer => ({ peer, on: onRoster(peer) })),
     protocol: PROTOCOL_MIN, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL,
@@ -8864,7 +8870,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, peer, unit),
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
-        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...sessionTitleTools([...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off", lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined, lifecycleConfig.mode !== "off"), ...CONDUCTOR_TOOLS], adapter?.title === "hub").map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
+        tools: [...TOOL_SCHEMAS.map((t) => t.function), ...sessionTitleTools([...profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off", lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined, lifecycleConfig.mode !== "off", taskSweepConfig(config.task_sweep).enabled), ...CONDUCTOR_TOOLS], adapter?.title === "hub").map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal, context) => {
           const reviewToolTurn = reviewObserverHeld(peer) || pi.budgetEnvelopes.some(isReviewObserverExcluded) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded);
           if (MEMORY_READ_TOOLS.has(name)) validateMemoryRead(name, raw as Record<string, unknown>);
@@ -9112,6 +9118,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sdlcCriteria: lifecycleConfig.mode !== "off",
         sdlcAudit: lifecycleConfig.mode !== "off" && lifecycleConfig.security !== undefined,
         sdlcSurvey: lifecycleConfig.mode !== "off",
+        taskWait: taskSweepConfig(config.task_sweep).enabled,
         taskTool: (name, a, turn) => name === "hub_ask" && turn.signal ? invocationRequestSignal.run({ signal: turn.signal, current: () => !turn.signal!.aborted }, () => taskOp(peer, name, a, true, turn.pii)) : taskOp(peer, name, a, true, turn.pii),
         beforeInput: (context, envs) => beforeOwnedObserverInput(peer, local, context, envs),
         inputReleased: (context, envs) => ownedObserverInputReleased(peer, local, context, envs),

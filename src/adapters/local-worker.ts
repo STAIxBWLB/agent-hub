@@ -41,6 +41,8 @@ export interface LocalOptions {
   /** #1403 A4: the lifecycle is on and `[security]` is configured, so `hub_audit_report` is listed. */
   sdlcAudit?: boolean;
   sdlcSurvey?: boolean;
+  /** #1454: the idle sweep is on, so `hub_task_wait` is published. */
+  taskWait?: boolean;
   /** Host-owned conditional instruction, sampled once per delivered turn. */
   titlePreface?: () => string | undefined;
   cwd: string;
@@ -246,7 +248,7 @@ export class LocalPeer extends BasePeer {
         await this.requireBudget(envs, "model_calls");
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         if (signal.aborted) throw new Error("turn cancelled before model request");
-        const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria, this.opts.sdlcAudit, this.opts.sdlcSurvey).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
+        const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria, this.opts.sdlcAudit, this.opts.sdlcSurvey, this.opts.taskWait).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
         this.releaseObserverInput(this.currentObserverInputContext, envs);
         const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model, task);
@@ -670,7 +672,7 @@ export class LocalPeer extends BasePeer {
     }
     const fixedModel = selection?.model ?? policy?.fixedModel ?? this.opts.fixedModel;
     const task = policy?.task === undefined ? undefined : Number(policy.task);
-    const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria, this.opts.sdlcAudit, this.opts.sdlcSurvey).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
+    const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria, this.opts.sdlcAudit, this.opts.sdlcSurvey, this.opts.taskWait).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: fixedPrompt }, ...this.history, ...turnMsgs];
     const routed = await this.hubCall(route, messages, policy, signal);

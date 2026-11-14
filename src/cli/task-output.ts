@@ -104,6 +104,8 @@ function taskBlock(task: any, columns: number | undefined, now: number, detail: 
     ...pair("class", dash(task?.class), columns, w, undefined, "  "), ...pair("owner", taskHolderText(task, "owner"), columns, w, undefined, "  "), ...pair("reviewer", taskHolderText(task, "reviewer"), columns, w, undefined, "  "));
   if (task?.planner !== undefined) out.push(...pair("planner", taskHolderText(task, "planner"), columns, w, undefined, "  "));
   if (task?.reserved) out.push(...pair("reserved", task.reserved, columns, w, undefined, "  "));
+  // #1454: a recorded wait, with whether it has passed: a passed one means the idle ladder restarts, so it reads as attention.
+  if (task?.wait && typeof task.wait.until === "number") out.push(...pair("waiting", `${task.wait.passed ? "passed " : "until "}${new Date(task.wait.until).toISOString()}${task.wait.by ? `, set by ${task.wait.by}` : ""}${task.wait.reason ? `: ${task.wait.reason}` : ""}`, columns, w, task.wait.passed ? "attention" : undefined, "  "));
   if (task?.handoffOrigin) out.push(...pair("from", `project ${task.handoffOrigin.projectId}, handed off by ${task.handoffOrigin.peer}${typeof task.handoffOrigin.task === "number" ? ` (their task #${task.handoffOrigin.task})` : ""}`, columns, w, "attention", "  "));
   out.push(...pair("after", ids(task?.deps), columns, w, undefined, "  "));
   if (typeof task?.release === "number") out.push(...pair("release", `#${task.release}`, columns, w, undefined, "  "));
@@ -177,7 +179,7 @@ export function renderBacklogResult(op: keyof typeof BACKLOG_HEAD, result: unkno
   return out;
 }
 
-const GROOM_TEXT: Record<string, string> = { "text-dependency": "text names a dependency the card does not declare", overlap: "overlaps other open work", duplicate: "may duplicate another card", "over-wip": "its owner is over the WIP limit", stale: "has not moved for a long time", superseded: "was superseded", blocked: "cannot be routed", "closed-issue": "its issue is closed" };
+const GROOM_TEXT: Record<string, string> = { "text-dependency": "text names a dependency the card does not declare", overlap: "overlaps other open work", duplicate: "may duplicate another card", "over-wip": "its owner is over the WIP limit", stale: "has not moved for a long time", superseded: "was superseded", blocked: "cannot be routed", "closed-issue": "its issue is closed", "wait-passed": "its recorded wait has passed, so the idle sweep runs again: record a new wait or check the owner" };
 /** `ahub backlog groom`: what the planner would look at, one line per finding. */
 export function renderGroom(digest: unknown, columns?: number, _now = Date.now()): Span[][] {
   const d = digest as any;
