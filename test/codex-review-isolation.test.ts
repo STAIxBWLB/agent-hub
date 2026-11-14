@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
-import { codexCoreDenyGlobs, codexReviewerBackend } from "../src/adapters/codex-review-isolation.ts";
+import { codexCoreDenyGlobs, codexReviewerBackend, denyCoversDirectory } from "../src/adapters/codex-review-isolation.ts";
 import { writeTrust } from "../src/adapters/compat.ts";
 import type { ReviewerPrepareContext } from "../src/adapters/reviewer-print.ts";
 
@@ -393,7 +393,7 @@ test("#722 a binary that cannot be bound or an unreadable executable is the bina
 
 test("#722 the reason text for every class is a fixed sentence with no path, version output or token", async () => {
   const { REVIEWER_CAUSE_CLASSES, reviewerUnavailableReason } = await import("../src/adapters/reviewer-print.ts");
-  expect(REVIEWER_CAUSE_CLASSES).toEqual(["version", "binary", "mcp_inventory", "plugins_hooks_apps", "sandbox_proof", "credential_root", "timeout", "unknown"]);
+  expect(REVIEWER_CAUSE_CLASSES).toEqual(["version", "binary", "mcp_inventory", "plugins_hooks_apps", "sandbox_proof", "credential_root", "fixture_root_denied", "timeout", "unknown"]);
   for (const cause of REVIEWER_CAUSE_CLASSES) {
     const text = reviewerUnavailableReason(cause);
     expect(text).toContain(`[cause: ${cause}]`);
@@ -414,5 +414,75 @@ test("runtime review model adds only -m to the existing isolated launch and neve
     expect(selected.args.filter(word => word !== "-m" && word !== "runtime-review-model").slice(0, 9)).toEqual(plain.args.slice(0, 9));
     expect(selected.isolation).toMatchObject({ strictMcp: true, readOnly: true, ephemeral: true });
     await plain.cleanup?.(); await selected.cleanup?.();
+  } finally { f.close(); }
+});
+
+// #1493: a deny entry that contains the directory the proof makes its fixture in used to fail the proof as `sandbox_proof`, because the proof's own public
+// canary sat under the denied tree. Model-free: the fake `sandbox` command records the canary path it is handed, which is where the fixture root was made.
+const proofCanary = (calls: string): string => {
+  const sandbox = readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]).find(args => args[0] === "sandbox")!;
+  return sandbox[sandbox.indexOf("proof") + 1]!;
+};
+async function withTemp<T>(base: string, home: string, run: () => Promise<T>): Promise<T> {
+  const previous = { TMPDIR: process.env.TMPDIR, AGENTHUB_HOME: process.env.AGENTHUB_HOME };
+  process.env.TMPDIR = base; process.env.AGENTHUB_HOME = home;
+  try { return await run(); }
+  finally { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+}
+
+test("#1493 denyCoversDirectory asks what the sandbox asks: a pattern denies its own directory and everything below", () => {
+  expect(denyCoversDirectory(["/a/b"], "/a/b")).toBe(true);
+  expect(denyCoversDirectory(["/a/b"], "/a/b/c/d")).toBe(true);
+  expect(denyCoversDirectory(["/a/b/**"], "/a/b/c")).toBe(true);
+  expect(denyCoversDirectory(["/a/*"], "/a/x/y")).toBe(true);
+  expect(denyCoversDirectory(["/a/b"], "/a/bc")).toBe(false);
+  expect(denyCoversDirectory(["/a/b"], "/a")).toBe(false);
+  expect(denyCoversDirectory(["/a/*"], "/a")).toBe(false);
+  expect(denyCoversDirectory(["/x/**/*.env"], "/x/tmp")).toBe(false);
+  expect(denyCoversDirectory(["/a/b[c]"], "/a/bc/z")).toBe(true);
+  expect(denyCoversDirectory(["/a/b?"], "/a/bc")).toBe(true);
+  expect(denyCoversDirectory([], "/a/b")).toBe(false);
+  expect(denyCoversDirectory(["/a/(b"], "/a/(b/c")).toBe(true); // a regex metacharacter in a path is literal
+});
+
+test("#1493 a deny entry that contains the system temp directory moves the fixture root under the hub directory; the proof legs and markers are unchanged", async () => {
+  const f = fixture(), denied = join(f.root, "denied"), home = join(f.root, "home");
+  try {
+    mkdirSync(join(denied, "tmp"), { recursive: true }); mkdirSync(home);
+    f.ctx.privatePaths = [...f.ctx.privatePaths, denied];
+    const result = await withTemp(join(denied, "tmp"), home, () => codexReviewerBackend.prepare(f.ctx));
+    expect("unavailable" in result, JSON.stringify(result)).toBe(false);
+    const canary = proofCanary(f.calls);
+    expect(canary.startsWith(realPath(join(home, "reviewer-proof")) + "/"), canary).toBe(true);
+    expect(canary.startsWith(realPath(denied))).toBe(false);
+    const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+    expect(calls.some(args => args[0] === "sandbox")).toBe(true);
+    expect(calls.some(args => args[0] === "exec")).toBe(false);
+    if (!("unavailable" in result)) await result.cleanup?.();
+  } finally { f.close(); }
+});
+
+test("#1493 without such a deny entry the fixture root stays in the system temp directory", async () => {
+  const f = fixture(), base = join(f.root, "base"), home = join(f.root, "home");
+  try {
+    mkdirSync(join(base, "tmp"), { recursive: true }); mkdirSync(home);
+    const result = await withTemp(join(base, "tmp"), home, () => codexReviewerBackend.prepare(f.ctx));
+    expect("unavailable" in result, JSON.stringify(result)).toBe(false);
+    expect(proofCanary(f.calls).startsWith(realPath(join(base, "tmp")) + "/")).toBe(true);
+    if (!("unavailable" in result)) await result.cleanup?.();
+  } finally { f.close(); }
+});
+
+test("#1493 when no usable base exists the refusal is fixture_root_denied, names no entry, and nothing is created or run", async () => {
+  const f = fixture(), denied = join(f.root, "secret-area-name"), home = join(denied, "hub-home");
+  try {
+    mkdirSync(join(denied, "tmp"), { recursive: true }); mkdirSync(home);
+    f.ctx.privatePaths = [...f.ctx.privatePaths, denied];
+    const refused = await withTemp(join(denied, "tmp"), home, () => codexReviewerBackend.prepare(f.ctx)) as Refused;
+    expect(refused.causeClass).toBe("fixture_root_denied");
+    expect(refused.unavailable).toContain("move TMPDIR or narrow the entry");
+    for (const text of [refused.unavailable, refused.detail ?? ""]) { expect(text).not.toContain("secret-area-name"); expect(text).not.toContain(f.root); }
+    expect(readFileSync(f.calls, "utf8")).not.toContain('["sandbox"');
+    expect(readdirSync(join(denied, "tmp"))).toEqual([]);
   } finally { f.close(); }
 });

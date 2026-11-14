@@ -14,7 +14,7 @@ import { nativeReviewerQuota, type NativeReviewerQuota } from "./definitions/nat
 
 /** #722: the closed list of legs a reviewer's per-review start can fail on. A class names a leg, never a path, content or token. */
 class ReviewerUsageCleanupError extends PrintChildCleanupError {}
-export const REVIEWER_CAUSE_CLASSES = ["version", "binary", "mcp_inventory", "plugins_hooks_apps", "sandbox_proof", "credential_root", "timeout", "unknown"] as const;
+export const REVIEWER_CAUSE_CLASSES = ["version", "binary", "mcp_inventory", "plugins_hooks_apps", "sandbox_proof", "credential_root", "fixture_root_denied", "timeout", "unknown"] as const;
 export type ReviewerCauseClass = typeof REVIEWER_CAUSE_CLASSES[number];
 const REVIEWER_CAUSE_HINT: Record<ReviewerCauseClass, string> = {
   version: "the CLI version is neither verified nor trusted; see ahub agents",
@@ -23,6 +23,7 @@ const REVIEWER_CAUSE_HINT: Record<ReviewerCauseClass, string> = {
   plugins_hooks_apps: "plugins, hooks or apps could not be proven disabled",
   sandbox_proof: "the native sandbox proof did not pass",
   credential_root: "a host credential root is unusable; remove or repair it",
+  fixture_root_denied: "a deny entry contains every directory the proof could use for its fixture; move TMPDIR or narrow the entry",
   timeout: "a proof command timed out",
   unknown: "unclassified; inspect hub.log",
 };

@@ -2695,6 +2695,75 @@ function codexCoreDenyGlobs(names = DENY_NAMES, segments = DENY_SEGMENTS) {
   }
   return [...new Set(globs)];
 }
+function globRegExp(pattern) {
+  let source = "";
+  for (let i = 0;i < pattern.length; i++) {
+    const char = pattern[i];
+    if (char === "*") {
+      if (pattern[i + 1] === "*") {
+        source += ".*";
+        i++;
+      } else
+        source += "[^/]*";
+    } else if (char === "?")
+      source += "[^/]";
+    else if (char === "[" && pattern.indexOf("]", i + 2) > 0) {
+      const close = pattern.indexOf("]", i + 2);
+      source += pattern.slice(i, close + 1);
+      i = close;
+    } else
+      source += char.replace(/[\\^$.|+(){}\[\]]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`);
+}
+function denyCoversDirectory(patterns, directory) {
+  const chain = [];
+  for (let current = directory;; current = dirname5(current)) {
+    chain.push(current);
+    if (dirname5(current) === current)
+      break;
+  }
+  return patterns.some((pattern) => {
+    let matcher;
+    try {
+      matcher = globRegExp(pattern);
+    } catch {
+      return true;
+    }
+    return chain.some((part) => matcher.test(part));
+  });
+}
+function fixtureBase(patterns) {
+  const temp = realPath(tmpdir());
+  if (!denyCoversDirectory(patterns, temp))
+    return temp;
+  const own = join5(hubHome(), "reviewer-proof");
+  mkdirSync3(own, { recursive: true, mode: 448 });
+  const canonical = realPath(own);
+  if (denyCoversDirectory(patterns, canonical))
+    throw new FixtureRootError;
+  return canonical;
+}
+function privatePathPatterns(entries, cwd) {
+  const out = new Set;
+  for (const entry of entries) {
+    if (typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry))
+      throw new Error("invalid private path policy");
+    if (/[{}]/.test(entry))
+      throw new Error("unverified private path pattern");
+    const homePath = entry === "~" || entry.startsWith("~/");
+    const absolute = homePath ? resolve5(homedir2(), entry.slice(2)) : isAbsolute3(entry) ? entry : resolve5(cwd, entry);
+    out.add(absolute);
+    if (!/[?*\[\]]/.test(absolute) && existsSync3(absolute))
+      out.add(realPath(absolute));
+    if (!isAbsolute3(entry) && !homePath && entry !== "." && entry !== "..") {
+      out.add(join5(cwd, "**", entry));
+      if (!/[?*\[\]]/.test(entry))
+        out.add(join5(cwd, "**", `*${entry.replace(/^\.\//, "").replace(/\/$/, "")}*`));
+    }
+  }
+  return [...out];
+}
 function toml(value) {
   if (typeof value === "string" || typeof value === "boolean" || typeof value === "number")
     return JSON.stringify(value);
@@ -2958,7 +3027,13 @@ async function prepare(ctx) {
     if (observedTransport.type !== "stdio" || observedTransport.command !== hub.command || JSON.stringify(observedTransport.args ?? []) !== JSON.stringify(hub.args) || Object.keys(observedEnv).length !== Object.keys(intendedEnv).length || Object.entries(intendedEnv).some(([key, value]) => observedEnv[key] !== value))
       throw new Error("hub transport changed");
     leg = "sandbox_proof";
-    root = realPath(mkdtempSync(join5(tmpdir(), "ahub-codex-review-isolation-")));
+    const privatePatterns = privatePathPatterns(ctx.privatePaths, cwd);
+    const credentialPatterns = [];
+    try {
+      for (const { path, label } of hostCredentialRoots(env, cwd))
+        credentialPatterns.push(path, canonicalLabelled(path, label));
+    } catch {}
+    root = realPath(mkdtempSync(join5(fixtureBase([...privatePatterns, ...codexCoreDenyGlobs(), ...credentialPatterns]), "ahub-codex-review-isolation-")));
     const privateFile = join5(root, "private.env"), publicFile = join5(root, "public.txt"), writeFile = join5(root, "write-proof");
     const coreName = join5(root, ".env"), coreStateDir = join5(root, ".agenthub", "state"), coreState = join5(coreStateDir, "private.txt");
     const fixtureHome = join5(root, "host-home"), hostConfig = join5(fixtureHome, ".config", "gh", "hosts.yml"), hostKube = join5(fixtureHome, ".kube", "config"), hostDocker = join5(fixtureHome, ".docker", "config.json"), hostAlias = join5(root, "host-alias.yml");
@@ -2983,25 +3058,9 @@ async function prepare(ctx) {
       filesystem[glob] = "deny";
     denyCredentialRoots(filesystem, [...hostCredentialRoots(env, cwd), ...hostCredentialRoots({ HOME: fixtureHome }, cwd)], cwd);
     leg = "sandbox_proof";
-    for (const entry of ctx.privatePaths) {
-      if (typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry))
-        throw new Error("invalid private path policy");
-      if (/[{}]/.test(entry))
-        throw new Error("unverified private path pattern");
-      const homePath = entry === "~" || entry.startsWith("~/");
-      const absolute = homePath ? resolve5(homedir2(), entry.slice(2)) : isAbsolute3(entry) ? entry : resolve5(cwd, entry);
-      const patterns = new Set([absolute]);
-      if (!/[?*\[\]]/.test(absolute) && existsSync3(absolute))
-        patterns.add(realPath(absolute));
-      if (!isAbsolute3(entry) && !homePath && entry !== "." && entry !== "..") {
-        patterns.add(join5(cwd, "**", entry));
-        if (!/[?*\[\]]/.test(entry))
-          patterns.add(join5(cwd, "**", `*${entry.replace(/^\.\//, "").replace(/\/$/, "")}*`));
-      }
-      for (const pattern of patterns) {
-        filesystem[pattern] = "deny";
-        filesystem[`${pattern.replace(/\/$/, "")}/**`] = "deny";
-      }
+    for (const pattern of privatePatterns) {
+      filesystem[pattern] = "deny";
+      filesystem[`${pattern.replace(/\/$/, "")}/**`] = "deny";
     }
     const profile = { filesystem, network: { enabled: false } }, permissions = ["-c", `permissions=${toml({ "ahub-review": profile })}`, "-c", 'default_permissions="ahub-review"'];
     await run(["debug", "models", "--bundled", ...policy, ...permissions], false, 4 * 1024 * 1024);
@@ -3055,6 +3114,8 @@ AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync3(writeFile))
     }
     if (error instanceof VersionRefusal)
       return { unavailable: error.message, causeClass: "version" };
+    if (error instanceof FixtureRootError)
+      return { unavailable: "Codex reviewer isolation receipt unavailable (a local.deny or pii.paths entry contains the system temp directory and the hub directory; move TMPDIR or narrow the entry)", causeClass: "fixture_root_denied" };
     if (error instanceof CredentialRootError) {
       const why = { dangling: "a dangling link", unreadable: "an unreadable path", unsupported: "unsupported syntax or overlapping the checkout" }[error.kind];
       return { unavailable: `Codex reviewer isolation receipt unavailable (credential root ${error.label} is ${why}; remove or repair it)`, causeClass: "credential_root", detail: `${error.label}: ${why}` };
@@ -3065,7 +3126,7 @@ AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync3(writeFile))
 var TOOLS, VersionRefusal, CAP, MAX_SERVERS = 64, digest = (value) => createHash2("sha256").update(value).digest("hex"), inside = (file, root) => {
   const part = relative(root, file);
   return part === "" || part !== ".." && !part.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute3(part);
-}, object2 = (value) => {
+}, FixtureRootError, object2 = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("invalid metadata");
   return value;
@@ -3081,6 +3142,11 @@ var init_codex_review_isolation = __esm(() => {
   VersionRefusal = class VersionRefusal extends Error {
   };
   CAP = 128 * 1024;
+  FixtureRootError = class FixtureRootError extends Error {
+    constructor() {
+      super("fixture root denied");
+    }
+  };
   HOST_CREDENTIAL_PATHS = [".config", ".ssh", ".aws", ".azure", ".kube", ".docker", ".gnupg", ".codex", ".claude", ".kimi", ".kimi-code", ".gemini", ".git-credentials", ".vault-token", "Library/Keychains", ".local/share/keyrings", ".password-store"];
   HOST_CREDENTIAL_ENV = ["XDG_CONFIG_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_HOME", "GEMINI_CLI_HOME", "GNUPGHOME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AZURE_CONFIG_DIR", "DOCKER_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS"];
   CredentialRootError = class CredentialRootError extends Error {
