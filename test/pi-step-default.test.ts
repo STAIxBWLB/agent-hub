@@ -1,3 +1,4 @@
+import { buildPiLaunch } from "../src/pi/launch.ts";
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +19,14 @@ test("T3 Pi defaults and tracked config use 100 while local stays 30 and policy 
   expect(mergeNativeConfiguration({ pi: { max_steps: 30 } }, DEFAULT_CONFIG).pi.max_steps).toBe(30);
   expect(() => validateRawConfig({ pi: { max_steps: 100 }, local: { max_steps: 30 } })).not.toThrow();
   expect(() => validateEffectiveConfig(DEFAULT_CONFIG)).not.toThrow();
+});
+
+test("T3 launcher omission injects 100 and an explicit existing 30 stays 30", () => {
+  const options = { stateDir: "/fixture/pi-state", mode: "headless" as const, backend: "dgx" as const,
+    relay: { url: "http://127.0.0.1:9/v1", token: "fixture-token", models: [{ id: "dgx/coding" }] }, tools: [] };
+  const launch = (maxSteps?: number) => buildPiLaunch({ ...options, ...(maxSteps === undefined ? {} : { maxSteps }) }, {}, "/fixture/extension.ts", 9, "fixture-bridge-token");
+  expect(launch().env.AGENTHUB_PI_MAX_STEPS).toBe("100");
+  expect(launch(30).env.AGENTHUB_PI_MAX_STEPS).toBe("30");
 });
 
 for (const configured of [true, false]) test(`T3 the real extension rejects attempt 101 before its tool effect with ${configured ? "configured" : "unset-env default"} 100 ceiling`, async () => {

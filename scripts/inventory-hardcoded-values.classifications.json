@@ -2928,7 +2928,7 @@
   "src/pi/extension.ts:contextWindow:inline:m.contextWindow ?? 131072=131072#0": "operational",
   "src/pi/extension.ts:maxSteps:inline:process.env.AGENTHUB_PI_MAX_STEPS ?? 100=100#0": "contract",
   "src/pi/extension.ts:maxTokens:inline:m.maxTokens ?? 8192=8192#0": "operational",
-  "src/pi/launch.ts:AGENTHUB_PI_MAX_STEPS:inline:opts.maxSteps ?? 30=30#0": "operational",
+  "src/pi/launch.ts:AGENTHUB_PI_MAX_STEPS:inline:opts.maxSteps ?? 100=100#0": "contract",
   "src/pi/tool-receipts.ts:PI_TOOL_RESULT_CAP:constant:PI_TOOL_RESULT_CAP=100000#0": "contract",
   "src/pi/tool-receipts.ts:execute:inline:callId.length > 512=512#0": "contract",
   "src/pi/tool-receipts.ts:execute:inline:session.length > 512=512#0": "contract",
