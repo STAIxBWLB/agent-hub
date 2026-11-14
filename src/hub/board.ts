@@ -2951,8 +2951,10 @@ export class Board {
   }
 
   roadmapIntegrity(): { milestones: number; links: number; digest: string } {
-    const milestones = this.milestones().sort((a, b) => a.id - b.id), links = this.milestoneLinks();
-    return { milestones: milestones.length, links: links.length, digest: createHash("sha256").update(JSON.stringify({ milestones, links })).digest("hex") };
+    return this.db.transaction(() => {
+      const milestones = this.milestones().sort((a, b) => a.id - b.id), links = this.milestoneLinks();
+      return { milestones: milestones.length, links: links.length, digest: createHash("sha256").update(JSON.stringify({ milestones, links })).digest("hex") };
+    })();
   }
 
   /** Parent shape and compare-and-set are checked under the same write transaction. */

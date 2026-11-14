@@ -70,7 +70,7 @@ test("roadmap renders a human view by default and keeps unknown totals unknown",
   expect(output).toContain("Tasks approved: 1/2");
   expect(output).toContain("issues closed: unknown/1");
   expect(output).toContain("Releases shipped: unknown/1");
-  expect(output).toContain("inherited from example/repo#42");
+  expect(output).toContain("inherited from #42 (example/repo)");
   expect(output).toContain("Private tasks withheld: 1");
   expect(() => JSON.parse(output)).toThrow();
   expect(renderRoadmap({ id: 4 })).toContain("unknown/unknown");

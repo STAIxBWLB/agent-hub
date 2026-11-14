@@ -3397,12 +3397,17 @@ export class Tasks {
     this.roadmapTextCurrent(fields);
   }
 
+  private roadmapResult(by: PeerId, id: number): MilestoneView {
+    try { return this.milestoneShow(by, id); }
+    catch { throw new Error("roadmap operation finished but public readback is unavailable; inspect ahub roadmap show before retrying"); }
+  }
+
   async milestoneNew(by: PeerId, raw: unknown): Promise<MilestoneView> {
     const current = this.roadmapWriteAuthority(by), fields = this.roadmapParsed(() => parseMilestoneInput(raw));
     this.roadmapStateAuthority(by, fields.state);
     await this.roadmapScreen(fields); current(); this.roadmapStateAuthority(by, fields.state); this.roadmapTextCurrent(fields);
     const row = this.d.board.newMilestone(fields, by, this.d.now?.() ?? Date.now());
-    return this.milestoneShow(by, row.id);
+    return this.roadmapResult(by, row.id);
   }
 
   async milestoneEdit(by: PeerId, id: number, revision: number, raw: unknown): Promise<MilestoneView> {
@@ -3417,7 +3422,7 @@ export class Tasks {
     validate(); await this.roadmapScreen(fields); const row = validate(); this.roadmapTextCurrent(fields);
     if (Object.entries(fields).every(([key, value]) => row[key as keyof Milestone] === value)) return this.milestoneShow(by, id);
     this.d.board.updateMilestone(id, fields, revision, { by, at: this.d.now?.() ?? Date.now(), event: "edited", fields: Object.keys(fields) });
-    return this.milestoneShow(by, id);
+    return this.roadmapResult(by, id);
   }
 
   milestoneLink(by: PeerId, id: number, kind: MilestoneLinkKind, raw: string): MilestoneView {
@@ -3427,21 +3432,21 @@ export class Tasks {
     if (kind === "task" && !this.d.board.get(Number(ref)) || kind === "release" && !this.d.board.release(Number(ref)))
       throw new PreEffectToolRefusal("roadmap target does not exist; inspect ahub board or ahub release list before linking");
     this.d.board.linkMilestone(id, kind, ref, by, row.revision, this.d.now?.() ?? Date.now());
-    return this.milestoneShow(by, id);
+    return this.roadmapResult(by, id);
   }
 
   milestoneUnlink(by: PeerId, id: number, kind: MilestoneLinkKind, raw: string): MilestoneView {
     this.roadmapWriteAuthority(by);
     const row = this.roadmapCurrent(id), ref = this.roadmapParsed(() => milestoneLinkRef(kind, raw));
     this.d.board.unlinkMilestone(id, kind, ref, by, row.revision, this.d.now?.() ?? Date.now());
-    return this.milestoneShow(by, id);
+    return this.roadmapResult(by, id);
   }
 
   milestoneOrder(by: PeerId, id: number, order: number): MilestoneView {
     this.roadmapWriteAuthority(by);
     const row = this.roadmapCurrent(id), fields = this.roadmapParsed(() => parseMilestonePatch({ order }));
     if (row.order !== order) this.d.board.updateMilestone(id, fields, row.revision, { by, at: this.d.now?.() ?? Date.now(), event: "ordered", fields: ["order"] });
-    return this.milestoneShow(by, id);
+    return this.roadmapResult(by, id);
   }
 
   milestoneState(by: PeerId, id: number, state: MilestoneState): MilestoneView {
@@ -3449,7 +3454,7 @@ export class Tasks {
     this.roadmapParsed(() => parseMilestonePatch({ state }));
     const row = this.roadmapCurrent(id, state);
     if (row.state !== state) this.d.board.updateMilestone(id, { state }, row.revision, { by, at: this.d.now?.() ?? Date.now(), event: "state", fields: ["state"] });
-    return this.milestoneShow(by, id);
+    return this.roadmapResult(by, id);
   }
 
   milestoneList(by: PeerId): MilestoneView[] {

@@ -8,6 +8,7 @@ import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig, type PlanIssueMetadata } from "../src/hub/sdlc.ts";
 import type { SpecsCheckReport } from "../src/hub/specs.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -15,7 +16,7 @@ function fixture() {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-roadmap-tasks-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const roles: Record<string, string[]> = { claude: ["conductor"], kimi: ["planner"], codex: ["implementer"] };
-  const control: { private: boolean; observer: boolean; screening: boolean; screen?: () => Promise<void>; patterns?: string[] } = { private: false, observer: false, screening: false };
+  const control: { private: boolean; observer: boolean; screening: boolean; screen?: () => Promise<void>; patterns?: string[]; specsRead?: () => void } = { private: false, observer: false, screening: false };
   const notices: string[] = [], routing = loadRouting(cwd);
   const specs: SpecsCheckReport = { specCount: 0, errors: 0, warnings: 0, stale: 0, truncated: false, freshness: [], items: [] };
   const tasks = new Tasks({ board, bus, cwd, project: "roadmap-fixture", repository: "example/repo", roles, notify: message => { notices.push(message); },
@@ -23,7 +24,7 @@ function fixture() {
     privateTurn: () => control.private, reviewObserverInput: () => control.observer,
     operational: by => by === "claude" && roles.claude?.includes("conductor") === true,
     piiScreen: async () => { await control.screen?.(); return { label: "clear", ms: 0 }; },
-    specsRead: action => action === "check" ? specs : { specs: [], errors: 0, truncated: false, items: [] }, sdlc: { config: () => sdlcConfig(undefined) } });
+    specsRead: action => { control.specsRead?.(); return action === "check" ? specs : { specs: [], errors: 0, truncated: false, items: [] }; }, sdlc: { config: () => sdlcConfig(undefined) } });
   return { cwd, board, bus, tasks, roles, control, notices, specs };
 }
 const fields = (title = "Outcome milestone") => ({ title, outcome: "Observable outcome", horizon: "now" as const, order: 0 });
@@ -166,4 +167,29 @@ test("private/observer contexts and a privacy or role change during screening re
   f.control.screen = async () => { f.roles.kimi = []; };
   await expect(f.tasks.milestoneNew("kimi", fields())).rejects.toThrow();
   expect(f.board.milestones()).toEqual([]);
+});
+
+test("privacy changing in post-write readback reports an uncertain read, never a pre-effect refusal", async () => {
+  const f = fixture(); let readbacks = 0, committedId: number | undefined;
+  f.control.specsRead = () => {
+    const rows = f.board.milestones();
+    expect(rows).toHaveLength(1);
+    committedId = rows[0]!.id; readbacks++;
+    f.control.private = true;
+  };
+  const failure = await f.tasks.milestoneNew("kimi", fields("Committed before readback")).catch(error => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).not.toBeInstanceOf(PreEffectToolRefusal);
+  expect(failure.message).toContain("readback is unavailable");
+  expect(failure.message).toContain("inspect ahub roadmap show before retrying");
+  expect(readbacks).toBe(1);
+  const retained = f.board.milestones();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.id).toBe(committedId);
+  expect(retained[0]?.title).toBe("Committed before readback");
+  expect(retained[0]?.revision).toBe(0);
+  expect(retained[0]?.history.map(entry => entry.event)).toEqual(["created"]);
+  f.control.specsRead = undefined; f.control.private = false;
+  expect(f.tasks.milestoneShow("kimi", committedId!).title).toBe("Committed before readback");
+  expect(f.board.milestones()).toEqual(retained);
 });

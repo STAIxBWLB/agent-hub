@@ -1,7 +1,15 @@
 import { milestoneId, milestoneRevision, milestoneLinkRef, parseMilestoneInput, parseMilestonePatch, type MilestoneLinkKind } from "../hub/roadmap.ts";
 import { terminalText, wrap } from "./console-state.ts";
 
-export const ROADMAP_USAGE = "usage: ahub roadmap [list|show <id>|new --title <text> --outcome <text>|edit <id> --revision <n> <fields>|link <id> <spec|issue|task|release> <ref>|unlink <id> <kind> <ref>|order <id> <n>|state <id> <proposed|planned|active|done|dropped>] [--json on list/show]";
+const optionalFields = "[--horizon now|next|later] [--order <n>] [--target YYYY-MM-DD|none] [--parent <id>|none]";
+export const ROADMAP_FORMS = {
+  list: "[list] [--json]", show: "show <id> [--json]",
+  new: `new --title <text> --outcome <text> ${optionalFields}`,
+  edit: `edit <id> --revision <n> [--title <text>] [--outcome <text>] ${optionalFields}`,
+  link: "link <id> <spec|issue|task|release> <ref>", unlink: "unlink <id> <kind> <ref>",
+  order: "order <id> <n>", state: "state <id> <proposed|planned|active|done|dropped>",
+} as const;
+export const ROADMAP_USAGE = `usage: ${Object.values(ROADMAP_FORMS).map(form => `ahub roadmap ${form}`).join(" | ")}`;
 export interface RoadmapArgs {
   op: "hub_roadmap_list" | "hub_roadmap_show" | "hub_roadmap_edit";
   args: Record<string, unknown>;
@@ -108,7 +116,8 @@ export function renderRoadmap(input: unknown, width = 80): string {
     }
     for (const value of list(m.tasks)) {
       const task = row(value), placement = row(task.placement);
-      const basis = placement.rule === "source-issue" || placement.rule === "inherited" ? `inherited from ${text(placement.issue)}` : placement.rule === "explicit" ? "explicit link" : "placement unknown";
+      const issue = /^(.+)#([1-9][0-9]*)$/.exec(text(placement.issue));
+      const basis = placement.rule === "source-issue" || placement.rule === "inherited" ? issue ? `inherited from #${issue[2]} (${issue[1]})` : `inherited from ${text(placement.issue)}` : placement.rule === "explicit" ? "explicit link" : "placement unknown";
       add(`  Task ${count(task.id)}: ${text(task.title)} (${text(task.state)}; ${basis})`);
     }
   };
