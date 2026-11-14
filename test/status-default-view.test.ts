@@ -48,6 +48,24 @@ describe("ahub status default view (#1484 AC2)", () => {
     expect(attention).toMatch(/^ {2}⚠ {2}restart pending/m);
     expect(text(renderStatusDefault(status(), 80, now))).toContain("▸ Attention (6 items)");
   });
+  test("only a refused agent CLI version is an Attention row; trusted and in-line ones are a count on the Hub row", () => {
+    const drift = status();
+    drift.agentDrift = [
+      { id: "codex-review", version: "0.169.0", state: "refused", receipt: "r" },
+      { id: "pi", version: "1.5.2", state: "trusted", receipt: "r" },
+      { id: "qwen", version: "0.27.1", state: "in-line", receipt: "r" },
+    ];
+    const items = statusAttention(drift, now).filter(item => item.text.startsWith("agent CLI"));
+    expect(items).toEqual([{ marker: "warn", text: "agent CLI codex-review 0.169.0 is refused", next: "ahub agents trust codex-review 0.169.0" }]);
+    const view = text(renderStatusDefault(drift, 120, now));
+    expect(view).not.toMatch(/agent CLI pi|agent CLI qwen/);
+    expect(view).not.toContain("ahub agents trust pi"); expect(view).not.toContain("ahub agents trust qwen");
+    expect(view).toContain("agent CLIs:  2 outside the verified version, already accepted (ahub agents)");
+    // the Attention header counts only rows that need action: the shared fixture has 6, and the trusted and in-line rows add none
+    expect(view).toContain("▸ Attention (6 items)");
+    drift.agentDrift = [{ id: "pi", version: "1.5.2", state: "trusted", receipt: "r" }];
+    expect(statusAttention(drift, now).some(item => item.text.startsWith("agent CLI"))).toBe(false);
+  });
   test("a healthy hub says so in one row", () => {
     const healthy = text(renderStatusDefault({ version: "0.40.0", pid: 1, controlPort: 2, peers: { claude: { state: "idle", queued: 0, attached: true } }, tasks: { approved: 3 } } as never, 80, now));
     expect(healthy).toContain("▸ Attention\n  ✓  nothing needs attention\n");

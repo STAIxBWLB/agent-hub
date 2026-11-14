@@ -424,7 +424,8 @@ export function statusAttention(data: StatusOutput, now = Date.now()): Attention
   if (specs?.missingBlockHint) add("warn", "specs: AGENTS.md has no specs instruction block");
   for (const pending of data.pendingRestart ?? []) add("warn", `restart pending: ${pending.key}: ${pending.reason}`, "ahub restart --dry-run");
   if (data.mainCheckout) add("warn", `main checkout: ${data.mainCheckout}`);
-  for (const drift of data.agentDrift ?? []) add("warn", `agent CLI ${drift.id} ${drift.version} is ${drift.state}`, `ahub agents trust ${drift.id} ${drift.version}`);
+  // Only a refused version needs action. A trusted one is already accepted (the command would repeat what was done) and an in-line one is within policy: both are facts, shown as a count on the Hub row.
+  for (const drift of data.agentDrift ?? []) if (drift.state === "refused") add("warn", `agent CLI ${drift.id} ${drift.version} is refused`, `ahub agents trust ${drift.id} ${drift.version}`);
   if (data.retainedConfig?.length) add("warn", `config retained: ${data.retainedConfig.map(row => row.key).join(", ")}`, "ahub settings reload");
   for (const row of data.schedules ?? []) if (row.error) add("warn", `schedule ${row.id}: ${row.error}`, "ahub schedule list");
   for (const [peer, row] of Object.entries(data.queueBackpressure?.peers ?? {})) if (row.blocked) add("warn", `${peer} queue pressure: automatic offers held: ${row.reason ?? row.code ?? "unknown"}`, `ahub queue list --peer ${peer}`);
@@ -489,6 +490,8 @@ export function renderStatusDefault(data: StatusOutput, columns?: number, now = 
   if (data.memoryProfile) hub.push(["memory", `${data.memoryProfile.profile === "generation" ? `generation ${data.memoryProfile.generation?.slice(0, 8) ?? "unknown"}` : data.memoryProfile.profile ?? "unbound"}; ${data.memoryProfile.state ?? "unknown"}`]);
   const specs = data.specs;
   if (specs && [specs.specCount, specs.documents, specs.errors, specs.stale].every(value => Number.isSafeInteger(value) && value >= 0) && (specs.specCount > 0 || specs.documents > 0 || specs.errors > 0)) hub.push(["specs", `${specs.specCount} (errors ${specs.errors}, stale ${specs.stale})`]);
+  const outside = (data.agentDrift ?? []).filter(row => row.state !== "refused");
+  if (outside.length) hub.push(["agent CLIs", `${outside.length} outside the verified version, already accepted (ahub agents)`]);
   if (data.schedules?.length) hub.push(["schedules", plural(data.schedules.length, "schedule")]);
   report.section("Hub").kv(hub);
   const peers = Object.entries(data.peers);
