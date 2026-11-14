@@ -11,11 +11,11 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function project() { const root = mkdtempSync(join(tmpdir(), "ahub-pi-continuations-config-")); roots.push(root); return root; }
 
-test("Pi continuation default is two extra turns while T1/T2 leave both tool-step defaults unchanged", () => {
+test("T3 raises only the Pi step default while continuation and local defaults stay unchanged", () => {
   const defaults = nativeConfigurationDefaults({ home: "/fixture-home", env: {}, networkAllow: [] });
   expect(defaults.rpc.pi.max_continuations).toBe(2);
   expect(DEFAULT_CONFIG.pi.max_continuations).toBe(2);
-  expect(defaults.rpc.pi.max_steps).toBe(30);
+  expect(defaults.rpc.pi.max_steps).toBe(100);
   expect(defaults.sandbox.local.max_steps).toBe(30);
   expect(mergeNativeConfiguration({}, DEFAULT_CONFIG).pi.max_continuations).toBe(2);
 });

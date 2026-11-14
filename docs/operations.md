@@ -798,6 +798,12 @@ Every Pi start (headless, TUI, console or auto start) first runs the configured
 version, or one that cannot be read, is refused before Pi starts, unless the
 person trusts that exact version with `ahub agents trust pi <version>`.
 
+`pi.max_steps` defaults to `100` managed tool-step attempts per native turn
+(#1447 T3); this repository's tracked setting is also `100`. Failed managed
+calls count and the first rejected attempt is reported as `101/100`. The local
+worker's `local.max_steps` default and repository setting remain `30`. This is a
+source/config change; it does not restart a running Pi or change its active turn.
+
 `pi.max_continuations` sets the number of extra turns after the initial tool-step
 ceiling stop (#1447). Its default is `2`, with an integer range of `0..10`.
 Each continuation asks Pi to checkpoint its completed work and next steps before
