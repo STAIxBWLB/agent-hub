@@ -13,6 +13,8 @@ import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { gitProject } from "./fakes/git-project.ts";
 import { publishPiDependencies } from "../src/pi/dependency-publish.ts";
+import { preparePiDependencies } from "../src/pi/task-dependencies.ts";
+import { hubGitSync } from "../src/hub/git.ts";
 
 const roots: string[] = [];
 const closers: (() => void)[] = [];
@@ -206,3 +208,33 @@ test("#1447 T5 publisher refuses a replaced worktree ancestor and stale authorit
   expect(await publishPiDependencies(fresh.source, fresh.target, () => false)).toBe(false);
   expect(existsSync(fresh.source)).toBe(true);
 }, 10_000);
+
+async function preparedTypecheckFixture() {
+  const f = await taskFixture();
+  // These two inputs match the mandatory frozen install that seeded this runner's
+  // shared Bun cache. Copy manifests only, never an existing dependency tree.
+  for (const file of ["package.json", "bun.lock"]) writeFileSync(join(f.cwd, file), readFileSync(join(import.meta.dir, "..", file)));
+  writeFileSync(join(f.cwd, "index.ts"), "export const checked: number = 1;\n");
+  writeFileSync(join(f.cwd, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, skipLibCheck: true, types: [], lib: ["ES2020"] }, files: ["index.ts"] }));
+  for (const args of [["add", "package.json", "bun.lock", "index.ts", "tsconfig.json"], ["commit", "-qm", "reviewed typecheck fixture"]]) {
+    const run = hubGitSync(["-C", f.cwd, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" });
+    expect(run.status, String(run.stderr)).toBe(0);
+  }
+  const task = f.tasks.accept("pi", f.offer().id), worktree = f.worktrees.describe("pi", task.id)!;
+  const result = await preparePiDependencies(worktree.path, { base: worktree.base, repositoryRoot: f.cwd, stagingParent: f.state, current: () => true, publish: publishPiDependencies });
+  expect(result).toEqual({ ready: true });
+  expect(existsSync(join(worktree.path, "node_modules/.bin/tsc"))).toBe(true);
+  return { ...f, worktree };
+}
+
+test("#1447 T5 a Git-prepared worktree installs from the shared cache and runs TypeScript with offline resolution", async () => {
+  const f = await preparedTypecheckFixture(), home = join(f.state, "typecheck-home"); mkdirSync(home);
+  const checked = Bun.spawnSync([process.execPath, "x", "--offline", "tsc", "--noEmit"], { cwd: f.worktree.path, env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin" }, timeout: 5000 });
+  expect(checked.exitCode, checked.stderr.toString()).toBe(0);
+}, 20_000);
+
+test.skipIf(!sandboxAvailable())("#1447 T5 the prepared worktree runs bun x tsc with kernel network access denied", async () => {
+  const f = await preparedTypecheckFixture();
+  const checked = await sandboxedExec([process.execPath, "x", "tsc", "--noEmit"], { cwd: f.worktree.path, profile: profile(f.worktree.path, false), timeoutMs: 5000 });
+  expect(checked.code, checked.output).toBe(0);
+}, 20_000);
