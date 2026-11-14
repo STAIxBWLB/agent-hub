@@ -196,6 +196,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       notice(`detail ${id} changed or is no longer available`);
     }
   };
+  let instructedAnswersSeen = new Set<string>();
   const refresh = async () => {
     if (polling || !active) { if (active) refreshPending = true; return; }
     polling = true;
@@ -232,6 +233,9 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         }
       } catch { /* retain running console presentation while a config file is unreadable */ }
       if (questionReply?.ok === true) {
+        const instructed = Array.isArray(questionReply.answeredQuestions) ? questionReply.answeredQuestions.filter((row: any) => row.state === "answered" && row.instructed === true && typeof row.provenance === "string") : [];
+        for (const row of instructed) if (!instructedAnswersSeen.has(row.set)) stream({ text: `  ${terminalText(String(row.set))}: ${terminalText(row.provenance)}`, peer: row.peer, kind: "question", tone: "success" });
+        instructedAnswersSeen = new Set(instructed.map((row: any) => String(row.set)));
         const rows = questionRows(questionReply.questions);
         // A set the person has not been told about gets one stream line with no question text: A answers it, or ahub answer.
         const seen = new Set(state.questionsSeen ?? []);

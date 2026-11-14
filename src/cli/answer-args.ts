@@ -1,4 +1,4 @@
-import { QUESTION_SET } from "../hub/questions.ts";
+import { parseAnswerInstruction, QUESTION_SET } from "../hub/questions.ts";
 
 /**
  * #1053 T4: `ahub answer <set> <question>=<option>[,<option>]... [--other <text>]...`. Pure: it turns argv into the `answers` list the hub validates
@@ -9,7 +9,7 @@ import { QUESTION_SET } from "../hub/questions.ts";
  */
 
 const ID = /^[A-Za-z0-9_.-]{1,64}$/;
-export interface ParsedAnswer { set: string; answers: { questionId: string; optionIds: string[]; other?: string }[] }
+export interface ParsedAnswer { set: string; instruction?: string; answers: { questionId: string; optionIds: string[]; other?: string }[] }
 export type AnswerArgs = { ok: true; value: ParsedAnswer } | { ok: false; error: string };
 export const ANSWER_USAGE = "usage: ahub answer <set> <question>=<option>[,<option>] [--other <text>]   (ahub answer lists the open questions)";
 
@@ -17,9 +17,17 @@ export function parseAnswerArgs(args: readonly string[]): AnswerArgs {
   const fail = (error: string): { ok: false; error: string } => ({ ok: false, error });
   const [set, ...rest] = args;
   if (!set || !QUESTION_SET.test(set)) return fail(`${ANSWER_USAGE}; the set looks like qs-0123456789ab`);
+  let instruction: string | undefined;
   const picks = new Map<string, string[]>(), others: string[] = [];
   for (let index = 0; index < rest.length; index++) {
     const word = rest[index]!;
+    if (word === "--instructed") {
+      if (instruction !== undefined) return fail("--instructed may appear once; correct it or use ahub console");
+      const parsed = parseAnswerInstruction(rest[++index]);
+      if (!parsed.ok) return fail(`${parsed.error}; supply --instructed with the person's quote, or use ahub console`);
+      instruction = parsed.value;
+      continue;
+    }
     if (word === "--other" || word.startsWith("--other=")) {
       const value = word === "--other" ? rest[++index] : word.slice("--other=".length);
       if (value === undefined || value === "") return fail("--other needs the text to give");
@@ -46,5 +54,5 @@ export function parseAnswerArgs(args: readonly string[]): AnswerArgs {
     if (other.has(target)) return fail(`question ${target} has two --other texts`);
     other.set(target, named ? text.slice(at + 1) : text);
   }
-  return { ok: true, value: { set, answers: [...picks].map(([questionId, optionIds]) => ({ questionId, optionIds, ...(other.has(questionId) ? { other: other.get(questionId)! } : {}) })) } };
+  return { ok: true, value: { set, ...(instruction === undefined ? {} : { instruction }), answers: [...picks].map(([questionId, optionIds]) => ({ questionId, optionIds, ...(other.has(questionId) ? { other: other.get(questionId)! } : {}) })) } };
 }

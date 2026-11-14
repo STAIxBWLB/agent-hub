@@ -156,6 +156,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (native?.cli.personOnlyFlags?.some(flag => args.includes(flag))) return "console";
   if (command === "permission" || command === "watch") return "console";
   if (args.some((arg) => arg === "--as-user" || arg.startsWith("--as-user="))) return "console";
+  if (command === "answer" && args.includes("--instructed")) return "conductor";
   if (command === "pet" && (args.includes("--window") || args.includes("--palette"))) return "allowed";
   if (conductorOperation(command,args)) return "conductor";
   if (command === "stop") return "console";

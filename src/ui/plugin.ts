@@ -21,7 +21,7 @@ import { DASHBOARD_VIEWS, renderDashboard } from "../hub/ui.ts";
 import { parseLineageResult } from "../hub/execution-lineage.ts";
 import { executionLineageLines } from "./lineage-view.ts";
 import { officeModel, type OfficeScene } from "./office-model.ts";
-import { personEvidence, questionItem, QUESTION_ITEM, type InboxAnswers, type QuestionRowView } from "./plugin-questions.ts";
+import { instructedAnswerItem, personEvidence, questionItem, QUESTION_ITEM, type InboxAnswers, type QuestionRowView } from "./plugin-questions.ts";
 import { canPublishResults, receiptEvidence, resultItem, RESULT_ACTIONS, RESULT_ITEM, type ResultAction, type ResultRowView } from "./plugin-results.ts";
 import { mergeSpaces, officeSpace } from "./office-space.ts";
 import type { DeliverablePorts } from "../hub/deliverable-files.ts";
@@ -274,6 +274,11 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         const item = questionItem(q, { id: project.id, name }, options.features);
         seen.set(item.id, item.at);
         items.push(item);
+      }
+      for (const row of Array.isArray(snap.answeredQuestions) ? snap.answeredQuestions : []) {
+        if (typeof row?.set !== "string" || typeof row.peer !== "string" || typeof row.person !== "string" || typeof row.provenance !== "string" || !Number.isSafeInteger(row.created)) continue;
+        const item = instructedAnswerItem(row, { id: project.id, name });
+        seen.set(item.id, item.at); items.push(item);
       }
       // #1054 T6: unread results, only to a console that renders the `result` group AND gives a receipt person evidence. Otherwise they stay in the ahub panel, `ahub console`, `ahub status`
       // and `ahub results`. A row that is not well formed is dropped, never rendered; the detail is what the hub built at display (a stub when private).

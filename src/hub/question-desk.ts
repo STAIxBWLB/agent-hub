@@ -1,7 +1,7 @@
 import { HUB, newEnvelope, USER, type Envelope, type PeerId } from "./envelope.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { QuestionWaitDetached } from "./question-detach.ts";
-import { parseAsk, QUESTION_SET, type AnswerResult, type QuestionAnswer, type QuestionReason, type QuestionRow, type QuestionStore, type QuestionSurface } from "./questions.ts";
+import { answerProvenance, parseAnswerInstruction, parseAsk, QUESTION_SET, type AnswerResult, type QuestionAnswer, type QuestionReason, type QuestionRow, type QuestionStore, type QuestionSurface } from "./questions.ts";
 
 /**
  * #1053 T3: what `hub_ask` does with the store. The store owns the row and its one terminal transition; this desk owns the waiting call (in memory, never
@@ -11,7 +11,7 @@ import { parseAsk, QUESTION_SET, type AnswerResult, type QuestionAnswer, type Qu
  */
 
 export type AskResult =
-  | { status: "answered"; questionSet: string; answers: QuestionAnswer[]; answeredBy: "person"; surface: QuestionSurface }
+  | { status: "answered"; questionSet: string; answers: QuestionAnswer[]; answeredBy: "person"; surface: QuestionSurface; actor?: string; instructed?: true; provenance?: string }
   | { status: "pending"; questionSet: string }
   | { status: "superseded"; questionSet: string }
   | { status: "cancelled"; questionSet: string; reason: QuestionReason }
@@ -55,9 +55,13 @@ interface Waiter { resolve(result: AskResult): void; timer: ReturnType<typeof se
 const KEEP_SETTLED_MS = 7 * 86_400_000;
 
 /** The late-answer envelope. `from` is the person, `kind` is `answer`, and the set rides in `refs.question` and as the body's first line `reply_to: <set>` (an envelope has no reply field of its own: `reply_to` is the `hub_send` argument that resolves an envelope id). The id is derived from the set so a republish after a crash is dropped by the bus's own dedupe. */
+function answerResult(row: QuestionRow): AskResult {
+  const provenance = answerProvenance(row);
+  return { status: "answered", questionSet: row.set, answers: row.answers ?? [], answeredBy: "person", surface: row.surface ?? "console", ...(provenance ? { actor: row.person, instructed: true as const, provenance } : {}) };
+}
 export function answerEnvelope(row: QuestionRow): Envelope {
-  const result: AskResult = { status: "answered", questionSet: row.set, answers: row.answers ?? [], answeredBy: "person", surface: row.surface ?? "console" };
-  const body = `reply_to: ${row.set}\nYour question ${row.set} was answered by the person${row.surface ? ` (${row.surface})` : ""}. Use this answer; do not ask it again.\n${JSON.stringify(result)}`;
+  const result = answerResult(row);
+  const body = `reply_to: ${row.set}\nYour question ${row.set} was ${answerProvenance(row) ?? `answered by the person${row.surface ? ` (${row.surface})` : ""}`}. Use this answer; do not ask it again.\n${JSON.stringify(result)}`;
   return { ...newEnvelope(USER, body, { to: [row.peer], kind: "answer", priority: "important", refs: { question: row.set }, ...(row.private ? { private: true } : {}) }), id: `answer-${row.set}` };
 }
 /** The expiry notice. A hub notice of kind `status`, never an answer: the agent decides for itself. */
@@ -113,7 +117,7 @@ export class QuestionDesk {
    * The person's answer, from the console role only (the daemon checks the role before it calls this). Of any number of concurrent answers, stops and expiries,
    * the store's compare-and-set lets exactly one win; a loser is told the row's real terminal state. An answer to a row with no waiting call is the late path.
    */
-  answer(set: unknown, raw: unknown, surface: QuestionSurface, person?: string): AnswerResult {
+  answer(set: unknown, raw: unknown, surface: QuestionSurface, person?: string, instruction?: string): AnswerResult {
     if (typeof set !== "string" || !QUESTION_SET.test(set)) return { ok: false, error: "no such question" };
     const current = this.p.store.get(set);
     if (current?.state === "open" && this.sessionChanged(current)) {
@@ -121,12 +125,27 @@ export class QuestionDesk {
       return { ok: false, error: "question is already cancelled", state: "cancelled" };
     }
     const late = !this.waiters.has(set);
-    const result = this.p.store.answer(set, raw, surface, this.p.now(), late, person);
+    const result = this.p.store.answer(set, raw, surface, this.p.now(), late, person, instruction);
     if (!result.ok) return result;
     this.p.event({ type: "question", set, peer: result.row.peer, event: "answered", latencyMs: this.p.now() - result.row.created, surface, ...(person ? { person } : {}), private: result.row.private });
     if (late) this.publishOwed(result.row);
-    else this.settleWait(set, { status: "answered", questionSet: set, answers: result.row.answers ?? [], answeredBy: "person", surface });
+    else this.settleWait(set, answerResult(result.row));
     return result;
+  }
+
+  /** The daemon authenticates the current conductor before this synchronous admission. */
+  instructedAnswer(set: unknown, raw: unknown, instruction: unknown, conductor: PeerId): AnswerResult {
+    const refuse = (error: string): AnswerResult => ({ ok: false, error: `${error}; the person can answer with ahub console` });
+    if (this.closed || this.p.held()) return refuse("recovery or shutdown is holding answers");
+    const quote = parseAnswerInstruction(instruction);
+    if (!quote.ok) return refuse(quote.error);
+    const row = typeof set === "string" ? this.p.store.get(set) : undefined;
+    if (!row) return refuse("no such question");
+    if (row.peer === conductor) return refuse("the conductor cannot answer its own question");
+    if (row.private || this.p.isPrivate(row.peer, row.task)) return refuse("a private question requires the person");
+    if (row.state !== "open") return refuse(`question is already ${row.state}`);
+    const result = this.answer(set, raw, "conductor", conductor, quote.value);
+    return result.ok ? result : { ...result, error: `${result.error}; the person can answer with ahub console` };
   }
 
   /** The person sent these peers a normal message: every open question of each is superseded and its waiting call told. That message is delivered as usual. */

@@ -13,11 +13,12 @@ export type QuestionState = (typeof QUESTION_STATES)[number];
 export const QUESTION_REASONS = ["superseded", "stopped", "turn_aborted", "session_changed", "expired", "unattended"] as const;
 export type QuestionReason = (typeof QUESTION_REASONS)[number];
 /** Where an answer came from. `acon` is the plugin action of T5; the others are the console's own surfaces. */
-export const QUESTION_SURFACES = ["terminal", "console", "dashboard", "acon"] as const;
+export const QUESTION_SURFACES = ["terminal", "console", "dashboard", "acon", "conductor"] as const;
 export type QuestionSurface = (typeof QUESTION_SURFACES)[number];
 
 export const MAX_QUESTIONS = 4, MAX_OPTIONS = 8, MIN_OPTIONS = 2;
 export const MAX_PROMPT = 500, MAX_LABEL = 80, MAX_DESCRIPTION = 240, MAX_OTHER = 500;
+export const MAX_INSTRUCTION = 500;
 /** Bounds on rows that can wait at once: one peer cannot fill the inbox, and the whole table stays small. */
 export const MAX_OPEN_PER_PEER = 8, MAX_OPEN_TOTAL = 64;
 const ID = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -45,6 +46,9 @@ export interface QuestionRow {
   surface?: QuestionSurface;
   /** The console's verified identity (`ActionMeta.identity`) of an answer given in the acon panel; absent for the terminal and the hub's own console, whose person is the local user. */
   person?: string;
+  /** Claimed per-set person instruction; the quote is database-only, never a public projection. */
+  instructed?: true;
+  instruction?: string;
   questions: AskQuestion[];
   answers?: QuestionAnswer[];
   /** 0 nothing to publish, 1 a hub envelope (late answer or expiry notice) is owed to the peer, 2 it was published. */
@@ -65,6 +69,22 @@ function text(value: unknown, field: string, max: number, optional = false): Par
   if (length(trimmed) > max) return fail(`${field} is longer than ${max} characters`);
   if (CONTROL.test(trimmed)) return fail(`${field} holds a control character`);
   return { ok: true, value: trimmed };
+}
+
+export function parseAnswerInstruction(value: unknown): Parsed<string> {
+  const parsed = text(value, "instruction quote", MAX_INSTRUCTION);
+  return parsed.ok ? { ok: true, value: parsed.value! } : parsed;
+}
+
+/** Display attribution only. The stored instruction quote never leaves this module through a view. */
+export function answerProvenance(row: Pick<QuestionRow, "instructed" | "person">): string | undefined {
+  return row.instructed && row.person ? `answered by ${row.person} on the person's instruction` : undefined;
+}
+
+export function questionView(row: QuestionRow): Omit<QuestionRow, "instruction"> & { provenance?: string } {
+  const { instruction: _quote, ...view } = row;
+  const provenance = answerProvenance(row);
+  return { ...view, ...(provenance ? { provenance } : {}) };
 }
 
 /** The `hub_ask` input, closed and bounded exactly as the spec's Design section. Never echoes a value. */
@@ -152,7 +172,7 @@ export function validateAnswers(questions: readonly AskQuestion[], input: unknow
 
 interface RawRow {
   set_id: string; peer: string; session: string; task: number | null; private: number; state: string; created: number; settled: number | null; reason: string | null;
-  surface: string | null; person: string | null; questions: string; answers: string | null; envelope: number;
+  surface: string | null; person: string | null; instructed: number; instruction: string | null; questions: string; answers: string | null; envelope: number;
 }
 function rowOf(raw: RawRow): QuestionRow {
   return {
@@ -160,6 +180,7 @@ function rowOf(raw: RawRow): QuestionRow {
     created: raw.created, ...(raw.settled !== null ? { settled: raw.settled } : {}), ...(raw.reason !== null ? { reason: raw.reason as QuestionReason } : {}),
     ...(raw.surface !== null ? { surface: raw.surface as QuestionSurface } : {}), ...(raw.person ? { person: raw.person } : {}), questions: JSON.parse(raw.questions) as AskQuestion[],
     ...(raw.answers !== null ? { answers: JSON.parse(raw.answers) as QuestionAnswer[] } : {}), envelope: raw.envelope as 0 | 1 | 2,
+    ...(raw.instructed === 1 ? { instructed: true as const, ...(raw.instruction !== null ? { instruction: raw.instruction } : {}) } : {}),
   };
 }
 
@@ -176,6 +197,9 @@ export class QuestionStore {
       questions TEXT NOT NULL, answers TEXT, envelope INTEGER NOT NULL DEFAULT 0)`);
     // The verified person of an acon answer: an additive column, so a table made before it is altered in place and an older hub simply never reads it.
     if (!(this.db.query("PRAGMA table_info(questions)").all() as { name: string }[]).some(column => column.name === "person")) this.db.run("ALTER TABLE questions ADD COLUMN person TEXT");
+    const columns = new Set((this.db.query("PRAGMA table_info(questions)").all() as { name: string }[]).map(column => column.name));
+    if (!columns.has("instructed")) this.db.run("ALTER TABLE questions ADD COLUMN instructed INTEGER NOT NULL DEFAULT 0");
+    if (!columns.has("instruction")) this.db.run("ALTER TABLE questions ADD COLUMN instruction TEXT");
     this.db.run("CREATE INDEX IF NOT EXISTS questions_by_state ON questions(state, peer)");
   }
   close(): void { try { this.db.close(); } catch { /* already closed */ } }
@@ -191,6 +215,10 @@ export class QuestionStore {
     if (filter.state) { where.push("state = ?"); args.push(filter.state); }
     if (filter.peer) { where.push("peer = ?"); args.push(filter.peer); }
     return (this.db.query(`SELECT * FROM questions ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created, set_id LIMIT ?`).all(...args, limit) as RawRow[]).map(rowOf);
+  }
+  /** Most recent instructed answers, separate from the open-question shelf. */
+  instructedAnswers(limit = MAX_OPEN_TOTAL): QuestionRow[] {
+    return (this.db.query("SELECT * FROM questions WHERE state = 'answered' AND instructed = 1 ORDER BY settled DESC, set_id LIMIT ?").all(limit) as RawRow[]).map(rowOf);
   }
   openCount(peer?: string): number {
     const row = (peer === undefined ? this.db.query("SELECT COUNT(*) AS n FROM questions WHERE state = 'open'").get() : this.db.query("SELECT COUNT(*) AS n FROM questions WHERE state = 'open' AND peer = ?").get(peer)) as { n: number };
@@ -215,14 +243,14 @@ export class QuestionStore {
    * The one terminal transition: a compare-and-set on `state = 'open'`. Of any number of concurrent callers (a person's answer, a stop, an expiry) exactly one
    * sees `changes === 1`; every other gets the row's real terminal state back. `late` says no waiting call will carry the result, so an envelope is owed.
    */
-  answer(set: string, raw: unknown, surface: QuestionSurface, now: number, late: boolean, person?: string): AnswerResult {
+  answer(set: string, raw: unknown, surface: QuestionSurface, now: number, late: boolean, person?: string, instruction?: string): AnswerResult {
     const row = this.get(set);
     if (!row) return { ok: false, error: "no such question" };
     if (row.state !== "open") return { ok: false, error: `question is already ${row.state}`, state: row.state };
     const parsed = validateAnswers(row.questions, raw);
     if (!parsed.ok) return { ok: false, error: parsed.error };
-    const result = this.db.query("UPDATE questions SET state = 'answered', settled = ?, surface = ?, person = ?, answers = ?, envelope = ? WHERE set_id = ? AND state = 'open'")
-      .run(now, surface, person ?? null, JSON.stringify(parsed.value), late ? 1 : 0, set);
+    const result = this.db.query("UPDATE questions SET state = 'answered', settled = ?, surface = ?, person = ?, answers = ?, envelope = ?, instructed = ?, instruction = ? WHERE set_id = ? AND state = 'open'")
+      .run(now, surface, person ?? null, JSON.stringify(parsed.value), late ? 1 : 0, instruction === undefined ? 0 : 1, instruction ?? null, set);
     if (result.changes !== 1) { const now_ = this.get(set); return { ok: false, error: `question is already ${now_?.state ?? "settled"}`, ...(now_ ? { state: now_.state } : {}) }; }
     return { ok: true, row: this.get(set)! };
   }

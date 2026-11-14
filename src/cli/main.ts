@@ -294,13 +294,14 @@ operationalAuditReady=identity.role==="tools" && commandAccess==="conductor" && 
 function audit(outcome: "run" | "refused" | "invalid"): void {
   if (caller.role === "console") return;
   if(outcome==="refused" && operationalAuditReady){if(operationalRefusalRecorded)return;operationalRefusalRecorded=true;}
-  try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, outcome); }
+  try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, outcome, cmd === "answer" && args.includes("--instructed")); }
   catch {
     if (delegatedPeer) fail("live-test delegation audit unavailable; nothing was executed");
     console.error("ahub: CLI audit could not be recorded (outbox unavailable or full)");
   }
 }
 if (identity.role === "invalid") { audit("invalid"); fail(`${identity.reason}; use ahub console or a terminal with no agent markers`); }
+if (delegationRefused && cmd === "answer" && args.includes("--instructed")) { audit("refused"); fail(`${LIVE_TEST_PERSON_REFUSAL}; the person can answer with ahub console`); }
 if (delegationRefused) { audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL); }
 if (identity.role === "tools" && commandAccess === "console") { audit("refused"); fail(peerCommandRefusal(identity.peer, commandLabel)); }
 // Recovery keeps its authoritative delegation audit in the operation receipt, independent of an old source drain.
@@ -2645,10 +2646,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       const parsed = parseAnswerArgs(operands);
       if (!parsed.ok) return fail(parsed.error);
-      const reply = await hub.request({ t: "answer", surface: "terminal", questionSet: parsed.value.set, answers: parsed.value.answers });
+      const reply = await hub.request({ t: "answer", surface: "terminal", questionSet: parsed.value.set, answers: parsed.value.answers, ...(parsed.value.instruction === undefined ? {} : { instructed: parsed.value.instruction }) });
       if (reply.ok === false) return fail(String(reply.error ?? "the answer was refused"));
-      if (options.json) return console.log(JSON.stringify({ ok: true, questionSet: reply.questionSet, state: reply.state }));
-      console.log(`answered ${reply.questionSet ?? parsed.value.set}`);
+      if (options.json) return console.log(JSON.stringify({ ok: true, questionSet: reply.questionSet, state: reply.state, ...(reply.instructed ? { actor: reply.actor, instructed: true } : {}) }));
+      console.log(`answered ${reply.questionSet ?? parsed.value.set}${reply.instructed && typeof reply.actor === "string" ? `; answered by ${terminalText(reply.actor)} on the person's instruction` : ""}`);
     } finally { hub.close(); }
   },
 
@@ -3463,6 +3464,7 @@ async function runConductorCommand(): Promise<void> {
   }
   let op: string;
   let input: Record<string, unknown>;
+  if (cmd === "answer") return commands.answer!(); // The daemon checks instructed answer authority.
   if (cmd === "sdlc") return commands.sdlc!(); // SDLC operational subcommands are role-checked by the daemon.
   if (cmd === "task") {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";

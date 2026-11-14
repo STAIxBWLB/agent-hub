@@ -113,7 +113,7 @@ import { ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEO
 import { BUS_ACCEPTED_SETTLE_MS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
 import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
-import { QuestionStore, QUESTION_SURFACES } from "./questions.ts";
+import { QuestionStore, QUESTION_SURFACES, questionView } from "./questions.ts";
 import { RunTracker, outcomeOf, settleVerdict, type Run } from "./completions.ts";
 import { resultDetail, type ResultDetail } from "./completion-detail.ts";
 import { CompletionStore } from "./completions-store.ts";
@@ -189,7 +189,7 @@ import { canonicalPath, realPath, hubHome } from "./project.ts";
 import { HandoffRefusal, checkTarget, handoffAge, handoffCatchUpRow, handoffChunks, handoffConnectFailure, handoffLogGate, handoffOutcomeUnknown, handoffReach, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
-import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, LINEAGE_TOOL_NAMES, GUIDANCE_TOOL_NAMES, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
+import { QUESTION_TOOLS, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, LINEAGE_TOOL_NAMES, GUIDANCE_TOOL_NAMES, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
 import { effectiveClass, listedCapabilities, PublishRefusal, readShare, shareView, validatePublished, type CapabilityManifest } from "./capabilities.ts";
 import { invocationApproval, checkArgs, DEFAULT_TIMEOUT_S, InvocationLedger, invocationRefusal, refusedBy, renderInvocationResult, requestText, type InvocationOutcome, type InvocationRow } from "./invocations.ts";
 import { Conductor, ConductorHolds, conductorPeer, requireConductor, conductorProgressSink, publicConductorTask, publicPeerBudget, taskShowAllowed, type ConductEvent } from "./conductor.ts";
@@ -3417,7 +3417,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const toolName = observation.name.replace(/^mcp__[^ ]+__/, "");
     if (toolName === "hub_survey_report") return;
     if (GUIDANCE_TOOL_NAMES.has(toolName) || toolName === "hub_audit_report") return;
-    if (observation.name === "hub_set_title" || observation.name === "hub_ask") return; // #1053: a question and its answer are never progress evidence (they may reach an escalation model)
+    if (observation.name === "hub_set_title" || QUESTION_TOOLS.has(observation.name.replace(/^mcp__[^ ]+__/, ""))) return; // #1053: a question and its answer are never progress evidence (they may reach an escalation model)
     try {
       const candidates = board.list().filter(task => task.owner === peer && ["in_progress", "changes_requested"].includes(task.state));
       const task = taskId ? candidates.find(task => task.id === Number(taskId)) : candidates.length === 1 ? candidates[0] : undefined;
@@ -4688,7 +4688,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // #1278: the audit row is written when the command runs and read here on a later sweep, so the peer's open tasks now may not be the ones then. A row older than the drain's own
       // freshness bound is `unattributed` (what is known), never matched to whatever is open at drain time; a fresh one uses the rule `turn_end` uses.
       const fresh = Date.now() - audit.at <= CLI_AUDIT_FRESH_MS && Date.now() >= audit.at;
-      if (!event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}), ...(fresh ? taskAttribution(audit.peer) : { attribution: "unattributed" as const }) })) {
+      if (!event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}), ...(audit.instructed ? { instructed: true } : {}), ...(fresh ? taskAttribution(audit.peer) : { attribution: "unattributed" as const }) })) {
         throw new Error("CLI audit event was not retained");
       }
       retainedCliAudits.add(audit.id); // Only after the event append succeeded.
@@ -5635,6 +5635,15 @@ export async function startDaemon(opts: DaemonOptions) {
       if (stopping || recoveryActive() || bus.isRecoveryHeld) throw new PreEffectToolRefusal("recovery or shutdown is holding execution reference links; wait for release and retry");
       return JSON.stringify({ ok: true, link: await tasks.linkExecutionReference(by, a) });
     }
+    if (op === "hub_ask_answer") {
+      if (by === USER || conductorPeer(config.roles) !== by) throw new PreEffectToolRefusal("only the configured conductor may record an instructed answer; the person can use ahub console");
+      if (childToolAuthority.getStore()) throw new PreEffectToolRefusal("delegated runs cannot record person answers; use ahub console");
+      if (piiTurn || turns.get(by)?.private || contextPii(by) || reviewObserverInput(by)) throw new PreEffectToolRefusal("private or observer context cannot record person answers; use ahub console");
+      if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["set", "answers", "instruction"].includes(key))) throw new PreEffectToolRefusal("answer takes set, answers and instruction only; correct the fields or use ahub console");
+      const result = questionDesk.instructedAnswer(a.set, a.answers, a.instruction, by);
+      if (!result.ok) throw new PreEffectToolRefusal(result.error);
+      return JSON.stringify({ ok: true, questionSet: result.row.set, state: result.row.state, actor: by, instructed: true });
+    }
     if (op === "hub_ask") {
       // #1053: a structured question for the person. Refused before any row for a read-only instance, a PII turn's own words are marked private by the desk's `isPrivate`.
       if (by === USER) throw new PreEffectToolRefusal("hub_ask is for the agents of this project; the person answers with the console (ahub status shows open questions)");
@@ -6470,6 +6479,7 @@ export async function startDaemon(opts: DaemonOptions) {
     event: e => { event(e.type === "question" ? withQuestionAttribution(e) : e); if (e.type === "question" && e.event !== "asked" && e.event !== "pending" && e.event !== "unavailable") queueMicrotask(() => settleCheck(e.peer)); }, // #1054: a closed question may be the last thing a run waited on
     peerKnown: peer => bus.peers.has(peer) || (bus.knownPeers().includes(peer) && membershipAllowed(peer)),
   });
+  const instructedQuestionViews = () => questionStore.instructedAnswers().filter(row => !row.private && !contextPii(row.peer) && (row.task === undefined || (() => { const task = board.get(row.task); return !!task && !tasks.isPii(task); })())).map(questionView);
   // #1053: expiry (`questions.ttl_s`), a changed native session, an envelope a refused publish still owes, and old settled rows. Pushed here, after the desk exists, like the other late timers.
   const questionTimer = setInterval(() => { try { if (!stopping && !recoveryActive()) questionDesk.sweep(); } catch { log("question sweep failed; the rows keep their state"); } }, opts.questionSweepMs ?? 5_000);
   questionTimer.unref?.(); intervals.push(questionTimer);
@@ -9714,6 +9724,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }),
       // #1053 T4: the open questions, for the person's surfaces (the panel and the acon inbox). A live-test dashboard never gets the text.
       questions: session?.liveTest ? [] : questionStore.list({ state: "open" }, 64).map(row => ({ set: row.set, peer: row.peer, created: row.created, private: row.private, questions: row.questions })),
+      answeredQuestions: session?.liveTest ? [] : instructedQuestionViews(),
       // #1054 T6: unread results for the person's surfaces (the panel and the acon inbox), only for the Agents view the inbox and the Results section read.
       ...(_input?.view === "agents" ? { results: resultsView(session) } : {}),
       events: uiEvents.filter((e) => e.seq > after),
@@ -12780,6 +12791,8 @@ export async function startDaemon(opts: DaemonOptions) {
         // #601: ahub study is the person's. A tools connection (any agent) may use the hub_study_* tools, never these op names, whatever Tasks would answer.
         if ((msg.op === "study_evidence" || msg.op === "study_check") && c.role !== "console") return void reply({ t: "task", ok: false, error: "task inventory and synthesis checks are console commands; ask the person to run ahub study evidence --task or ahub study check; a single link is readable through hub_evidence_read" });
         if (String(msg.op).startsWith("study_") && c.role !== "console") return void reply({ t: "task", ok: false, error: "ahub study draft, revise, approve and close are console commands; agents use the hub_study_* tools" });
+        if (msg.op === "hub_ask_answer" && c.role !== "tools") return void reply({ t: "task", ok: false, error: "instructed answers require the conductor tools connection; the person can use ahub console" });
+        if (msg.op === "hub_ask_answer" && (c.toolsOwner || c.externalOwner)) return void reply({ t: "task", ok: false, error: "delegated runs cannot record person answers; use ahub console" });
         if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
         if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: msg.op === "hub_visual" || msg.op === "hub_visual_show" ? visualOperational("recovery").message : "recovery is holding mutations" });
         if (c.role === "tools" && c.peer && Object.hasOwn(CONDUCTOR_TASK_OPS, String(msg.op))) {
@@ -12945,9 +12958,16 @@ export async function startDaemon(opts: DaemonOptions) {
       // #1053: a person's answer to a question a peer asked. Console role ONLY, like `permit`: a peer's connection, a `hub_send` body or a tool result that quotes an answer
       // is text and never reaches this case. The reply is always sent (rid), and a refusal names the row's terminal state, never its text.
       case "answer": {
-        if (c.role !== "console") return void reply({ t: "answer", ok: false, error: "answer is a console command: only the person answers a question" });
+        if (c.role !== "console" || msg.instructed !== undefined) {
+          if (c.role !== "tools" || !c.peer || conductorPeer(config.roles) !== c.peer) return void reply({ t: "answer", ok: false, error: "answer is a console command unless explicitly instructed through the configured conductor; use ahub console" });
+          if (c.toolsOwner || c.externalOwner) return void reply({ t: "answer", ok: false, error: "delegated runs cannot record person answers; use ahub console" });
+          if (readOnlyPeer(c.peer)) return void reply({ t: "answer", ok: false, error: "read-only sessions cannot record person answers; use ahub console" });
+          if (turns.get(c.peer)?.private || contextPii(c.peer) || reviewObserverInput(c.peer)) return void reply({ t: "answer", ok: false, error: "private or observer context cannot record person answers; use ahub console" });
+          const result = questionDesk.instructedAnswer(msg.questionSet, msg.answers, msg.instructed, c.peer);
+          return void reply(result.ok ? { t: "answer", ok: true, questionSet: result.row.set, state: result.row.state, actor: c.peer, instructed: true } : { t: "answer", ok: false, error: result.error });
+        }
         if (recoveryActive() || stopping) return void reply({ t: "answer", ok: false, error: "recovery or shutdown is holding answers; answer again once the hub is back" });
-        const surface = QUESTION_SURFACES.includes(msg.surface as never) ? msg.surface : "console";
+        const surface = msg.surface !== "conductor" && QUESTION_SURFACES.includes(msg.surface as never) ? msg.surface : "console";
         // The verified identity the acon plugin read from its console's `ActionMeta` rides only on the `acon` surface, one line and bounded, never text of the question or the answer.
         const person = surface === "acon" && typeof msg.person === "string" && msg.person.trim() ? sanitize(msg.person).replace(/\s+/g, " ").trim().slice(0, 200) : undefined;
         const result = questionDesk.answer(msg.questionSet, msg.answers, surface, person);
@@ -12956,7 +12976,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // The person's read of the open questions (the console, `ahub`, the panel). Question text is the person's surface only: a tools connection is refused.
       case "questions": {
         if (c.role !== "console") return void reply({ t: "questions", ok: false, error: "questions are shown to the person: use the console" });
-        return void reply({ t: "questions", ok: true, questions: questionStore.list(msg.state === "all" ? {} : { state: "open" }, 100) });
+        return void reply({ t: "questions", ok: true, questions: questionStore.list(msg.state === "all" ? {} : { state: "open" }, 100).map(questionView), answeredQuestions: instructedQuestionViews() });
       }
       // #1054: a person's receipt for a result. Console role ONLY, like `permit`: a peer's connection, a `hub_send` body or a tool result that quotes a receipt is text and never reaches
       // the store. A snapshot or a `results` read never writes one. Every message gets a reply (rid), a refusal included.

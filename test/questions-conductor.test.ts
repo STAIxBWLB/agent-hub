@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { parseAnswerArgs } from "../src/cli/answer-args.ts";
+import { answerProvenance } from "../src/hub/questions.ts";
 import { QuestionStore } from "../src/hub/questions.ts";
 import { Board } from "../src/hub/board.ts";
 import { BasePeer } from "../src/hub/peers.ts";
@@ -45,12 +47,12 @@ async function fixture() {
   const connect = async (role: "console" | "tools", peer?: string) => { const client = await ControlClient.connect(stateDir, { role, projectRoot: root, ...(peer ? { peer } : {}) }); clients.push(client); return client; };
   const person = await connect("console"), lead = await connect("tools", "claude"), asker = await connect("tools", "codex"), other = await connect("tools", "pi");
   cleanup.push(async () => { for (const client of clients) client.close(); await daemon.stop(); });
-  const rows = () => { const store = new QuestionStore(join(stateDir, "hub.db")); try { return store.list({}, 100) as unknown as InstructedRow[]; } finally { store.close(); } };
+  const rows = (openOnly = false) => { const store = new QuestionStore(join(stateDir, "hub.db")); try { return store.list(openOnly ? { state: "open" } : {}, 100) as unknown as InstructedRow[]; } finally { store.close(); } };
   const open = async (peer = "codex", task?: number) => {
     const client = peer === "claude" ? lead : peer === "pi" ? other : asker;
     const waiting = client.request({ t: "task", op: "hub_ask", args: { ...ASK, ...(task === undefined ? {} : { task }) } });
-    await until(() => rows().some(row => row.peer === peer && row.state === "open"));
-    const set = rows().find(row => row.peer === peer && row.state === "open")!.set;
+    await until(() => rows(true).some(row => row.peer === peer && row.state === "open"));
+    const set = rows(true).find(row => row.peer === peer && row.state === "open")!.set;
     return { set, waiting };
   };
   const answerTool = (client: ControlClient, set: string, ...supplied: unknown[]) => {
@@ -58,7 +60,7 @@ async function fixture() {
     return client.request({ t: "task", op: "hub_ask_answer", args: { set, answers: ANSWERS, ...(instruction === undefined ? {} : { instruction }) } });
   };
   const cli = async (args: string[], peer?: string) => {
-    const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: join(home, "claude"), CODEX_HOME: join(home, "codex"), KIMI_CODE_HOME: join(home, "kimi"), AGENTHUB_HOME: join(home, "hub"), AMEM_HOME: join(home, "amem"), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: root };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: join(home, "claude"), CODEX_HOME: join(home, "codex"), KIMI_CODE_HOME: join(home, "kimi"), AGENTHUB_HOME: join(home, "hub"), AMEM_HOME: join(home, "amem"), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: root };
     for (const key of Object.keys(env)) if (key.startsWith("ORCA_") || ["AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "AGENTHUB_DELIVERY_ONLY", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_UNATTENDED", "CODEX_THREAD_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID"].includes(key)) delete env[key];
     if (peer) env.AGENTHUB_PEER_ID = peer;
     const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), ...args], { cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -81,6 +83,9 @@ test("AC1 conductor tool records a per-set instruction in db only and returns an
   const row = f.rows().find(row => row.set === q.set)!;
   expect(row).toMatchObject({ state: "answered", surface: "conductor", person: "claude", instructed: true, instruction: QUOTE });
   const view = await f.person.request({ t: "questions" }); expect(JSON.stringify(view)).not.toContain(QUOTE);
+  const all = await f.person.request({ t: "questions", state: "all" });
+  const projected = all.questions.find((row: Record<string, unknown>) => row.set === q.set);
+  expect(projected).toBeDefined(); expect(projected).not.toHaveProperty("instruction"); expect(projected.provenance).toContain(PROVENANCE); expect(JSON.stringify(all)).not.toContain(QUOTE);
   expect(safeSinks(f)).not.toContain(QUOTE); expect(safeSinks(f)).not.toContain(ANSWER_TEXT);
 }, 20_000);
 
@@ -124,8 +129,9 @@ test("AC3 person parity and real CLI instructed conductor path, audit and agent 
   const instructed = await f.open(), cli = await f.cli(["answer", instructed.set, "choice=a", "--other", ANSWER_TEXT, "--instructed", QUOTE], "claude");
   expect(cli.code, cli.stderr).toBe(0); await instructed.waiting; expect(f.rows().find(row => row.set === instructed.set)).toMatchObject({ surface: "conductor", person: "claude", instructed: true, instruction: QUOTE });
   expect(classifyPeerCommand("answer", [instructed.set, "choice=a", "--instructed", QUOTE])).toBe("conductor");
-  const audit = readFileSync(join(f.stateDir, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(row => row.type === "agent_cli");
-  expect(audit.some(row => row.peer === "claude" && row.instructed === true)).toBe(true);
+  const audit = () => readFileSync(join(f.stateDir, "events.jsonl"), "utf8").split("\n").flatMap(line => { try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; } }).filter(row => row.type === "agent_cli");
+  await until(() => audit().some(row => row.peer === "claude" && row.instructed === true));
+  expect(audit().some(row => row.peer === "claude" && row.instructed === true)).toBe(true);
   for (const [args, peer] of [[["answer", "qs-aaaaaaaaaaaa", "choice=a"], "claude"], [["answer", "qs-aaaaaaaaaaaa", "choice=a", "--instructed", QUOTE], "pi"], [["--live-test", "answer", "qs-aaaaaaaaaaaa", "choice=a", "--instructed", QUOTE], "claude"]] as [string[], string][]) {
     const refused = await f.cli(args, peer); expect(refused.code).not.toBe(0); expect(refused.stdout + refused.stderr).not.toContain(QUOTE); expect(refused.stdout + refused.stderr).toContain("ahub console");
   }
@@ -141,3 +147,43 @@ test("AC4 capture excludes instructed-answer tool input/output while ordinary ca
   const names = mem.calls.filter(row => row.path.endsWith("/observations")).map(row => (row.body as { tool_name: string }).tool_name);
   expect(names).toEqual(["read"]); expect(JSON.stringify(mem.calls)).not.toContain(QUOTE); expect(JSON.stringify(mem.calls)).not.toContain(ANSWER_TEXT);
 });
+
+
+test("instruction CLI parser requires one nonempty quote within 500 characters and preserves legacy answers", () => {
+  const base = ["qs-aaaaaaaaaaaa", "choice=a"];
+  const plain = parseAnswerArgs(base); expect(plain.ok).toBe(true); if (!plain.ok) throw new Error("expected ordinary person args"); expect(plain.value).not.toHaveProperty("instruction");
+  const atBound = parseAnswerArgs([...base, "--instructed", "x".repeat(500)]); expect(atBound.ok).toBe(true);
+  for (const tail of [["--instructed"], ["--instructed", ""], ["--instructed", "   "], ["--instructed", "x".repeat(501)], ["--instructed", QUOTE, "--instructed", QUOTE]]) {
+    const parsed = parseAnswerArgs([...base, ...tail]); expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error("expected invalid instruction refusal");
+    expect(parsed.error).toMatch(/instruction|instructed|quote/); expect(parsed.error).toContain("ahub console"); expect(parsed.error).not.toContain(QUOTE);
+  }
+});
+
+test("answer provenance is a fixed actor attribution and never quotes the database-only instruction", () => {
+  expect(answerProvenance({ person: "claude", instructed: true, instruction: QUOTE } as { person: string; instructed: true })).toBe(PROVENANCE);
+  expect(answerProvenance({ person: "console-fixture" })).toBeUndefined();
+});
+
+test("settled history cannot crowd out an open question or recent instructed provenance in default reads and CLI listing", async () => {
+  const f = await fixture(), store = new QuestionStore(join(f.stateDir, "hub.db"));
+  let instructedSet: string;
+  try {
+    const base = Date.now() - 120_000;
+    for (let i = 0; i < 101; i++) {
+      const row = store.ask({ peer: "pi", session: "pi-fixture-session", private: false, questions: ASK.questions }, base + i);
+      if ("error" in row) throw new Error("fixture question seed refused");
+      const answer = store.answer(row.set, ANSWERS, "terminal", base + i + 1, false); expect(answer.ok).toBe(true);
+    }
+    const row = store.ask({ peer: "pi", session: "pi-fixture-session", private: false, questions: ASK.questions }, Date.now() - 1000);
+    if ("error" in row) throw new Error("fixture instructed question seed refused");
+    instructedSet = row.set;
+    expect(store.answer(row.set, ANSWERS, "conductor", Date.now() - 500, false, "claude", QUOTE).ok).toBe(true);
+  } finally { store.close(); }
+  const q = await f.open(), read = await f.person.request({ t: "questions" }); expect(read.ok).toBe(true);
+  expect(read.questions.some((row: Record<string, unknown>) => row.set === q.set && row.state === "open")).toBe(true);
+  const provenance = read.answeredQuestions.find((row: Record<string, unknown>) => row.set === instructedSet);
+  expect(provenance).toBeDefined(); expect(provenance.provenance).toBe(PROVENANCE); expect(provenance).not.toHaveProperty("instruction"); expect(JSON.stringify(read)).not.toContain(QUOTE);
+  const listing = await f.cli(["answer"]); expect(listing.code, listing.stderr).toBe(0); expect(listing.stdout).toContain(q.set); expect(listing.stdout + listing.stderr).not.toContain(QUOTE);
+  expect((await f.person.request({ t: "answer", questionSet: q.set, answers: ANSWERS })).ok).toBe(true); await q.waiting;
+}, 20_000);

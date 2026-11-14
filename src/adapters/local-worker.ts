@@ -538,7 +538,7 @@ export class LocalPeer extends BasePeer {
           const result: ChatMessage = { role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) };
           msgs.push(result); results.push(result);
           if (this.approvalStopReason) { this.abort?.abort(); throw new ApprovalWaitStop(this.approvalStopReason); }
-          if (!remoteTurn && !reviewScope.excluded && name !== "hub_set_title" && name !== "hub_ask" && !reviewCaptureExcluded(name, call.function.arguments)) this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
+          if (!remoteTurn && !reviewScope.excluded && name !== "hub_set_title" && name !== "hub_ask" && name !== "hub_ask_answer" && !reviewCaptureExcluded(name, call.function.arguments)) this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
           // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
           // doc_read text is converted document content (a converter can surface hidden text), never memory evidence: not captured, whatever the turn.
           // web_fetch text is a third party's page and its URL is the model's own request: neither is memory evidence either (#515b).

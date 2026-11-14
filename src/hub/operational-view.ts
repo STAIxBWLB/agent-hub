@@ -19,7 +19,7 @@ const EVENT_FIELDS: Record<string,readonly string[]>={
   tokens:["peer","n","task","attribution","pii"],
   usage:["peer","source","id","task","attribution","pii","reasoningTokens","measuredAt","inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens"],
   turn_end:["peer","turn","ms","tokens","files","snapshotMs","task","attribution","pii","model","modelEvidence"],
-  conduct:["peer","action","task","target"],agent_cli:["peer","command","refused","delegated"],
+  conduct:["peer","action","task","target"],agent_cli:["peer","command","refused","delegated","instructed"],
   pii_screen:["task","item","label","source","category","miss","ms"],
   overflow:["id","from","peer"],undeliverable:["id","from","peer"],stale:["id","from","peer","task"],quiet:["id","from","peers"],
   envelope:["id","from","to","priority","hop","kind","task","bytes","private","dropped"],

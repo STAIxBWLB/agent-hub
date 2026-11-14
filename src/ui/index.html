@@ -459,6 +459,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <section id="schedules-section" aria-labelledby="schedules-title" data-view="agents" hidden><div class="section-head"><h2 id="schedules-title">Schedules</h2><span id="schedule-count" class="meta"></span></div><div id="schedules"></div></section>
 <section id="rooms-section" aria-labelledby="rooms-title" data-view="agents" data-empty="true" hidden><div class="section-head"><h2 id="rooms-title">Rooms</h2><span id="room-count" class="meta"></span></div><div id="rooms"></div></section>
 <section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><p id="runtime-models-notice" class="meta notice-warn" role="status" hidden></p><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
+<section id="instructed-answers-section" aria-labelledby="instructed-answers-title" data-view="agents" data-empty="true" hidden><div class="section-head"><h2 id="instructed-answers-title">Recorded answers</h2></div><div id="instructed-answers"></div></section>
 <section id="results-section" aria-labelledby="results-title" data-view="agents" hidden><div class="section-head"><h2 id="results-title">Results</h2><span id="results-count" class="meta"></span></div><div id="results"></div></section>
 <section aria-labelledby="permissions-title" data-view="agents" hidden><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
 <section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div>
@@ -791,6 +792,18 @@ function renderTaskStage(stage) {
   const row = el('div', undefined, 'task-stage' + (stage.changes ? ' changes' : ''));
   for (const [index, label] of ['Proposed', 'In progress', 'In review', 'Approved'].entries()) row.append(el('span', `${index < stage.stage ? '[x]' : '[ ]'} ${label}${index < 3 ? ' > ' : ''}`, index < stage.stage ? 'reached' : ''));
   row.append(el('span', ` / Stage ${stage.stage}/4: ${stage.label}`)); return row;
+}
+function renderInstructedAnswers(input) {
+  const rows = Array.isArray(input) ? input.filter(row => row && row.instructed === true && typeof row.set === 'string' && typeof row.provenance === 'string') : [];
+  $('instructed-answers-section').dataset.empty = rows.length ? 'false' : 'true';
+  update('instructed-answers', rows, target => {
+    for (const row of rows) {
+      const card = el('div', undefined, 'row');
+      card.append(el('p', row.set + ': ' + row.provenance, 'meta'));
+      if (Array.isArray(row.answers)) card.append(el('pre', JSON.stringify(row.answers), 'meta'));
+      target.append(card);
+    }
+  });
 }
 function renderApprovals(permissions) {
   const terminalWaiting = permissions.filter((permission) => adapterDisplay[permission.peer]?.terminalApproval).length;
@@ -2031,6 +2044,7 @@ function render(snapshot) {
   renderBoard(snapshot, peers, ids);
   renderSources(snapshot.sources);
   renderApprovals(snapshot.permissions);
+  renderInstructedAnswers(snapshot.answeredQuestions);
   update('budget', snapshot.budget, (target) => {
     if (!Object.keys(snapshot.budget).length) return empty(target, 'No usage readings yet. Usage appears when a peer reports it.');
     for (const [peer, budget] of Object.entries(snapshot.budget)) {
