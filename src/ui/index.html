@@ -409,7 +409,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 .usage-table th{font-size:var(--text-xs);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;background:var(--panel-soft)}
 .usage-table tr:hover td{background:var(--hover)}
 .usage-table .num{font-family:var(--font-mono);text-align:right}
-.usage-table td.task-cell{max-width:32ch;overflow:hidden;text-overflow:ellipsis}
+.usage-table .task-clip{display:block;max-width:32ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .usage-tag{display:inline-block;padding:1px var(--space-2);border-radius:var(--radius-control);font-size:var(--text-xs);font-family:var(--font-mono)}
 .usage-tag.pii{background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber)}
 .meta.usage-behind{color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber);border-radius:var(--radius-control);padding:var(--space-2) var(--space-3)}
@@ -1916,11 +1916,11 @@ function renderUsage(usage, tasks, budget) {
     // A PII task's public title is exactly "[pii]" (Tasks.publicView), so the board row alone marks it even when it has no usage rows.
     const pii = ut?.pii === true || bt?.title === '[pii]';
     const tr = el('tr');
-    const taskCell = el('td', undefined, 'task-cell');
+    const taskCell = el('td');
     if (pii) {
       taskCell.append(el('span', '#' + id + ' [pii]', 'usage-tag pii'));
     } else {
-      taskCell.textContent = '#' + id + (bt?.title ? ' ' + bt.title : ''); taskCell.title = taskCell.textContent;
+      const clip = el('span', '#' + id + (bt?.title ? ' ' + bt.title : ''), 'task-clip'); clip.title = clip.textContent; taskCell.append(clip);
     }
     const stateCell = el('td', bt?.state ? bt.state.replaceAll('_', ' ') : '-');
     const ownerCell = el('td', bt?.owner || '-');

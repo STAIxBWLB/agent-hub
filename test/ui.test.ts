@@ -684,9 +684,9 @@ test("#1477 the active view tab scrolls into sight once per change", () => {
 test("#1477 task cells are capped with a title, empty states are padded, holders and labels have gaps, the badge is labelled", () => {
   const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
   const css = html.match(/<style>([\s\S]*?)<\/style>/)![1]!.replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.usage-table td\.task-cell\{max-width:\d+ch;overflow:hidden;text-overflow:ellipsis\}/);
-  expect(html).toContain("const taskCell = el('td', undefined, 'task-cell');");
-  expect(html).toContain("taskCell.title = taskCell.textContent;");
+  // max-width does not hold on a td in an auto-layout table, so the cap sits on a block span that also carries nowrap and the ellipsis.
+  expect(css).toMatch(/\.usage-table \.task-clip\{display:block;max-width:\d+ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\}/);
+  expect(html).toContain("el('span', '#' + id + (bt?.title ? ' ' + bt.title : ''), 'task-clip'); clip.title = clip.textContent; taskCell.append(clip);");
   expect(html).toContain("if (!unread.length) empty(target, 'Nothing unread.');");
   expect(css).toMatch(/\.structure-group>\.row-head,\.structure-group>p/);
   expect(css).toMatch(/\.detail-group>\.peer-mark\{margin:0 var\(--space-4\) var\(--space-2\) 0\}/);
