@@ -2301,6 +2301,7 @@
   "src/hub/sdlc.ts:gates:inline:list.length > 6=6#0": "contract",
   "src/hub/sdlc.ts:identicalTreeGate:inline:proof.jobs.length > 100=100#0": "safety floor",
   "src/hub/sdlc.ts:identicalTreeGate:inline:runs.length > 20=20#0": "safety floor",
+  "src/hub/sdlc.ts:latestCheckRuns:inline:group.length < 2=2#0": "contract",
   "src/hub/sdlc.ts:mergeRepos:inline:Object.keys(value).length > 16=16#0": "contract",
   "src/hub/sdlc.ts:openPrFor:inline:rows.length >= 100=100#0": "safety floor",
   "src/hub/sdlc.ts:outputLimit:inline:Math.max=1#0": "safety floor",

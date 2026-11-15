@@ -4,7 +4,7 @@ import { evalGapBlockers, evalGateView, readEvalFor, type EvalGate } from "./eva
 import { findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import { securityPassBlockers, securityPassView, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
 import type { CriteriaView } from "./workflow.ts";
-import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
+import { latestCheckRuns, parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
 export interface DeliveryTask {
   /** Latest owner-reported artifact head; omitted by older library callers. */
   latestHead?: string;
@@ -33,7 +33,7 @@ async function finalSnapshot(repo: string, evidence: Map<number, PrEvidence>, ru
   // ponytail: one snapshot verifies at most 32 linked issues; paginate within the same deadline if queues grow.
   if (issues.size > 32) return { gatesStable: false };
   const [owner, name] = repo.split("/");
-  const fields = "headRefOid state isDraft baseRefName baseRefOid changedFiles reviewDecision reviewRequests(first:100){nodes{requestedReviewer{__typename}} pageInfo{hasNextPage}} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name conclusion status} ... on StatusContext{context state}} pageInfo{hasNextPage}}}";
+  const fields = "headRefOid state isDraft baseRefName baseRefOid changedFiles reviewDecision reviewRequests(first:100){nodes{requestedReviewer{__typename}} pageInfo{hasNextPage}} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name conclusion status startedAt checkSuite{workflowRun{workflow{resourcePath}}}} ... on StatusContext{context state}} pageInfo{hasNextPage}}}";
   const entries = [...evidence.entries()];
   const issueAlias = (issue: number) => {
     const primary = entries.find(([, value]) => value.issueLabels?.issue === issue);
@@ -53,7 +53,7 @@ async function finalSnapshot(repo: string, evidence: Map<number, PrEvidence>, ru
       const p = data.data.repository[`queue_p${id}`];
       const threads = p?.reviewThreads, reviews = p?.reviewRequests, checks = p?.statusCheckRollup === null ? { nodes: [], pageInfo: { hasNextPage: false } } : p?.statusCheckRollup?.contexts;
       if (threads?.pageInfo?.hasNextPage !== false || reviews?.pageInfo?.hasNextPage !== false || checks?.pageInfo?.hasNextPage !== false || !Array.isArray(threads.nodes) || threads.nodes.length > 100 || threads.nodes.some((n: { isResolved?: unknown }) => typeof n?.isResolved !== "boolean") || !Array.isArray(reviews.nodes) || !Array.isArray(checks.nodes) || checks.nodes.length > 100) return { gatesStable: false, prs };
-      const after = parsePrEvidence({ ...p, files: before.paths.map(path => ({ path })), statusCheckRollup: checks.nodes, reviewRequests: reviews.nodes, unresolvedThreads: threads.nodes.filter((n: { isResolved: boolean }) => !n.isResolved).length });
+      const after = parsePrEvidence({ ...p, files: before.paths.map(path => ({ path })), statusCheckRollup: latestCheckRuns(checks.nodes), reviewRequests: reviews.nodes, unresolvedThreads: threads.nodes.filter((n: { isResolved: boolean }) => !n.isResolved).length });
       if (before.issueLabels) after.issueLabels = { issue: before.issueLabels.issue, labels: parseIssueLabels(data.data.repository[`queue_i${id}`], before.issueLabels.issue) ?? null };
       if (gateIdentity(before) !== gateIdentity(after)) return { gatesStable: false, prs };
     }

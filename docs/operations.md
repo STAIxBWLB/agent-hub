@@ -5376,7 +5376,7 @@ PR or push check with the identical Git tree and all three successful jobs. An a
 unreadable result runs the main gate again and refuses release. A manual
 `prepare_bundle` dispatch builds reviewable plugin assets without publishing;
 it is never accepted as full-gate evidence. A `timing_runs=20` dispatch runs only the daemon, PII screen and ACP
-test files twenty times on macOS, in its own concurrency group; it does not replace the full gate. Each PR has its own CI concurrency group, so PRs run side by side; within a PR a newer pending run replaces the older pending one and an admitted run is never cancelled; main pushes and dispatches keep queueing every run. Two groups admitting the same tree at once may run it twice, never a false green (#609). `scripts/check.sh --changed [<base>]` runs every non-test step but only the affected test files, and the full suite when it cannot tell; the full gate stays CI's (#610).
+test files twenty times on macOS, in its own concurrency group; it does not replace the full gate. Each PR has its own CI concurrency group, so PRs run side by side; within a PR a newer head replaces the older run, pending or in progress (`cancel-in-progress` for pull requests only, #1490); main pushes and dispatches keep queueing every run and are never cancelled. A cancelled run is never a full-gate proof. A draft PR skips the macOS shards and its required `check (macos-latest)` fails with "macOS deferred" until `gh pr ready` starts a run that includes them (#1490). Two groups admitting the same tree at once may run it twice, never a false green (#609). `scripts/check.sh --changed [<base>]` runs every non-test step but only the affected test files, and the full suite when it cannot tell; the full gate stays CI's (#610).
 `scripts/check.sh` runs the suite under `scripts/hang-watch.sh`, which stops it when
 no test result line (`(pass)`, `(fail)`, `(skip)` or `(todo)`) and no test file header
 has appeared for `AHUB_CHECK_QUIET_S` seconds (300 by default, set to 300 in CI), so a
@@ -5385,7 +5385,7 @@ output through unchanged and appends one byte to a progress file for each of tho
 the watchdog polls that file's size. On a stop it prints where the run is and the process
 table below it first. `AHUB_CHECK_HANG_S` (2250 by default, sized in #1086 from two measured full runs on dgx02 of 1483 s and 1487 s of test time, 1.5 times the longer; it was 960) is only the backstop for a run
 that keeps printing results while hung; hosted CI sets 1500 on Linux inside a 35-minute
-job limit (#378, #593, #752, task 516). The macOS leg runs as four shards (#548): `AHUB_CHECK_SHARD=i/n`
+job limit (#378, #593, #752, task 516). The macOS leg runs as four shards and the Ubuntu leg as six (#548, #1490): `AHUB_CHECK_SHARD=i/n`
 makes `scripts/check.sh` run slice `i` of the full suite through `bun test --shard=i/n --timings=scripts/test-timings.json`, which puts
 every test file in exactly one shard and balances them by the recorded per-file times; shard 1 also runs the docs check, typecheck, role check, bundle freshness and
 package contents, so each of those runs once per gate, and the others install and test. Each shard runs under the same 1500 s backstop as Linux inside a 25-minute job

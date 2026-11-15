@@ -327,6 +327,40 @@ export function planningIssueReceipt(value: unknown, previous: SdlcReceipt | und
 }
 
 
+/**
+ * #1490 AC5: one head can carry the check rows of several runs of one workflow: the draft run `gh pr ready` replaces (its macOS aggregate failed on purpose, its other jobs were
+ * cancelled), a rerun, or a run a newer push cancelled. The newest run of a workflow is the one that says what the head's CI is, so an older row of the same check name is dropped
+ * from the evidence, never read as a failure to fix. Only when it is certain: every row of the name has a start time and the same workflow identity, and exactly one row is newest.
+ * Anything else (a different workflow with the same job name, a missing time, a tie) keeps every row, so `requiredCiBlocker` still says `duplicate` and unknown stays unknown.
+ * Callers apply it before they index the raw rows beside the parsed checks.
+ */
+export function latestCheckRuns<T>(rows: readonly T[]): T[] {
+  const field = (row: T) => row as unknown as { name?: unknown; context?: unknown; startedAt?: unknown; workflowName?: unknown; checkSuite?: { workflowRun?: { workflow?: { resourcePath?: unknown } } } } | null;
+  const workflowOf = (row: T): string | undefined => {
+    const value = field(row);
+    const named = value?.workflowName ?? value?.checkSuite?.workflowRun?.workflow?.resourcePath;
+    return typeof named === "string" && named ? named : undefined;
+  };
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const name = field(row)?.name ?? field(row)?.context;
+    if (typeof name !== "string") continue;
+    const group = groups.get(name);
+    if (group) group.push(row); else groups.set(name, [row]);
+  }
+  const older = new Set<T>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const workflows = new Set(group.map(workflowOf));
+    const times = group.map(row => typeof field(row)?.startedAt === "string" ? Date.parse(field(row)!.startedAt as string) : NaN);
+    if (workflows.size !== 1 || workflows.has(undefined) || times.some(time => !Number.isFinite(time))) continue;
+    const newest = Math.max(...times);
+    if (times.filter(time => time === newest).length !== 1) continue;
+    group.forEach((row, index) => { if (times[index] !== newest) older.add(row); });
+  }
+  return older.size ? rows.filter(row => !older.has(row)) : [...rows];
+}
+
 export function parsePrEvidence(value: unknown): PrEvidence {
   const p = value as Record<string, any>;
   if (!p || !sha(p.headRefOid) || !["OPEN", "CLOSED", "MERGED"].includes(p.state) || !Array.isArray(p.statusCheckRollup) || !Array.isArray(p.files) || p.files.length > 1000) throw new Error("PR readback: invalid or incomplete structured evidence");
@@ -521,6 +555,7 @@ export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh, wit
     const query = `query($owner:String!,$name:String!,$number:Int!${labels ? ",$issue:Int!" : ""}){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}}${labels ? " issue(number:$issue){number labels(first:100){nodes{name} pageInfo{hasNextPage}}}" : ""}}}`;
     const threads = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, ...(labels ? ["-F", `issue=${labels.issue}`] : []), "-F", `number=${receipt.pr}`]);
     const p = JSON.parse(view.stdout);
+    if (Array.isArray(p.statusCheckRollup)) p.statusCheckRollup = latestCheckRuns(p.statusCheckRollup);
     delete p.unresolvedThreads; // only the complete thread query can establish this fact
     if (threads.code === 0) {
       const response = JSON.parse(threads.stdout);
@@ -614,7 +649,7 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
   const full = requiredCheckNames(receipt.repo, requiredChecks);
   if (!full.length) return { ready: false, blockers: ["required checks unknown: set required_checks in .agenthub/sdlc.toml"], checks: full };
   const [owner, name] = receipt.repo.split("/");
-  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state commits(last:1){nodes{commit{oid tree{oid} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}} reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{author{__typename} createdAt} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}";
+  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state commits(last:1){nodes{commit{oid tree{oid} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion startedAt checkSuite{workflowRun{workflow{resourcePath}}}} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}} reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{author{__typename} createdAt} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}";
   try {
     const deadline = performance.now() + 20_000;
     const bounded: SdlcGh = (args, timeout, cwd, cap) => performance.now() < deadline
@@ -635,7 +670,7 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
     const nodes: unknown[] | undefined = contexts?.nodes;
     let reusedRun: number | undefined;
     const completeChecks = !(contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(nodes) || nodes.length > 100);
-    const requiredNodes = completeChecks ? nodes!.filter(node => {
+    const requiredNodes = completeChecks ? latestCheckRuns(nodes!).filter(node => {
       const raw = node as { name?: unknown; context?: unknown } | null | undefined;
       return full.some(name => (raw?.name ?? raw?.context) === name);
     }) : [];

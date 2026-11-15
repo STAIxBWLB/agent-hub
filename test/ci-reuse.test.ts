@@ -160,13 +160,58 @@ test("successful reused required checks cannot become a fresh full-gate proof", 
   expect(await read(boundedApi, "expected", { currentRunId: 99 })).toMatchObject({ kind: "reuse", run: { id: 2 } });
 });
 
-test("#609 PR checks run in a group per PR where a newer pending run replaces the older; main and dispatch keep queue max", async () => {
+test("#609, #1490 PR checks run in a group per PR where a newer head cancels the older run, pending or in progress; main and dispatch keep queue max and are never cancelled", async () => {
   const workflow = await Bun.file(new URL("../.github/workflows/check.yml", import.meta.url)).text();
   expect(workflow).toContain("github.event_name == 'pull_request' && format('check-pr-{0}', github.event.pull_request.number) || 'check-main'");
-  expect(workflow).toContain("cancel-in-progress: false"); // GitHub refuses queue max with cancel-in-progress true
+  // AC4: only a pull request run is cancelled when a newer head arrives; a push to main or a dispatch is not (GitHub also refuses queue max with cancel-in-progress true)
+  expect(workflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
+  expect(workflow).not.toContain("cancel-in-progress: false");
   expect(workflow).toContain("queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}");
+  const cancel = (event: string) => event === "pull_request";
+  expect([cancel("pull_request"), cancel("push"), cancel("workflow_dispatch")]).toEqual([true, false, false]);
   expect(workflow).toContain("inputs.timing_runs == '20' && 'macos-timing'");
   for (const job of ["ubuntu:", "ubuntu-shard:", "macos:", "macos-shard:", "seeded:", "decision:"]) expect(workflow).toContain(`\n  ${job}`);
+});
+
+// #1490 AC3: a run that was cancelled, or whose macOS aggregate failed on purpose for a draft PR, is never an identical-tree full proof. The proof reads job conclusions, not run status.
+test("#1490 AC3 a cancelled run, a draft-deferred run and a run with a skipped or cancelled required job are never reused as a full proof", () => {
+  const finished = (id: number, conclusions: Record<string, string>, runConclusion = "success") => {
+    const run = gateRun(id, "expected", "completed");
+    run.conclusion = runConclusion;
+    run.jobs = fullJobs().map(job => ({ ...job, conclusion: conclusions[job.name] ?? job.conclusion }));
+    return run;
+  };
+  const MAC = "check (macos-latest)";
+  expect(admission([finished(1, {})])).toMatchObject({ kind: "reuse", run: { id: 1 } }); // control: a real full proof is reused
+  // the draft run: the macOS aggregate failed on purpose, so the run is not successful and its macOS job is not either
+  expect(admission([finished(2, { [MAC]: "failure" }, "failure")])).toEqual({ kind: "run" });
+  expect(admission([finished(3, { [MAC]: "failure" })])).toEqual({ kind: "run" }); // even a run row that claims success
+  // a superseded run GitHub cancelled
+  expect(admission([finished(4, { "check (ubuntu-latest)": "cancelled", [MAC]: "cancelled", "seeded guards": "cancelled" }, "cancelled")])).toEqual({ kind: "run" });
+  expect(admission([finished(5, { "seeded guards": "cancelled" })])).toEqual({ kind: "run" });
+  expect(admission([finished(6, { [MAC]: "skipped" })])).toEqual({ kind: "run" });
+  expect(admission([finished(7, { [MAC]: "failure" }), finished(8, {})])).toMatchObject({ kind: "reuse", run: { id: 8 } }); // only the real proof counts
+});
+
+test("#1490 AC3 over the API: a draft-deferred and a cancelled run for the same tree are skipped, a later full proof is reused", async () => {
+  const fn = (gates as Record<string, unknown>).readFullGateAdmission as Function;
+  const jobsOf = (conclusions: Record<string, string>) => ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, status: "completed", conclusion: conclusions[name] ?? "success" }));
+  const byRun: Record<number, ReturnType<typeof jobsOf>> = {
+    1: jobsOf({ "check (macos-latest)": "failure" }), // draft deferral
+    2: jobsOf({ "check (ubuntu-latest)": "cancelled", "check (macos-latest)": "cancelled", "seeded guards": "cancelled" }), // superseded
+    3: jobsOf({}),
+  };
+  const api = async (path: string) => {
+    if (path.includes("status=success")) return { total_count: 3, workflow_runs: [1, 2, 3].map(id => ({ id, head_sha: String(id), conclusion: "success", event: "pull_request" })) };
+    if (path.includes("status=in_progress")) return { total_count: 0, workflow_runs: [] };
+    if (path.startsWith("git/commits/")) return { tree: { sha: "expected" } };
+    const id = Number(/actions\/runs\/(\d+)\/jobs/.exec(path)![1]);
+    return { total_count: 3, jobs: byRun[id] };
+  };
+  expect(await fn(api, "expected", { currentRunId: 99 })).toMatchObject({ kind: "reuse", run: { id: 3 } });
+  delete byRun[3];
+  byRun[3] = jobsOf({ "check (macos-latest)": "failure" });
+  expect(await fn(api, "expected", { currentRunId: 99 })).toEqual({ kind: "run" }); // no real proof: a fresh gate runs
 });
 
 type ProofLoss = "404" | "timeout" | "malformed" | "missing" | "invalid-json";

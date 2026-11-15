@@ -81,7 +81,34 @@ for (const [os, label] of [["ubuntu", "Ubuntu"], ["macos", "macOS"]] as const) {
 }
 
 // #1307: GitHub runs at most 5 macOS jobs at once; a stacked PR's macOS shards wait until it targets the default branch, and the required aggregator fails for it, never passes or skips.
-const MACOS_SHARD_IF = "needs.decision.outputs.run_gate == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.base.ref == github.event.repository.default_branch)";
+// #1490: a draft PR defers them the same way until `gh pr ready`.
+const MACOS_SHARD_IF = "needs.decision.outputs.run_gate == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.draft != true)";
+
+test("#1490 AC1/AC2 a draft PR starts no macOS shard and its required macOS aggregate fails with the deferred message; marking it ready runs the shards", () => {
+  const raw = readFileSync(new URL("../.github/workflows/check.yml", import.meta.url), "utf8");
+  // `ready_for_review` is what starts the run that includes macOS once the PR leaves draft
+  expect((workflow as unknown as { on: { pull_request: { types: string[] } } }).on.pull_request.types).toEqual(["opened", "synchronize", "reopened", "ready_for_review"]);
+  expect(raw).toContain("github.event.pull_request.draft != true");
+  const steps = jobs.macos!.steps;
+  const deferred = steps.find(step => step.name === "macOS shards deferred for a draft PR");
+  expect(deferred?.if).toBe("needs.decision.outputs.run_gate == 'true' && github.event_name == 'pull_request' && github.event.pull_request.draft == true");
+  const run = Bun.spawnSync(["bash", "-c", deferred!.run!], { env: { ...process.env } });
+  expect(run.exitCode).toBe(1); // never a success: a skip or a pass would be borrowed as proof (#1490)
+  expect(run.stdout.toString()).toContain("::error title=macOS deferred::draft PR; macOS runs when the PR is marked ready (gh pr ready)");
+  // it runs before the shard check, and the reuse step (run_gate false) is untouched
+  expect(steps.indexOf(deferred!)).toBeLessThan(steps.findIndex(step => step.name === "Every macOS shard passed"));
+  // Evaluate the shard condition: a draft PR on the default branch skips, a ready one runs, a push never depends on the draft flag.
+  const evaluate = (event: string, draft: boolean | undefined, base: string) => {
+    const expression = MACOS_SHARD_IF.replace(/needs\.decision\.outputs\.run_gate == 'true'/, "true").replace(/github\.event_name/g, JSON.stringify(event)).replace(/github\.event\.pull_request\.base\.ref/g, JSON.stringify(base))
+      .replace(/github\.event\.repository\.default_branch/g, JSON.stringify("main")).replace(/github\.event\.pull_request\.draft/g, String(draft)).replace(/ == /g, " === ").replace(/ != /g, " !== ");
+    return Function(`return (${expression});`)() as boolean;
+  };
+  expect(evaluate("pull_request", true, "main")).toBe(false);
+  expect(evaluate("pull_request", false, "main")).toBe(true);
+  expect(evaluate("pull_request", false, "feat/x")).toBe(false); // the stacked-PR deferral stays
+  expect(evaluate("push", undefined, "main")).toBe(true);
+  expect(evaluate("workflow_dispatch", undefined, "main")).toBe(true);
+});
 
 test("#1307 a stacked PR defers its macOS shards and the required macOS aggregator fails for it, naming the base, the default branch and the fix", () => {
   const steps = jobs.macos!.steps;
@@ -260,3 +287,53 @@ test("#548 a scratch check.sh spawned from a test in a sharded gate runs its own
   const leaked = checkSh({ AHUB_CHECK_SHARD: "2/4" });
   expect(leaked.err).not.toContain("check-docs.mjs");
 });
+
+// #1490 AC6: the Ubuntu leg runs six shards and the macOS leg four. The matrix, the name and the denominator agree (the generic #548 tests above read the count from the workflow), every
+// file runs in exactly one of six shards, and check.sh runs the once-only steps on shard 1 of six only.
+test("#1490 AC6 the Ubuntu leg has six shards and the macOS leg four, with the stable aggregate names unchanged", () => {
+  expect(jobs["ubuntu-shard"]!.strategy!.matrix.shard).toEqual([1, 2, 3, 4, 5, 6]);
+  expect(jobs["macos-shard"]!.strategy!.matrix.shard).toEqual([1, 2, 3, 4]);
+  expect(jobs["ubuntu-shard"]!.name).toBe("check (ubuntu-latest) shard ${{ matrix.shard }}/6");
+  expect(gateEnv(jobs["ubuntu-shard"]!).AHUB_CHECK_SHARD).toBe("${{ matrix.shard }}/6");
+  expect(gateEnv(jobs["macos-shard"]!).AHUB_CHECK_SHARD).toBe("${{ matrix.shard }}/4");
+  expect(shownNames().filter(name => name.startsWith("check (ubuntu-latest) shard"))).toEqual([1, 2, 3, 4, 5, 6].map(index => `check (ubuntu-latest) shard ${index}/6`));
+  expect(jobs.ubuntu!.name).toBe("check (ubuntu-latest)");
+});
+
+test("#1490 AC6 every test file runs in exactly one of six shards, and the real suite's files are partitioned by the committed timings", () => {
+  const files = [...new Bun.Glob("test/**/*.test.ts").scanSync({ cwd: join(import.meta.dir, "..") })].sort();
+  expect(files.length).toBeGreaterThan(300);
+  const timings = JSON.parse(readFileSync(new URL("../scripts/test-timings.json", import.meta.url), "utf8")) as { files: Record<string, number> };
+  // Bun's own partition on a stand-in tree with the real file names and weights (the contract test above proves it on a tree it can run): every name lands in one shard of six.
+  const dir = mkdtempSync(join(tmpdir(), "ahub-shard-six-"));
+  try {
+    for (const file of files) { mkdirSync(join(dir, file, ".."), { recursive: true }); writeFileSync(join(dir, file), `import { test } from "bun:test";\ntest("${file}", () => {});\n`); }
+    writeFileSync(join(dir, "timings.json"), JSON.stringify({ version: 1, files: Object.fromEntries(files.filter(file => timings.files[file] !== undefined).map(file => [file, timings.files[file]])) }));
+    const seen: string[] = [], sizes: number[] = [];
+    for (let index = 1; index <= 6; index++) {
+      const xml = join(dir, `shard-${index}.xml`);
+      const run = Bun.spawnSync(["bun", "test", `--shard=${index}/6`, "--timings=timings.json", "--reporter=junit", `--reporter-outfile=${xml}`], { cwd: dir, stdout: "pipe", stderr: "pipe", env: { ...process.env, BUN_OPTIONS: "" } });
+      expect(run.exitCode, `shard ${index}`).toBe(0);
+      const these = [...readFileSync(xml, "utf8").matchAll(/<testsuite name="(test\/[^"]+\.test\.ts)"/g)].map(match => match[1]!);
+      sizes.push(these.length);
+      seen.push(...these);
+    }
+    expect([...seen].sort()).toEqual(files);
+    expect(Math.min(...sizes)).toBeGreaterThan(0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120_000);
+
+for (const index of [2, 3, 4, 5, 6]) test(`#1490 AC6 shard ${index}/6 installs and tests its slice and runs none of the once-only steps`, () => {
+  const run = runGate({ AHUB_CHECK_SHARD: `${index}/6` });
+  expect(run.code).toBe(0);
+  const steps = run.steps.filter(step => !step.startsWith("check-owned"));
+  expect(steps).toEqual(["bun install --frozen-lockfile", "warm-git --version", `bun test --timeout 20000 --shard=${index}/6 --timings=scripts/test-timings.json`]);
+  for (const once of ONCE) expect(steps).not.toContain(once);
+  expect(run.out.trim().split("\n").at(-1)).toBe(`check: OK (shard ${index}/6)`);
+});
+
+test("#1490 AC6 across the six Ubuntu shards each once-only step runs exactly once", () => {
+  const all = [1, 2, 3, 4, 5, 6].flatMap(index => runGate({ AHUB_CHECK_SHARD: `${index}/6` }).steps);
+  for (const once of ONCE) expect(all.filter(step => step === once), once).toHaveLength(1);
+  expect(checkSh({ AHUB_CHECK_SHARD: "7/6" }).code).toBe(2); // i must be between 1 and n
+}, 30_000); // seven real check.sh runs against stubs, as the #548 test above
