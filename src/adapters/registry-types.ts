@@ -347,9 +347,8 @@ export interface AdapterDefinition {
     /** Fixed builtin CLI ports; project definitions cannot supply these callbacks. */
     entry?: Readonly<Omit<BuiltinCliEntry, "command">>;
     preview?: NativePreviewBuilder;
-    usage?: readonly (readonly [usage: string, description: string])[];
-    /** #1504: the one-line overview summary of this kind's row in `ahub help` (three or more words, at most 56 cells); fixed builtins only, like `usage`. */
-    summary?: string;
+    /** `[usage, description, summary?]`: the optional third element is the one-line row of `ahub help` for this form (#1504; three or more words, at most 56 cells). It rides this field's fixed-builtin restriction. */
+    usage?: readonly (readonly [usage: string, description: string, summary?: string])[];
     /** Configuration leaves that select this peer's next native launch command or provider profile. */
     launchConfigKeys?: readonly string[];
     /** Restrictions only; core identity remains authoritative. */

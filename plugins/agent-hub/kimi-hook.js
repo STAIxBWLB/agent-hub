@@ -20631,7 +20631,7 @@ var init_definition = __esm(() => {
       recoveryRefusal: () => "Antigravity session continuity and resume are unavailable until native behavior is verified"
     },
     turnEnd: "native-hook",
-    cli: { command: "agy", entry: { lifecycleAdmission: true, execute: runAgyEntry }, summary: "start optional Antigravity CLI in this terminal", usage: [["ahub agy [--print-command | --dry-run] [args...]", "optional Antigravity CLI 1.4.x TUI (1.4.2 verified) in this terminal (roster.agy, default off): pull-only via hub_inbox, implementer/verifier only; native permissions unmanaged, no hub sandbox"]], authority: "person", startWords: () => ["agy"] },
+    cli: { command: "agy", entry: { lifecycleAdmission: true, execute: runAgyEntry }, usage: [["ahub agy [--print-command | --dry-run] [args...]", "optional Antigravity CLI 1.4.x TUI (1.4.2 verified) in this terminal (roster.agy, default off): pull-only via hub_inbox, implementer/verifier only; native permissions unmanaged, no hub sandbox", "start optional Antigravity CLI in this terminal"]], authority: "person", startWords: () => ["agy"] },
     display: DISPLAY,
     routing: { allowedRoles: ["implementer", "verifier"] },
     reviewer: { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" },
@@ -22489,7 +22489,7 @@ var init_builtin_metadata = __esm(() => {
       turnEnd: "native-hook",
       settle: { signal: "native-stop" },
       budget: { account: "claude", checkpoint: true, reader: { source: "claude status line", read: claudeWindows }, context: { source: "claude_statusline", read: claudeContext } },
-      cli: { command: "claude", entry: { lifecycleAdmission: true, execute: runClaudeEntry }, preview: previewClaude, summary: "launch Claude Code with the hub channel", usage: [["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"]], retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] },
+      cli: { command: "claude", entry: { lifecycleAdmission: true, execute: runClaudeEntry }, preview: previewClaude, usage: [["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel", "launch Claude Code with the hub channel"]], retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] },
       display: CLAUDE_DISPLAY,
       hooks: { recallPlatform: "claude", recallSource: "claude", recallInjected: true, pluginInventory: claudePluginInventory },
       reviewerVariant: CLAUDE_REVIEWER_VARIANT,
@@ -22529,7 +22529,7 @@ var init_builtin_metadata = __esm(() => {
       turnEnd: "adapter",
       settle: { signal: "turn-completed" },
       budget: { account: "codex", checkpoint: true, reader: { source: "codex rateLimits", read: codexWindows }, context: { source: "codex_token_usage", read: codexContext } },
-      cli: { command: "codex", entry: { lifecycleAdmission: true, execute: runCodexEntry }, preview: previewCodex, summary: "start the Codex adapter and attach the TUI", usage: [["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"]], launchConfigKeys: ["codex_bin"], retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] },
+      cli: { command: "codex", entry: { lifecycleAdmission: true, execute: runCodexEntry }, preview: previewCodex, usage: [["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI", "start the Codex adapter and attach the TUI"]], launchConfigKeys: ["codex_bin"], retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] },
       display: CODEX_DISPLAY,
       hooks: { recallPlatform: "codex", recallSource: "codex", recallInjected: true, pluginInventory: codexPluginInventory, classifyTool: codexToolSemantic }
     },
@@ -22574,7 +22574,7 @@ var init_builtin_metadata = __esm(() => {
       budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } },
       capabilities: { watch: true },
       hooks: { factsHook: KIMI_TUI_FACTS_HOOK, recallPlatform: "kimi", recallSource: "kimi" },
-      cli: { command: "kimi", entry: { lifecycleAdmission: true, execute: runKimiEntry }, preview: previewKimi, summary: "start Kimi in its own TUI, or headless over ACP", usage: [["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"]], launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
+      cli: { command: "kimi", entry: { lifecycleAdmission: true, execute: runKimiEntry }, preview: previewKimi, usage: [["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP", "start Kimi in its own TUI, or headless over ACP"]], launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
       display: KIMI_DISPLAY
     },
     {
@@ -22603,7 +22603,7 @@ var init_builtin_metadata = __esm(() => {
       reporting: { tokensNotReported: true },
       configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
       routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
-      cli: { command: "pi", entry: { lifecycleAdmission: false, execute: runPiEntry }, preview: previewPi, summary: "start Pi in a terminal, or headless", usage: [["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id>] [--session-file <path>] [--replace-session]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"]], launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
+      cli: { command: "pi", entry: { lifecycleAdmission: false, execute: runPiEntry }, preview: previewPi, usage: [["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id>] [--session-file <path>] [--replace-session]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how", "start Pi in a terminal, or headless"]], launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
       display: PI_DISPLAY
     },
     {
@@ -22629,7 +22629,7 @@ var init_builtin_metadata = __esm(() => {
       budget: { account: "local", quotaExempt: true, instrumented: true, noQuotaReason: "on-prem gateway has no provider quota" },
       configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
       routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
-      cli: { command: "local", entry: { lifecycleAdmission: false, execute: runLocalEntry }, summary: "start the hub-native worker on self-hosted models", usage: [["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"]], launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] },
+      cli: { command: "local", entry: { lifecycleAdmission: false, execute: runLocalEntry }, usage: [["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)", "start the hub-native worker on self-hosted models"]], launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] },
       display: LOCAL_DISPLAY
     },
     {
@@ -22656,7 +22656,7 @@ var init_builtin_metadata = __esm(() => {
       turnEnd: "adapter",
       settle: { signal: "prompt-response" },
       budget: { account: "jcode", context: { source: "jcode_usage_update", read: jcodeContextValue } },
-      cli: { command: "jcode", entry: { lifecycleAdmission: true, execute: runJcodeEntry }, preview: previewJcode, summary: "start optional Jcode, in its TUI or headless", usage: [["ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional Jcode (roster.jcode, default off): its TUI on the hub-owned ACP session, opened once that session is saved; --mode headless for ACP only; native policy unmanaged, no hub sandbox"]], authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: (mode) => ["jcode", "--mode", mode] },
+      cli: { command: "jcode", entry: { lifecycleAdmission: true, execute: runJcodeEntry }, preview: previewJcode, usage: [["ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional Jcode (roster.jcode, default off): its TUI on the hub-owned ACP session, opened once that session is saved; --mode headless for ACP only; native policy unmanaged, no hub sandbox", "start optional Jcode, in its TUI or headless"]], authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: (mode) => ["jcode", "--mode", mode] },
       display: JCODE_DISPLAY,
       hooks: { recallPlatform: "jcode" }
     }
@@ -22851,7 +22851,7 @@ var init_qwen = __esm(() => {
     settle: { signal: "message-stop" },
     budget: { account: "qwen" },
     capabilities: { watch: true },
-    cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, summary: "start optional Qwen Code, headless or in its TUI", usage: [["ahub qwen [--mode headless|tui] [--model <alias>] [--session-id <id>] [--print-command]", `start optional Qwen Code ACP (${describe("qwen")}; roster.qwen, default off); --mode tui runs Qwen's own TUI in this terminal, driven through its dual-output files (${describe("qwen-dual")}); a hub deny ends the turn without an answer and a stalled turn is stopped with Esc in the Qwen terminal`]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
+    cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless|tui] [--model <alias>] [--session-id <id>] [--print-command]", `start optional Qwen Code ACP (${describe("qwen")}; roster.qwen, default off); --mode tui runs Qwen's own TUI in this terminal, driven through its dual-output files (${describe("qwen-dual")}); a hub deny ends the turn without an answer and a stalled turn is stopped with Esc in the Qwen terminal`, "start optional Qwen Code, headless or in its TUI"]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
     display: QWEN_DISPLAY,
     hooks: { recallPlatform: "qwen" }
   };
@@ -23262,7 +23262,6 @@ function assertNativeCapabilityScope(definition) {
     ["cli.entry", declared(definition.cli, "entry")],
     ["cli.preview", declared(definition.cli, "preview")],
     ["cli.usage", declared(definition.cli, "usage")],
-    ["cli.summary", declared(definition.cli, "summary")],
     ["instances.modelSelect", declared(definition.instances, "modelSelect")]
   ];
   const field = restricted.find(([, present]) => present)?.[0];

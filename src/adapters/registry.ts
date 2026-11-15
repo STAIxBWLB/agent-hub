@@ -282,7 +282,6 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["cli.entry", declared(definition.cli, "entry")],
     ["cli.preview", declared(definition.cli, "preview")],
     ["cli.usage", declared(definition.cli, "usage")],
-    ["cli.summary", declared(definition.cli, "summary")], // #1504: help text a definition supplies, restricted exactly like cli.usage
     ["instances.modelSelect", declared(definition.instances, "modelSelect")], // #844: a fixed-builtin assumption, one validated model word per declared headless instance
   ];
   const field = restricted.find(([, present]) => present)?.[0];

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ADAPTERS } from "../src/adapters/registry.ts";
+import { ADAPTERS, assertNativeCapabilityScope } from "../src/adapters/registry.ts";
 import { EXAMPLES, HELP, INTERNAL_COMMANDS, helpCommands, helpFlags, helpOverviewRows, listsSubcommand, renderHelp } from "../src/cli/help.ts";
 import { ROLE_SGR } from "../src/cli/output-standard.ts";
 import { initialConsoleState, paint, PALETTE, renderConsole, wrap } from "../src/cli/console-state.ts";
@@ -119,7 +119,7 @@ describe("ahub help (#212)", () => {
       expect(Bun.stringWidth(row!.summary)).toBeLessThanOrEqual(56);
     }
     // the words come from the definition, not from a peer-keyed table in help.ts
-    for (const definition of ADAPTERS.filter(definition => definition.cli.usage?.length)) expect(agents.find(row => row.name === definition.kind)?.summary, definition.kind).toBe(definition.cli.summary);
+    for (const definition of ADAPTERS.filter(definition => definition.cli.usage?.length)) expect(agents.find(row => row.name === definition.kind)?.summary, definition.kind).toBe(definition.cli.usage![0]![2]);
     expect(readFileSync(join(import.meta.dir, "../src/cli/help.ts"), "utf8")).not.toMatch(/\b(?:jcode|pi|qwen|agy|local|kimi):\s*"/);
   });
 
@@ -157,6 +157,28 @@ describe("ahub help (#212)", () => {
       }
     }
     expect(renderHelp(80, false, "nosuchcommand")).toBe("");
+  });
+
+  test("#1504: a flag after a `|` in a form is attributed to the form the entry's first piece named (task handoff --list | --sync | --project ...)", () => {
+    const flags = new Map(helpFlags("task").map(item => [item.flag, item.forms]));
+    for (const flag of ["--list", "--sync", "--project", "--issue", "--task", "--duplicate-ok", "--key"]) expect(flags.get(flag), flag).toContain("handoff");
+    // a flag that two forms take names both, and a flag of another form is not pulled in
+    expect(flags.get("--path")).toEqual(["propose", "handoff"]);
+    expect(flags.get("--urgent")).toEqual(["propose"]);
+    const rendered = renderHelp(80, false, "task").replace(/\s+/g, " ");
+    expect(rendered).toMatch(/--sync in handoff/);
+    expect(rendered).toMatch(/--key <uuid> in handoff/);
+  });
+
+  test("#1504: a native agent's summary rides cli.usage, so a non-builtin definition cannot supply one", () => {
+    for (const definition of ADAPTERS.filter(definition => definition.cli.usage?.length)) expect(definition.cli.usage![0]![2], definition.kind).toBeTruthy();
+    // The generic fixture of test/adapter-capability-scope.test.ts: qwen's metadata without any fixed-builtin capability, so `cli.usage` is the only restricted field present.
+    const { projection: _projection, settle: _settle, modelOverride: _modelOverride, cli, ...base } = ADAPTERS.find(definition => definition.kind === "qwen")!;
+    const { entry: _entry, preview: _preview, usage: _usage, ...genericCli } = cli;
+    const { createTui: _createTui, upStart: _upStart, ...start } = base.start;
+    const external = { ...base, cli: genericCli, kind: "fixture", family: "fixture", start: { ...start }, session: { idField: base.session.idField, currentId: base.session.currentId } };
+    expect(() => assertNativeCapabilityScope(external)).not.toThrow();
+    expect(() => assertNativeCapabilityScope({ ...external, cli: { ...genericCli, usage: [["ahub fixture", "x", "a summary"]] } })).toThrow("cli.usage is restricted to fixed builtin adapter definitions");
   });
 
   test("#1504 AC3: the flag count in the heading and the --json and --color meanings come from one place", () => {

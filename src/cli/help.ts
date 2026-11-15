@@ -4,7 +4,7 @@ import { ROADMAP_FORMS } from "./roadmap.ts";
 import { paint, wrap, Report as LayoutReport, type Span } from "./console-state.ts";
 
 /** One usage form of `ahub help`: the usage starts with `ahub <command>`, alternatives joined by `|`. */
-export interface HelpEntry { section: string; usage: string; description: string; /** #1504: the overview row of a native agent, from its adapter definition (`cli.summary`); never a table in this file that names a peer. */ summary?: string }
+export interface HelpEntry { section: string; usage: string; description: string; /** #1504: the overview row of a native agent, from the third element of its definition's `cli.usage` entry; never a table in this file that names a peer. */ summary?: string }
 
 /** #1405: one source for the probe usage, read by `ahub help` and by the refusal of a malformed probe command. */
 export const GUIDANCE_PROBE_USAGE = {
@@ -218,7 +218,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
 export function helpEntries(definitions: readonly AdapterDefinition[] = ADAPTERS): readonly HelpEntry[] {
   const byKind = new Map(definitions.map(definition => [definition.kind, definition]));
   const order = deriveAdapterLists(definitions).HELP_ORDER;
-  const native: readonly (readonly [string, string, string?])[] = order.flatMap(kind => (byKind.get(kind)?.cli.usage ?? []).map(([usage, description], index) => [usage, description, index === 0 ? byKind.get(kind)?.cli.summary : undefined] as const));
+  const native: readonly (readonly [string, string, string?])[] = order.flatMap(kind => byKind.get(kind)?.cli.usage ?? []);
   const instanceKinds = order.filter(kind => byKind.get(kind)?.instances !== undefined);
   const instances: readonly [string, string] = [`ahub ${instanceKinds.join("|")} --as <instance> [options...]`, "start an extra instance of that kind declared under instances in .agenthub/config.local.json"];
   return SECTIONS.flatMap(([section, rows]) => {
@@ -339,10 +339,14 @@ export function helpFlags(command: string, entries: readonly HelpEntry[] = HELP)
   const found = new Map<string, HelpFlag>();
   for (const entry of entries.filter(entry => helpCommands(entry).includes(command))) {
     const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
+    let lead = "";
     topLevelPieces(entry.usage).forEach((piece, index) => {
       const body = index === 0 ? piece.slice(prefix.length).trim() : piece;
       const token = body.split(/\s/)[0]!.replace(/[\[\]]/g, "");
-      const form = token.split("|").filter(word => /^[a-z][a-z0-9-]*$/.test(word)).join("|");
+      const named = token.split("|").filter(word => /^[a-z][a-z0-9-]*$/.test(word)).join("|");
+      // #1504: a piece after ` | ` that starts with a flag or an argument (`task handoff --list | --sync | --project <root|id> ...`) is another way into the form the first piece named
+      if (index === 0) lead = named;
+      const form = named || lead;
       for (const match of body.matchAll(FLAG)) {
         const flag = match[1]!, shape = match[2] ?? match[3] ?? "", joiner = match[2] !== undefined ? "=" as const : " " as const;
         const seen = found.get(flag) ?? found.set(flag, { flag, shape, joiner, forms: [] }).get(flag)!;
