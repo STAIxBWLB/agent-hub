@@ -8,6 +8,10 @@ depends-on: [task-board]
 paths:
   - src/hub/roadmap.ts
   - src/hub/roadmap-view.ts
+  - src/hub/roadmap-unplaced.ts
+  - src/hub/roadmap-triage.ts
+  - src/hub/github-import.ts
+  - src/hub/specs-task.ts
   - src/hub/board.ts
   - src/hub/tasks.ts
   - src/hub/hub-tools.ts
@@ -22,14 +26,20 @@ paths:
   - test/roadmap-daemon.test.ts
   - test/roadmap-cli.test.ts
   - test/roadmap-recovery.test.ts
+  - test/roadmap-unplaced.test.ts
+  - test/roadmap-triage-tasks.test.ts
+  - test/roadmap-r3-cli.test.ts
+  - test/roadmap-r3-daemon.test.ts
 ---
 
 # Roadmap milestones
 
 R1 implements [#1479](https://github.com/STAIxBWLB/agent-hub/issues/1479) of the
 [#1478 roadmap](https://github.com/STAIxBWLB/agent-hub/issues/1478). The board is
-the source of truth. This slice adds no GitHub writes, roadmap model calls, export,
-automatic task assignment, dashboard or console UI.
+the source of truth. R1 adds no GitHub writes, roadmap model calls, export,
+automatic task assignment, dashboard or console UI. R3 ([#1481](https://github.com/STAIxBWLB/agent-hub/issues/1481),
+"Bottom-up placement" below) adds the first roadmap model call and read-only GitHub
+reads, and still adds no GitHub write.
 
 R1 adds no generation, triage or decomposition call; those belong to R2 and R3.
 The existing mandatory privacy screen on planner-written text stays exactly as
@@ -127,3 +137,55 @@ state requires the roadmap capability on a controlled recovery target and adds
 its ordered row/link digest to integrity. Empty databases retain the existing
 format floor and integrity shape; the additive tables do not advance the database
 format marker.
+
+## Bottom-up placement (R3)
+
+R3 starts from the work that exists (open GitHub issues, open board tasks, `active` and `draft` specs) and places it on the
+roadmap. It adds three reads and writes through R1's own writers only.
+
+**Unplaced work.** `ahub roadmap unplaced [--repo owner/name] [--json]` and `hub_roadmap_unplaced {repo?}` list what no live
+milestone places, each row with its reason (`UNPLACED_REASONS`). A link into a `dropped` milestone does not place; a link into a
+`done` one does. A task is placed by an explicit link or by its source issue through R1's inheritance, so linking an issue drops
+the issue and every task that inherits from it. An issue whose imported task is open is reported once, as that task. Private tasks
+are a count (`privateTasks`), never a row, and an issue behind one is not a row either. The result is a lower bound and says so:
+`partial: true` when the GitHub read stopped early or a list passed its cap of 100 (`more` counts the rest), and `unavailable`
+names a source that could not be read (`issues`, `specs`), so an empty list is never read as "all placed".
+
+**GitHub reads.** `readGitHubIssuePages` and `readGitHubMilestonePages` (`src/hub/github-import.ts`) page `gh api repos/<r>/issues|milestones?state=open&per_page=100&page=N`
+up to 10 pages under one 20 s deadline that also covers repository resolution. They are fixed argv GETs through `SdlcGh`; there is
+no write verb, method flag or body. The first page failing is an error; a later page failing, the deadline, or a full last page
+under the page limit is `partial: true` with what was read. Pull requests are left out and every row's URL must equal its
+canonical identity. `readGitHubImport` (the one-page Backlog intake) is unchanged.
+
+**Triage.** `ahub roadmap triage [--repo] [--list]` and `hub_roadmap_triage {repo?, list?}` (configured planner or unique
+conductor, never during a PII or private turn) ask the hub's model, in one call for at most 25 unplaced items, where each belongs.
+The model sees only text that passed `publicMetadataText`, and everything it reads is labelled data. `parseTriage`
+(`src/hub/roadmap-triage.ts`) keeps an answer only when it names an item and a milestone it was shown (or a bounded new
+milestone), gives exactly one of them, and quotes words (4 to 200 characters) that occur in the item text and in the milestone
+title or outcome. Each kept answer is screened again before it is stored as a pending row of `milestone_suggestions`, attributed to
+`hub` as a model's answer; nothing else reads that table, so a suggestion never enters `ahub ask` evidence or memory. A repeat triage
+skips an item that already has a pending suggestion. `list: true` reads the pending public suggestions with no model call, for any
+agent. No model, a dead one or an answer with nothing supportable reports `unavailable` or `dropped`, never a silent empty result.
+
+`hub_roadmap_edit {op: accept|reject, suggestion}` (`ahub roadmap accept|reject <id>`) settle one suggestion. Accept applies
+exactly its one link through `Board.linkMilestone` under the R1 revision compare-and-set, creating the suggested `proposed`
+milestone first for "new milestone" and remembering it (`created_milestone`), so a retry after a failed link never makes a
+second. A suggestion settles once: a repeat reject replays, and any other change of a settled suggestion (a second accept, an
+accept after a reject) refuses naming its state. A suggestion whose text is no
+longer public refuses accept and can be rejected. Nothing is linked without an accept.
+
+**Roll-up and ready to close.** `milestoneList` and `milestoneShow` add `tree` (the milestone and its children, a task, issue,
+spec or release linked twice counted once; `rollup` stays R1's own figure) and `readyToClose {ready, reasons}`. Ready needs
+something linked, every task approved or cancelled, every issue closed, every release shipped or dropped, no withheld private
+task, and every child `done` or `dropped`; spec freshness is not a condition. It is advice for the person: `done` and `dropped`
+stay person-only and nothing sets a state from it.
+
+**GitHub milestone import.** `ahub roadmap import-github [--repo] [--apply] [--json]` is the person's alone (console op
+`roadmap_import_github`, not in `CONDUCTOR_TASK_OPS`; refused for agent shells and live-test). Without `--apply` it lists what it
+would create and link. With it, each open GitHub milestone becomes one `proposed` milestone (outcome is its description, target its
+due day) in one transaction with its `milestone_imports` mark, and its open issues are linked; a repeat finds the mark and each
+link and changes nothing, a milestone that has since settled is not relinked, and text that fails the public screen is counted
+in `withheld`. Nothing is written to GitHub.
+
+`milestone_suggestions` and `milestone_imports` are additive tables outside the roadmap integrity digest: a lost suggestion is
+triaged again and an import mark only prevents a duplicate, so neither changes the recovery format.
