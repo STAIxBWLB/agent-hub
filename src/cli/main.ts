@@ -1664,7 +1664,8 @@ const commands: Record<string, () => Promise<void> | void> = {
   roadmap: async () => {
     let options;
     try { options = parseRoadmapArgs(args); } catch (error) { return fail(`${error instanceof Error ? error.message : "invalid roadmap arguments"}; see ahub help roadmap`); }
-    const text = await taskOp(options.op, options.args);
+    // R3 (#1481): the GitHub reads and the model call each carry their own deadline, so these ops wait longer than the 30 s default.
+    const text = await taskOp(options.op, options.args, false, undefined, ["hub_roadmap_unplaced", "hub_roadmap_triage", "roadmap_import_github"].includes(options.op) ? 60_000 : undefined);
     if (options.json) console.log(text);
     else console.log(renderRoadmap(text, outputOptions().columns));
   },

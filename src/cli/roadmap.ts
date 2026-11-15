@@ -1,4 +1,4 @@
-import { milestoneId, milestoneRevision, milestoneLinkRef, parseMilestoneInput, parseMilestonePatch, type MilestoneLinkKind } from "../hub/roadmap.ts";
+import { milestoneId, milestoneRevision, milestoneLinkRef, parseMilestoneInput, parseMilestonePatch, githubRepo, type MilestoneLinkKind } from "../hub/roadmap.ts";
 import { terminalText, wrap } from "./console-state.ts";
 
 const optionalFields = "[--horizon now|next|later] [--order <n>] [--target YYYY-MM-DD|none] [--parent <id>|none]";
@@ -8,18 +8,55 @@ export const ROADMAP_FORMS = {
   edit: `edit <id> --revision <n> [--title <text>] [--outcome <text>] ${optionalFields}`,
   link: "link <id> <spec|issue|task|release> <ref>", unlink: "unlink <id> <kind> <ref>",
   order: "order <id> <n>", state: "state <id> <proposed|planned|active|done|dropped>",
+  unplaced: "unplaced [--repo <owner/name>] [--json]",
+  triage: "triage [--repo <owner/name>] [--list] [--json]",
+  accept: "accept <suggestion>", reject: "reject <suggestion>",
+  importGithub: "import-github [--repo <owner/name>] [--apply] [--json]",
 } as const;
 export const ROADMAP_USAGE = `usage: ${Object.values(ROADMAP_FORMS).map(form => `ahub roadmap ${form}`).join(" | ")}`;
 export interface RoadmapArgs {
-  op: "hub_roadmap_list" | "hub_roadmap_show" | "hub_roadmap_edit";
+  op: "hub_roadmap_list" | "hub_roadmap_show" | "hub_roadmap_edit" | "hub_roadmap_unplaced" | "hub_roadmap_triage" | "roadmap_import_github";
   args: Record<string, unknown>;
   json: boolean;
 }
+/** R3 commands: their flags are not milestone fields, so they are parsed apart from new/edit. */
+const R3_COMMANDS = ["unplaced", "triage", "accept", "reject", "import-github"];
+const R3_JSON = ["unplaced", "triage", "import-github"];
 const fieldFlags = ["title", "outcome", "horizon", "order", "target", "parent"];
 const usage = (message: string): never => { throw new Error(`${message}; ${ROADMAP_USAGE}`); };
 function integer(value: string | undefined, zero = false): number {
   if (value === undefined || !/^(0|[1-9][0-9]*)$/.test(value)) return usage("roadmap needs a whole-number operand");
   return zero ? milestoneRevision(Number(value)) : milestoneId(Number(value));
+}
+
+function parseR3(command: string, rest: readonly string[], jsonSeen: boolean): RoadmapArgs {
+  let json = jsonSeen, list = false, apply = false, repo: string | undefined;
+  const operands: string[] = [];
+  for (let at = 0; at < rest.length; at++) {
+    const word = rest[at]!;
+    if (word === "--json") { if (json) return usage("duplicate roadmap --json flag"); json = true; continue; }
+    if (word === "--list" && command === "triage") { if (list) return usage("duplicate roadmap --list flag"); list = true; continue; }
+    if (word === "--apply" && command === "import-github") { if (apply) return usage("duplicate roadmap --apply flag"); apply = true; continue; }
+    if ((word === "--repo" || word.startsWith("--repo=")) && ["unplaced", "triage", "import-github"].includes(command)) {
+      if (repo !== undefined) return usage("duplicate roadmap --repo option");
+      const value = word === "--repo" ? rest[++at] : word.slice("--repo=".length);
+      if (value === undefined) return usage("roadmap --repo needs owner/name");
+      try { repo = githubRepo(value); } catch { return usage("roadmap --repo needs owner/name"); }
+      continue;
+    }
+    if (word.startsWith("-")) return usage("unknown roadmap option");
+    operands.push(word);
+  }
+  if (json && !R3_JSON.includes(command)) return usage(`roadmap ${command} has no --json form`);
+  if (command === "accept" || command === "reject") {
+    if (operands.length !== 1) return usage(`roadmap ${command} needs one suggestion id`);
+    return { op: "hub_roadmap_edit", args: { op: command, suggestion: integer(operands[0]) }, json };
+  }
+  if (operands.length) return usage(`roadmap ${command} takes no operands`);
+  const base = repo === undefined ? {} : { repo };
+  if (command === "unplaced") return { op: "hub_roadmap_unplaced", args: base, json };
+  if (command === "triage") return { op: "hub_roadmap_triage", args: { ...base, ...(list ? { list: true } : {}) }, json };
+  return { op: "roadmap_import_github", args: { ...base, ...(apply ? { apply: true } : {}) }, json };
 }
 
 /** Closed argv only. Values consumed by a text flag remain literal text, including '--json'. */
@@ -28,7 +65,8 @@ export function parseRoadmapArgs(argv: readonly string[]): RoadmapArgs {
   if (argv[index] === "--json") { json = true; index++; }
   const command = argv[index] ?? "list";
   if (argv[index] !== undefined) index++;
-  if (!["list", "show", "new", "edit", "link", "unlink", "order", "state"].includes(command)) return usage("unknown roadmap command");
+  if (!["list", "show", "new", "edit", "link", "unlink", "order", "state", ...R3_COMMANDS].includes(command)) return usage("unknown roadmap command");
+  if (R3_COMMANDS.includes(command)) return parseR3(command, argv.slice(index), json);
   const operands: string[] = [], flags = new Map<string, string>();
   for (; index < argv.length; index++) {
     const word = argv[index]!;
@@ -111,6 +149,11 @@ export function renderRoadmap(input: unknown, width = 80): string {
     add(`  Specs: fresh ${count(specs.fresh)}, stale ${count(specs.stale)}, unverified ${count(specs.unverified)}, unknown ${count(specs.unknown)}; total ${count(specs.total)}`);
     add(`  Releases shipped: ${ratio(releases, "shipped")} (unknown ${count(releases.unknown)})`);
     if (m.withheld !== undefined) add(`  Private tasks withheld: ${count(m.withheld)}`);
+    const tree = row(m.tree);
+    if (m.tree !== undefined && Number(tree.children) > 0) add(`  With children (${count(tree.children)}): tasks ${ratio(tree.tasks, "approved")}, issues ${ratio(tree.issues, "closed")}, releases ${ratio(tree.releases, "shipped")}`);
+    const ready = row(m.readyToClose);
+    if (ready.ready === true) add("  Ready to close: every linked item is closed or approved. Only the person records done: ahub roadmap state " + count(m.id) + " done");
+    else if (m.readyToClose !== undefined && list(ready.reasons).length) add(`  Not ready to close: ${list(ready.reasons).map(text).join("; ")}`);
     for (const value of list(m.links)) {
       const link = row(value); add(`  Link ${text(link.kind)}: ${text(link.ref)}`);
     }
@@ -121,6 +164,46 @@ export function renderRoadmap(input: unknown, width = 80): string {
       add(`  Task ${count(task.id)}: ${text(task.title)} (${text(task.state)}; ${basis})`);
     }
   };
+  const names = (rows: unknown[], one: (value: Row) => string) => { for (const value of rows) add(one(row(value))); };
+  if (Array.isArray(view.issues) && Array.isArray(view.tasks) && Array.isArray(view.specs) && view.privateTasks !== undefined) {
+    add(`Unplaced work${view.repo ? ` (${text(view.repo)})` : ""}`);
+    if (view.partial === true) add("Partial: the GitHub read stopped early or a list was cut, so these lists are a lower bound.");
+    for (const name of list(view.unavailable)) add(`Unavailable: ${text(name)} could not be read, so none are listed.`);
+    add(`Issues (${view.issues.length}${Number(row(view.more).issues) > 0 ? `, ${count(row(view.more).issues)} more` : ""})`);
+    names(view.issues, issue => `  ${text(issue.ref)}: ${text(issue.title)}\n    why: ${text(issue.reason)}`);
+    add(`Tasks (${view.tasks.length}${Number(row(view.more).tasks) > 0 ? `, ${count(row(view.more).tasks)} more` : ""})`);
+    names(view.tasks, task => `  #${count(task.id)} ${text(task.title)} (${text(task.state)})\n    why: ${text(task.reason)}`);
+    add(`Specs (${view.specs.length}${Number(row(view.more).specs) > 0 ? `, ${count(row(view.more).specs)} more` : ""})`);
+    names(view.specs, spec => `  ${text(spec.id)}: ${text(spec.title)} (${text(spec.status)})\n    why: ${text(spec.reason)}`);
+    add(`Private tasks counted, not listed: ${count(view.privateTasks)}`);
+    return lines.join("\n");
+  }
+  if (Array.isArray(view.suggestions)) {
+    add(`Triage suggestions (${view.suggestions.length})`);
+    if (view.unavailable) add(`Triage unavailable: ${text(view.unavailable)}`);
+    if (view.partial === true) add("Partial: more unplaced work remains; run triage again after deciding these.");
+    if (view.asked !== undefined) add(`Asked about ${count(view.asked)} item${view.asked === 1 ? "" : "s"}; ${count(view.dropped)} model answer${view.dropped === 1 ? "" : "s"} dropped as unsupported.`);
+    names(view.suggestions, s => {
+      const proposal = row(s.proposal), target = s.milestone === null || s.milestone === undefined ? `new milestone: ${text(proposal.title)}` : `milestone ${count(s.milestone)}`;
+      return `  #${count(s.id)} ${text(s.kind)} ${text(s.ref)} -> ${target}\n    item words: "${text(s.citeItem)}"${s.citeMilestone ? `\n    milestone words: "${text(s.citeMilestone)}"` : ""}\n    apply: ahub roadmap accept ${count(s.id)}   drop: ahub roadmap reject ${count(s.id)}`;
+    });
+    if (!view.suggestions.length) add("Nothing pending. Nothing is linked until you run ahub roadmap accept <id>.");
+    return lines.join("\n");
+  }
+  if (view.suggestion !== undefined && typeof view.suggestion === "object") {
+    const s = row(view.suggestion);
+    add(`Suggestion ${count(s.id)} ${text(s.state)}: ${text(s.kind)} ${text(s.ref)}`);
+    if (view.milestone !== undefined) milestone(view.milestone);
+    return lines.join("\n");
+  }
+  if (Array.isArray(view.milestones) && view.apply !== undefined) {
+    add(`GitHub milestones (${text(view.repo)}): ${view.apply === true ? "applied" : "dry run, nothing written; add --apply to create them"}`);
+    if (view.partial === true) add("Partial: the GitHub read stopped early, so this list is a lower bound.");
+    names(view.milestones, m => `  GitHub #${count(m.number)} ${text(m.title)}: ${m.action === "create" ? "would create" : "already imported as"}${m.milestone ? ` milestone ${count(m.milestone)}` : ""}; ${list(m.issues).length} issue${list(m.issues).length === 1 ? "" : "s"}, ${count(m.newLinks)} new link${m.newLinks === 1 ? "" : "s"}`);
+    if (view.apply === true) add(`Created ${count(view.created)} milestone${view.created === 1 ? "" : "s"}, linked ${count(view.linked)} issue${view.linked === 1 ? "" : "s"}.`);
+    if (Number(view.withheld) > 0) add(`Withheld ${count(view.withheld)} milestone${view.withheld === 1 ? "" : "s"} whose text was not cleared for public planning.`);
+    return lines.join("\n");
+  }
   if (Array.isArray(view.milestones)) {
     add(`Roadmap (${view.milestones.length} milestones)`);
     if (!view.milestones.length) add("No milestones recorded.");
