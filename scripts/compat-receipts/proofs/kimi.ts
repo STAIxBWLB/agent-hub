@@ -10,6 +10,8 @@ import { runReviewerProofs, type KimiPreparedFixture } from "./reviewers.ts";
 const TOOLS = ["mcp__agent-hub__hub_review", "mcp__agent-hub__hub_task_show"];
 const NATIVE_IDS = ["native-tool-loop", "write-absent", "write-positive-control", "network-guard-control", "cleanup"];
 const BLOCKED = "blocked external network attempt\n";
+/** What Kimi 2.6.x returns for a tool the private agent does not list (2.5.x said "Tool Write not found"). It appears JSON-escaped inside the tool_result the fixture server reads. */
+const NATIVE_POLICY_REFUSAL = 'Tool \\"Write\\" is disabled by the active tool policy';
 const guard = fileURLToPath(new URL("./kimi-loopback-only.cjs", import.meta.url));
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 const check: (value: unknown) => asserts value = value => { if (!value) throw new ReceiptError("proof-failed"); };
@@ -102,7 +104,9 @@ async function nativeCase(context: ProofContext, fixture: KimiPreparedFixture, r
     check(fixture.launch.env && fixture.launch.current?.() === true && fixture.launch.envMode === "replace" && fixture.launch.env.KIMI_CODE_TRUST_WORKSPACE === undefined && fixture.launch.env.KIMI_DISABLE_OAUTH_LOCK === undefined);
     const baseline = fixture.calls.length;
     const run = await context.run([...context.artifact.command, "-p", "Run only the synthetic fixture operations.", "--output-format", "stream-json", "--agent-file", agent, "--skills-dir", skills], {
-      cwd, env: { ...fixture.launch.env, HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temp}/`, XDG_CONFIG_HOME: join(home, ".config"), NODE_OPTIONS: `--require ${JSON.stringify(guard)}`, PROBE_NETWORK_LOG: networkLog },
+      // The CLI checks code.kimi.com for a newer release at startup. The loopback guard (rightly) refuses that attempt and logs it, which made `network.log` non-empty and failed every
+      // native leg on a hosted runner that has the network. The documented switch (and its legacy alias) turns the check off, so the assertion stays strict: any other attempt still fails.
+      cwd, env: { ...fixture.launch.env, HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temp}/`, XDG_CONFIG_HOME: join(home, ".config"), KIMI_CODE_NO_AUTO_UPDATE: "1", KIMI_CLI_NO_AUTO_UPDATE: "1", NODE_OPTIONS: `--require ${JSON.stringify(guard)}`, PROBE_NETWORK_LOG: networkLog },
       signal: context.signal, timeoutMs: context.limits.legMs, maxBytes: context.limits.outputBytes,
     });
     successful(run, context);
@@ -110,7 +114,10 @@ async function nativeCase(context: ProofContext, fixture: KimiPreparedFixture, r
     check(inventory.every(names => names.length === (positive ? 3 : 2) && [...TOOLS, ...(positive ? ["Write"] : [])].every(name => names.includes(name))));
     check(read(marker, context) === (positive ? "synthetic-write-control" : "unchanged"));
     check(JSON.stringify(fixture.calls.slice(baseline)) === JSON.stringify(positive ? [] : ["hub_task_show", "hub_review"]));
-    if (!positive) check(results.some(text => text.includes("ERROR: Tool execution failed.") && /Tool.*Write.*not found/.test(text)));
+    // The refusal text is corroboration: the load-bearing facts are the advertised inventory above (no Write), the unchanged marker and the broker call sequence. Kimi 2.5.x answered the
+    // injected Write with "Tool Write not found"; 2.6.x answers `<system>ERROR: Tool execution failed.</system>` then `Tool "Write" is disabled by the active tool policy` (observed on 2.6.2,
+    // same inventory, same unchanged marker). Both are accepted by their exact failure marker plus their exact Write sentence; any other text, or a result that never mentions Write, fails.
+    if (!positive) check(results.some(text => text.includes("ERROR: Tool execution failed.") && (/Tool.*Write.*not found/.test(text) || text.includes(NATIVE_POLICY_REFUSAL))));
     check(read(join(tool, "config.toml"), context) === config && read(join(tool, "credentials/kimi-code.json"), context) === token && read(join(tool, `credentials/${scope}.json`), context) === token);
     check(fixture.launch.current?.() === true);
   } finally { await server.stop(true); }

@@ -43,7 +43,7 @@ function fixture(): { context: ProofContext; prepared: KimiPreparedFixture; effe
     isolation: { backend: "kimi", version: context.version, binary: "fixture", profile: "fixture", readOnly: true, strictMcp: true, ephemeral: true, evidence: [] } } };
   return { context, prepared, effects };
 }
-type Fault = "extra-tool" | "missing-call" | "missing-write" | "forged-receipt" | "timeout" | "owned-stop" | "survivor" | "network-control" | "config-changed";
+type Fault = "extra-tool" | "missing-call" | "missing-write" | "forged-receipt" | "timeout" | "owned-stop" | "survivor" | "network-control" | "config-changed" | "wording-2x" | "vague-refusal" | "update-check" | "other-network";
 function executablePort(fault?: Fault): ReceiptCommand {
   return async (argv, options) => {
     expect(options.signal).toBeInstanceOf(AbortSignal);
@@ -59,6 +59,11 @@ function executablePort(fault?: Fault): ReceiptCommand {
     expect(options.env.KIMI_CODE_TRUST_WORKSPACE).toBeUndefined();
     expect(options.env.KIMI_DISABLE_OAUTH_LOCK).toBeUndefined();
     expect(options.env.NODE_OPTIONS).toContain("kimi-loopback-only.cjs");
+    // #1248: Kimi checks code.kimi.com for a newer release at startup; the loopback guard refuses and logs that attempt, which failed every native leg on a runner with a network.
+    // The documented switch (and its legacy alias) turns it off. A candidate that ignores it (fault `update-check`) shows up as a logged attempt, and any other attempt still fails.
+    expect(options.env.KIMI_CODE_NO_AUTO_UPDATE).toBe("1");
+    expect(options.env.KIMI_CLI_NO_AUTO_UPDATE).toBe("1");
+    if (fault === "update-check" || fault === "other-network") writeFileSync(log, "blocked external network attempt\n");
     if (fault === "forged-receipt") return { ...ok(), stdout: '{"passed":true,"cleanup":true}' };
     if (fault === "timeout") return { ...ok(), exitCode: null, timedOut: true };
     if (fault === "owned-stop") return { ...ok(), ownedStopConfirmed: false };
@@ -83,6 +88,8 @@ function executablePort(fault?: Fault): ReceiptCommand {
       let content: unknown;
       if (call.name === "Write") {
         if (names.includes("Write")) { if (fault !== "missing-write") writeFileSync(input.path, input.content); content = "written"; }
+        else if (fault === "wording-2x") content = [{ type: "text", text: '<system>ERROR: Tool execution failed.</system>\nTool "Write" is disabled by the active tool policy' }];
+        else if (fault === "vague-refusal") content = [{ type: "text", text: "<system>ERROR: Tool execution failed.</system>\nsomething went wrong" }];
         else content = "ERROR: Tool execution failed. Tool Write not found";
       } else if (fault !== "missing-call") {
         const rpc = await fetch(binding.url, { method: "POST", headers: { ...binding.headers, "content-type": "application/json" }, signal: options.signal,
@@ -171,4 +178,19 @@ test("shared Kimi broker controls reject a third tool in observed inventory", as
     return Response.json(value);
   })).rejects.toMatchObject({ causeCode: "proof-failed" });
   expect(f.prepared.calls).toEqual([]);
+});
+
+// #1248: Kimi 2.6.x words the injected-Write refusal differently from 2.5.x; the exact new wording qualifies, a vague one never does, and the inventory/marker/broker facts stay mandatory.
+test("Kimi accepts the 2.6.x refusal wording and still refuses a vague failure text", async () => {
+  const modern = fixture(), accepted = await runKimiNativeProofs({ ...modern.context, run: executablePort("wording-2x") }, modern.prepared);
+  expect(Object.values(accepted).every(result => result.status === "pass" && result.cause === "ok")).toBe(true);
+  const vague = fixture(), refused = await runKimiNativeProofs({ ...vague.context, run: executablePort("vague-refusal") }, vague.prepared);
+  expect(refused["write-absent"]).toEqual({ status: "fail", cause: "proof-failed" });
+  expect(refused["native-tool-loop"]).toEqual({ status: "fail", cause: "proof-failed" });
+});
+for (const fault of ["update-check", "other-network"] as const) test(`Kimi still fails any native network attempt (${fault}), so the update switch cannot hide one`, async () => {
+  const f = fixture(), results = await runKimiNativeProofs({ ...f.context, run: executablePort(fault) }, f.prepared);
+  expect(results["native-tool-loop"]).toEqual({ status: "fail", cause: "proof-failed" });
+  expect(results["write-positive-control"]).toEqual({ status: "fail", cause: "proof-failed" });
+  expect(readdirSync(f.context.root).some(name => name.startsWith("kimi-native-"))).toBe(false);
 });

@@ -137,3 +137,19 @@ test("public install recipes bind exact npm versions or checksummed release asse
     }
   }
 });
+
+// #1248: pi sat at `autoAdmit: true` for days with every leg `producer-not-importable` because nothing tied the manifest to the worker. Every id the manifest lets the workflow admit must have a
+// committed producer branch in the proof worker, and every leg the manifest names for it must be one that producer reports (an unreported leg is a silent not-run).
+test("every autoAdmit id has a producer branch in the proof worker", () => {
+  const worker = readFileSync(join(import.meta.dir, "../scripts/compat-receipts/proof-worker.ts"), "utf8");
+  for (const [id, entry] of Object.entries(manifest.entries)) {
+    if (!entry.autoAdmit) continue;
+    expect(worker.includes(`data.id === "${id}"`), `${id} is autoAdmit true but proof-worker.ts has no producer branch for it`).toBe(true);
+  }
+});
+test("the pi producer reports exactly the legs the manifest requires of pi, and the other ids it names stay unchanged", () => {
+  const pi = readFileSync(join(import.meta.dir, "../scripts/compat-receipts/proofs/pi.ts"), "utf8");
+  const reported = [...(/const IDS = \[([^\]]+)\]/.exec(pi)?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map(match => match[1]!).sort();
+  expect(reported).toEqual(manifest.entries.pi!.legs.map(leg => leg.id).sort());
+  expect(pi).not.toContain("producer-not-importable");
+});

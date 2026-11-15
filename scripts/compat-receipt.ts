@@ -130,7 +130,7 @@ export async function runCompatReceipt(input: { id: string; version: string; out
       finally { active.delete(task); }
     } };
   const platform = ports.platform ?? process.platform, os = platform === "darwin" ? "macos" : platform, architecture = ports.architecture ?? process.arch;
-  const legs = entry.legs.map(leg => proof("not-run", blockedCause(leg, os, architecture, entry) ?? (input.id === "pi" ? "producer-not-importable" : "producer-not-committed"), leg.id, leg.requiredForAdmission));
+  const legs = entry.legs.map(leg => proof("not-run", blockedCause(leg, os, architecture, entry) ?? "producer-not-committed", leg.id, leg.requiredForAdmission));
   let artifact: InstalledArtifact | undefined, installation = proof("not-run", "install-unavailable", "installation", true);
   try {
     try {
