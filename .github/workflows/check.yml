@@ -2,6 +2,8 @@ name: check
 
 on:
   pull_request:
+    # #1490: a draft PR skips macOS; marking it ready starts a run that includes it
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       prepare_bundle:
@@ -26,13 +28,13 @@ env:
   NPM_VERSION: '11.20.0'
 
 concurrency:
-  # #609: one group per PR, so PRs run side by side; within a PR a newer pending run replaces the older pending one
-  # (queue single), while an admitted controller is never cancelled. Main pushes and dispatches keep queue max.
-  # GitHub refuses queue max together with cancel-in-progress true, so in-progress runs are not cancelled.
+  # #609, #1490: one group per PR, so PRs run side by side. Within a PR a newer run replaces the older one: pending (queue single) and, since #1490, in progress
+  # (cancel-in-progress). A cancelled run is never a full-gate proof (scripts/ci-gates.mjs reuses only a run whose three required jobs all succeeded). Main pushes and
+  # dispatches keep queue max and are never cancelled: GitHub refuses queue max together with cancel-in-progress true.
   # ponytail: controllers of different groups admitting the same tree at the same instant both run it (a duplicate run,
   # never a false green); a repository-wide group removes that at the cost of serializing every PR.
   group: ${{ github.event_name == 'workflow_dispatch' && inputs.timing_runs == '20' && 'macos-timing' || github.event_name == 'pull_request' && format('check-pr-{0}', github.event.pull_request.number) || 'check-main' }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 jobs:
@@ -83,8 +85,8 @@ jobs:
 
   ubuntu-shard:
     # #548: the Ubuntu leg as shards of the full suite, balanced by the recorded per-file times in scripts/test-timings.json (bun test --shard --timings: every file in
-    # exactly one shard). Shard 1 also runs typecheck, roles, bundle freshness, package contents and docs once; the others install and test. Keep the existing timings; verify hosted shard durations before merge.
-    name: check (ubuntu-latest) shard ${{ matrix.shard }}/4
+    # exactly one shard). #1490: six shards here (Ubuntu runners are free and waited 0 min); macOS keeps four so its slot use does not grow. Shard 1 also runs typecheck, roles, bundle freshness, package contents and docs once; the others install and test. Keep the existing timings; verify hosted shard durations before merge.
+    name: check (ubuntu-latest) shard ${{ matrix.shard }}/6
     needs: decision
     if: needs.decision.outputs.run_gate == 'true'
     runs-on: ubuntu-latest
@@ -92,7 +94,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,7 +111,7 @@ jobs:
       - name: Gate shard (once-only steps on shard 1, tests of this shard)
         env:
           # Keep the existing bounds: the quiet bound is the hang detector, the total is only the backstop for a run that keeps printing while hung.
-          AHUB_CHECK_SHARD: ${{ matrix.shard }}/4
+          AHUB_CHECK_SHARD: ${{ matrix.shard }}/6
           AHUB_CHECK_HANG_S: '1500'
           AHUB_CHECK_QUIET_S: '300'
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
@@ -152,8 +154,8 @@ jobs:
     name: check (macos-latest) shard ${{ matrix.shard }}/4
     needs: decision
     # #1307: GitHub runs at most 5 macOS jobs at once on this account. A stacked PR (base not the default branch) is rebased and rerun once it targets main, so its shards wait;
-    # the aggregator below fails for it rather than letting a skipped required check pass.
-    if: needs.decision.outputs.run_gate == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.base.ref == github.event.repository.default_branch)
+    # the aggregator below fails for it rather than letting a skipped required check pass. #1490: a draft PR defers them the same way, until `gh pr ready`.
+    if: needs.decision.outputs.run_gate == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.draft != true)
     runs-on: macos-latest
     timeout-minutes: 25
     strategy:
@@ -238,6 +240,13 @@ jobs:
           DEFAULT: ${{ github.event.repository.default_branch }}
         run: |
           echo "::error title=macOS shards deferred::this PR targets $BASE, not $DEFAULT (#1307). They run on the next run after it targets $DEFAULT: push a commit, or close and reopen the PR."
+          exit 1
+      # #1490: a deferred aggregate never reports success. A planned skip would let the identical-tree reuse proof (scripts/ci-reuse.mjs), scripts/ci-gates.mjs FULL_GATES or the release
+      # gate borrow a run that never tested macOS.
+      - name: macOS shards deferred for a draft PR
+        if: needs.decision.outputs.run_gate == 'true' && github.event_name == 'pull_request' && github.event.pull_request.draft == true
+        run: |
+          echo "::error title=macOS deferred::draft PR; macOS runs when the PR is marked ready (gh pr ready)"
           exit 1
       - name: Every macOS shard passed
         if: needs.decision.outputs.run_gate == 'true'

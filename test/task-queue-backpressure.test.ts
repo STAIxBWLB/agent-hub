@@ -375,7 +375,7 @@ test("a queue-held review moving to its new reviewer keeps the pending CI notifi
   const pendingRead = deferred(), releaseRead = deferred(), readFinished = deferred();
   const checks = () => names.map(name => ({ name, status: state.conclusion === "IN_PROGRESS" ? "IN_PROGRESS" : "COMPLETED", conclusion: state.conclusion === "IN_PROGRESS" ? "" : state.conclusion }));
   const gh: SdlcGh = async args => {
-    if (args[0] === "pr" && args.includes("headRefOid,state,statusCheckRollup")) {
+    if (args[0] === "pr" && args.includes("headRefOid,state,statusCheckRollup,isDraft")) {
       pendingRead.resolve();
       // Hold a real watcher read while queue admission assigns the reviewer.
       await releaseRead.promise;

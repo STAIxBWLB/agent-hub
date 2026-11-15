@@ -31,7 +31,7 @@ function rig(mode: "advise" | "enforce", watch = { deadlineMs: 5000, pollMs: 10 
   const state = { conclusion: "IN_PROGRESS" as string, prHead: head, prState: "OPEN", polls: 0 };
   const notices: string[] = [];
   const gh: SdlcGh = async args => {
-    if (args[0] === "pr" && args.includes("headRefOid,state,statusCheckRollup")) {
+    if (args[0] === "pr" && args.includes("headRefOid,state,statusCheckRollup,isDraft")) {
       state.polls++;
       return { code: 0, stdout: JSON.stringify({ headRefOid: state.prHead, state: state.prState, statusCheckRollup: NAMES.map(name => ({ name, status: state.conclusion === "IN_PROGRESS" ? "IN_PROGRESS" : "COMPLETED", conclusion: state.conclusion === "IN_PROGRESS" ? "" : state.conclusion })) }) };
     }
@@ -259,4 +259,47 @@ test("CiWatchers: after a told failed or incomplete result, sustained pending, u
     await sleep(40);
     expect([name, polls]).toEqual([name, after]);
   }
+});
+
+// #1490 AC5: a draft PR defers its macOS check (the aggregate fails on purpose until `gh pr ready`) and a superseded run is cancelled. Neither is a CI failure the implementer has to fix, so
+// neither tells it "failed"; a real failure of the same head still does.
+test("#1490 AC5: pollCi reads a cancelled required check and a draft PR's deferred macOS check as pending, never failed", async () => {
+  const MAC = "check (macos-latest)";
+  const rows = (conclusion: (name: string) => string) => NAMES.map(name => ({ name, status: "COMPLETED", conclusion: conclusion(name) }));
+  const reply = (extra: object, checks: object[]) => async (args: string[]) => {
+    expect(args.join(" ")).toContain("headRefOid,state,statusCheckRollup,isDraft");
+    return { code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", statusCheckRollup: checks, ...extra }) };
+  };
+  const target = { repo: "o/r", pr: 1 };
+  // draft: the deferred macOS aggregate failed on purpose, the others passed: still waiting, not failed
+  expect(await pollCi(target, head, NAMES, reply({ isDraft: true }, rows(name => name === MAC ? "FAILURE" : "SUCCESS")))).toBe("pending");
+  // the same rows on a ready PR are a real failure
+  expect(await pollCi(target, head, NAMES, reply({ isDraft: false }, rows(name => name === MAC ? "FAILURE" : "SUCCESS")))).toBe("failed");
+  expect(await pollCi(target, head, NAMES, reply({}, rows(name => name === MAC ? "FAILURE" : "SUCCESS")))).toBe("failed"); // no isDraft field: not a draft
+  // a draft's real failure elsewhere is still told
+  expect(await pollCi(target, head, NAMES, reply({ isDraft: true }, rows(name => name === "seeded guards" ? "FAILURE" : name === MAC ? "FAILURE" : "SUCCESS")))).toBe("failed");
+  expect(await pollCi(target, head, NAMES, reply({ isDraft: true }, rows(name => name === "check (ubuntu-latest)" ? "FAILURE" : "SUCCESS")))).toBe("failed");
+  // a draft whose macOS check passed (a reused proof cannot, but a manual rerun could) is not held back
+  expect(await pollCi(target, head, NAMES, reply({ isDraft: true }, rows(() => "SUCCESS")))).toBe("passed");
+  // a cancelled run of this head (superseded or replaced by the ready run) is waiting for the next run, on a draft or a ready PR
+  for (const isDraft of [true, false]) expect(await pollCi(target, head, NAMES, reply({ isDraft }, rows(name => name === "seeded guards" ? "CANCELLED" : "SUCCESS")))).toBe("pending");
+  // a timed-out or action-required check is a real problem, not a cancellation
+  expect(await pollCi(target, head, NAMES, reply({}, rows(name => name === "seeded guards" ? "TIMED_OUT" : "SUCCESS")))).toBe("failed");
+});
+
+test("#1490 AC5: a draft run's deferred macOS failure tells the owner nothing, the ready run's pass tells once, and a real failure after it is told", async () => {
+  const r = rig("advise"); await r.start();
+  const macos = "check (macos-latest)";
+  const rollup = (draft: boolean) => ({ headRefOid: head, state: "OPEN", isDraft: draft, statusCheckRollup: NAMES.map(name => ({ name, status: "COMPLETED", conclusion: name === macos && draft ? "FAILURE" : "SUCCESS" })) });
+  let draft = true;
+  const watcherPoll = (r.tasks as unknown as { d: { sdlc: { gh: SdlcGh } } }).d.sdlc;
+  const original = watcherPoll.gh;
+  watcherPoll.gh = async (args, ...rest) => args[0] === "pr" && args.includes("headRefOid,state,statusCheckRollup,isDraft") ? { code: 0, stdout: JSON.stringify(rollup(draft)) } : original(args, ...rest);
+  await r.tasks.done("codex", r.task.id, "ready");
+  await sleep(120);
+  expect(r.ciNotices(r.owner)).toHaveLength(0); // the draft deferral is not a failure
+  expect(r.ciNotices(r.reviewer)).toHaveLength(0);
+  draft = false; // gh pr ready: the ready run passes
+  expect(await until(() => r.ciNotices(r.owner).length === 1)).toBe(true);
+  expect(r.ciNotices(r.owner)[0]!.body).toContain(`${head.slice(0, 12)} passed`);
 });

@@ -20,19 +20,34 @@ export interface CiWatch { id: number; head: string; repo: string; pr: number; d
 /** `reported`: a result was told, so a deadline ends silently. `renew`: the next pending read may renew the deadline once (set by each new told result). */
 type Entry = { watch: CiWatch; timer?: ReturnType<typeof setTimeout>; reported?: boolean; renew?: boolean };
 
-/** One read of the PR: the head, its state and the required checks of that head. A failed or unreadable read is `pending`; the deadline bounds the retries. */
+/**
+ * #1490: the required check a draft PR defers. Its aggregate fails with "macOS deferred" until `gh pr ready` (check.yml), which is not a CI failure of the head.
+ * ponytail: the name is this repository's own (`requiredCheckNames`); a project with another deferral names it here, or reads it from its workflow.
+ */
+const DEFERRED_ON_DRAFT: readonly string[] = ["check (macos-latest)"];
+
+/**
+ * One read of the PR: the head, its state and the required checks of that head. A failed or unreadable read is `pending`; the deadline bounds the retries.
+ * #1490: a cancelled check (a superseded run, or the draft run that `gh pr ready` replaces) and a draft PR's deferred macOS check are `pending`, never `failed`: nobody has to fix them.
+ * A cancelled run of an older head never gets here (the head differs: `superseded`).
+ */
 export async function pollCi(target: { repo: string; pr: number }, head: string, required: readonly string[], run: SdlcGh): Promise<CiPoll> {
   if (!REPO.test(target.repo) || !Number.isSafeInteger(target.pr) || target.pr < 1) return "closed";
   const names = requiredCheckNames(target.repo, required);
   if (!names.length) return "incomplete";
   try {
-    const view = await run(["pr", "view", String(target.pr), "--repo", target.repo, "--json", "headRefOid,state,statusCheckRollup"], 10_000, undefined, 512 * 1024);
+    const view = await run(["pr", "view", String(target.pr), "--repo", target.repo, "--json", "headRefOid,state,statusCheckRollup,isDraft"], 10_000, undefined, 512 * 1024);
     if (view.code !== 0) return "pending";
     const body = JSON.parse(view.stdout);
     if (body?.headRefOid !== head) return "superseded";
     if (body.state !== "OPEN") return "closed";
+    const draft = body.isDraft === true;
+    const rollup = Array.isArray(body.statusCheckRollup) ? body.statusCheckRollup.map((check: Record<string, unknown>) => {
+      const native = String(check?.conclusion ?? check?.state ?? "");
+      return native === "CANCELLED" || draft && DEFERRED_ON_DRAFT.includes(String(check?.name ?? check?.context)) && native !== "SUCCESS" ? { ...check, status: "PENDING" } : check;
+    }) : body.statusCheckRollup;
     // The same check-state mapping as every other PR read; files are not requested here.
-    const evidence = parsePrEvidence({ ...body, files: [], changedFiles: 0 });
+    const evidence = parsePrEvidence({ ...body, statusCheckRollup: rollup, files: [], changedFiles: 0 });
     const rows = names.map(name => evidence.checks.filter(check => check.name === name));
     if (rows.some(row => row.some(check => check.state === "failed"))) return "failed";
     if (rows.some(row => row.length === 0 || row.some(check => check.state === "pending"))) return "pending";
