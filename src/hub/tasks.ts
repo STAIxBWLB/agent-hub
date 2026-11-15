@@ -3649,7 +3649,7 @@ export class Tasks {
     repo: string; apply: boolean; partial: boolean; milestones: { number: number; title: string; milestone: number | null; action: "create" | "exists"; issues: string[]; newLinks: number }[]; created: number; linked: number; withheld: number;
   }> {
     const current = this.roadmapWriteAuthority(by);
-    if (!this.personOrConductor(by)) throw new PreEffectToolRefusal("GitHub milestone import is a console command; ask the person to run ahub roadmap import-github");
+    if (by !== USER) throw new PreEffectToolRefusal("GitHub milestone import is a console command; ask the person to run ahub roadmap import-github");
     if (input.apply !== undefined && typeof input.apply !== "boolean") throw new PreEffectToolRefusal("roadmap import apply must be true or false; omit it for a dry run");
     const apply = input.apply === true, gh = this.roadmapGh(run), repoInput = this.roadmapRepo(input.repo);
     const milestonePages = await readGitHubMilestonePages({ ...(repoInput === undefined ? {} : { repo: repoInput }) }, gh);

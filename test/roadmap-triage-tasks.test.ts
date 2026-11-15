@@ -182,6 +182,22 @@ test("import-github is a dry run by default, lists what it would create, and --a
   await expect(f.tasks.roadmapImportGitHub(USER, { apply: "yes" }, gh)).rejects.toThrow("true or false");
 });
 
+test("import-github is the console user's alone: the configured conductor is refused before any gh call, dry run and apply (hub task 982)", async () => {
+  const f = fixture();
+  const calls: string[][] = [];
+  const gh = fakeGh({ milestones: [{ number: 2, title: "Beta", description: "Ship the beta", due: "2026-12-31T00:00:00Z", url: "https://github.com/example/repo/milestone/2" }], issues: [issueRow(10, 2)], calls });
+  // Control: this fixture's conductor passes a person-or-conductor guard (it reaches the id check), so the refusal below is the import's own.
+  await expect(f.tasks.approveIntake("claude", "x")).rejects.toThrow("positive task number");
+  for (const input of [{}, { apply: true }]) {
+    await expect(f.tasks.roadmapImportGitHub("claude", input, gh)).rejects.toThrow("console command");
+  }
+  expect(calls).toEqual([]);
+  expect(f.board.milestones()).toEqual([]);
+  expect(f.board.milestoneLinks()).toEqual([]);
+  await f.tasks.roadmapImportGitHub(USER, {}, gh);
+  expect(calls.length).toBeGreaterThan(0);
+});
+
 test("import never relinks into a settled milestone and withholds text that fails the public screen", async () => {
   const f = fixture();
   const gh = fakeGh({ milestones: [{ number: 2, title: "Beta", description: "d", due: null, url: "https://github.com/example/repo/milestone/2" }, { number: 3, title: "sk-abcdefghijklmnopqrstuvwxyz0123456789 secret", description: "d", due: null, url: "https://github.com/example/repo/milestone/3" }], issues: [issueRow(10, 2)] });
