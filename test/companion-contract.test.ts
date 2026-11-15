@@ -33,6 +33,7 @@ function check(rule: Rule, value: unknown): boolean {
     case "string": return typeof value === "string" && value.length > 0;
     case "absolute-path": return typeof value === "string" && value.startsWith("/");
     case "count": return count(value);
+    case "nullable-fraction": return value === null || typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
     case "count-map": return plain(value) && Object.entries(value).every(([k, n]) => rule.values!.includes(k) && count(n));
     case "enum": return typeof value === "string" && rule.values!.includes(value);
     case "true": return value === true;
@@ -53,6 +54,11 @@ const conditionOf = (rule: Rule): string | undefined => /^with ([A-Za-z0-9_.<>]+
 function conform(rules: Record<string, Rule>, doc: unknown): string[] {
   const bad: string[] = [];
   for (const [path, rule] of Object.entries(rules)) {
+    if (path === "peers.<id>.context.used" || path === "peers.<id>.context.freshness") {
+      const peers = plain(doc) && plain(doc.peers) ? doc.peers : {};
+      const field = path.split(".").at(-1)!;
+      for (const [id, peer] of Object.entries(peers)) if (plain(peer) && plain(peer.context) && !Object.hasOwn(peer.context, field)) bad.push(`${path}: missing at peers.${id}.context`);
+    }
     const condition = conditionOf(rule);
     if (condition !== undefined && !condition.includes("<") && hasPath(doc, condition) && !hasPath(doc, path)) bad.push(`${path}: missing while ${condition} is present`);
     let nodes: { at: string; value: unknown; present: boolean }[] = [{ at: "", value: doc, present: true }];
@@ -85,7 +91,7 @@ async function fixture() {
   // A declared channel instance nobody attached: the detached peer row.
   writeFileSync(join(cwd, ".agenthub/config.local.json"), JSON.stringify({ instances: { "claude-2": { kind: "claude", roles: ["reviewer"] } } }));
   const registry = new Registry(join(home, "registry.db")), project = registry.register(cwd); cleanups.push(() => registry.close());
-  const daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, config: loadConfig(cwd) });
+  const daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, instanceId: "context-instance", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, config: loadConfig(cwd) });
   let stopped = false; const stop = async () => { if (!stopped) { stopped = true; await daemon.stop(); } }; cleanups.push(stop);
   class Busy extends BasePeer { async deliver() {} async start() { this.setState("busy"); } async stop() { this.setState("offline"); } }
   const busy = new Busy("local"); daemon.bus.add(busy); await busy.start();
@@ -101,6 +107,13 @@ async function fixture() {
   const frames: { t?: string }[] = []; socket.onmessage = event => frames.push(JSON.parse(String(event.data)));
   await new Promise<void>((resolve, reject) => { socket.onerror = () => reject(new Error("fixture websocket failed")); socket.onopen = () => { socket.send(JSON.stringify({ t: "hello", v: PROTOCOL, token, role: "peer", peer: "claude", channel: false, rid: 1 })); resolve(); }; });
   await until(() => frames.some(row => row.t === "welcome"), "pull-only attach");
+  writeFileSync(join(project.stateDir, "claude-session.json"), JSON.stringify({ instanceId: "context-instance", sessionId: "native-1", launchId: "launch-1" }));
+  writeFileSync(join(project.stateDir, "claude-context.json"), JSON.stringify({ instanceId: "context-instance", sessionId: "native-1", launchId: "launch-1", at: Date.now(), context: { context_window_size: 200000, used_percentage: 20, current_usage: { input_tokens: 40000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }));
+  for (let n = 0; n < 30; n++) {
+    const status = (await person.request({ t: "status" })).status;
+    if (status.peers.claude.context?.used === 0.2) break;
+    await Bun.sleep(100);
+  }
   const gone = new Busy("paused-away"); daemon.bus.add(gone); await gone.start(); await gone.stop();
   const paused = await person.request({ t: "pause", peer: "paused-away" }); expect(paused.ok, JSON.stringify(paused)).toBe(true);
   await until(() => daemon.bus.queueSummary("held").needsReview === 1, "held delivery");
@@ -139,6 +152,8 @@ test("status reply and ahub status/projects --json carry every contract path wit
     const out = await cli(f.home, f.project.root, args);
     expect(out.code, `${args.join(" ")}: ${out.stderr}`).toBe(0);
     const status = JSON.parse(out.stdout);
+    expect(status.peers.claude.context).toMatchObject({ used: 0.2, freshness: "fresh" });
+    expect(Object.hasOwn(status.peers["claude-2"], "context")).toBe(false);
     expect(conform(contract.status, status)).toEqual([]);
     expect(status.projectId).toBe(f.project.id);
     expect(status.cwd).toBe(f.project.root);
@@ -162,6 +177,17 @@ test("status reply and ahub status/projects --json carry every contract path wit
 test("src/cli/shell-quote.ts matches the contract's shellQuote vectors", () => {
   expect(contract.shellQuote.length).toBe(11);
   for (const v of contract.shellQuote) expect(shellQuote(v.in)).toBe(v.out);
+});
+
+test("optional per-peer context requires a nullable fraction and a freshness when present", () => {
+  const rules = Object.fromEntries(Object.entries(contract.status).filter(([path]) => path.startsWith("peers.<id>.context")));
+  for (const freshness of ["fresh", "stale", "unknown"]) {
+    for (const used of [null, 0, 0.5, 1]) expect(conform(rules, { peers: { a: { context: { used, freshness } }, b: {} } })).toEqual([]);
+  }
+  for (const used of [-0.1, 1.1, "0.5"]) expect(conform(rules, { peers: { a: { context: { used, freshness: "fresh" } } } }).length).toBeGreaterThan(0);
+  expect(conform(rules, { peers: { a: { context: { used: null, freshness: "other" } } } }).length).toBeGreaterThan(0);
+  expect(conform(rules, { peers: { a: { context: { used: null } } } }).length).toBeGreaterThan(0);
+  expect(conform(rules, { peers: { a: { context: { freshness: "unknown" } } } }).length).toBeGreaterThan(0);
 });
 
 /** Execute the shipped closed producer with synthetic port facts, not a daemon/account. */
