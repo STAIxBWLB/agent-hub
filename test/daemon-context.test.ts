@@ -558,3 +558,80 @@ test("#624 Claude's transcript usage is never filed under agy when Claude's own 
   await Bun.sleep(2500); // more than one 2 s usage round
   expect(readEvents(join(f.cwd, "events.jsonl")).filter(e => e.type === "usage")).toEqual([]);
 }, 20_000);
+
+const FIELDS = { done: "parser and tests", in_progress: "tool wiring", next: "rebuild the bundle", verified_by: "bun test parser", traps: "the cache is shared" };
+const RENDERED = "Done:\nparser and tests\n\nIn progress:\ntool wiring\n\nNext:\nrebuild the bundle\n\nVerified by:\nbun test parser\n\nTraps:\nthe cache is shared";
+
+test("hub task 975: a context checkpoint with structured fields is saved in the fixed order, counted by name, and a summary-only one is unchanged", async () => {
+  const f = await fixture(0.8, false, undefined, { inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false } }, false);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1");
+  f.reading(); await until(() => !!request(f.pushes));
+  const ask = request(f.pushes), id = /request_id: "([^"]+)"/.exec(ask.body)![1];
+  for (const name of ["done", "in_progress", "next", "verified_by", "traps"]) expect(ask.body).toContain(`${name} (`);
+  const saved = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "S", ...FIELDS, request_id: id } });
+  expect(saved.ok === true, String(saved.error ?? "")).toBe(true);
+  expect(JSON.parse(readFileSync(join(f.cwd, "context-checkpoint-claude.json"), "utf8")).summary).toBe(`S\n\n${RENDERED}`);
+  expect(f.mem.calls.some(call => call.path === "/api/memory/save" && JSON.stringify(call.body).includes("tool wiring"))).toBe(true);
+  const events = readEvents(join(f.cwd, "events.jsonl")).filter(e => e.type === "checkpoint");
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({ peer: "claude", reason: "context", fields: ["done", "in_progress", "next", "verified_by", "traps"] });
+  expect(JSON.stringify(events)).not.toContain("tool wiring");
+}, 20_000);
+
+test("hub task 975: an over-length field is refused with the limit named, nothing is saved, and the open request takes a corrected call", async () => {
+  const f = await fixture(0.8, false, undefined, { inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false } }, false);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1");
+  f.reading(); await until(() => !!request(f.pushes));
+  const id = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1];
+  const long = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "S", traps: "y".repeat(201), request_id: id } });
+  expect(long.ok).toBe(false); expect(String(long.error)).toContain("checkpoint field traps line 1 has 201 characters; the limit is 200 characters per line");
+  const many = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "S", done: "1\n2\n3\n4\n5\n6", request_id: id } });
+  expect(many.ok).toBe(false); expect(String(many.error)).toContain("the limit is 5 lines");
+  expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
+  expect(readEvents(join(f.cwd, "events.jsonl")).filter(e => e.type === "checkpoint")).toEqual([]);
+  const ok = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "only a summary", request_id: id } });
+  expect(ok.ok === true, String(ok.error ?? "")).toBe(true);
+  expect(JSON.parse(readFileSync(join(f.cwd, "context-checkpoint-claude.json"), "utf8")).summary).toBe("only a summary");
+  expect(readEvents(join(f.cwd, "events.jsonl")).filter(e => e.type === "checkpoint")).toMatchObject([{ reason: "context", fields: [] }]);
+}, 20_000);
+
+test("hub task 975: private text in a structured field is refused like private text in the summary", async () => {
+  const f = await fixture(0.8, false, undefined, { inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false } }, false);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1");
+  f.reading(); await until(() => !!request(f.pushes));
+  const id = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1];
+  const denied = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "clean", traps: "PRIVATE-MARKER", request_id: id } });
+  expect(denied.ok).toBe(false);
+  expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
+  expect(f.mem.calls.some(c => c.path === "/api/memory/save" && JSON.stringify(c.body).includes("PRIVATE-MARKER"))).toBe(false);
+  expect(readFileSync(join(f.cwd, "events.jsonl"), "utf8")).not.toContain("PRIVATE-MARKER");
+}, 20_000);
+
+test("hub task 975: a quota checkpoint stores the rendered fields in the pause record and counts them by name", async () => {
+  const f = await fixture(0, false, undefined, { inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false } });
+  const accepted = await f.claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } }); expect(accepted.ok === true, String(accepted.error ?? "")).toBe(true);
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture needs the attached fake WS peer");
+  peer.steer = undefined; peer.nativeStarted("native-1");
+  const ask = () => f.pushes.find(push => push.t === "event" && push.e?.env?.kind === "budget" && push.e.env.body.startsWith("Checkpoint request: your quota"))?.e.env;
+  expect((await f.console_.request({ t: "budget", set: { peer: "claude", used: 0.999, resetsInMs: 3_600_000 } })).ok).toBe(true);
+  await until(() => !!ask());
+  for (const name of ["done", "in_progress", "next", "verified_by", "traps"]) expect(ask().body).toContain(`${name} (`);
+  const checkpointed = Budget.prototype.checkpointed, persisted: string[] = [];
+  Budget.prototype.checkpointed = function (who, summary) { persisted.push(summary); return checkpointed.call(this, who, summary); };
+  try {
+    const long = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "S", next: "n".repeat(201) } });
+    expect(long.ok).toBe(false); expect(String(long.error)).toContain("the limit is 200 characters per line");
+    expect(persisted).toEqual([]);
+    const saved = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "S", ...FIELDS } });
+    expect(saved.ok === true, String(saved.error ?? "")).toBe(true);
+  } finally { Budget.prototype.checkpointed = checkpointed; }
+  expect(persisted).toEqual([`S\n\n${RENDERED}`]);
+  expect(readEvents(join(f.cwd, "events.jsonl")).filter(e => e.type === "checkpoint")).toMatchObject([{ peer: "claude", reason: "quota", fields: ["done", "in_progress", "next", "verified_by", "traps"] }]);
+}, 30_000);

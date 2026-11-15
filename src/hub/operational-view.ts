@@ -29,7 +29,7 @@ const EVENT_FIELDS: Record<string,readonly string[]>={
   permission:["id","peer","event","latencyMs","surface","option"],
   supervision_turn:["peer","turn","tokens","ms"],hook_stats:["peer","n","startupMs","hubMs","maxStartupMs"],
   capability:["peer","state","via"],cohort:["id","event","silent","tasks","owners"],
-  planning:["by","task","release","fields","revision"],context_pressure:["peer","source","measuredAt","used","window"],
+  planning:["by","task","release","fields","revision"],context_pressure:["peer","source","measuredAt","used","window"],checkpoint:["peer","reason","fields"],
   budget_pause:["peer","reason","window","resetsAt","by"],budget_resume:["peer","reason","window","resetsAt","by"],
   quota_reset:["peer","window","cause","resetsAt","used","previousUsed","previousResetsAt","measuredAt"],
 };
@@ -40,7 +40,7 @@ const EVENT_REQUIRED:Record<string,readonly string[]>={
   overflow:["id","from","peer"],undeliverable:["id","from","peer"],stale:["id","from","peer"],quiet:["id","from","peers"],envelope:["id","from","priority","hop"],
   memory_brief:["peer","task","native","fails","claudeMem"],preface:["peer","bytes","lines","ordered"],fact:["peer","id","files","plans","unknown","named","bytes","via"],fact_ack:["peer","id","via","ms"],
   permission_mode:["peer","from","to"],permission:["id","peer","event"],supervision_turn:["peer","turn"],hook_stats:["peer","n","startupMs","hubMs","maxStartupMs"],
-  capability:["peer","state"],cohort:["id","event","silent","tasks","owners"],planning:["by","fields","revision"],context_pressure:["peer","source","measuredAt","used","window"],
+  capability:["peer","state"],cohort:["id","event","silent","tasks","owners"],planning:["by","fields","revision"],context_pressure:["peer","source","measuredAt","used","window"],checkpoint:["peer","reason","fields"],
   budget_pause:["peer","reason","window","resetsAt","by"],budget_resume:["peer","reason","window","resetsAt","by"],quota_reset:["peer","window","cause","used","previousUsed"],
 };
 const NUMBERS=new Set(["n","ms","tokens","files","snapshotMs","reasoningTokens","inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens","hop","bytes","lines","native","fails","claudeMem","plans","unknown","named","hookMs","rttMs","latencyMs","startupMs","hubMs","maxStartupMs","used","previousUsed","previousResetsAt","resetsAt","plannedStart","due","revision"]);

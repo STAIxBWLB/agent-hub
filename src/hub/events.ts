@@ -101,6 +101,8 @@ export type HubEvent =
   | ({ type: "pii_screen" } & ScreenRecord)
   | { type: "conflict"; peer: string; task?: number; other: number; owner: string; paths: string[]; concurrent: boolean; turns?: [string, string] }
   | { type: "context_pressure"; peer: string; source: string; measuredAt: number; used: number; window: number | null }
+  /** #1331: a saved checkpoint and which structured fields it carried (names from a closed list, never text), so field use is countable. */
+  | { type: "checkpoint"; peer: string; reason: "quota" | "context"; fields: string[] }
   | { type: "quota"; peer: string; windows: { id: string; used: number; resetsAt?: number }[]; hard: boolean; measuredAt?: string }
   /**
    * The limit ledger (#683 U1): additive, ids and numbers only, no PROTOCOL bump (a reader that does not know a type ignores it).
