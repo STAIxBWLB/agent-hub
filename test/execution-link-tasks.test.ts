@@ -47,6 +47,18 @@ test("Tasks write admitted declared references idempotently without changing tas
   expect(page.edges[0]?.strength).toBe("declared"); expect(JSON.stringify(page)).not.toContain("PRIVATE_TASK_TITLE");
 });
 
+test("atex build remains an opaque declared node after task admission", async () => {
+  const f = await fixture();
+  const reference: ExecutionReferenceV1 = { v: 1, tool: "atex", projectKey: "writing-project", kind: "build", id: "receipt-1", sha256: "a".repeat(64) };
+  const result = await f.tasks.linkExecutionReference("codex", { ...f.input(), reference });
+  expect(result.strength).toBe("declared");
+  const page = f.tasks.executionLineage("codex", { taskId: f.task.id });
+  expect(page.state).toBe("available");
+  if (page.state !== "available") throw new Error("fixture unavailable");
+  expect(page.nodes.find(node => node.ref.tool === "atex")?.ref).toEqual(reference);
+  expect(page.edges.find(edge => edge.to.tool === "atex")?.strength).toBe("declared");
+});
+
 test("stale task identity, flow, project, role and private contexts refuse before persistence", async () => {
   const f = await fixture();
   for (const value of [{ ...f.input(), taskCreated: 0 }, { ...f.input(), flowRevision: 999 }, { ...f.input(), reference: { ...f.reference, tool: "ahub", projectKey: "other", kind: "task" } }])

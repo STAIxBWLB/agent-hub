@@ -1,6 +1,6 @@
 import { types } from "node:util";
 /** ExecutionReferenceV1 is an opaque address, never authority or a resolver instruction. */
-export const EXECUTION_PRODUCERS = ["ahub", "ares", "amem", "vmem"] as const;
+export const EXECUTION_PRODUCERS = ["ahub", "ares", "amem", "vmem", "atex"] as const;
 export interface ExecutionReferenceV1 {
   v: 1;
   tool: typeof EXECUTION_PRODUCERS[number];

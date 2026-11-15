@@ -43,6 +43,16 @@ function fixture() {
 }
 
 describe("acon lineage provider port (#1220 T3)", () => {
+  test("atex build appears as metadata without a navigation action", async () => {
+    const { provider, setReply, actions } = fixture();
+    const build = { v: 1 as const, tool: "atex" as const, projectKey: "writing-project", kind: "build", id: "receipt-1", sha256: "a".repeat(64) };
+    setReply({ ok: true, lineage: { ...page, nodes: [...page.nodes, { ref: build, state: "declared", strength: "declared" }] } });
+    const reply = await provider.snapshot({ after: 0, panel: "lineage", projectId: "p1", instanceId: "i1", taskId: 7 });
+    expect(reply.ok).toBe(true);
+    const lines = (reply.lines as string[]).join("\n");
+    expect(lines).toContain("atex"); expect(lines).toContain("build"); expect(lines).toContain("a".repeat(64));
+    expect(actions).toEqual([]);
+  });
   test("the console answers with the page the CLI prints, over the console role's own control message", async () => {
     const { provider, hellos, requests, actions } = fixture();
     const reply = await provider.snapshot({ after: 0, panel: "lineage", projectId: "p1", instanceId: "i1", taskId: 7 });
