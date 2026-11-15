@@ -1,4 +1,4 @@
-import { requiredCheckNames, parsePrEvidence, type SdlcGh } from "./sdlc.ts";
+import { latestCheckRuns, requiredCheckNames, parsePrEvidence, type SdlcGh } from "./sdlc.ts";
 
 /**
  * #785 P1b: one bounded watcher per exact PR head. It starts when `hub_task_done` names a head whose CI was not green,
@@ -42,7 +42,7 @@ export async function pollCi(target: { repo: string; pr: number }, head: string,
     if (body?.headRefOid !== head) return "superseded";
     if (body.state !== "OPEN") return "closed";
     const draft = body.isDraft === true;
-    const rollup = Array.isArray(body.statusCheckRollup) ? body.statusCheckRollup.map((check: Record<string, unknown>) => {
+    const rollup = Array.isArray(body.statusCheckRollup) ? latestCheckRuns(body.statusCheckRollup as Record<string, unknown>[]).map((check: Record<string, unknown>) => {
       const native = String(check?.conclusion ?? check?.state ?? "");
       return native === "CANCELLED" || draft && DEFERRED_ON_DRAFT.includes(String(check?.name ?? check?.context)) && native !== "SUCCESS" ? { ...check, status: "PENDING" } : check;
     }) : body.statusCheckRollup;

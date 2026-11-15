@@ -303,3 +303,63 @@ test("#1490 AC5: a draft run's deferred macOS failure tells the owner nothing, t
   expect(await until(() => r.ciNotices(r.owner).length === 1)).toBe(true);
   expect(r.ciNotices(r.owner)[0]!.body).toContain(`${head.slice(0, 12)} passed`);
 });
+
+// #1490 AC5, the case PR #1527 hit on its own run: after `gh pr ready` one head carries the rows of two runs of the same workflow. The draft run's aggregates failed (its macOS one on
+// purpose, the others because it was cancelled) while the ready run is going green. The newest run says what the head's CI is; the older run's rows are no failure to fix.
+import { latestCheckRuns, parsePrEvidence, readReviewReadiness } from "../src/hub/sdlc.ts";
+const row = (name: string, startedAt: string, conclusion: string, status = "COMPLETED", workflowName = "check") => ({ name, status, conclusion, startedAt, workflowName });
+const draftRun = (at = "2026-11-15T21:13:28Z") => NAMES.map(name => row(name, at, "FAILURE"));
+const readyRun = (conclusion: string, status = "COMPLETED", at = "2026-11-15T21:14:43Z") => NAMES.map(name => row(name, at, conclusion, status));
+
+test("#1490 AC5: latestCheckRuns keeps only the newest run's row of a check name, and keeps every row when it cannot be sure", () => {
+  const older = row("check (ubuntu-latest)", "2026-11-15T21:13:28Z", "CANCELLED"), newer = row("check (ubuntu-latest)", "2026-11-15T21:14:43Z", "SUCCESS");
+  expect(latestCheckRuns([older, newer])).toEqual([newer]);
+  expect(latestCheckRuns([newer, older])).toEqual([newer]); // order never decides
+  expect(latestCheckRuns([older])).toEqual([older]);
+  const other = row("seeded guards", "2026-11-15T21:00:00Z", "SUCCESS");
+  expect(latestCheckRuns([older, other, newer])).toEqual([other, newer]); // other names are untouched, in order
+  // not sure: keep both, so the readers still say `duplicate` and unknown stays unknown
+  expect(latestCheckRuns([older, { ...newer, workflowName: "release" }])).toHaveLength(2); // another workflow with the same job name
+  expect(latestCheckRuns([older, { ...newer, workflowName: undefined }])).toHaveLength(2); // no workflow identity
+  expect(latestCheckRuns([older, { ...newer, startedAt: undefined }])).toHaveLength(2); // no start time
+  expect(latestCheckRuns([older, { ...newer, startedAt: "not a time" }])).toHaveLength(2);
+  expect(latestCheckRuns([older, { ...newer, startedAt: older.startedAt }])).toHaveLength(2); // a tie
+  // a commit status has no run: kept as is, and two with one context stay a duplicate
+  expect(latestCheckRuns([{ context: "ci/x", state: "FAILURE" }, { context: "ci/x", state: "SUCCESS" }])).toHaveLength(2);
+  expect(latestCheckRuns([])).toEqual([]);
+  // the GraphQL shape (workflow under the check suite) is understood too
+  const graph = (at: string, conclusion: string) => ({ name: "n", status: "COMPLETED", conclusion, startedAt: at, checkSuite: { workflowRun: { workflow: { resourcePath: "/o/r/actions/workflows/check.yml" } } } });
+  expect(latestCheckRuns([graph("2026-11-15T21:13:28Z", "CANCELLED"), graph("2026-11-15T21:14:43Z", "SUCCESS")]).map(item => item.conclusion)).toEqual(["SUCCESS"]);
+});
+
+test("#1490 AC5: the head's evidence is the newest run's, so a replaced draft run is no CI failure, in every reader", async () => {
+  const state = (rows: object[]) => parsePrEvidence({ headRefOid: head, state: "OPEN", files: [], statusCheckRollup: latestCheckRuns(rows) }).checks;
+  // the ready run is still going: pending, not failed by the draft run's rows
+  expect(state([...draftRun(), ...readyRun("", "IN_PROGRESS")]).map(check => check.state)).toEqual(["pending", "pending", "pending"]);
+  // the ready run is green: passed
+  expect(state([...draftRun(), ...readyRun("SUCCESS")]).map(check => check.state)).toEqual(["passed", "passed", "passed"]);
+  // the ready run really failed: failed
+  expect(state([...draftRun(), ...readyRun("FAILURE")]).map(check => check.state)).toEqual(["failed", "failed", "failed"]);
+  // the same rows without the filter are the false failure this guards against
+  expect(parsePrEvidence({ headRefOid: head, state: "OPEN", files: [], statusCheckRollup: [...draftRun(), ...readyRun("SUCCESS")] }).checks.some(check => check.state === "failed")).toBe(true);
+
+  // pollCi (the watcher): the draft run's rows never make the watcher say "failed" while the ready run is green or running
+  const target = { repo: "o/r", pr: 1 };
+  const poll = (rows: object[], isDraft = false) => pollCi(target, head, NAMES, async () => ({ code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", isDraft, statusCheckRollup: rows }) }));
+  expect(await poll([...draftRun(), ...readyRun("", "IN_PROGRESS")])).toBe("pending");
+  expect(await poll([...draftRun(), ...readyRun("SUCCESS")])).toBe("passed");
+  expect(await poll([...draftRun(), ...readyRun("FAILURE")])).toBe("failed");
+
+  // readReviewReadiness (the review admission, GraphQL): ready only when the newest run is green
+  const graph = (rows: object[]) => async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: head, state: "OPEN",
+    commits: { nodes: [{ commit: { oid: head, tree: { oid: "b".repeat(40) }, statusCheckRollup: { contexts: { nodes: rows.map(item => ({ ...item, workflowName: undefined, checkSuite: { workflowRun: { workflow: { resourcePath: "/o/r/actions/workflows/check.yml" } } } })), pageInfo: { hasNextPage: false } } } } }] },
+    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) });
+  const receipt = { stage: "build", repo: "o/r", pr: 1 };
+  expect(await readReviewReadiness(receipt, head, graph([...draftRun(), ...readyRun("SUCCESS")]), NAMES)).toMatchObject({ ready: true, checks: NAMES });
+  expect((await readReviewReadiness(receipt, head, graph([...draftRun(), ...readyRun("", "IN_PROGRESS")]), NAMES)).blockers.join(" ")).toContain("pending");
+  expect((await readReviewReadiness(receipt, head, graph([...draftRun(), ...readyRun("FAILURE")]), NAMES)).blockers.join(" ")).toContain("failed");
+  // not sure (no start times): both runs' rows stay, the draft run's failures still count, and the head is never ready
+  const unsure = await readReviewReadiness(receipt, head, graph([...draftRun(), ...readyRun("SUCCESS")].map(item => ({ ...item, startedAt: undefined }))), NAMES);
+  expect(unsure.ready).toBe(false);
+  expect(unsure.blockers.join(" ")).toContain("not green");
+});
