@@ -2,7 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HELP, helpCommands, helpOverviewRows, renderHelp } from "../src/cli/help.ts";
+import { ADAPTERS, assertNativeCapabilityScope } from "../src/adapters/registry.ts";
+import { EXAMPLES, HELP, INTERNAL_COMMANDS, helpCommands, helpFlags, helpOverviewRows, listsSubcommand, renderHelp } from "../src/cli/help.ts";
 import { ROLE_SGR } from "../src/cli/output-standard.ts";
 import { initialConsoleState, paint, PALETTE, renderConsole, wrap } from "../src/cli/console-state.ts";
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
@@ -86,11 +87,40 @@ describe("ahub help (#212)", () => {
         for (const word of entry.description.split(/\s+/).filter(Boolean)) expect(detail, `${command}: ${word}`).toContain(word);
       }
     }
-    // every flag the usages name is still in the help text of its command
-    const flags = new Set(HELP.flatMap(entry => entry.usage.match(/--[a-z][a-z-]*/g) ?? []));
-    expect(flags.size).toBeGreaterThan(40);
-    const all = HELP.map(entry => `${entry.usage} ${entry.description}`).join(" ");
-    for (const flag of flags) expect(all, flag).toContain(flag);
+    // #1504: every flag a command's usages name is in the text `ahub help <command>` renders for that command. This reads the rendered text; the old check compared HELP with itself and could not fail.
+    let checked = 0;
+    for (const command of commands) {
+      const rendered = renderHelp(100, false, command);
+      for (const entry of HELP.filter(entry => helpCommands(entry).includes(command))) {
+        for (const flag of entry.usage.match(/--[a-z][a-z0-9-]*/g) ?? []) { expect(rendered, `${command} ${flag}`).toContain(flag); checked++; }
+      }
+    }
+    expect(checked).toBeGreaterThan(300);
+    // and the check can fail: a rendering that drops a flag is caught
+    expect(renderHelp(100, false, "kill")).not.toContain("--json");
+  });
+
+  test("#1504 AC1: every section title of the overview, the first included, follows one blank line", () => {
+    const lines = renderHelp(80, false).split("\n");
+    const titles = lines.flatMap((line, index) => line.startsWith("▸ ") ? [index] : []);
+    expect(titles.length).toBeGreaterThan(5);
+    for (const index of titles) expect(lines[index - 1], lines[index]).toBe("");
+    expect(lines[titles[0]! - 2]).toStartWith("Usage: ahub");
+    for (let index = 1; index < lines.length; index++) if (lines[index] === "") expect(lines[index - 1], `no double blank at ${index}`).not.toBe("");
+  });
+
+  test("#1504 AC2: every native agent row says what the command does, from its adapter definition", () => {
+    const agents = helpOverviewRows().filter(row => row.section === "Agents");
+    const natives = ["claude", "codex", "kimi", "jcode", "agy", "qwen", "pi", "local"];
+    for (const name of natives) {
+      const row = agents.find(row => row.name === name);
+      expect(row, name).toBeDefined();
+      expect(row!.summary.split(/\s+/).length, `${name}: ${row!.summary}`).toBeGreaterThanOrEqual(3);
+      expect(Bun.stringWidth(row!.summary)).toBeLessThanOrEqual(56);
+    }
+    // the words come from the definition, not from a peer-keyed table in help.ts
+    for (const definition of ADAPTERS.filter(definition => definition.cli.usage?.length)) expect(agents.find(row => row.name === definition.kind)?.summary, definition.kind).toBe(definition.cli.usage![0]![2]);
+    expect(readFileSync(join(import.meta.dir, "../src/cli/help.ts"), "utf8")).not.toMatch(/\b(?:jcode|pi|qwen|agy|local|kimi):\s*"/);
   });
 
   test("the overview names where the long text lives and has no hidden command", () => {
@@ -100,6 +130,123 @@ describe("ahub help (#212)", () => {
     // a command whose usage is documented only in the long text still has a row
     for (const command of ["pause|resume", "version|--version", "check-path"]) expect(overview, command).toContain(`  ${command}`);
     expect(overview).not.toMatch(/--json|--color=/); // flags belong to `ahub help <command>`
+  });
+
+  /** The commands a person types that take an argument, a flag or a subcommand: `ahub version | --version` is two spellings, not arguments. */
+  const takesArguments = (command: string) => HELP.some(entry => helpCommands(entry).includes(command) && /[<\[|]|\.\.\./.test(entry.usage.replace(/^ahub \S+/, "")) && !/^ahub (?:version \| --version|--version)$/.test(entry.usage));
+  const sectionsOf = (text: string) => text.split("\n").filter(line => line.startsWith("▸ ")).map(line => line.slice(2).replace(/ \(\d+\)$/, ""));
+
+  test("#1504 AC3: `ahub help <command>` shows usage, a short description, flags one per line, examples, then the long text, within the width", () => {
+    for (const command of new Set(HELP.flatMap(helpCommands))) for (const columns of [80, 100]) {
+      const text = renderHelp(columns, false, command);
+      const sections = sectionsOf(text);
+      // in order, each present only when it has content
+      expect(sections[0], command).toBe("Usage");
+      expect(sections.at(-1), command).toBe("Details");
+      const order = ["Usage", "Description", "Flags", "Examples", "Details"];
+      expect(sections.map(name => order.indexOf(name)), `${command}: ${sections}`).toEqual([...sections.map(name => order.indexOf(name))].sort((a, b) => a - b));
+      expect(sections.every(name => order.includes(name)), `${command}: ${sections}`).toBe(true);
+      for (const line of text.split("\n")) expect(Bun.stringWidth(line), `${command}: ${line}`).toBeLessThanOrEqual(columns);
+      if (takesArguments(command) && !INTERNAL_COMMANDS.includes(command)) expect(sections, `${command} has no example`).toContain("Examples");
+      if (helpFlags(command).length) expect(sections, `${command} lists no flags`).toContain("Flags");
+      // flags are one per line: a flag appears once in the Flags section
+      const block = text.split("\n").slice(text.split("\n").findIndex(line => line.startsWith("▸ Flags")) + 1);
+      if (sections.includes("Flags")) {
+        const rows = block.slice(0, block.findIndex(line => line.startsWith("▸ ")) - 1).filter(line => /^ {2}-/.test(line));
+        expect(rows.length, command).toBe(helpFlags(command).length);
+      }
+    }
+    expect(renderHelp(80, false, "nosuchcommand")).toBe("");
+  });
+
+  test("#1504: a flag after a `|` in a form is attributed to the form the entry's first piece named (task handoff --list | --sync | --project ...)", () => {
+    const flags = new Map(helpFlags("task").map(item => [item.flag, item.forms]));
+    for (const flag of ["--list", "--sync", "--project", "--issue", "--task", "--duplicate-ok", "--key"]) expect(flags.get(flag), flag).toContain("handoff");
+    // a flag that two forms take names both, and a flag of another form is not pulled in
+    expect(flags.get("--path")).toEqual(["propose", "handoff"]);
+    expect(flags.get("--urgent")).toEqual(["propose"]);
+    const rendered = renderHelp(80, false, "task").replace(/\s+/g, " ");
+    expect(rendered).toMatch(/--sync in handoff/);
+    expect(rendered).toMatch(/--key <uuid> in handoff/);
+  });
+
+  test("#1504: a native agent's summary rides cli.usage, so a non-builtin definition cannot supply one", () => {
+    for (const definition of ADAPTERS.filter(definition => definition.cli.usage?.length)) expect(definition.cli.usage![0]![2], definition.kind).toBeTruthy();
+    // The generic fixture of test/adapter-capability-scope.test.ts: qwen's metadata without any fixed-builtin capability, so `cli.usage` is the only restricted field present.
+    const { projection: _projection, settle: _settle, modelOverride: _modelOverride, cli, ...base } = ADAPTERS.find(definition => definition.kind === "qwen")!;
+    const { entry: _entry, preview: _preview, usage: _usage, ...genericCli } = cli;
+    const { createTui: _createTui, upStart: _upStart, ...start } = base.start;
+    const external = { ...base, cli: genericCli, kind: "fixture", family: "fixture", start: { ...start }, session: { idField: base.session.idField, currentId: base.session.currentId } };
+    expect(() => assertNativeCapabilityScope(external)).not.toThrow();
+    expect(() => assertNativeCapabilityScope({ ...external, cli: { ...genericCli, usage: [["ahub fixture", "x", "a summary"]] } })).toThrow("cli.usage is restricted to fixed builtin adapter definitions");
+  });
+
+  test("#1504 AC3: the flag count in the heading and the --json and --color meanings come from one place", () => {
+    const status = renderHelp(80, false, "status");
+    expect(status).toMatch(/▸ Flags \(\d+\)/);
+    expect(status).toContain("--json");
+    expect(status.replace(/\s+/g, " ")).toContain("one JSON document on stdout, never colored");
+    expect(status.replace(/\s+/g, " ")).toContain("auto, always or never; auto follows NO_COLOR, FORCE_COLOR and the terminal");
+  });
+
+  test("#1504 AC4: everything `ahub help <command>` printed before still appears, form by form, flag by flag and word by word", () => {
+    let forms = 0, words = 0;
+    for (const command of new Set(HELP.flatMap(helpCommands))) {
+      const text = renderHelp(100, false, command).replace(/\s+/g, " ");
+      for (const entry of HELP.filter(entry => helpCommands(entry).includes(command))) {
+        forms++;
+        expect(text, `${command}: ${entry.usage}`).toContain(entry.usage.replace(/\s+/g, " "));
+        for (const flag of entry.usage.match(/--[a-z][a-z0-9-]*/g) ?? []) expect(text, `${command} ${flag}`).toContain(flag);
+        for (const word of entry.description.split(/\s+/).filter(Boolean)) { words++; expect(text, `${command}: ${word}`).toContain(word); }
+      }
+    }
+    expect(forms).toBeGreaterThan(150);
+    expect(words).toBeGreaterThan(4000); // measured 4802 on 2026-11-14; a floor that proves the loop is not empty
+  });
+
+  test("#1504 AC5: every example is a command that exists, a subcommand and flags its own usage lists", () => {
+    const dispatch = (() => {
+      const src = readFileSync(CLI, "utf8");
+      const at = src.indexOf("const commands: Record<");
+      return new Set([...src.slice(at, src.indexOf("\n};\n", at)).matchAll(/^  (?:"([^"]+)"|([\w-]+)): /gm)].map(m => m[1] ?? m[2]!));
+    })();
+    const commandWords = new Set(HELP.flatMap(helpCommands));
+    let checked = 0, subChecked = 0;
+    for (const [command, examples] of Object.entries(EXAMPLES)) {
+      expect(commandWords.has(command), `${command} has no help entry`).toBe(true);
+      for (const example of examples) {
+        checked++;
+        const words = example.match(/"[^"]*"|\S+/g)!;
+        expect(words[0], example).toBe("ahub");
+        // the command word is in the dispatch table
+        const first = words[1] === "--project" || words[1] === "--live-test" ? words[1] : words[1]!;
+        expect(dispatch.has(first) || ["--project", "--live-test"].includes(first), `${example}: ${first} is not a command`).toBe(true);
+        expect(first === command || helpCommands({ section: "", usage: `ahub ${command}`, description: "" }).includes(first), `${example} is filed under ${command}`).toBe(true);
+        // every flag is in a usage of that command
+        const usages = HELP.filter(entry => helpCommands(entry).includes(command)).map(entry => entry.usage).join(" ");
+        for (const word of words.slice(2).filter(word => /^-{1,2}[a-z]/.test(word))) expect(usages, `${example}: ${word} is not in the usage`).toContain(word);
+        // Derived from the usage, not from a list: when every form of the command starts with a bare word (`task show`, `sdlc status`, `completion zsh`), the example's first word must be one the usage lists
+        // (`listsSubcommand`, the check `ahub <command> <sub> --help` relies on). A command whose forms start with an argument or an option (`say`, `board`, `usage`) has no required subcommand.
+        const sub = words[2];
+        const forms = HELP.filter(entry => helpCommands(entry).includes(command)).map(entry => entry.usage.replace(/^ahub \S+\s*/, "").trim());
+        const strict = !command.startsWith("--") && forms.length > 0 && forms.every(form => /^[a-z][a-z-]*(?:\|[a-z][a-z-]*)*(?:\s|$)/.test(form));
+        if (strict && sub) { subChecked++; expect(listsSubcommand(command, sub), `${example}: ${sub} is not a subcommand of ${command}`).toBe(true); }
+      }
+    }
+    expect(checked).toBeGreaterThan(70);
+    expect(subChecked).toBeGreaterThan(15);
+    expect(listsSubcommand("task", "nosuchsub")).toBe(false); // the check can fail
+    // the check can fail: an example naming a command or flag that does not exist is caught
+    expect(dispatch.has("nosuchcommand")).toBe(false);
+  });
+
+  test("#1504 AC5: a native agent's example comes from its definition's own usage", () => {
+    for (const definition of ADAPTERS.filter(definition => definition.cli.usage?.length)) {
+      const text = renderHelp(100, false, definition.kind);
+      const usage = definition.cli.usage![0]![0];
+      expect(text, definition.kind).toContain(usage.includes("--print-command") ? `ahub ${definition.kind} --print-command` : `ahub ${definition.kind}\n`);
+    }
+    expect(Object.keys(EXAMPLES).filter(key => ADAPTERS.some(definition => definition.kind === key))).toEqual([]);
   });
 
   test("with ASCII markers the overview has no non-ASCII glyph", () => {

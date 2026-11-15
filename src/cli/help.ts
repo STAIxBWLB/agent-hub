@@ -4,7 +4,7 @@ import { ROADMAP_FORMS } from "./roadmap.ts";
 import { paint, wrap, Report as LayoutReport, type Span } from "./console-state.ts";
 
 /** One usage form of `ahub help`: the usage starts with `ahub <command>`, alternatives joined by `|`. */
-export interface HelpEntry { section: string; usage: string; description: string }
+export interface HelpEntry { section: string; usage: string; description: string; /** #1504: the overview row of a native agent, from the third element of its definition's `cli.usage` entry; never a table in this file that names a peer. */ summary?: string }
 
 /** #1405: one source for the probe usage, read by `ahub help` and by the refusal of a malformed probe command. */
 export const GUIDANCE_PROBE_USAGE = {
@@ -221,12 +221,12 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
 export function helpEntries(definitions: readonly AdapterDefinition[] = ADAPTERS): readonly HelpEntry[] {
   const byKind = new Map(definitions.map(definition => [definition.kind, definition]));
   const order = deriveAdapterLists(definitions).HELP_ORDER;
-  const native = order.flatMap(kind => byKind.get(kind)?.cli.usage ?? []);
+  const native: readonly (readonly [string, string, string?])[] = order.flatMap(kind => byKind.get(kind)?.cli.usage ?? []);
   const instanceKinds = order.filter(kind => byKind.get(kind)?.instances !== undefined);
   const instances: readonly [string, string] = [`ahub ${instanceKinds.join("|")} --as <instance> [options...]`, "start an extra instance of that kind declared under instances in .agenthub/config.local.json"];
   return SECTIONS.flatMap(([section, rows]) => {
-    const entries: readonly (readonly [string, string])[] = section === "Agents" ? [rows[0]!, ...native, ...(instanceKinds.length ? [instances] : []), ...rows.slice(1)] : rows;
-    return entries.map(([usage, description]) => ({ section, usage, description }));
+    const entries: readonly (readonly [string, string, string?])[] = section === "Agents" ? [rows[0]!, ...native, ...(instanceKinds.length ? [instances] : []), ...rows.slice(1)] : rows;
+    return entries.map(([usage, description, summary]) => ({ section, usage, description, ...(summary ? { summary } : {}) }));
   });
 }
 export const HELP = helpEntries();
@@ -292,40 +292,146 @@ export function helpOverviewRows(entries: readonly HelpEntry[] = HELP): Overview
     if (!fresh.length) continue;
     fresh.forEach(word => seen.add(word));
     const own = (word: string) => SUMMARIES[`${entry.section}/${word}`] ?? SUMMARIES[word];
-    const summary = own(fresh[0]!) ?? firstClause(entry.description, SUMMARY_MAX);
+    const summary = own(fresh[0]!) ?? entry.summary ?? firstClause(entry.description, SUMMARY_MAX);
     rows.push({ section: entry.section, name: fresh.join("|").replace(/^version\|--version$/, "version|--version"), summary: Bun.stringWidth(summary) > SUMMARY_MAX ? firstClause(summary, SUMMARY_MAX) : summary });
   }
   return rows;
 }
 
+/**
+ * #1504 T2, one example or more per command that takes arguments: complete, copyable, and only ever a form, subcommand and flag the command's own usage lists
+ * (`test/help.test.ts` runs each against the dispatch table and the usage). A native agent's example is derived from its definition's usage, never named here.
+ * Internal commands (`daemon`, `recovery-run`, `manager`, `facts`) have none: nobody types them.
+ */
+export const EXAMPLES: Readonly<Record<string, readonly string[]>> = {
+  specs: ["ahub specs check --require-fresh", "ahub specs covers src/cli/help.ts"], worktrees: ["ahub worktrees tidy"], "--project": ["ahub --project ../other-repo status"],
+  projects: ["ahub projects --json"], "--live-test": ["ahub --live-test status"], setup: ["ahub setup --agents claude,codex"], init: ["ahub init --profile dev --sdlc advise --dry-run --json"],
+  help: ["ahub help task"], completion: ["ahub completion zsh"],
+  up: ["ahub up --no-console"], console: ["ahub console --panels"], pet: ["ahub pet --short"],
+  sdlc: ["ahub sdlc status 12", "ahub sdlc explain 12 --json"], backlog: ["ahub backlog list --full", "ahub backlog return 12 3 waiting on a spec"],
+  status: ["ahub status --verbose"], logs: ["ahub logs -f"], doctor: ["ahub doctor --json"], agents: ["ahub agents --json"],
+  reset: ["ahub reset"], restart: ["ahub restart --dry-run"], upgrade: ["ahub upgrade --dry-run"], recovery: ["ahub recovery status"],
+  role: ["ahub role list"], stop: ["ahub stop pi"], peer: ["ahub peer takeover codex"], models: ["ahub models status"],
+  say: ["ahub say @codex please rebase on main"], watch: ["ahub watch kimi"], permission: ["ahub permission codex ask-when-needed"],
+  permit: ["ahub permit 7 deny"], answer: ["ahub answer"], results: ["ahub results --unread"], roster: ["ahub roster --json"], roles: ["ahub roles --json"],
+  autonomy: ["ahub autonomy status"], model: ["ahub model list"], settings: ["ahub settings list"], pause: ["ahub pause codex"], resume: ["ahub resume codex"],
+  title: ["ahub title pi release review"], queue: ["ahub queue list --peer codex"], board: ["ahub board --ready"],
+  task: ["ahub task show 12", "ahub task propose implement Fix the flaky test --path test/a.test.ts"], roadmap: ["ahub roadmap show 3"], release: ["ahub release list"],
+  smoke: ["ahub smoke run qwen-dual-output --project-id 1f3a --receipt receipt.json"], broker: ["ahub broker serve --port 8787"], room: ["ahub room list"],
+  source: ["ahub source list"], schedule: ["ahub schedule list"], intake: ["ahub intake \"Add a dark mode toggle\""], capabilities: ["ahub capabilities --json"], learn: ["ahub learn list"],
+  study: ["ahub study show --json"], deliverables: ["ahub deliverables --task 12 --check"], review: ["ahub review 12 approved looks good", "ahub review brief 12"],
+  route: ["ahub route explain 12"], ask: ["ahub ask what blocks task 12"], remember: ["ahub remember Pi 1.5.2 is verified"], budget: ["ahub budget --full"],
+  guidance: ["ahub guidance list --task 12 --task-created 1760000000000"], lineage: ["ahub lineage show --task 12"], turns: ["ahub turns codex --limit 5"],
+  undo: ["ahub undo 42"], report: ["ahub report --since 7d"], usage: ["ahub usage --by peer --since 7d"], export: ["ahub export --since 7d"], research: ["ahub research --since 30d"],
+  bench: ["ahub bench list"], "check-path": ["ahub check-path src/cli/help.ts"], memory: ["ahub memory search sweep"], goal: ["ahub goal list"], ui: ["ahub ui --no-open"],
+};
+/** Commands nobody types: a process the hub starts, or a hook a tool calls. They have no example. */
+export const INTERNAL_COMMANDS: readonly string[] = ["daemon", "recovery-run", "manager", "facts"];
+
+/** One example per native agent, from its own definition: `ahub <kind> --print-command` when its usage has that flag (it prints the launch and starts nothing), else the bare command. */
+function nativeExample(command: string, entries: readonly HelpEntry[]): string[] {
+  const own = entries.find(entry => entry.section === "Agents" && helpCommands(entry).includes(command) && entry.summary !== undefined);
+  return own ? [own.usage.includes("--print-command") ? `ahub ${command} --print-command` : `ahub ${command}`] : [];
+}
+
+/** A flag of a command's usages: its value shape as the usage writes it, and the subcommand forms it appears in (empty for the command's base form). */
+export interface HelpFlag { flag: string; shape: string; /** `=` or a space: how the usage joins the flag and its value, kept so the Flags line reads as the usage does. */ joiner: "=" | " "; forms: string[] }
+const FLAG = /(?<![\w-])(-{1,2}[A-Za-z][A-Za-z0-9-]*)(?:=([^\s\]()]+)| (<[^>]+>|[A-Z][A-Za-z]*\b|N\b|[a-z0-9_,.-]+(?:\|[a-z0-9_,.<>-]+)+))?/g;
+/** Every flag the usages of `command` name, in the order they first appear, once each. */
+export function helpFlags(command: string, entries: readonly HelpEntry[] = HELP): HelpFlag[] {
+  const found = new Map<string, HelpFlag>();
+  for (const entry of entries.filter(entry => helpCommands(entry).includes(command))) {
+    const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
+    let lead = "";
+    topLevelPieces(entry.usage).forEach((piece, index) => {
+      const body = index === 0 ? piece.slice(prefix.length).trim() : piece;
+      const token = body.split(/\s/)[0]!.replace(/[\[\]]/g, "");
+      const named = token.split("|").filter(word => /^[a-z][a-z0-9-]*$/.test(word)).join("|");
+      // #1504: a piece after ` | ` that starts with a flag or an argument (`task handoff --list | --sync | --project <root|id> ...`) is another way into the form the first piece named
+      if (index === 0) lead = named;
+      const form = named || lead;
+      for (const match of body.matchAll(FLAG)) {
+        const flag = match[1]!, shape = match[2] ?? match[3] ?? "", joiner = match[2] !== undefined ? "=" as const : " " as const;
+        const seen = found.get(flag) ?? found.set(flag, { flag, shape, joiner, forms: [] }).get(flag)!;
+        if (!seen.shape && shape) { seen.shape = shape; seen.joiner = joiner; }
+        if (form && !seen.forms.includes(form)) seen.forms.push(form);
+      }
+    });
+  }
+  return [...found.values()];
+}
+/** The two flags the standard itself defines (`docs/design/cli-output.md`, Output and Color); every other flag keeps only what its usage says. */
+const FLAG_MEANING: Readonly<Record<string, string>> = {
+  "--json": "one JSON document on stdout, never colored",
+  "--color": "auto, always or never; auto follows NO_COLOR, FORCE_COLOR and the terminal",
+};
+
 const DESCRIPTION = 34;
 /**
- * Usage at 2 spaces, description at one fixed column, wrapped at word boundaries to the terminal width
- * (80 to 100 columns). A usage too long for that column puts its description on the next line.
- * With a command, only its entries; an unknown command renders nothing.
+ * `ahub help <command>` in the standard's shape (#1504): the usage forms, a short description, each flag on one line, examples, then the long text unchanged
+ * (every usage form with its whole description) so nothing a form or flag says is lost. Lines are wrapped within `width`.
+ */
+function renderCommandHelp(width: number, ascii: boolean, command: string, model: readonly HelpEntry[]): Span[][] {
+  const entries = model.filter(entry => helpCommands(entry).includes(command));
+  if (!entries.length) return [];
+  const report = new LayoutReport(width, ascii);
+  report.section("Usage");
+  for (const entry of entries) {
+    const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
+    const text = wrap(entry.usage, width - 2, 4);
+    report.append(text.map((line, index): Span[] => index === 0 ? [{ text: "  " }, { text: prefix, role: "accent" }, { text: line.slice(prefix.length) }] : [{ text: "  " + line }]));
+  }
+  const row = helpOverviewRows(model).find(item => item.name.split("|").includes(command));
+  if (row) report.section("Description").note(row.summary, "value");
+  const flags = helpFlags(command, model);
+  if (flags.length) {
+    report.section("Flags", String(flags.length));
+    const labels = flags.map(item => item.shape ? `${item.flag}${item.joiner}${item.shape}` : item.flag);
+    const column = Math.min(30, Math.max(...labels.map(label => Bun.stringWidth(label)))) + 2;
+    flags.forEach((item, index) => {
+      const label = labels[index]!, base = item.flag;
+      const meaning = FLAG_MEANING[base] ?? (item.forms.length ? `in ${item.forms.length > 3 ? `${item.forms.slice(0, 3).join(", ")} and ${item.forms.length - 3} more` : item.forms.join(", ")}` : "");
+      const room = width - 2 - column;
+      if (Bun.stringWidth(label) + 2 > column || !meaning) {
+        report.append([[{ text: "  " }, { text: label, role: "accent" }]]);
+        if (meaning) for (const line of wrap(meaning, width - 2 - column, 0)) report.append([[{ text: " ".repeat(2 + column) + line }]]);
+        return;
+      }
+      const lines = wrap(meaning, room, 0);
+      report.append([[{ text: "  " }, { text: label, role: "accent" }, { text: " ".repeat(column - Bun.stringWidth(label)) + lines[0]! }]]);
+      for (const line of lines.slice(1)) report.append([[{ text: " ".repeat(2 + column) + line }]]);
+    });
+  }
+  const examples = [...(EXAMPLES[command] ?? []), ...nativeExample(command, model)];
+  if (examples.length) {
+    report.section("Examples");
+    for (const example of examples) report.append(wrap(example, width - 2, 4).map((line, index): Span[] => [{ text: index === 0 ? "  " : "  " }, { text: line, role: index === 0 ? "accent" : "value" }]));
+  }
+  report.section("Details");
+  let section = "";
+  for (const entry of entries) {
+    if (entry.section !== section) { section = entry.section; report.append([[{ text: `  ${entry.section}`, tone: "strong" }]]); }
+    const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
+    const usage = wrap(entry.usage, width - 4, 0);
+    const description = wrap(entry.description, width - DESCRIPTION, 0);
+    const first: Span[] = [{ text: "  " }, { text: prefix, tone: "info" }, { text: usage[0]!.slice(prefix.length) }];
+    if (usage.length === 1 && 2 + Bun.stringWidth(usage[0]!) + 2 <= DESCRIPTION) first.push({ text: " ".repeat(DESCRIPTION - 2 - Bun.stringWidth(usage[0]!)) + description.shift() });
+    report.append([first, ...usage.slice(1).map((text): Span[] => [{ text: `    ${text}` }]), ...description.map((text): Span[] => [{ text: " ".repeat(DESCRIPTION) + text }])]);
+  }
+  return report.lines();
+}
+
+/**
+ * Without a command, the overview. With one, `ahub help <command>` (renderCommandHelp), wrapped at word boundaries to the terminal width (80 to 100 columns);
+ * an unknown command renders nothing.
  */
 export function renderHelp(columns: number, color: boolean, command?: string, definitions?: readonly AdapterDefinition[], ascii = false): string {
   const width = Math.min(100, Math.max(80, columns || 80));
   const model = definitions === undefined ? HELP : helpEntries(definitions);
   // The overview is a fixed 80 columns (standard v1, Help): its rows are short, so a wider terminal gains nothing and every terminal reads the same text.
   if (command === undefined) return renderOverview(80, color, ascii, model);
-  const entries = command === undefined ? model : model.filter(entry => helpCommands(entry).includes(command));
-  const lines: Span[][] = command === undefined ? wrap(`agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory`, width, 0).map(text => [{ text }]) : [];
-  let section = "";
-  for (const entry of entries) {
-    if (entry.section !== section) {
-      if (lines.length) lines.push([]);
-      lines.push([{ text: entry.section, tone: "strong" }]);
-      section = entry.section;
-    }
-    const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
-    const usage = wrap(entry.usage, width - 4, 0);
-    const description = wrap(entry.description, width - DESCRIPTION, 0);
-    const first: Span[] = [{ text: "  " }, { text: prefix, tone: "info" }, { text: usage[0]!.slice(prefix.length) }];
-    if (usage.length === 1 && 2 + Bun.stringWidth(usage[0]!) + 2 <= DESCRIPTION) first.push({ text: " ".repeat(DESCRIPTION - 2 - Bun.stringWidth(usage[0]!)) + description.shift() });
-    lines.push(first, ...usage.slice(1).map(text => [{ text: `    ${text}` }]), ...description.map(text => [{ text: " ".repeat(DESCRIPTION) + text }]));
-  }
-  return lines.map(line => paint(line, color)).join("\n");
+  // #1504: one command is the standard's shape (usage, description, flags, examples) with the long text below it; an unknown command renders nothing.
+  return renderCommandHelp(width, ascii, command, model).map(line => paint(line, color)).join("\n");
 }
 
 /**
@@ -346,7 +452,8 @@ function renderOverview(width: number, color: boolean, ascii: boolean, entries: 
     for (const more of summary.slice(1)) report.append([[{ text: " ".repeat(2 + column) + more }]]);
   }
   report.section("More").note("ahub help <command> shows every usage form and flag of one command; ahub --help and ahub -h print this overview", "value");
-  return [...out, ...report.lines()].map(line => paint(line, color)).join("\n");
+  // #1504 AC1: every section title, the first included, follows one blank line. The report only blanks between its own sections, so the gap after the intro lines is added here.
+  return [...out, [], ...report.lines()].map(line => paint(line, color)).join("\n");
 }
 
 /** Split a usage at its top-level " | " only: a pipe inside [...] or <...> belongs to one alternative (`[--class <c> | <class>]`). */
