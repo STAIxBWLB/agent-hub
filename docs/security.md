@@ -26,8 +26,11 @@ agent-hub connects agents that can each run commands. This page says what the hu
 
 ## Pi prepared dependencies (#1447 T5)
 
-The localhost listener leg moved to a follow-up; Pi's network profile and proxy
-environment are unchanged in this slice.
+The localhost listener grant is a no-go for the tested Seatbelt rules: the
+native proof did not establish both a working listener and denial of non-loopback
+peers. Pi's network profile and proxy environment remain unchanged. The opt-in
+isolated check runner provides separate Linux test evidence, not a Pi sandbox
+listener grant. See `docs/verification/2026-11-16-pi-loopback-1447.md`.
 
 Preparation is a host operation after guarded acceptance and before the tool
 reply. Its immutable input snapshot comes from the recorded task-worktree base

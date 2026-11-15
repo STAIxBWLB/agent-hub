@@ -362,9 +362,14 @@ Kimi 2.5.2's own TUI also earns completions, but only through the `ahub kimi` la
 
 ## Pi accepted-worktree dependencies (#1447 T5)
 
-The localhost listener leg moved to a follow-up. This slice leaves Pi's network
-profile and proxy environment unchanged. Full verification stays with CI and
-the remote runner.
+The localhost listener leg is a no-go under the two tested Seatbelt rules: neither
+proved a usable listener restricted to loopback peers. Pi's network profile and
+proxy environment remain unchanged. Listener tests are not claimed as Pi-local
+focused checks. The opt-in `hub_check_start` runner can run permitted tests in
+an isolated Linux container; that receipt is Linux evidence, not a macOS Pi
+sandbox proof. The native observations and limits are recorded in
+`docs/verification/2026-11-16-pi-loopback-1447.md`. Full verification stays with
+CI and the remote runner.
 
 Dependency preparation completes before the accept/self-claim reply and first
 accepted-worktree use. The earlier assignment turn is metadata-only. Existing

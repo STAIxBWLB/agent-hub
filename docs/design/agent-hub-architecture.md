@@ -47,8 +47,10 @@ Authority is role-scoped: the person retains decisions requiring judgment or con
 
 Native tools keep their vendor permission and execution boundaries. The local worker applies path and permission checks to its tools, and runs command execution through a host-supported sandbox; the hub does not sandbox vendor-native tools or claim all ACP commands are isolated. This avoids confusing a hub permission mode with execution confinement ([#39](https://github.com/STAIxBWLB/agent-hub/issues/39), [#270](https://github.com/STAIxBWLB/agent-hub/issues/270)).
 
-Pi dependency preparation (#1447 T5) leaves its network profile unchanged; the
-localhost listener leg moved to a follow-up. It is a separate bounded host
+Pi dependency preparation (#1447 T5) leaves its network profile unchanged. The
+tested localhost listener rules are a no-go without a working listener and
+non-loopback denial proof (see `docs/verification/2026-11-16-pi-loopback-1447.md`).
+Dependency preparation is a separate bounded host
 operation after task admission: immutable install inputs
 come from the recorded reviewed Git base, install in protected state outside peer
 roots, and publish by same-volume rename through a verified directory identity.
