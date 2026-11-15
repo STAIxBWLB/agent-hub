@@ -3981,9 +3981,9 @@ used as an execution-time proof.
 | Proof family | T1 can run | Explicit not-run work |
 | --- | --- | --- |
 | Codex reviewer | Committed production prepare, actual metadata/native-canary checks and launch configuration assertions | Model-backed hub call, separate control artifact and human source review |
-| Kimi reviewer | Committed prepare/inventory/broker plus promoted native two-tool loop, Write positive/negative controls, preload guard and producer group cleanup | Human source review; unsupported native platform |
+| Kimi reviewer | Committed prepare/inventory/broker plus promoted native two-tool loop, Write positive/negative controls, preload guard and producer group cleanup; the native child runs with Kimi's own startup update check off (`KIMI_CODE_NO_AUTO_UPDATE`), and accepts the 2.5.x and 2.6.x injected-Write refusal wordings (#1248) | Human source review; unsupported native platform |
 | Claude implementer | Committed Write/Bash/rewrite and host-wrapper producer groups | Human upstream-impact review; unsupported launcher forms |
-| Pi | Artifact acquisition only in this core | Historical top-level producer needs import-safe/candidate-version extraction |
+| Pi | Candidate-parameterized model-free receipt (`proofs/pi.ts`, from the 1.5.0/1.5.2 producers): `--version`, the installed SDK loading this checkout's extension, tool callback replay and denial, `--mode rpc` `get_state`, zero provider requests, the two host fixtures, and a before/after hash of the account's own `~/.pi/agent` (#1248) | Account-backed inference and interactive TUI coexistence (explicit unverified follow-ups, not legs) |
 | Qwen ACP | Promoted ACP identity/session/mapped-mode and actual published permission-handler producers, preload controls and group cleanup | Human lifecycle/source review; Linux does not replace required macOS arm64 |
 | Jcode | Reconstructed isolated serve/ACP/MCP, fixed-stream steering, telemetry and owned-group checks | Human source comparison; native macOS qualification remains unverified. The 0.99.1 Linux control is not qualified: telemetry identity and strict persisted-context binding fail; see the [reconstruction receipt](verification/2026-11-07-jcode-receipt-reconstruction-1248.md) |
 | agy and qwen-dual | Policy and unavailable/manual-leg reporting | No public agy installer; account/model/TUI or unspecified-platform legs |
