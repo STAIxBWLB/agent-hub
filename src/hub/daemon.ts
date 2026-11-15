@@ -781,6 +781,8 @@ export interface DaemonOptions {
   worktreeShelfGh?: import("./sdlc.ts").SdlcGh;
   /** Host-only bounded PR evidence seam for review reads; never config or control input. */
   reviewMaterialsGh?: import("./sdlc.ts").SdlcGh;
+  /** Host-only test seam (R3, #1481): the `gh` runner the roadmap's read-only issue and milestone reads use. Never read from configuration or a request. */
+  roadmapGh?: import("./sdlc.ts").SdlcGh;
   /** Host-only bounds of the per-head CI watcher (#785 P1b); tests shorten them, never read from config or a tool. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   checkoutBranch?: typeof mainCheckoutBranch;
@@ -3106,6 +3108,7 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     specsRead: (action, paths) => projectSpecs.read(action, paths),
     specsList: () => { const list = projectSpecs.list(); if (!list) throw new Error("specs are off"); return list; },
+    ...(opts.roadmapGh ? { roadmapGh: opts.roadmapGh } : {}),
     // R3 (#1481): the hub's own model, public text only (the caller screened it), never PII and never trusted: Tasks parses and checks the answer.
     roadmapModel: (system, user, allowed) => inference ? inference.complete(system, user, 2000, { interactive: true, timeoutMs: 20_000, allowed }) : Promise.resolve(undefined),
     auditSource: gitAuditSource(opts.cwd), // #1403 A4

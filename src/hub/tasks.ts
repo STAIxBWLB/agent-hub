@@ -231,8 +231,10 @@ export interface TasksDeps {
   specsRead?: (action: "check" | "covers", paths: readonly string[]) => SpecsCheckReport | SpecsCoverReport;
   /** R3 (#1481): spec ids with their status, for the unplaced list. Absent or throwing is "unavailable", never "no specs". */
   specsList?: () => { specs: { id: string; title: string; status: string | null }[]; errors: number; truncated: boolean };
-  /** R3 (#1481): the hub's own model for triage. Absent, off or failing is no suggestion; it carries no authority and links nothing. */
+  /** R3 (#1481): the model for triage. Absent, off or failing is no suggestion; it carries no authority and links nothing. */
   roadmapModel?: (system: string, user: string, allowed: () => boolean) => Promise<string | undefined>;
+  /** R3 (#1481): host-only `gh` runner for the roadmap's read-only issue and milestone reads (tests); production uses `sdlc.gh`. */
+  roadmapGh?: SdlcGh;
   /** Host-verified existing symbols at this task's admitted completion head; never plan guesses. */
   memorySymbolNodes?: (task: Task) => MemorySymbolNodes | undefined;
   /** Host-only release report selector; derives its answer from committed policy and the in-memory authorization ledger. */
@@ -3538,7 +3540,7 @@ export class Tasks {
   }
 
   private roadmapGh(run?: SdlcGh): SdlcGh {
-    return run ?? this.d.sdlc?.gh ?? ((args, timeout, _cwd, bound) => sdlcGh(args, timeout, this.d.cwd, bound));
+    return run ?? this.d.roadmapGh ?? this.d.sdlc?.gh ?? ((args, timeout, _cwd, bound) => sdlcGh(args, timeout, this.d.cwd, bound));
   }
 
   /** Issues, tasks and specs that no live milestone places, each with its reason. Private tasks are counted and never named. */
