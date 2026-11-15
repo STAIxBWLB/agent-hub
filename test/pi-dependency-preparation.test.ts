@@ -186,6 +186,6 @@ test("#1447 T5 private cache output runs offline TypeScript; shared hardlink out
 test.skipIf(!sandboxAvailable())("#1447 T5 the prepared worktree runs bun x tsc with kernel network access denied", async () => {
   const f = await preparedTypecheckFixture();
   expect(f.preparation).toEqual({ ready: true });
-  const checked = await sandboxedExec([process.execPath, "--bun", "x", "tsc", "--noEmit"], { cwd: f.worktree.path, profile: profile(f.worktree.path, false), timeoutMs: 5000 });
+  const checked = await sandboxedExec([process.execPath, join(f.worktree.path, "node_modules/typescript/bin/tsc"), "--noEmit"], { cwd: f.worktree.path, profile: profile(f.worktree.path, false), timeoutMs: 5000 });
   expect(checked.code, checked.output).toBe(0);
 }, 20_000);
