@@ -37,8 +37,9 @@ reply. Its immutable input snapshot comes from the recorded task-worktree base
 commit through hardened Git object reads. A changed task input is not installed.
 Manifest lifecycle hooks, explicit trusted dependencies, runtime Bun preload,
 installer script settings, paths escaping the snapshot and unsupported layouts
-refuse preparation. Default trusted dependency code is limited to the reviewed
-main lockfile, the same trust as the person's own install on main.
+refuse preparation. Trusted dependency code is limited to the lockfile and install
+inputs recorded by the task worktree's base commit, with the same repository-code
+trust as installing that checked-out base on the person's behalf.
 
 The fixed installer runs in private host-protected state with an isolated HOME,
 explicit shared Bun cache and a deadline. No ambient tokens or installer output
@@ -46,8 +47,9 @@ reach peer text. Publication is a same-device rename to an absent target through
 a trusted helper that verifies its kernel CWD against the held worktree inode;
 project preload and dotenv are disabled for that helper. Existing directories,
 files, symlinks, changed roots and cross-device publication refuse. No dependency
-tree is copied. Temporary state is removed on every outcome. Failures keep the
-task accepted and give fixed not-prepared guidance; changed ownership, session
+tree is copied. Temporary-state cleanup is attempted on every outcome; cleanup
+failures do not change task acceptance. Failures keep the task accepted and give
+fixed not-prepared guidance; changed ownership, session
 or privacy after the await cannot return a stale successful acceptance. Full
 verification remains with CI and the remote runner.
 
@@ -59,7 +61,7 @@ instead of changing the backend or copying dependency files.
 
 ## Native memory authority and profile selection
 
-The portable core is the exact-pinned first-party `@staix/agent-mem` 0.23.1 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.
+The portable core is the exact-pinned first-party `@staix/agent-mem` 0.26.3 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.
 
 `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` take the project from the daemon, require `memory_read`, refuse private turns and validate UTF-8 input before logs or storage work. Complete records and graph metadata are screened before counts and truncation. Search is at most 20 lines/4 KiB (default 8); show accepts at most 8 ids and returns at most 8 KiB; graph is at most 120 nodes/240 edges/6 KiB (default 60 nodes), with no edge lacking an endpoint. Unknown, ambiguous and withheld ids share one neutral refusal. Arguments and results are excluded from hub-managed capture; this does not govern a vendor's independent transcript or memory hooks.
 

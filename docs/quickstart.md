@@ -454,7 +454,7 @@ or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes
 | `ahub settings set planner <peer>[,<peer>...]` | pin up to eight planners; status reports whether they came from settings, roles or the automatic choice |
 | `ahub settings reload` | apply edited config files without a restart; guarded values wait for your `y` in this terminal, and restart-only keys stay pending |
 | `ahub settings edit <file> set <path> <json>` | change an instance, the review block or the `sdlc.toml` lifecycle with a validated diff and a backup; `ahub settings backups` lists the backups |
-| `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
+| `ahub status [--ascii]` | peers, queues, pauses; `--ascii` uses ASCII markers; `ahub budget` for quota windows |
 | `ahub usage [--by peer\|task\|issue\|pr\|release\|day\|model]` | tokens per group, each number with its source; `ahub usage limits` for pauses and resets |
 | `ahub worktrees` | live and settled worktrees; `ahub worktrees tidy` previews what is safe to remove, and only you confirm it with `--confirm <fingerprint>` |
 | `ahub answer` | the questions agents asked you with `hub_ask`; `ahub answer <set> <question>=<option>` answers one set, or press `A` in `ahub console` |

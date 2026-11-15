@@ -143,9 +143,9 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   Pi can checkpoint and continue after a tool-step ceiling, within a configured
   continuation allowance; exhausted ceilings and model failures have distinct
   task-move reasons ([Pi operations](docs/operations.md#pi-with-dgx-and-mlx)).
-- **Guard rails.** The local worker and Pi run in a sandbox, and their writes and
-  shell commands wait for your approval unless you choose a looser permission mode.
-  Publish, external-write, destroy and install calls ask a person in every mode for
+- **Guard rails.** The local worker and Pi run in a sandbox, and peer-issued writes
+  and shell commands wait for your approval unless you choose a looser permission mode.
+  Peer-issued publish, external-write, destroy and install calls ask a person in every mode for
   Claude Code, the local worker, Pi, hub-owned ACP peers such as Kimi and the
   approval requests Codex sends, wherever the hub sees the call before it runs;
   `ahub status` names each peer where it cannot. The opt-in floor
