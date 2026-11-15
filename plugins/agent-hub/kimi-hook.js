@@ -13536,7 +13536,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.4"
     },
     dependencies: {
-      "@staix/agent-mem": "0.26.1"
+      "@staix/agent-mem": "0.26.3"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -14529,6 +14529,8 @@ var init_sync = __esm(() => {
   init_platform();
   init_mutation();
   init_generation_sync();
+  init_config();
+  init_home();
   init_sync_screen();
   init_sync_binding();
   init_sync_binding();
@@ -14983,10 +14985,18 @@ var init_sync_placement_activation_proof = __esm(() => {
   captures = new WeakMap;
 });
 
+// node_modules/@staix/agent-mem/src/memory/sync-placement-bound.ts
+var PLACEMENT_SOURCE_MAX_BYTES;
+var init_sync_placement_bound = __esm(() => {
+  init_sync_placement_journal_format();
+  PLACEMENT_SOURCE_MAX_BYTES = 64 * 1024 * 1024;
+});
+
 // node_modules/@staix/agent-mem/src/memory/sync-placement-publication-plan.ts
 var init_sync_placement_publication_plan = __esm(() => {
   init_generation();
   init_sync_placement_journal_format();
+  init_sync_placement_bound();
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-projection.ts
@@ -15099,6 +15109,8 @@ var init_sync_placement_capture = __esm(() => {
   init_sync_placement_activation_proof();
   init_sync_placement_effective_writers();
   init_sync_placement_writer_revision_format();
+  init_inspection_bound();
+  init_sync_placement_bound();
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-dependencies.ts
@@ -15109,6 +15121,7 @@ var init_sync_placement_dependencies = __esm(() => {
   init_prune();
   init_store();
   init_sync_placement_journal_format();
+  init_sync_placement_bound();
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-git.ts
@@ -15126,7 +15139,7 @@ var init_sync_placement_git = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/sync-placement-materialize.ts
 var init_sync_placement_materialize = __esm(() => {
   init_generation();
-  init_sync_screen();
+  init_sync_placement_bound();
   init_sync_placement_dependencies();
   init_sync_placement_git();
   init_sync_placement_format();
