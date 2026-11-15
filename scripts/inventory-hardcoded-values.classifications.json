@@ -663,6 +663,7 @@
   "src/cli/handoff-output.ts:<anonymous>:inline:String(project).slice=24#0": "contract",
   "src/cli/handoff-output.ts:<anonymous>:inline:cause.slice=200#0": "safety floor",
   "src/cli/help.ts:DESCRIPTION:constant:DESCRIPTION=34#0": "contract",
+  "src/cli/help.ts:FLAG_LINE:constant:FLAG_LINE=46#0": "contract",
   "src/cli/help.ts:SUMMARY_MAX:constant:SUMMARY_MAX=56#0": "contract",
   "src/cli/help.ts:firstClause:inline:Bun.stringWidth(${out} ${word}.trim()) > max - 3=3#0": "contract",
   "src/cli/help.ts:meaning:inline:item.forms.length - 3} more=item.forms.length - 3#0": "contract",

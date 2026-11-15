@@ -360,11 +360,76 @@ export function helpFlags(command: string, entries: readonly HelpEntry[] = HELP)
   }
   return [...found.values()];
 }
-/** The two flags the standard itself defines (`docs/design/cli-output.md`, Output and Color); every other flag keeps only what its usage says. */
-const FLAG_MEANING: Readonly<Record<string, string>> = {
+/**
+ * #1504 AC3: what each flag is for, one short line, kept beside the usage text it describes (never a second table keyed by peer). The two flags the standard itself defines
+ * (`--json`, `--color`, `docs/design/cli-output.md`) keep their longer text; every other line is at most `FLAG_LINE` cells, so it fits beside the longest label at 80 columns.
+ * A key is a flag, or `<command> <flag>` where one command's flag is for something other than the flag's own entry. A flag with no entry (one a definition outside this
+ * file adds) falls back to the forms that take it, and `test/help.test.ts` fails a flag of any command in this file that has no line.
+ */
+export const FLAG_DESCRIPTIONS: Readonly<Record<string, string>> = {
   "--json": "one JSON document on stdout, never colored",
   "--color": "auto, always or never; auto follows NO_COLOR, FORCE_COLOR and the terminal",
+  // in many commands
+  "--yes": "confirm without asking", "--full": "whole titles and every detail", "--verbose": "print every detail", "--dry-run": "report what would happen, change nothing",
+  "--preview": "show the change, save nothing", "--now": "apply now, not at the next start", "--apply": "write it; without this only a preview",
+  "--reason": "why, recorded with the change", "--revision": "revision acted on; a stale one is refused", "--limit": "at most this many rows", "--since": "start of the period: 7d or an ISO time",
+  "--task": "task number it concerns", "--issue": "GitHub issue number", "--pr": "pull request number", "--repo": "repository as owner/name", "--peer": "this peer only", "--project": "project path or id",
+  "--label": "label to use", "--model": "model alias or id to run with", "--class": "task class, such as implement", "--format": "jsonl or csv", "--list": "list instead of acting", "--confirm": "fingerprint that confirms this action",
+  "--action": "the resolution to apply", "--by": "how to group the rows", "--file": "JSON file to read", "--id": "id hash of the item", "--cursor": "continue from this page token", "--variant": "variant id",
+  "--attempt": "attempt id (ra-...)", "--task-created": "creation time of the task, in milliseconds", "--owner": "peer that owns the task", "--after": "wait for this task id (repeatable)", "--milestone": "milestone to use",
+  // setup, init and sdlc
+  "--require-fresh": "also fail on stale documents", "--base": "compare against this git ref", "--agents": "agents ahub up starts", "--research": "turn research records on", "--no-research": "turn research records off",
+  "--profile": "role profile or pack", "--sdlc": "SDLC mode: off, advise or enforce", "--required-checks": "CI check names that must pass", "--coordination": "advisory or turn-free", "--memory": "turn shared memory on",
+  "--no-memory": "turn shared memory off", "--snapshots": "turn per-turn snapshots on", "--no-snapshots": "turn per-turn snapshots off", "--pi": "turn the Pi peer on", "--no-pi": "turn the Pi peer off",
+  "--specs": "turn design specs on", "--no-specs": "turn design specs off", "--spec-review": "how covering specs are reviewed", "--conductor": "the peer that conducts, or none", "--planner": "peers that plan",
+  "--reviewer": "peers that review, or person", "--track-config": "share config.json through git", "--no-track-config": "keep config.json out of git", "--autonomy": "inherit the machine preset, or not",
+  "--shadow": "hub-owned snapshots for a non-git folder", "--release-guard": "install the tag pre-push hook", "--focus": "area the survey looks at", "--review": "review scope: full, delta or none",
+  "--reviewers": "number of reviewers", "--ci": "CI scope: full, focused or reuse", "--reserved": "reserve the card for this peer", "--unreserve": "clear the card's reservation", "--to": "version to upgrade to",
+  "--version": "print the installed version",
+  // daemon, agents and recovery
+  "--unattended": "no permission prompts; the agent acts alone", "--no-console": "do not enter the console", "--no-agents": "do not start the default agents", "--panels": "start in panels mode",
+  "--no-pet": "turn the attention pet off", "--short": "print ahub!N only when action is needed", "--palette": "retired: run acon ui and open Mini", "-f": "follow new lines",
+  "--stale-anchors": "report stale memory symbol anchors", "--orphans": "inspect registrations whose root is gone", "--kill": "stop the selected orphan's hub", "--revoke": "withdraw a trusted version",
+  "--fresh-session": "restart the peer as a new session", "--stop-and-archive": "stop its targets and archive the snapshot", "--print-command": "print the launch command, start nothing", "--as": "name of the extra instance",
+  "--mode": "tui or headless", "--session-id": "session id to resume or pin", "--provider-profile": "Jcode provider profile to use", "--headless": "run without a terminal", "--backend": "Pi backend: auto, dgx or mlx",
+  "--session-file": "Pi session file to open", "--replace-session": "replace the saved session", "--route": "routing.toml route to use", "--group": "only this catalog group", "--no-thoughts": "hide the peer's reasoning lines",
+  // messages, approvals and settings
+  "--other": "answer in free text, not an option", "--instructed": "the person's quote the conductor acts on", "--unread": "only unread results", "--read": "mark one result read", "--read-all": "mark every result read",
+  "--unread-last": "mark the latest read one unread", "--all-projects": "apply to every registered project", "--state": "only deliveries in this state",
+  // tasks, roadmap, rooms and broker
+  "--ready": "only tasks with nothing left to wait for", "--columns": "show the tasks as board columns", "--release": "only this release, by name", "--release-id": "only this release, by id", "--handoffs": "show work handed to other projects",
+  "--path": "file the task touches (repeatable)", "--urgent": "mark the task urgent", "--needs-network": "keep it from a peer with no network", "--needs-worktree": "keep it from a sandboxed peer", "--backlog": "stage it in Backlog, unoffered",
+  "--detail": "longer text of the task", "--sync": "sync handoff states from the targets", "--duplicate-ok": "file despite an open task, with a reason", "--key": "idempotency key (a UUID) for the handoff",
+  "--role": "owner, reviewer or planner", "--model-said": "what the model said about the claim", "--manifest": "synthesis manifest the verdict binds to", "--disposition": "resolved or qualified",
+  "--superseded-by": "work that replaces this task", "--created": "when the label applies (person only)", "--title": "milestone title", "--outcome": "the outcome the milestone delivers", "--horizon": "now, next or later",
+  "--order": "position among its siblings", "--target": "target date (YYYY-MM-DD) or none", "--parent": "parent milestone id, or none", "--project-id": "id of the disposable project", "--receipt": "file to write the receipt to",
+  "--timeout-ms": "time limit, 100 to 120000 ms", "--hostname": "interface to listen on", "--port": "port to listen on", "--public-url": "public ws or wss URL", "--state-dir": "directory for the relay's state",
+  "--broker": "relay URL", "--accept": "request to accept", "--name": "name to join the room under", "--roster": "signed roster to join with", "--frame": "digest of the incoming frame", "--source": "registered src: id (repeatable)",
+  "--campaign": "campaign id", "--events-after": "continue its events after this number", "--plan": "plan hash to compare under", "--baseline": "baseline attempt id", "--approved": "only approved tasks",
+  "--check": "measure the files now, mark changed ones", "--unmet": "criterion not met (repeatable)", "--head": "head commit SHA the verdict is for", "--findings": "findings as JSON", "--security-pass": "security pass result as JSON",
+  // history, reports and memory
+  "--remember": "also save the answer to memory", "--resets-in": "when the window resets, such as 30m", "--window": "5h or week", "--root": "execution root reference as JSON", "--task-scope": "task the root is scoped to",
+  "--nodes": "at most this many nodes", "--edges": "at most this many edges", "--bytes": "at most this many bytes", "--ref": "execution reference as JSON", "--from": "reference the link comes from, as JSON",
+  "--context": "also drop a Codex turn from its conversation", "--dogfood": "print the dogfood scorecard", "--dataset": "directory for the per-project datasets", "--arm": "label of the arm being run", "--repeat": "attempts per task",
+  "--tasks": "run only these tasks (a,b)", "--addon": "declare an add-on: name=on or name=off", "--suite": "suite to compare", "--mixed": "compare across suites", "--tier": "short or long term", "--kind": "decision, contract, fail or finding",
+  "--machine": "only entries from this machine", "--hops": "graph depth: 1 or 2", "--history": "include superseded and expired entries", "--as-of": "memory as it stood at this time", "--remote": "private git remote to sync with",
+  "--db": "claude-mem database to read", "--restart": "revisit rows skipped under an earlier policy", "--days": "older than this many days (default 90)", "--depends": "goal it depends on (repeatable)", "--shared": "share the goal across machines",
+  "--force": "void other machines' claims", "--no-open": "print the link, do not open it", "--settings": "open with a settings session", "--stop": "stop the dashboard manager", "--hook": "run as a Claude Code hook; never blocks",
+  // a flag one command uses for something other than its own entry
+  "--all": "include everything, not the default subset", "status --all": "every registered project", "ui --all": "the unified project dashboard", "reset --all": "archive the state directory instead", "queue --all": "include rows already settled",
+  "learn --all": "include decided candidates", "research --all": "every registered project", "goal --all": "include completed goals", "sdlc --mode": "off or advise", "sdlc --profile": "audit depth: quick or standard",
+  "sdlc --since": "git ref, or a date for metrics", "memory --since": "only entries since this ISO time", "memory --label": "name for this machine", "bench --memory": "memory state: off, claude-mem, native or both",
+  "task --model": "model label the verdict was given under", "room --action": "accept or discard the application", "room --label": "label for your member", "room --confirm": "member fingerprint prefix",
+  "worktrees --confirm": "fingerprint of the preview to run", "board --label": "only issues with this label", "board --milestone": "only issues of this milestone", "board --repo": "repository to import from", "goal --milestone": "milestone of the goal (repeatable)",
+  "broker --owner": "owner fingerprint allowed (repeatable)", "study --after": "continue after this id", "--live-test --project": "project to run the command in", "task --project": "project to hand the work to",
+  "task --revision": "refuse if the task has moved on", "study --revision": "revision of the evidence to read", "usage --by": "peer, task, issue, pr, release, day or model", "report --by": "group by task", "check-path --peer": "the peer asking (default: this one)",
 };
+/** The widest a flag's line may be, except the standard's two flags: it sits beside the longest label (30 cells and a gap) within 80 columns. */
+export const FLAG_LINE = 46;
+/** What `command` says its `flag` is for: its own entry first, then the flag's. */
+export function flagDescription(command: string, flag: string): string | undefined {
+  return FLAG_DESCRIPTIONS[`${command} ${flag}`] ?? FLAG_DESCRIPTIONS[flag];
+}
 
 const DESCRIPTION = 34;
 /**
@@ -390,7 +455,7 @@ function renderCommandHelp(width: number, ascii: boolean, command: string, model
     const column = Math.min(30, Math.max(...labels.map(label => Bun.stringWidth(label)))) + 2;
     flags.forEach((item, index) => {
       const label = labels[index]!, base = item.flag;
-      const meaning = FLAG_MEANING[base] ?? (item.forms.length ? `in ${item.forms.length > 3 ? `${item.forms.slice(0, 3).join(", ")} and ${item.forms.length - 3} more` : item.forms.join(", ")}` : "");
+      const meaning = flagDescription(command, base) ?? (item.forms.length ? `in ${item.forms.length > 3 ? `${item.forms.slice(0, 3).join(", ")} and ${item.forms.length - 3} more` : item.forms.join(", ")}` : "");
       const room = width - 2 - column;
       if (Bun.stringWidth(label) + 2 > column || !meaning) {
         report.append([[{ text: "  " }, { text: label, role: "accent" }]]);
