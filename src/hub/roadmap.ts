@@ -105,3 +105,23 @@ export function milestoneHistory(raw: unknown): MilestoneHistoryEntry[] {
     return entry;
   });
 }
+
+/** R3: a qualified GitHub repository, lower-cased the way issue refs are. */
+export function githubRepo(raw: unknown): string {
+  if (typeof raw !== "string" || raw.length > MILESTONE_LIMITS.issue || !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(raw)) throw new Error("roadmap repo needs owner/name");
+  return raw.toLowerCase();
+}
+
+/** R3 suggestions: model-written placements, kept apart from milestones until a person or planner accepts one. */
+export const SUGGESTION_ITEM_KINDS = ["issue", "task", "spec"] as const;
+export const SUGGESTION_STATES = ["pending", "accepted", "rejected", "superseded"] as const;
+export type SuggestionItemKind = typeof SUGGESTION_ITEM_KINDS[number];
+export type SuggestionState = typeof SUGGESTION_STATES[number];
+export interface MilestoneSuggestion {
+  id: number; kind: SuggestionItemKind; ref: string;
+  /** An existing milestone, or null with `proposal` for "new milestone: <title>". */
+  milestone: number | null; proposal: { title: string; outcome: string } | null;
+  /** Words copied from the milestone (title or outcome) and from the item text that the model matched. */
+  citeMilestone: string | null; citeItem: string;
+  state: SuggestionState; by: string; created: number; settled: number | null; settledBy: string | null;
+}

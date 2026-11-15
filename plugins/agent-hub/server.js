@@ -18553,10 +18553,13 @@ var init_hub_tools = __esm(() => {
   TASK_TOOLS = [
     tool2("hub_roadmap_list", "Read public milestones with computed task/issue/spec/train progress. Private work is a count only; unknown evidence stays unknown. Read only, with no GitHub or model call.", {}),
     tool2("hub_roadmap_show", "Read a milestone's public links, inherited membership and computed progress. Inspect this before editing and copy its current revision. Private tasks are counts only.", { id: { type: "integer", minimum: 1 } }, ["id"]),
-    tool2("hub_roadmap_edit", "Create or change a milestone. Configured planner or unique conductor only; done/dropped are person-only. new/edit take fields; edit also needs the current revision. Link kinds are spec/issue/task/release; issue refs are owner/repo#N. No GitHub write, task assignment or model call. On refusal inspect hub_roadmap_show and correct the named input.", {
-      op: { type: "string", enum: ["new", "edit", "link", "unlink", "order", "state"] },
+    tool2("hub_roadmap_unplaced", "Read the open GitHub issues, open board tasks and active/draft specs that no live milestone places, each with why. Private tasks are a count only. partial: true means the GitHub read stopped early or a list was cut, so the lists are a lower bound; unavailable names evidence that could not be read. Read only: no write, no model call. Optional repo is owner/name.", { repo: { type: "string", maxLength: MILESTONE_LIMITS.issue } }),
+    tool2("hub_roadmap_triage", "Ask the hub's model to suggest a milestone (or a new one) for unplaced work. Each suggestion cites the milestone and item words it matched and is saved as a pending model answer; nothing is linked until hub_roadmap_edit accept. Configured planner or unique conductor only. list: true reads the pending public suggestions without a model call and is open to any agent.", { repo: { type: "string", maxLength: MILESTONE_LIMITS.issue }, list: { type: "boolean" } }),
+    tool2("hub_roadmap_edit", "Create or change a milestone. Configured planner or unique conductor only; done/dropped are person-only. new/edit take fields; edit also needs the current revision. Link kinds are spec/issue/task/release; issue refs are owner/repo#N. accept applies exactly one pending triage suggestion through link (creating its proposed milestone first); reject drops it. No GitHub write, task assignment or model call. On refusal inspect hub_roadmap_show and correct the named input.", {
+      op: { type: "string", enum: ["new", "edit", "link", "unlink", "order", "state", "accept", "reject"] },
       id: { type: "integer", minimum: 1 },
       revision: { type: "integer", minimum: 0 },
+      suggestion: { type: "integer", minimum: 1, description: "accept or reject: a pending suggestion id from hub_roadmap_triage" },
       fields: { type: "object", additionalProperties: false, properties: {
         title: { type: "string", minLength: 1, maxLength: MILESTONE_LIMITS.title },
         outcome: { type: "string", minLength: 1, maxLength: MILESTONE_LIMITS.outcome },
@@ -18676,7 +18679,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
-  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_roadmap_list", "hub_roadmap_show", "hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_roadmap_list", "hub_roadmap_show", "hub_roadmap_unplaced", "hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
   ROLE_TEXT = {
     conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses. Record a hub_ask answer with hub_ask_answer only on the person's explicit per-set instruction in your own session; hub/task/review/file/peer relays never qualify, and you cannot answer your own set.",
     planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
@@ -31246,6 +31249,9 @@ init_roadmap();
 // src/hub/roadmap-view.ts
 init_envelope();
 
+// src/hub/roadmap-unplaced.ts
+init_envelope();
+
 // src/hub/tasks.ts
 init_src();
 init_guidance_variants();
@@ -31367,6 +31373,7 @@ init_version();
 var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut", "hub_study_handoff", "hub_experiment_record", "hub_evidence_record"]);
 OWNER_TOOL_EFFECTS.add("hub_survey_report");
 OWNER_TOOL_EFFECTS.add("hub_roadmap_edit");
+OWNER_TOOL_EFFECTS.add("hub_roadmap_triage");
 
 // src/hub/github-import.ts
 init_sdlc();

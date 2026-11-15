@@ -439,7 +439,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_roadmap_list", "hub_roadmap_show", "hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_evidence_read", "hub_status", "hub_specs", "hub_supervision_list"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_roadmap_list", "hub_roadmap_show", "hub_roadmap_unplaced", "hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_evidence_read", "hub_status", "hub_specs", "hub_supervision_list"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -783,6 +783,8 @@ export interface DaemonOptions {
   worktreeShelfGh?: import("./sdlc.ts").SdlcGh;
   /** Host-only bounded PR evidence seam for review reads; never config or control input. */
   reviewMaterialsGh?: import("./sdlc.ts").SdlcGh;
+  /** Host-only test seam (R3, #1481): the `gh` runner the roadmap's read-only issue and milestone reads use. Never read from configuration or a request. */
+  roadmapGh?: import("./sdlc.ts").SdlcGh;
   /** Host-only bounds of the per-head CI watcher (#785 P1b); tests shorten them, never read from config or a tool. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   checkoutBranch?: typeof mainCheckoutBranch;
@@ -3107,6 +3109,10 @@ export async function startDaemon(opts: DaemonOptions) {
       return report;
     },
     specsRead: (action, paths) => projectSpecs.read(action, paths),
+    specsList: () => { const list = projectSpecs.list(); if (!list) throw new Error("specs are off"); return list; },
+    ...(opts.roadmapGh ? { roadmapGh: opts.roadmapGh } : {}),
+    // R3 (#1481): the hub's own model, public text only (the caller screened it), never PII and never trusted: Tasks parses and checks the answer.
+    roadmapModel: (system, user, allowed) => inference ? inference.complete(system, user, 2000, { interactive: true, timeoutMs: 20_000, allowed }) : Promise.resolve(undefined),
     auditSource: gitAuditSource(opts.cwd), // #1403 A4
     sdlc: {
       config: () => lifecycleConfig,
@@ -5755,7 +5761,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // shared memory and a new task could be routed to a cloud peer without matching any pattern.
     if (op === "hub_experiment_record" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     if (op === "hub_evidence_record" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("evidence recording is unavailable in a private or PII context; keep private work on-prem and record only public evidence outside that context");
-    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_roadmap_edit" || op === "hub_backlog_return_untouched" || op === "hub_task_wait" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new" || op === "hub_study_draft" || op === "hub_study_revise")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_roadmap_edit" || op === "hub_roadmap_triage" || op === "hub_backlog_return_untouched" || op === "hub_task_wait" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new" || op === "hub_study_draft" || op === "hub_study_revise")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and shared memory. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && (a.plan != null || a.refs != null)))) {
@@ -5937,9 +5943,15 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_roadmap_show":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "id")) throw new PreEffectToolRefusal("roadmap show takes id only; use ahub roadmap show with a milestone id");
         return JSON.stringify(tasks.milestoneShow(by, a.id));
+      case "hub_roadmap_unplaced":
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "repo")) throw new PreEffectToolRefusal("roadmap unplaced takes an optional owner/name repo only; use ahub roadmap unplaced");
+        return JSON.stringify(await tasks.roadmapUnplaced(by, { repo: a.repo }));
+      case "hub_roadmap_triage":
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "repo" && key !== "list") || a.list !== undefined && typeof a.list !== "boolean") throw new PreEffectToolRefusal("roadmap triage takes an optional repo and list true or false; use ahub roadmap triage");
+        return JSON.stringify(a.list === true ? { suggestions: tasks.milestoneSuggestions(by, "pending") } : await tasks.roadmapTriage(by, { repo: a.repo }));
       case "hub_roadmap_edit": {
-        const fields: Record<string, readonly string[]> = { new: ["op", "fields"], edit: ["op", "id", "revision", "fields"], link: ["op", "id", "kind", "ref"], unlink: ["op", "id", "kind", "ref"], order: ["op", "id", "order"], state: ["op", "id", "state"] };
-        if (!a || typeof a !== "object" || Array.isArray(a) || typeof a.op !== "string" || !Object.hasOwn(fields, a.op)) throw new PreEffectToolRefusal("unknown roadmap operation; use new, edit, link, unlink, order or state with hub_roadmap_edit");
+        const fields: Record<string, readonly string[]> = { new: ["op", "fields"], edit: ["op", "id", "revision", "fields"], link: ["op", "id", "kind", "ref"], unlink: ["op", "id", "kind", "ref"], order: ["op", "id", "order"], state: ["op", "id", "state"], accept: ["op", "suggestion"], reject: ["op", "suggestion"] };
+        if (!a || typeof a !== "object" || Array.isArray(a) || typeof a.op !== "string" || !Object.hasOwn(fields, a.op)) throw new PreEffectToolRefusal("unknown roadmap operation; use new, edit, link, unlink, order, state, accept or reject with hub_roadmap_edit");
         if (Object.keys(a).some(key => !fields[a.op]!.includes(key))) throw new PreEffectToolRefusal("roadmap operation has unknown fields; inspect hub_roadmap_show and use the documented operation fields");
         switch (a.op) {
           case "new": return JSON.stringify(await tasks.milestoneNew(by, a.fields));
@@ -5948,6 +5960,8 @@ export async function startDaemon(opts: DaemonOptions) {
           case "unlink": return JSON.stringify(tasks.milestoneUnlink(by, a.id, a.kind, a.ref));
           case "order": return JSON.stringify(tasks.milestoneOrder(by, a.id, a.order));
           case "state": return JSON.stringify(tasks.milestoneState(by, a.id, a.state));
+          case "accept": return JSON.stringify(await tasks.roadmapAccept(by, a.suggestion));
+          case "reject": return JSON.stringify({ suggestion: tasks.roadmapReject(by, a.suggestion) });
         }
         throw new PreEffectToolRefusal("unknown roadmap operation; use ahub roadmap list");
       }
@@ -6206,6 +6220,9 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "github_import":
         return JSON.stringify(await tasks.importGitHub(by, { repo: a.repo, label: a.label, milestone: a.milestone }));
+      // R3 (#1481): not in CONDUCTOR_TASK_OPS on purpose: only the person imports GitHub milestones, and a dry run is the default.
+      case "roadmap_import_github":
+        return JSON.stringify(await tasks.roadmapImportGitHub(by, { repo: a.repo, apply: a.apply }));
       case "release_show": {
         const release = a.id !== undefined ? (Number.isSafeInteger(a.id) && a.id > 0 ? board.release(a.id) : undefined) : board.releases().find(release => release.name === a.name);
         if (!release) throw new PreEffectToolRefusal("no such release");

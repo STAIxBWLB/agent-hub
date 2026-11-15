@@ -72,6 +72,13 @@ export class SpecTaskInspector {
     return action === "check" ? this.engine().check() : this.engine().covers(paths);
   }
 
+  /** R3 (#1481): spec ids, titles and status for the roadmap's unplaced list. Specs off is no list, never an empty one. */
+  list(): { specs: { id: string; title: string; status: string | null }[]; errors: number; truncated: boolean } | undefined {
+    if (!this.config().enabled) return undefined;
+    const report = this.engine().list();
+    return { specs: report.specs.map(spec => ({ id: spec.id, title: spec.title, status: spec.status })), errors: report.errors, truncated: report.truncated };
+  }
+
   status(): SpecsStatus | undefined {
     const config = this.config();
     if (!config.enabled) return undefined;

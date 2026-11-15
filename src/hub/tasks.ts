@@ -1,6 +1,8 @@
 import { requireConductor } from "./conductor.ts";
-import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState } from "./roadmap.ts";
-import { milestoneViews, type MilestoneView } from "./roadmap-view.ts";
+import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind } from "./roadmap.ts";
+import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
+import { computeUnplaced, withTree, type ReadyToClose, type TreeRollup, type UnplacedResult } from "./roadmap-unplaced.ts";
+import { buildTriagePrompt, parseTriage, TRIAGE_BATCH, type TriageItem } from "./roadmap-triage.ts";
 import { pathCandidates } from "@staix/agent-mem";
 import { renderGuidanceVariantV1 } from "./guidance-variants.ts";
 import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-probe-store.ts";
@@ -71,7 +73,7 @@ import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
 import { VERSION } from "../version.ts";
 import { NoWriteTurns } from "./no-writes.ts";
-import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
+import { readGitHubImport, readGitHubIssuePages, readGitHubMilestonePages, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
 import { adoptMergeGates, guardedMerge, mergeModeFor, mergeView, readAdoptMergeEvidence, requiredChecksFor, type MergeView } from "./sdlc-merge.ts";
@@ -227,6 +229,12 @@ export interface TasksDeps {
   specsConfig?: () => SpecsConfig;
   /** Explicit, read-only inspection remains available when task notices are disabled. */
   specsRead?: (action: "check" | "covers", paths: readonly string[]) => SpecsCheckReport | SpecsCoverReport;
+  /** R3 (#1481): spec ids with their status, for the unplaced list. Absent or throwing is "unavailable", never "no specs". */
+  specsList?: () => { specs: { id: string; title: string; status: string | null }[]; errors: number; truncated: boolean };
+  /** R3 (#1481): the model for triage. Absent, off or failing is no suggestion; it carries no authority and links nothing. */
+  roadmapModel?: (system: string, user: string, allowed: () => boolean) => Promise<string | undefined>;
+  /** R3 (#1481): host-only `gh` runner for the roadmap's read-only issue and milestone reads (tests); production uses `sdlc.gh`. */
+  roadmapGh?: SdlcGh;
   /** Host-verified existing symbols at this task's admitted completion head; never plan guesses. */
   memorySymbolNodes?: (task: Task) => MemorySymbolNodes | undefined;
   /** Host-only release report selector; derives its answer from committed policy and the in-memory authorization ledger. */
@@ -3499,16 +3507,20 @@ export class Tasks {
     return this.roadmapResult(by, id);
   }
 
-  milestoneList(by: PeerId): MilestoneView[] {
-    this.roadmapReadAuthority(by);
+  private roadmapSnapshot(by: PeerId): RoadmapSnapshot {
     let freshness: SpecsCheckReport["freshness"] | undefined;
     try { const report = this.d.specsRead?.("check", []); if (report && "freshness" in report && !report.truncated && report.errors === 0)
       freshness = report.freshness.filter(row => this.publicMetadataText(row.path) && (row.id === undefined || this.publicMetadataText(row.id))); } catch { /* unavailable evidence stays unknown */ }
-    const views = milestoneViews({ milestones: this.d.board.milestones(), links: this.d.board.milestoneLinks(), tasks: this.d.board.list(), releases: this.d.board.releases(), freshness,
+    return { milestones: this.d.board.milestones(), links: this.d.board.milestoneLinks(), tasks: this.d.board.list(), releases: this.d.board.releases(), freshness,
       issueOf: task => { try { const source = this.planIssueIdentity(task); return source ? `${source.repo.toLowerCase()}#${source.issue}` : undefined; } catch { return undefined; } },
       privateTask: task => this.isPii(task) || task.signals.includes("pii") || task.state === "backlog" && by !== USER && !this.isConfiguredPlanner(by),
       publicText: text => this.publicMetadataText(text),
-    });
+    };
+  }
+
+  milestoneList(by: PeerId): (MilestoneView & { tree: TreeRollup; readyToClose: ReadyToClose })[] {
+    this.roadmapReadAuthority(by);
+    const views = withTree(milestoneViews(this.roadmapSnapshot(by)));
     this.roadmapReadAuthority(by); return views;
   }
 
@@ -3517,6 +3529,167 @@ export class Tasks {
     const row = this.milestoneList(by).find(row => row.id === id);
     if (!row) throw new PreEffectToolRefusal("roadmap milestone does not exist; use ahub roadmap list");
     return row;
+  }
+
+  // ---- R3 (#1481): bottom-up placement. Reads are the roadmap read authority; every write below is the R1 writer, never a new one. ----
+
+  /** The one repository the roadmap reads from GitHub: the caller's choice, else the project's. Never derived from model text. */
+  private roadmapRepo(raw: unknown): string | undefined {
+    if (raw === undefined) return undefined;
+    return this.roadmapParsed(() => githubRepo(raw));
+  }
+
+  private roadmapGh(run?: SdlcGh): SdlcGh {
+    return run ?? this.d.roadmapGh ?? this.d.sdlc?.gh ?? ((args, timeout, _cwd, bound) => sdlcGh(args, timeout, this.d.cwd, bound));
+  }
+
+  /** Issues, tasks and specs that no live milestone places, each with its reason. Private tasks are counted and never named. */
+  async roadmapUnplaced(by: PeerId, input: { repo?: unknown } = {}, run?: SdlcGh): Promise<UnplacedResult & { repo: string | null }> {
+    this.roadmapReadAuthority(by);
+    const repo = this.roadmapRepo(input.repo);
+    let issues: Awaited<ReturnType<typeof readGitHubIssuePages>> | undefined;
+    try { issues = await readGitHubIssuePages({ ...(repo === undefined ? {} : { repo }) }, this.roadmapGh(run)); } catch { issues = undefined; }
+    this.roadmapReadAuthority(by);
+    let specs: { id: string; title: string; status: string | null }[] | undefined;
+    try { const list = this.d.specsList?.(); if (list && !list.truncated && list.errors === 0) specs = list.specs; } catch { specs = undefined; }
+    const snapshot = this.roadmapSnapshot(by);
+    const result = computeUnplaced({ milestones: snapshot.milestones, links: snapshot.links, tasks: snapshot.tasks, issues, specs, issueOf: snapshot.issueOf, privateTask: snapshot.privateTask, publicText: snapshot.publicText });
+    return { ...result, repo: issues?.repo ?? repo ?? null };
+  }
+
+  /** Pending and settled suggestions as a caller may read them: public text only. */
+  milestoneSuggestions(by: PeerId, state?: MilestoneSuggestion["state"]): MilestoneSuggestion[] {
+    this.roadmapReadAuthority(by);
+    return this.d.board.suggestions(state).filter(row => this.suggestionPublic(row));
+  }
+
+  private suggestionPublic(row: MilestoneSuggestion): boolean {
+    const text = [row.ref, row.citeItem, row.citeMilestone ?? "", row.proposal?.title ?? "", row.proposal?.outcome ?? ""].join("\n");
+    if (!this.publicMetadataText(text)) return false;
+    if (row.kind !== "task") return true;
+    const task = this.d.board.get(Number(row.ref));
+    return task !== undefined && !this.isPii(task) && !task.signals.includes("pii");
+  }
+
+  /**
+   * Ask the hub's model where unplaced items belong. The model sees only public text, answers are checked against what it was shown
+   * (ids offered, cited words present), saved as pending suggestions, and nothing is linked: that is `roadmapAccept`.
+   */
+  async roadmapTriage(by: PeerId, input: { repo?: unknown } = {}, run?: SdlcGh): Promise<{ suggestions: MilestoneSuggestion[]; asked: number; dropped: number; partial: boolean; unavailable: string | null }> {
+    const current = this.roadmapWriteAuthority(by);
+    const unplaced = await this.roadmapUnplaced(by, input, run);
+    current();
+    const snapshot = this.roadmapSnapshot(by), views = milestoneViews(snapshot);
+    const pending = new Set(this.d.board.suggestions("pending").map(row => `${row.kind}:${row.ref}`));
+    const items: TriageItem[] = [
+      ...unplaced.tasks.map(row => ({ kind: "task" as const, ref: String(row.id), text: row.title })),
+      ...unplaced.issues.map(row => ({ kind: "issue" as const, ref: row.ref, text: row.title })),
+      ...unplaced.specs.map(row => ({ kind: "spec" as const, ref: row.id, text: row.title })),
+    ].filter(item => !pending.has(`${item.kind}:${item.ref}`));
+    const live = views.filter(view => view.state !== "done" && view.state !== "dropped" && view.title !== "[withheld]");
+    const batch = items.slice(0, TRIAGE_BATCH);
+    const done = (suggestions: MilestoneSuggestion[], dropped: number, unavailable: string | null) => ({ suggestions, asked: batch.length, dropped, partial: unplaced.partial || items.length > batch.length, unavailable });
+    if (!batch.length) return done([], 0, null);
+    if (!this.d.roadmapModel) return done([], 0, "no hub model is configured for roadmap triage");
+    const prompt = buildTriagePrompt(batch, live.map(view => ({ id: view.id, title: view.title, outcome: view.outcome })));
+    const answer = await this.d.roadmapModel(prompt.system, prompt.user, () => { try { current(); return true; } catch { return false; } });
+    current();
+    if (!answer) return done([], 0, "the hub model gave no answer; retry ahub roadmap triage later");
+    const parsed = parseTriage(answer, prompt), saved: MilestoneSuggestion[] = [], at = this.d.now?.() ?? Date.now();
+    for (const row of parsed.suggestions) {
+      // Re-screen at the write: what is stored is public planning text only, and a milestone that has since settled is not a target.
+      if (row.milestone !== null) { const target = this.d.board.milestone(row.milestone); if (!target || ["done", "dropped"].includes(target.state)) continue; }
+      const text = [row.ref, row.citeItem, row.citeMilestone ?? "", row.proposal?.title ?? "", row.proposal?.outcome ?? ""].join("\n");
+      if (!this.publicMetadataText(text)) continue;
+      if (this.screenOn() && (await this.screenCall(text)).label !== "clear") continue;
+      current();
+      // A model's answer, attributed to the hub (never to the asker), is advisory data: no ask or memory path reads this table.
+      const made = this.d.board.addSuggestion(row, "hub", at);
+      if (made) saved.push(made);
+    }
+    return done(saved, parsed.dropped + parsed.suggestions.length - saved.length, null);
+  }
+
+  /** Apply one suggestion through R1's own writers. A "new milestone" suggestion creates it first; a retry never creates a second. */
+  async roadmapAccept(by: PeerId, rawId: unknown): Promise<{ suggestion: MilestoneSuggestion; milestone: MilestoneView }> {
+    const current = this.roadmapWriteAuthority(by);
+    const id = this.roadmapParsed(() => milestoneId(rawId)), row = this.d.board.suggestion(id);
+    if (!row) throw new PreEffectToolRefusal("roadmap suggestion does not exist; use ahub roadmap triage");
+    if (row.state !== "pending") throw new PreEffectToolRefusal(`roadmap suggestion was already ${row.state}; run ahub roadmap triage for current suggestions`);
+    if (!this.suggestionPublic(row)) throw new PreEffectToolRefusal("roadmap suggestion text is no longer public; reject it with ahub roadmap reject");
+    let target = row.milestone ?? this.d.board.suggestionCreated(id);
+    if (target === undefined) {
+      const proposal = row.proposal;
+      if (!proposal) throw new PreEffectToolRefusal("roadmap suggestion has no target; reject it with ahub roadmap reject");
+      const fields = this.roadmapParsed(() => parseMilestoneInput({ title: proposal.title, outcome: proposal.outcome }));
+      await this.roadmapScreen(fields); current();
+      const made = this.d.board.newMilestone(fields, by, this.d.now?.() ?? Date.now());
+      this.d.board.setSuggestionCreated(id, made.id); target = made.id;
+    }
+    const milestone = this.roadmapCurrent(target);
+    const ref = this.roadmapParsed(() => milestoneLinkRef(row.kind, row.ref));
+    if (row.kind === "task" && !this.d.board.get(Number(ref))) throw new PreEffectToolRefusal("roadmap target does not exist; reject the suggestion with ahub roadmap reject");
+    current();
+    this.d.board.linkMilestone(target, row.kind, ref, by, milestone.revision, this.d.now?.() ?? Date.now());
+    const settled = this.d.board.settleSuggestion(id, "accepted", by, this.d.now?.() ?? Date.now());
+    return { suggestion: settled, milestone: this.roadmapResult(by, target) };
+  }
+
+  roadmapReject(by: PeerId, rawId: unknown): MilestoneSuggestion {
+    this.roadmapWriteAuthority(by);
+    const id = this.roadmapParsed(() => milestoneId(rawId));
+    return this.d.board.settleSuggestion(id, "rejected", by, this.d.now?.() ?? Date.now());
+  }
+
+  /**
+   * One-time import of open GitHub milestones as `proposed` milestones, linking their open issues. A dry run unless `apply`.
+   * A repeat finds each milestone's import mark and each link, so a second `apply` changes nothing. Nothing is ever written to GitHub.
+   */
+  async roadmapImportGitHub(by: PeerId, input: { repo?: unknown; apply?: unknown } = {}, run?: SdlcGh): Promise<{
+    repo: string; apply: boolean; partial: boolean; milestones: { number: number; title: string; milestone: number | null; action: "create" | "exists"; issues: string[]; newLinks: number }[]; created: number; linked: number; withheld: number;
+  }> {
+    const current = this.roadmapWriteAuthority(by);
+    if (!this.personOrConductor(by)) throw new PreEffectToolRefusal("GitHub milestone import is a console command; ask the person to run ahub roadmap import-github");
+    if (input.apply !== undefined && typeof input.apply !== "boolean") throw new PreEffectToolRefusal("roadmap import apply must be true or false; omit it for a dry run");
+    const apply = input.apply === true, gh = this.roadmapGh(run), repoInput = this.roadmapRepo(input.repo);
+    const milestonePages = await readGitHubMilestonePages({ ...(repoInput === undefined ? {} : { repo: repoInput }) }, gh);
+    const issuePages = await readGitHubIssuePages({ repo: milestonePages.repo }, gh);
+    current();
+    const issuesOf = new Map<number, string[]>();
+    for (const row of issuePages.rows) if (row.milestone !== null) issuesOf.set(row.milestone, [...(issuesOf.get(row.milestone) ?? []), `${issuePages.repo}#${row.number}`]);
+    const out: { number: number; title: string; milestone: number | null; action: "create" | "exists"; issues: string[]; newLinks: number }[] = [];
+    let created = 0, linked = 0, withheld = 0;
+    for (const source of milestonePages.rows) {
+      const description = source.description || `Imported from GitHub milestone ${milestonePages.repo}#milestone/${source.number}`;
+      let fields: ReturnType<typeof parseMilestoneInput>;
+      try { fields = parseMilestoneInput({ title: source.title, outcome: description.slice(0, 4000), ...(source.due ? { target: source.due } : {}) }); }
+      catch { withheld++; continue; }
+      const prior = this.d.board.importedMilestone(milestonePages.repo, source.number), existing = prior === undefined ? undefined : this.d.board.milestone(prior);
+      const refs = (issuesOf.get(source.number) ?? []).filter(ref => this.publicMetadataText(ref));
+      const have = new Set(existing ? this.d.board.milestoneLinks(existing.id).filter(link => link.kind === "issue").map(link => link.ref) : []);
+      const newRefs = refs.filter(ref => !have.has(ref));
+      const text = `${fields.title}\n${fields.outcome}`;
+      if (!this.publicMetadataText(text)) { withheld++; continue; }
+      const row = { number: source.number, title: sanitize(fields.title), milestone: existing?.id ?? null, action: existing ? "exists" as const : "create" as const, issues: refs, newLinks: newRefs.length };
+      if (apply) {
+        // The model screen runs on apply only, for a milestone about to be created; a dry run lists what passes the pattern screen.
+        if (!existing && this.screenOn() && (await this.screenCall(text)).label !== "clear") { withheld++; continue; }
+        current();
+        const made = this.d.board.importMilestone(milestonePages.repo, source.number, fields, by, this.d.now?.() ?? Date.now());
+        if (made.created) created++;
+        row.milestone = made.milestone.id;
+        for (const ref of newRefs) {
+          const live = this.d.board.milestone(made.milestone.id)!;
+          // A settled milestone is final: an import never reopens or relinks it.
+          if (["done", "dropped"].includes(live.state)) break;
+          const before = this.d.board.milestoneLinks(made.milestone.id).length;
+          this.d.board.linkMilestone(made.milestone.id, "issue", ref, by, live.revision, this.d.now?.() ?? Date.now());
+          if (this.d.board.milestoneLinks(made.milestone.id).length > before) linked++;
+        }
+      }
+      out.push(row);
+    }
+    return { repo: milestonePages.repo, apply, partial: milestonePages.partial || issuePages.partial, milestones: out, created, linked, withheld };
   }
 
   releaseList(by: PeerId): Record<string, unknown>[] {
