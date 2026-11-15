@@ -663,7 +663,7 @@ and so is every help entry the gate has no class for yet;
 | `ahub doctor [--json] [--full] [--color=...]` | Allowed | a read-only check of tools, daemon, plugin, gateway, models and memory; the `memory capture: codex` and `memory capture: kimi` rows come from agent-mem's setup state (`amem setup <tool> --json` on PATH, a preview that writes nothing), as set up, `amem setup <tool> --apply` needed, client missing, or unknown when `amem` is missing, refuses or prints no setup plan (#1008) |
 | `ahub doctor --stale-anchors [--json]` | Allowed | a bounded read-only report of memory symbol anchors at current HEAD |
 | `ahub queue list [--peer <id>] [--json] [--full] [--color=...]` | Allowed | public queue metadata only; inspect your own public held bodies through `hub_inbox`; `ahub queue show` and operator resolution remain person/conductor operations |
-| `ahub roster [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |
+| `ahub roster [list] [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |
 | `ahub roles [--json] [--color=...]` | Allowed | each rostered peer's flow roles as the running hub settled them (#1411 T2); no operand |
 | `ahub settings [list] [--json]`, `ahub settings get <key> [--json]` | Allowed | public registry values; secret-locating values, paths, undo records and config-editor details are withheld |
 | `ahub sdlc status\|explain [<task>] [--json] [--color=...]` | Allowed | public lifecycle status; private tasks stay stubs, without private evidence or receipts |
@@ -2619,7 +2619,7 @@ global CLI the way it was installed; `ahub doctor` names the exact step.
 
 ## Change the participating peers while the hub runs
 
-`ahub roster` lists every known peer, whether it participates, its start mode,
+`ahub roster` or `ahub roster list` lists every known peer, whether it participates, its start mode,
 current state, queued messages and open tasks. `ahub roster --json` is the same
 ordered catalog view for scripts. Status and the console keep their existing lazy
 rows; an off-roster peer is shown only while it has retained messages, an uncertain

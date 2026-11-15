@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "323a2789db067f6aa4b30bdd13a83a7ed01e9287",
+      "verifiedAgainst": "824e5d473afe6ad3403fe900cc658fb40dd60304",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "323a2789db067f6aa4b30bdd13a83a7ed01e9287",
+      "verifiedAgainst": "824e5d473afe6ad3403fe900cc658fb40dd60304",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "323a2789db067f6aa4b30bdd13a83a7ed01e9287",
+      "verifiedAgainst": "824e5d473afe6ad3403fe900cc658fb40dd60304",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "323a2789db067f6aa4b30bdd13a83a7ed01e9287",
+      "verifiedAgainst": "824e5d473afe6ad3403fe900cc658fb40dd60304",
       "paths": [
         "package.json",
         "src/",
@@ -154,7 +154,7 @@
       ]
     },
     "docs/dogfood.md": {
-      "verifiedAgainst": "323a2789db067f6aa4b30bdd13a83a7ed01e9287",
+      "verifiedAgainst": "824e5d473afe6ad3403fe900cc658fb40dd60304",
       "paths": [
         "src/hub/dogfood.ts",
         "src/hub/dogfood-read.ts",
@@ -550,7 +550,7 @@
       ]
     },
     "docs/agent-notes/README.md": {
-      "verifiedAgainst": "323a2789db067f6aa4b30bdd13a83a7ed01e9287",
+      "verifiedAgainst": "823ae3fae4d593600770ea5cde4489cf9b58e1f9",
       "paths": [
         "src/cli/console-state.ts",
         "src/cli/attention.ts",
@@ -559,7 +559,7 @@
       ]
     },
     "src/cli/help.ts": {
-      "verifiedAgainst": "bc00e83688ca9ae84d2691a1880eee105d7bef13",
+      "verifiedAgainst": "824e5d473afe6ad3403fe900cc658fb40dd60304",
       "paths": [
         "src/cli/main.ts",
         "src/cli/launch.ts",
