@@ -394,7 +394,7 @@ test("AC7: the Settings section renders every row from the registry with its sou
   const controls = nodes.filter((n) => ["select", "input", "button"].includes(n.tag));
   expect(controls.length).toBeGreaterThanOrEqual(4 + 4 + 2 + 1 + 1); // a value control and Save per row, two previews, the typed confirmation, undo
   for (const control of controls) expect(!!control.textContent || !!control.attrs["aria-label"] || labels.has(control.id)).toBe(true);
-  expect(nodes.filter((n) => n.tag === "details").map((n) => n.open)).toEqual([true, false, false, false]);
+  expect(nodes.filter((n) => n.tag === "details").map((n) => n.open)).toEqual([false, false, false, false]); // #1477: Permissions starts collapsed
   // Saving sends the registry key and the typed value; never-ask sends the typed confirmation with it.
   const kimi = nodes.find((n) => n.id === "setting-permission-kimi")!, confirm = nodes.find((n) => n.attrs["aria-label"] === "Type kimi to confirm never-ask for kimi")!;
   expect(kimi.value).toBe("ask-when-needed"); expect(confirm.hidden).toBe(true);
