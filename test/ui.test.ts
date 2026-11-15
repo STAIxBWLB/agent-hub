@@ -653,3 +653,45 @@ test("split HTTP applies a bounded per-request deadline without changing ordinar
  try{const split=read("backlog_split"),ordinary=read("pause");await observed;expect(deadlines.find(entry=>entry.action==="backlog_split")?.seconds ?? 0).toBeGreaterThan(16);expect(deadlines.filter(entry=>entry.action==="pause")).toHaveLength(0);sockets[1]!.destroy();const ended=await ordinary;expect(ended.clientDeadline).toBe(false);expect(ended.raw).not.toContain('"ok":true');release();const result=await split;expect(result.clientDeadline).toBe(false);expect(result.raw).toContain('"ok":true');expect(count).toBe(2);
  }finally{release();for(const socket of sockets)socket.destroy()}
 },24000);
+
+test("#1477 the board count follows the filters, and the shared predicate is the one the board uses", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const source = html.slice(html.indexOf("function boardTaskVisible("), html.indexOf("function renderBoard("));
+  const api = runInNewContext(`${source}; ({boardTaskVisible,taskCountText})`) as { boardTaskVisible: (t: unknown, a: string, b: string, c: string) => boolean; taskCountText: (a: number, b: number, c: boolean) => string };
+  const tasks = [{ state: "in_progress", owner: "a", release: 1 }, { state: "approved", owner: "b", reviewer: "a" }, { state: "proposed" }];
+  const shown = (state: string, owner = "", release = "") => tasks.filter(task => api.boardTaskVisible(task, state, owner, release)).length;
+  expect(api.taskCountText(3, shown(""), false)).toBe("3 tasks");
+  expect(api.taskCountText(3, shown("backlog"), true)).toBe("0 of 3 tasks");
+  expect(api.taskCountText(3, shown("work"), true)).toBe("1 of 3 tasks");
+  expect(shown("", "a")).toBe(2); expect(shown("", "", "1")).toBe(1);
+  expect(html).toContain("taskCountText(snapshot.tasks.length,snapshot.tasks.filter(task=>boardTaskVisible(task,taskFilter,ownerFilter,releaseFilter)).length,Boolean(taskFilter||ownerFilter||releaseFilter))");
+  expect(html).toContain("snapshot.tasks.filter(task=>boardTaskVisible(task,taskFilter,ownerFilter,releaseFilter))");
+});
+
+test("#1477 the active view tab scrolls into sight once per change", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const source = html.slice(html.indexOf("let revealedView = null;"), html.indexOf("function switchView("));
+  const scrolls: unknown[] = [];
+  const buttons = ["board", "agents"].map(view => ({ dataset: { viewTarget: view }, scrollIntoView: (options: unknown) => scrolls.push([view, options]) }));
+  const context = { document: { querySelectorAll: () => buttons }, currentView: "board" };
+  const api = runInNewContext(`let currentView = "board"; ${source}; ({reveal: revealActiveView, set: (v) => { currentView = v; }})`, context) as { reveal: () => void; set: (view: string) => void };
+  api.reveal(); api.reveal();
+  expect(scrolls).toEqual([["board", { block: "nearest", inline: "nearest" }]]);
+  api.set("agents"); api.reveal();
+  expect(scrolls).toHaveLength(2); expect(scrolls[1]).toEqual(["agents", { block: "nearest", inline: "nearest" }]);
+});
+
+test("#1477 task cells are capped with a title, empty states are padded, holders and labels have gaps, the badge is labelled", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)![1]!.replace(/\/\*[\s\S]*?\*\//g, "");
+  // max-width does not hold on a td in an auto-layout table, so the cap sits on a block span that also carries nowrap and the ellipsis.
+  expect(css).toMatch(/\.usage-table \.task-clip\{display:block;max-width:\d+ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\}/);
+  expect(html).toContain("el('span', '#' + id + (bt?.title ? ' ' + bt.title : ''), 'task-clip'); clip.title = clip.textContent; taskCell.append(clip);");
+  expect(html).toContain("if (!unread.length) empty(target, 'Nothing unread.');");
+  expect(css).toMatch(/\.structure-group>\.row-head,\.structure-group>p/);
+  expect(css).toMatch(/\.detail-group>\.peer-mark\{margin:0 var\(--space-4\) var\(--space-2\) 0\}/);
+  expect(css).toMatch(/\.board-toolbar label\{margin:0;display:inline-flex;align-items:center;gap:var\(--space-2\)\}/);
+  expect(html).toContain('id="attention-badge" class="attention-badge" aria-label="Global attention" title="Global attention" hidden>Attention (0)');
+  expect(html).toContain("target.title=attentionLabel");
+  expect(html).toContain("const settingsOpen = new Set();");
+});

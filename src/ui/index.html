@@ -212,6 +212,8 @@ details.settings-group .row{border-bottom:1px dashed var(--line)}
 details.settings-group .row:last-child{border-bottom:0}
 /* Structure (#689): instances, lifecycle and the executable keys. Tier 3 is text only: no control, a command to run in the console. */
 .structure-group .row{padding:var(--space-3) var(--space-4)}
+.structure-group>.row-head,.structure-group>p,.structure-instance,.structure-sdlc,.structure-add,.structure-backups{padding:var(--space-3) var(--space-4)}
+.structure-keys{display:flex;flex-wrap:wrap;gap:var(--space-2);margin:var(--space-2) 0 0}
 .structure-instance,.structure-sdlc,.structure-add,.structure-backups{border-bottom:1px dashed var(--line)}
 .structure-tier3{background:var(--panel-soft);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius-surface);padding:var(--space-3) var(--space-4);margin:var(--space-3) var(--space-4)}
 .structure-tier3 code{display:block;overflow-wrap:anywhere;color:var(--muted)}
@@ -240,18 +242,19 @@ details.settings-group .row:last-child{border-bottom:0}
 .board-lane{border-top:1px solid var(--line)}
 .board-lane>h3{padding:var(--space-3) var(--space-4) 0;font-size:var(--text-lg)}
 .peer-mark{display:inline-flex;align-items:center;gap:var(--space-2)}
+.detail-group>.peer-mark{margin:0 var(--space-4) var(--space-2) 0}
 .peer-color-dot{width:9px;height:9px;display:inline-block;border-radius:var(--radius-full);background:var(--peer-color);flex-shrink:0}
 .peer-color-dot.reviewer{background:transparent;border:2px solid var(--peer-color)}
 .agent-legend{display:flex;flex-wrap:wrap;gap:var(--space-2);padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--line)}
 .agent-legend .agent-slot{border:1px solid var(--line);border-radius:var(--radius-surface);padding:var(--space-3);flex:1 1 180px;min-width:0}
 .board-drop-active{outline:2px solid var(--accent);outline-offset:2px}
 .board-toolbar{padding:var(--space-3) var(--space-4);display:flex;gap:var(--space-4);flex-wrap:wrap;align-items:center}
-.board-toolbar label{margin:0}
+.board-toolbar label{margin:0;display:inline-flex;align-items:center;gap:var(--space-2)}
 .board-toolbar select{width:auto;max-width:220px}
 .board-unknown{padding:var(--space-3) var(--space-4);color:var(--amber)}
 @media(max-width:1100px){.board-columns{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:900px){.stack{gap:var(--space-4)}.stream{height:300px}footer{padding:var(--space-4)}}
-@media(max-width:600px){.structure-field{grid-template-columns:minmax(0,1fr)}.structure-tier3{margin:var(--space-3)}.split{grid-template-columns:minmax(0,1fr)}.board-columns{grid-template-columns:1fr;padding:var(--space-3)}.board-toolbar{align-items:stretch}.board-toolbar select{max-width:none;width:100%}.board-toolbar label{width:100%}}
+@media(max-width:600px){.structure-field{grid-template-columns:minmax(0,1fr)}.structure-tier3{margin:var(--space-3)}.split{grid-template-columns:minmax(0,1fr)}.board-columns{grid-template-columns:1fr;padding:var(--space-3)}.board-toolbar{align-items:stretch}.board-toolbar select{max-width:none;width:100%}.board-toolbar label{width:100%;display:flex}}
 /* Reduced motion (#469 R6): one rule for the whole page. Every transition and animation is off, whatever rule declares it. */
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
 
@@ -288,7 +291,7 @@ details.settings-group .row:last-child{border-bottom:0}
 .theme-field select{width:auto}
 .icon-button{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;padding:0}
 .attention-badge{min-height:44px}
-.view-nav{grid-row:2;display:flex;gap:var(--space-1);padding:var(--space-2) var(--space-4);overflow-x:auto;overscroll-behavior-x:contain;background:var(--panel);border-bottom:1px solid var(--line);scrollbar-width:thin}
+.view-nav{grid-row:2;display:flex;gap:var(--space-1);padding:var(--space-2) var(--space-4);overflow-x:auto;overscroll-behavior-x:contain;background:linear-gradient(to right,var(--panel) 30%,transparent) 0 0/40px 100% no-repeat local,linear-gradient(to left,var(--panel) 30%,transparent) 100% 0/40px 100% no-repeat local,linear-gradient(to right,var(--line),transparent) 0 0/14px 100% no-repeat scroll,linear-gradient(to left,var(--line),transparent) 100% 0/14px 100% no-repeat scroll,var(--panel);border-bottom:1px solid var(--line);scrollbar-width:thin}
 .view-nav button{display:inline-flex;align-items:center;gap:var(--space-2);flex:none;min-height:44px;border-color:transparent;background:transparent;white-space:nowrap}
 .view-nav button:hover{background:var(--hover)}
 .view-nav button[aria-current="page"]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent);font-weight:600}
@@ -306,7 +309,7 @@ kbd{display:inline-block;min-width:24px;padding:1px var(--space-2);border:1px so
 @media(min-width:1024px){
  .shell{grid-template-columns:200px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
  .topbar{grid-column:1/-1}
- .view-nav{grid-row:2;grid-column:1;flex-direction:column;overflow-x:visible;overflow-y:auto;padding:var(--space-3);border-bottom:0;border-right:1px solid var(--line);position:sticky;top:56px;align-self:start;height:calc(100vh - 56px)}
+ .view-nav{grid-row:2;grid-column:1;background:var(--panel);flex-direction:column;overflow-x:visible;overflow-y:auto;padding:var(--space-3);border-bottom:0;border-right:1px solid var(--line);position:sticky;top:56px;align-self:start;height:calc(100vh - 56px)}
  .view-nav button{width:100%;justify-content:flex-start}
  .view-nav .badge{margin-left:auto}
  .shell-body{grid-row:2;grid-column:2}
@@ -406,6 +409,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 .usage-table th{font-size:var(--text-xs);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;background:var(--panel-soft)}
 .usage-table tr:hover td{background:var(--hover)}
 .usage-table .num{font-family:var(--font-mono);text-align:right}
+.usage-table .task-clip{display:block;max-width:32ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .usage-tag{display:inline-block;padding:1px var(--space-2);border-radius:var(--radius-control);font-size:var(--text-xs);font-family:var(--font-mono)}
 .usage-tag.pii{background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber)}
 .meta.usage-behind{color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber);border-radius:var(--radius-control);padding:var(--space-2) var(--space-3)}
@@ -431,7 +435,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 </defs></svg>
 <a class="skip-link" href="#main-content">Skip to content</a>
 <div class="shell">
-<header class="topbar"><div class="brand"><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1></div><div id="project-context" class="meta"></div><div class="topbar-end"><div id="connection" class="connection" role="status">Connecting...</div><button type="button" id="attention-badge" class="attention-badge" aria-label="Global attention" hidden>(0)</button><div class="theme-field"><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div><button type="button" id="keys-open" class="icon-button" aria-label="Keyboard shortcuts" aria-haspopup="dialog"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-help"/></svg></button></div></header>
+<header class="topbar"><div class="brand"><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1></div><div id="project-context" class="meta"></div><div class="topbar-end"><div id="connection" class="connection" role="status">Connecting...</div><button type="button" id="attention-badge" class="attention-badge" aria-label="Global attention" title="Global attention" hidden>Attention (0)</button><div class="theme-field"><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div><button type="button" id="keys-open" class="icon-button" aria-label="Keyboard shortcuts" aria-haspopup="dialog"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-help"/></svg></button></div></header>
 <nav id="dashboard-nav" class="view-nav" aria-label="Dashboard views">
 <button type="button" data-view-target="board" aria-current="page"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-board"/></svg><span class="nav-label">Board</span></button>
 <button type="button" data-view-target="office"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-office"/></svg><span class="nav-label">Office</span></button>
@@ -539,6 +543,15 @@ function applyDashboardView() {
   for (const section of document.querySelectorAll('main section[data-view]')) section.hidden = section.dataset.view !== currentView;
   for (const stack of document.querySelectorAll('main > .stack')) stack.hidden = ![...stack.children].some(section => section.dataset.view === currentView);
   for (const button of document.querySelectorAll('button[data-view-target]')) button.setAttribute('aria-current', button.dataset.viewTarget === currentView ? 'page' : 'false');
+  revealActiveView();
+}
+// #1477: the strip scrolls sideways on a phone, so a view picked by key or link is brought into sight once per change (a poll redraw never fights the person's own scrolling).
+let revealedView = null;
+function revealActiveView() {
+  if (revealedView === currentView) return;
+  revealedView = currentView;
+  const active = [...document.querySelectorAll('button[data-view-target]')].find(button => button.dataset.viewTarget === currentView);
+  if (active && typeof active.scrollIntoView === 'function') active.scrollIntoView({block:'nearest', inline:'nearest'});
 }
 function switchView(view) {
   if (!DASHBOARD_VIEWS.includes(view)) return;
@@ -820,7 +833,7 @@ function renderApprovals(permissions) {
   });
 }
 const SETTING_GROUPS = ['Roster', 'Permissions', 'Roles', 'Start', 'Routing', 'Switches'], INHERIT = '__inherit__';
-const settingsOpen = new Set(['Permissions']);
+const settingsOpen = new Set();
 const settingText = (value) => value === null || value === undefined ? '(not set)' : Array.isArray(value) ? (value.join(', ') || '(none)') : String(value);
 async function previewSetting(row, value, out, control) {
   if (stopped) return;
@@ -1004,7 +1017,15 @@ function renderStructure(target, edit, raise) {
   }
   const tier3 = el('div', undefined, 'structure-tier3');
   tier3.append(el('p', 'Executable and secret-locating keys', 'label'), el('p', "Changing one runs code with the daemon's rights or chooses where secrets are read from. It is never done from a browser: use the console command.", 'meta'));
-  for (const item of edit.tier3 || []) { tier3.append(el('p', item.key + (item.set ? ' (set)' : ' (not set)'), 'meta'), el('code', item.command)); }
+  // One command template and a compact key list (#1477): a key whose command is not the template shows its own.
+  const tier3Template = 'ahub settings edit config.local.json set <key> <json>', tier3Keys = el('div', undefined, 'structure-keys'), tier3Own = [];
+  tier3.append(el('code', tier3Template));
+  for (const item of edit.tier3 || []) {
+    tier3Keys.append(el('span', item.key + (item.set ? ' (set)' : ' (not set)'), 'badge'));
+    if (item.command !== tier3Template.replace('<key>', item.key)) tier3Own.push(item);
+  }
+  tier3.append(tier3Keys);
+  for (const item of tier3Own) tier3.append(el('p', item.key, 'meta'), el('code', item.command));
   group.append(tier3);
   const backups = el('div', undefined, 'structure-backups');
   backups.append(el('p', 'Backups (the last ' + (edit.backups || []).length + ')', 'label'));
@@ -1535,6 +1556,11 @@ async function refreshReviewComments(id) {
     if (lastSnapshot) { lastSnapshot = {...lastSnapshot, reviewComments:reviewCommentsCache.get(cacheKey)}; render(lastSnapshot); }
   } catch (error) { if (taskDetailId === id) notice('Review comments unavailable: ' + error.message, true); }
 }
+// #1477: the one filter the board and its count share; a count that ignored the filter said "5 tasks" over an empty board.
+function boardTaskVisible(task, taskFilter, ownerFilter, releaseFilter) {
+  return (!taskFilter || (taskFilter === 'work' ? ['in_progress','changes_requested'].includes(task.state) : task.state === taskFilter)) && (!ownerFilter || task.owner === ownerFilter || task.reviewer === ownerFilter) && (!releaseFilter || task.release === Number(releaseFilter));
+}
+function taskCountText(total, shown, filtered) { return (filtered ? shown + ' of ' + total : String(total)) + ' tasks'; }
 function renderBoard(snapshot, peers, ids) {
   if (columnFocus === undefined) {
     columnFocus = dashboardCookie.get('agent-hub-column-focus') || null;
@@ -1554,7 +1580,7 @@ function renderBoard(snapshot, peers, ids) {
   peerOptions(peerFilter,ids,'All agents'); if (ids.includes(previous)) peerFilter.value=previous;
   const taskFilter=$('task-filter').value, ownerFilter=peerFilter.value, releaseFilter=$('task-release-filter').value, lanes=$('task-lanes').value;
   const eligible=ids.filter(id=>['idle','busy'].includes(peers[id].state) && peers[id].attached!==false && peers[id].rostered!==false);
-  $('task-count').textContent=snapshot.tasks.length+' tasks';
+  $('task-count').textContent=taskCountText(snapshot.tasks.length,snapshot.tasks.filter(task=>boardTaskVisible(task,taskFilter,ownerFilter,releaseFilter)).length,Boolean(taskFilter||ownerFilter||releaseFilter));
   $('board-back').hidden = columnFocus === null; $('board-focus-title').hidden = columnFocus === null;
   $('board-focus-title').textContent = columnFocus ? model.columns.find(column => column.id === columnFocus)?.label || '' : '';
   update('task-legend',[snapshot.boardLegend,peers],target=>{
@@ -1574,7 +1600,7 @@ function renderBoard(snapshot, peers, ids) {
   update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,releaseFilter,lanes,showAllDone,[...overdue],columnFocus],target=>{
     taskRows.clear(); const keyed=keyedStart('cards',true);
     if(!snapshot.tasks.length)target.append(el('p','No tasks yet. Plan one with the Plan button, or run ahub task propose <title>.','empty'));
-    const visible=snapshot.tasks.filter(task=>(!taskFilter || (taskFilter==='work' ? ['in_progress','changes_requested'].includes(task.state) : task.state===taskFilter)) && (!ownerFilter || task.owner===ownerFilter || task.reviewer===ownerFilter) && (!releaseFilter || task.release===Number(releaseFilter)));
+    const visible=snapshot.tasks.filter(task=>boardTaskVisible(task,taskFilter,ownerFilter,releaseFilter));
     const visibleIds=new Set(visible.map(task=>task.id));
     const owners=columnFocus ? [null] : lanes==='agents' ? [...new Set(visible.map(task=>task.owner || ''))] : lanes==='releases' ? [...new Set(visible.map(task=>task.release ?? 0))] : [null];
     if (!owners.length) owners.push(null);
@@ -1671,8 +1697,8 @@ function renderNeedsAttention(snapshot) {
   if(signature===attentionSignature)return;
   attentionSignature=signature;attentionFirst=value?.items[0];
   const target=$('attention-badge');target.hidden=!value;target.disabled=!value?.items.length;
-  target.textContent=value?'('+value.act+')'+(value.watch?' +'+value.watch+' watch':''):'(0)';
-  target.setAttribute('aria-label',value?'Global attention: '+value.act+' action, '+value.watch+' watch':'Attention unavailable');
+  target.textContent=value?'Attention ('+value.act+')'+(value.watch?' +'+value.watch+' watch':''):'Attention (0)';
+  const attentionLabel=value?'Global attention: '+value.act+' action, '+value.watch+' watch':'Attention unavailable';target.setAttribute('aria-label',attentionLabel);target.title=attentionLabel;
   const approvals=$('agents-approval-count');approvals.textContent=approvalCount?'('+approvalCount+')':'';approvals.hidden=!approvalCount;
   const title=value?.act?'('+value.act+') agent-hub':attentionBaseTitle;if(document.title!==title)document.title=title;
 }
@@ -1894,7 +1920,7 @@ function renderUsage(usage, tasks, budget) {
     if (pii) {
       taskCell.append(el('span', '#' + id + ' [pii]', 'usage-tag pii'));
     } else {
-      taskCell.textContent = '#' + id + (bt?.title ? ' ' + bt.title : '');
+      const clip = el('span', '#' + id + (bt?.title ? ' ' + bt.title : ''), 'task-clip'); clip.title = clip.textContent; taskCell.append(clip);
     }
     const stateCell = el('td', bt?.state ? bt.state.replaceAll('_', ' ') : '-');
     const ownerCell = el('td', bt?.owner || '-');
@@ -2605,7 +2631,7 @@ function renderResults(results) {
     const tools = el('div', undefined, 'row-head');
     if (unread.length) tools.append(button('Mark all read', {action: 'results_read_all'}));
     if (results.canUnread) tools.append(button('Mark last unread again', {action: 'results_unread_last'}));
-    if (!unread.length) target.append(el('p', 'Nothing unread.', 'meta'));
+    if (!unread.length) empty(target, 'Nothing unread.');
     for (const item of unread) {
       const block = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
       head.append(el('span', String(item.title), 'label'));

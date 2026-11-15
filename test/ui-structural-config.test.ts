@@ -59,7 +59,10 @@ test("#689 every tier 3 key is shown read-only with the console command, and has
   expect(group).toBeDefined();
   const text = group.text();
   expect(text).toContain("kimi_cmd"); expect(text).toContain("instances.jcode-two.model");
-  expect(text).toContain("ahub settings edit config.local.json set kimi_cmd <json>");
+  // #1477: one command template and a compact key list, not the same command once per key.
+  expect(text).toContain("ahub settings edit config.local.json set <key> <json>");
+  expect(text.split("ahub settings edit config.local.json set").length - 1).toBe(1);
+  expect(text).toContain("kimi_cmd (set)");
   expect(text).toContain("runs code with the daemon's rights or chooses where secrets are read from");
   expect(group.all().filter(node => ["input", "select", "textarea", "button"].includes(node.tag))).toEqual([]);
   // The tier 3 fields of an instance are not offered in its form either.
