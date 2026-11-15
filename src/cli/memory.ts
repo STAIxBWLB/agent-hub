@@ -12,7 +12,8 @@ import { foldSegment } from "../hub/permission-mode.ts";
 import { matchesPolicyLexically } from "../hub/path-policy.ts";
 import { memoryAnchorTaskIdentity, memoryStaleAnchors, unavailableMemoryStaleAnchors, type MemoryStaleAnchorReport, type MemoryTaskPrivacy } from "../hub/memory-stale-anchors.ts";
 import { MEMORY_SYMBOL_START_BUDGET_MS } from "../hub/memory-symbols.ts";
-import { detectCliIdentity } from "./identity.ts";
+import { AGENT_MEMORY_RECORDING_SUBS, detectCliIdentity } from "./identity.ts";
+import { withAgentAttribution } from "./agent-attribution.ts";
 import { createStalenessProbe } from "../hub/memory-staleness.ts";
 import { looksSecret, memoryHome, memoryProjectKey, pathCandidates, readProfileJSON, resolveShardProfile, type MemoryStore } from "@staix/agent-mem";
 import type { SyncOptions } from "@staix/agent-mem";
@@ -111,6 +112,9 @@ function commandStores(provided: MemoryStore | undefined, options: ProfileMemory
   try { return { ...(provided ? bindProfileMemory(provided, undefined, memoryProjectKey(cwd)) : openProfileMemory(options)), owned: !provided }; }
   catch (error) { throw new Error(error instanceof Error && error.message === MEMORY_SPLIT_INCOMPLETE ? error.message : MEMORY_PROFILE_UNAVAILABLE); }
 }
+/** What a JSON receipt may carry for an agent (#1522): the kind, state and generation prefix, never the home path, selector, version or skip totals the person sees. */
+const shownReceipt = (profile: MemoryProfileReceipt | undefined, person: boolean) =>
+  person || !profile ? profile : { profile: profile.profile, state: profile.state, ...(profile.generation ? { generation: profile.generation.slice(0, 8) } : {}) };
 function profileOutput(text: string, json: boolean, profile: MemoryProfileReceipt | undefined, person: boolean): string {
   if (!profile) return text;
   if (profile.state !== "ready") throw new Error(MEMORY_PROFILE_UNAVAILABLE);
@@ -119,12 +123,23 @@ function profileOutput(text: string, json: boolean, profile: MemoryProfileReceip
 }
 
 /** Hub wrapper: current project policy and TTL stay here; parsing and storage commands belong to the core. */
-export async function memoryCommand(args: string[], cwd: string, opts: { store?: MemoryStore; sync?: Omit<SyncOptions, "remote">; now?: () => number; person?: boolean } = {}): Promise<string> {
+export async function memoryCommand(args: string[], cwd: string, opts: { store?: MemoryStore; sync?: Omit<SyncOptions, "remote">; now?: () => number; person?: boolean; /** The agent shell's peer id (#1522): its changes are recorded under this name. */ agent?: string } = {}): Promise<string> {
   const person = opts.person ?? detectCliIdentity(process.env).role === "console";
+  const sub = args.find(arg => arg !== "--json");
+  // #1522: an agent runs the family as itself. The recording commands run inside amem's agent attribution, so every writer stamps the agent (never "user")
+  // and amem applies its screened-visibility checks to each target; with no agent peer id, or no way to attribute, a change is refused rather than run as the person.
+  if (!person && sub !== undefined && AGENT_MEMORY_RECORDING_SUBS.includes(sub)) {
+    const peer = opts.agent ?? (() => { const identity = detectCliIdentity(process.env); return identity.role === "tools" ? identity.peer : undefined; })();
+    if (peer === undefined) fail(`memory ${sub} changes memory and needs an identified agent or the person; no agent identity was found, so nothing was run`);
+    return withAgentAttribution(peer!, cwd, () => memoryCommandBody(args, cwd, opts, person));
+  }
+  return memoryCommandBody(args, cwd, opts, person);
+}
+
+async function memoryCommandBody(args: string[], cwd: string, opts: { store?: MemoryStore; sync?: Omit<SyncOptions, "remote">; now?: () => number }, person: boolean): Promise<string> {
   const privatePaths = (): string[] => { try { return loadConfig(cwd).pii?.paths ?? []; } catch (e) { return fail(`the project's config does not load (${(e as Error).message}); fix it before reading hub memory`); } };
   const rest = args.filter(arg => arg !== "--json");
   if (rest[0] === "decay") {
-    if (!person) fail("memory decay requires person authority");
     let days = 90;
     if (rest.length !== 1) {
       if (rest.length !== 3 || rest[1] !== "--days" || !/^[1-9][0-9]*$/.test(rest[2]!)) fail("usage: ahub memory decay [--days N] [--json] (N must be a positive integer)");
@@ -149,7 +164,8 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
           && !note.about.some(node => openGoals.has(node) || (node.startsWith("task:") && linkedTasks.has(node.slice(5))))), routing, cwd, paths);
       });
       const profile = context.binding.status(store);
-      if (args.includes("--json")) return profileOutput(JSON.stringify({ days, cutoff, candidates, memoryProfile: profile }), true, profile, person);
+      // #1522: decay is open to an agent, so its JSON carries only the receipt an agent may see.
+      if (args.includes("--json")) return profileOutput(JSON.stringify({ days, cutoff, candidates, memoryProfile: shownReceipt(profile, person) }), true, profile, person);
       const text = candidates.length
         ? [`${candidates.length} decay candidate${candidates.length === 1 ? "" : "s"} older than ${days} days (review only):`, ...candidates.map(note => `mem:${note.id} ${note.at} ${note.kind}: ${note.title ?? note.text}`)].join("\n")
         : `no decay candidates older than ${days} days`;
@@ -157,7 +173,6 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
     } finally { if (context.owned) store.close(); }
   }
   if (rest[0] === "declined") {
-    if (!person) fail("memory declined requires person authority");
     if (rest.length !== 1) fail("usage: ahub memory declined [--json]");
     const project = projectOf(cwd, opts.store);
     const context = commandStores(opts.store, { project, deferPromotions: true, now: opts.now }, cwd);
@@ -175,7 +190,7 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
       const profile = context.binding.status(context.store);
       if (hostSyncPolicyInputs(cwd, context.binding.home, project, profile).version !== boundPolicy.version)
         fail("memory declined policy changed during inspection; retry with stable privacy policy");
-      if (args.includes("--json")) return JSON.stringify({ rows: result.rows, complete: result.complete, ...(result.reason ? { reason: result.reason } : {}), memoryProfile: profile });
+      if (args.includes("--json")) return JSON.stringify({ rows: result.rows, complete: result.complete, ...(result.reason ? { reason: result.reason } : {}), memoryProfile: shownReceipt(profile, person) });
       const text = result.complete
         ? result.rows.length
           ? [`${result.rows.length} declined physical outbound row${result.rows.length === 1 ? "" : "s"}:`, ...result.rows.map(row => `mem:${row.id} ${row.rule}`), "Review the source or approved policy, then run `ahub memory sync`. `forget` does not remove append-only physical rows."].join("\n")

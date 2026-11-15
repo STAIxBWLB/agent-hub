@@ -151,7 +151,7 @@ test("through the hub: a peer links its claimed task to a long-term task, workin
   expect(await goalCommand(["list"], root, { store })).toContain("held by this machine");
   await expect(goalCommand(["show", foreign], root, { store })).rejects.toThrow("no long-term task"); // another project's, by id
   for (const [cmd, args, want] of [["goal", ["list"], "allowed"], ["goal", ["show", "x"], "allowed"], ["goal", ["take", "x"], "console"], ["goal", ["new", "t"], "console"],
-    ["memory", ["sync"], "console"], ["memory", ["machine"], "allowed"], ["memory", ["machine", "--label", "x"], "console"]] as const) expect(classifyPeerCommand(cmd, [...args])).toBe(want);
+    ["memory", ["sync"], "allowed"], ["memory", ["machine"], "allowed"], ["memory", ["machine", "--label", "x"], "allowed"]] as const) expect(classifyPeerCommand(cmd, [...args])).toBe(want);
   expect(await memoryCommand(["machine", "--label", "office mac"], root, { store })).toContain("office mac");
   writeFileSync(join(root, "unused"), "");
 }, 30_000);

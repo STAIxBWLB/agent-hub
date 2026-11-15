@@ -78,6 +78,11 @@ export function detectCliIdentity(env: Readonly<Record<string, string | undefine
 
 export type PeerCommandAccess = "allowed" | "conductor" | "console";
 
+/** #1522: the `ahub memory` subcommands an agent shell runs (reads, and the changes amem records under the agent's own name). Anything else in the family stays the person's. */
+export const AGENT_MEMORY_SUBS: readonly string[] = ["list", "search", "show", "suggestions", "machine", "sync", "import", "dedupe", "promote", "demote", "forget", "supersede", "rebuild", "decay", "declined"];
+/** The ones that change memory and record an actor: `memoryCommand` runs these under the agent's attribution. Reads and the two review previews run unchanged. */
+export const AGENT_MEMORY_RECORDING_SUBS: readonly string[] = ["sync", "import", "dedupe", "promote", "demote", "forget", "supersede", "rebuild"];
+
 /** Flags the read-only forms of #812 accept: display options that change no behaviour. */
 const peerReadFlags = (args: readonly string[]): boolean =>
   args.every((arg) => ["--json", "--full", "--verbose", "--color=always", "--color=never", "--color=auto"].includes(arg) || arg.startsWith("--color="));
@@ -192,8 +197,9 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (command === "agents") return args.every(arg => arg === "--json") ? "allowed" : "console";
   // #247: reading the research measures and records is harmless (ids and counts only); #933 made backfill a conductor operation (above).
   if (command === "research") return args[0] === "backfill" ? "console" : "allowed";
-  // #258: reading hub memory is harmless; promote, demote, forget, supersede, rebuild and goal changes stay a person's (#933: amem records their actor as "user"; goal link is a conductor operation, above).
-  if (command === "memory") { const sub = args.find((arg) => arg !== "--json"); return sub === undefined || sub.startsWith("--") || ["list", "search", "show", "suggestions"].includes(sub) || (sub === "machine" && !args.includes("--label")) ? "allowed" : "console"; } // graph labels are unscreened note text: a person's
+  // #1522 (hub task 969): an agent shell runs the memory family as itself. The CLI wraps the writers in amem's agent attribution (`memoryCommand`), so the recorded and displayed actor is the agent, never the person.
+  // Left to the person: `graph` (its labels are unscreened note text), `confirm`/`reject` (judgments of suggested links), `profile-check` and every command outside `memory`; hub verdicts are not memory commands.
+  if (command === "memory") { const sub = args.find((arg) => arg !== "--json"); return sub === undefined || sub.startsWith("--") || AGENT_MEMORY_SUBS.includes(sub) ? "allowed" : "console"; }
   if (command === "goal") { const sub = args.find((arg) => arg !== "--json"); return sub === undefined || sub.startsWith("--") || ["list", "show"].includes(sub) ? "allowed" : "console"; }
   // #251: a run resets the bench project's tree and proposes work (#933: a conductor operation, above); reading results is harmless.
   // The subcommand is the first argument that is not --json, which the command accepts anywhere.

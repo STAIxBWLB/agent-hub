@@ -93,7 +93,9 @@ test("declined person inspection reports complete generation ids without exposin
   expect(inspectedSnapshots).toBe(0);
   expect(JSON.stringify(result)).not.toContain("never print this text");
   expect(JSON.stringify(result)).not.toContain("private/student.txt");
-  await expect(memoryCommand(["declined"], f.cwd, { store, person: false })).rejects.toThrow("person authority");
+  // #1522: an agent may inspect declined rows, and sees the same screened result without the person-only generation id or row text.
+  const agentView = await memoryCommand(["declined"], f.cwd, { store, person: false });
+  expect(agentView).not.toContain(G); expect(agentView).not.toContain("never print this text"); expect(agentView).not.toContain("private/student.txt");
   const human = await memoryCommand(["declined"], f.cwd, { store, person: true });
   expect(human).toContain(`mem:${id} host`);
   expect(human).not.toContain("never print this text"); expect(human).not.toContain("private/student.txt");
@@ -137,7 +139,11 @@ test("agent memory and goal reads reveal only profile kind and generation prefix
   expect(goals).not.toContain(G); expect(goals).not.toContain("skipped");
   const rows = JSON.parse(await memoryCommand(["list", "--json"], f.cwd, { store, person: false }));
   expect(Array.isArray(rows)).toBe(true); expect(rows[0]?.memoryProfile).toBeUndefined();
-  await expect(memoryCommand(["decay", "--json"], f.cwd, { store, person: false })).rejects.toThrow("person authority");
+  // #1522: decay is a review-only listing, open to an agent; it shows only the generation prefix and never the skip totals.
+  const decayJson = await memoryCommand(["decay", "--json"], f.cwd, { store, person: false });
+  expect(decayJson).not.toContain(G); expect(decayJson).not.toContain("skipped");
+  const decayText = await memoryCommand(["decay"], f.cwd, { store, person: false });
+  expect(decayText).not.toContain(G); expect(decayText).not.toContain("skipped malformed");
   expect(await memoryCommand(["list"], f.cwd, { store, person: true })).toContain(`generation ${G}; skipped malformed legacy rows: 1`);
 });
 

@@ -80,7 +80,8 @@ test("model-suggested edges are drawn but are not evidence until a person confir
   expect(s.suggestions("work/other")).toEqual([]);
   expect(s.judge(third, "confirm", "user", "work/other")).toBeUndefined();
   expect(s.suggestions("work/app").map((x) => x.id)).toContain(third);
-  for (const sub of ["confirm", "reject", "import"]) expect(classifyPeerCommand("memory", [sub, "x"])).toBe("console");
+  for (const sub of ["confirm", "reject"]) expect(classifyPeerCommand("memory", [sub, "x"])).toBe("console"); // judging a suggested link is still the person's (#1522 leaves it out)
+  expect(classifyPeerCommand("memory", ["import", "claude-mem"])).toBe("allowed"); // #1522 AC1
   expect(classifyPeerCommand("memory", ["suggestions"])).toBe("allowed");
 });
 
