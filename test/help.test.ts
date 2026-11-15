@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ADAPTERS, assertNativeCapabilityScope } from "../src/adapters/registry.ts";
-import { EXAMPLES, HELP, INTERNAL_COMMANDS, helpCommands, helpFlags, helpOverviewRows, listsSubcommand, renderHelp } from "../src/cli/help.ts";
+import { EXAMPLES, FLAG_DESCRIPTIONS, FLAG_LINE, HELP, INTERNAL_COMMANDS, flagDescription, helpCommands, helpFlags, helpOverviewRows, listsSubcommand, renderHelp } from "../src/cli/help.ts";
 import { ROLE_SGR } from "../src/cli/output-standard.ts";
 import { initialConsoleState, paint, PALETTE, renderConsole, wrap } from "../src/cli/console-state.ts";
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
@@ -166,8 +166,9 @@ describe("ahub help (#212)", () => {
     expect(flags.get("--path")).toEqual(["propose", "handoff"]);
     expect(flags.get("--urgent")).toEqual(["propose"]);
     const rendered = renderHelp(80, false, "task").replace(/\s+/g, " ");
-    expect(rendered).toMatch(/--sync in handoff/);
-    expect(rendered).toMatch(/--key <uuid> in handoff/);
+    // #1504 AC3: the Flags line says what the flag is for; the forms stay on the Usage lines and in helpFlags
+    expect(rendered).toMatch(/--sync sync handoff states from the targets/);
+    expect(rendered).toMatch(/--key <uuid> idempotency key \(a UUID\) for the handoff/);
   });
 
   test("#1504: a native agent's summary rides cli.usage, so a non-builtin definition cannot supply one", () => {
@@ -187,6 +188,47 @@ describe("ahub help (#212)", () => {
     expect(status).toContain("--json");
     expect(status.replace(/\s+/g, " ")).toContain("one JSON document on stdout, never colored");
     expect(status.replace(/\s+/g, " ")).toContain("auto, always or never; auto follows NO_COLOR, FORCE_COLOR and the terminal");
+  });
+
+  test("#1504 AC3: every flag line of every command carries a description, one line of at most FLAG_LINE cells, and none is the old `in <forms>` fallback", () => {
+    let lines = 0;
+    for (const command of new Set(HELP.flatMap(helpCommands))) {
+      for (const item of helpFlags(command)) {
+        lines++;
+        const text = flagDescription(command, item.flag);
+        expect(text, `${command} ${item.flag} has no description`).toBeTruthy();
+        expect(text!.trim(), `${command} ${item.flag}`).toBe(text!);
+        if (item.flag !== "--json" && item.flag !== "--color") expect(Bun.stringWidth(text!), `${command} ${item.flag}: ${text}`).toBeLessThanOrEqual(FLAG_LINE);
+      }
+      // the rendered line: the flag's own text follows its label, not a list of forms
+      for (const columns of [80, 100]) {
+        const text = renderHelp(columns, false, command).split("\n");
+        const start = text.findIndex(line => line.startsWith("▸ Flags"));
+        if (start < 0) continue;
+        const block = text.slice(start + 1, text.findIndex((line, index) => index > start && line.startsWith("▸ ")));
+        for (const item of helpFlags(command)) {
+          const label = item.shape ? `${item.flag}${item.joiner}${item.shape}` : item.flag;
+          const row = block.findIndex(line => line.startsWith(`  ${label}`));
+          expect(row, `${command} ${label}`).toBeGreaterThanOrEqual(0);
+          const own = (block[row]!.slice(2 + label.length) + " " + (block.slice(row + 1).find(line => /^ {3,}\S/.test(line)) ?? "")).replace(/\s+/g, " ");
+          expect(own, `${command} ${label}`).toContain(flagDescription(command, item.flag)!.split(" ")[0]!);
+        }
+      }
+    }
+    expect(lines).toBeGreaterThan(300);
+  });
+
+  test("#1504 AC3: a flag's description is looked up by command first, so `--all` says what it does for each command", () => {
+    expect(flagDescription("status", "--all")).toBe("every registered project");
+    expect(flagDescription("learn", "--all")).toBe("include decided candidates");
+    expect(flagDescription("queue", "--all")).toBe("include rows already settled");
+    expect(flagDescription("nosuchcommand", "--all")).toBe(FLAG_DESCRIPTIONS["--all"]);
+    expect(flagDescription("status", "--nosuchflag")).toBeUndefined();
+    // the line a person reads under `ahub help learn`
+    expect(renderHelp(80, false, "learn").replace(/\s+/g, " ")).toContain("--all include decided candidates");
+    // a table entry names a flag some command takes: a stale entry would describe nothing
+    const used = new Set(HELP.flatMap(entry => helpCommands(entry).flatMap(command => helpFlags(command).map(item => [command, item.flag] as const))).flatMap(([command, flag]) => [flag, `${command} ${flag}`]));
+    for (const key of Object.keys(FLAG_DESCRIPTIONS)) expect(used.has(key), `${key} describes no flag of any command`).toBe(true);
   });
 
   test("#1504 AC4: everything `ahub help <command>` printed before still appears, form by form, flag by flag and word by word", () => {
