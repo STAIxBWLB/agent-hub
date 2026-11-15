@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { hubGitEnv, hubGitSync } from "./git.ts";
 import { stopOwnedProcess, trackGroup } from "./child-process.ts";
 import { hostExecutable } from "./host-executable.ts";
+import { installScriptsRefused } from "./install-policy.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
@@ -661,8 +662,6 @@ export function dependencyKey(parts: { lockfile: string; manifest: string; bun: 
 }
 /** Files besides bun.lock that decide what `bun install --frozen-lockfile` produces: manifests, Bun and registry config, patches. */
 const INSTALL_INPUT = /(?:^|\/)(?:package\.json|bunfig\.toml|\.npmrc)$|^patches\//;
-/** Scripts bun runs during the root or a workspace install. They can read tracked source, so no manifest hash can bind their output. */
-const INSTALL_LIFECYCLE = ["preinstall", "install", "postinstall", "prepublish", "preprepare", "prepare", "postprepare"];
 /** Hash of every install-affecting file in the staged source, by path and content, so a changed manifest or config never reuses a volume. */
 export async function dependencyManifest(source: string): Promise<string> {
   const files: string[] = [];
@@ -684,7 +683,7 @@ export async function dependencyManifest(source: string): Promise<string> {
       let manifest: unknown;
       try { manifest = JSON.parse(data.toString("utf8")); } catch { throw new RemoteDependencyError(); }
       const scripts = manifest && typeof manifest === "object" ? (manifest as { scripts?: unknown }).scripts : undefined;
-      if (scripts !== undefined && (!scripts || typeof scripts !== "object" || Array.isArray(scripts) || INSTALL_LIFECYCLE.some(name => Object.hasOwn(scripts, name)))) throw new RemoteDependencyError();
+      if (installScriptsRefused(scripts)) throw new RemoteDependencyError();
     }
     digest.update(`${path}\0${hash(data)}\0`);
   }

@@ -24,6 +24,36 @@ agent-hub connects agents that can each run commands. This page says what the hu
 - **Secrets stay where they are read.** The gateway key and Cloudflare Access values are read inside the gateway client and go only into request headers: never into logs, errors, envelopes, tool output, memory. Subscription logins of Claude, Codex and Kimi are never proxied or pooled.
 - **The hub's own model calls are fenced.** Digest condensation, task triage and the PII screen read agent-written text as data; their output is capped text framed as untrusted, or a value checked against a closed list. It is never used as a route, a peer id, a tool call or an instruction. The hub model's intake split (#511) is JSON that must pass the same parts schema a planner's `hub_backlog_split` takes and may name only the request's own sources; it only writes draft backlog cards that wait for a person's or the conductor's `intake approve`, and a PII request goes only to a model reached on campus, else stays unsplit.
 
+## Pi prepared dependencies (#1447 T5)
+
+The localhost listener leg moved to a follow-up; Pi's network profile and proxy
+environment are unchanged in this slice.
+
+Preparation is a host operation after guarded acceptance and before the tool
+reply. Its immutable input snapshot comes from the recorded task-worktree base
+commit through hardened Git object reads. A changed task input is not installed.
+Manifest lifecycle hooks, explicit trusted dependencies, runtime Bun preload,
+installer script settings, paths escaping the snapshot and unsupported layouts
+refuse preparation. Default trusted dependency code is limited to the reviewed
+main lockfile, the same trust as the person's own install on main.
+
+The fixed installer runs in private host-protected state with an isolated HOME,
+explicit shared Bun cache and a deadline. No ambient tokens or installer output
+reach peer text. Publication is a same-device rename to an absent target through
+a trusted helper that verifies its kernel CWD against the held worktree inode;
+project preload and dotenv are disabled for that helper. Existing directories,
+files, symlinks, changed roots and cross-device publication refuse. No dependency
+tree is copied. Temporary state is removed on every outcome. Failures keep the
+task accepted and give fixed not-prepared guidance; changed ownership, session
+or privacy after the await cannot return a stale successful acceptance. Full
+verification remains with CI and the remote runner.
+
+A bounded `lstat` walk never follows dependency symlinks and rejects every
+regular file with multiple hardlinks before publication. This prevents project
+writes from reaching a shared cache inode. Hardlink-producing backends, including
+Linux's default when cache and installation share a filesystem, remain unprepared
+instead of changing the backend or copying dependency files.
+
 ## Native memory authority and profile selection
 
 The portable core is the exact-pinned first-party `@staix/agent-mem` 0.23.1 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.

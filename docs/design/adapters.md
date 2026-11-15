@@ -360,6 +360,34 @@ External adapter modules are an explicit, person-owned, machine-local opt-in. Th
 
 Kimi 2.5.2's own TUI also earns completions, but only through the `ahub kimi` launcher's ephemeral `native_hook_launch` and local plugin (#1282). The plugin record binds the launch to its owner pid and process signature. A different launch may replace it only when that owner is proven gone; an active or unknown owner, including one from another project sharing the native home, is left unchanged. Replacement and cleanup share one fail-closed lock per native home, with no automatic stale-lock deletion. If begin or setup fails, the launcher reports the cause and starts the plain TUI without completion receipts. Quiet background/final-turn re-reads back off from 250 ms to 1 s, and the 2 s Stop deadline also arms them. A hook is a candidate observation, never proof. The daemon admits only the exact `kimi-tui` compat version and binds the observation to daemon, launch, native home, native session, project and current socket generation. The transcript's `turn.prompt` supplies the origin and turn id; its final `turn.ended` supplies the outcome. `prompt.completed` and `prompt.aborted`, when present, must agree with that turn; a notification may omit both id forms, so the native notification id or turn id is the fallback identity. A blocked Stop has no final row, so it cannot settle. StopFailure needs `failed`, Interrupt stays quiet with no result, and launcher loss or daemon reconstruction creates at most one `interrupted`. Every native-person result is private because the hook path cannot prove it is public. Headless ACP keeps `prompt-response`; an unverified TUI version or a launch without these readbacks keeps the old no-completion behavior. Native background task files supply the count or an explicit unknown; work or an unreadable inventory never settles. A 250 ms re-read covers missing TaskStarted/Notification hooks without turning elapsed time into evidence. No prompt, answer, error, task command or title reaches completion rows, events, logs or memory. The exact-version receipt is `docs/verification/2026-11-08-kimi-tui-completion-1282.md`.
 
+## Pi accepted-worktree dependencies (#1447 T5)
+
+The localhost listener leg moved to a follow-up. This slice leaves Pi's network
+profile and proxy environment unchanged. Full verification stays with CI and
+the remote runner.
+
+Dependency preparation completes before the accept/self-claim reply and first
+accepted-worktree use. The earlier assignment turn is metadata-only. Existing
+acceptance admission runs before preparation, and ownership, acceptance identity,
+session authority and privacy are rechecked after the await. Failure leaves the
+task accepted and returns fixed not-prepared guidance in the accept result and
+the next Pi prompt, never installer stdout or stderr.
+
+The host snapshots install inputs from the worktree's recorded reviewed base
+commit, not its writable files. Changed task inputs, missing lockfiles, malformed
+manifests, install lifecycle hooks, declared trusted dependencies and installer
+preload/script configuration refuse preparation. Test-only Bun preload is not an
+installer preload. The fixed command is `bun install --frozen-lockfile`, using an
+isolated HOME, explicit shared Bun cache and a bounded deadline. It runs in a
+private host-state snapshot, then publishes root `node_modules` by same-volume
+rename only to an absent target. Existing directories/symlinks, unsupported
+workspace layouts and cross-device publication refuse; no module-tree copy or
+script-skipping fallback is used. Temporary inputs are removed on every outcome.
+Before publication a bounded, non-following walk rejects regular dependency files
+with multiple hardlinks, so a peer cannot write through into the shared cache.
+A hardlink-producing backend remains unprepared; it is never rewritten or copied
+to bypass that refusal.
+
 ## Pi task-move ordering (#1447 T4)
 
 A late important task notice published during Bus condensation joins the next

@@ -72,6 +72,16 @@ failures retain `inference_failed`. A stop or recovery abort only logs its class
 and never escalates a task. An accepted-owner history binding, rather than every
 metadata revision, scopes the continuation counter.
 
+Pi worktree acceptance (#1447 T5) keeps its existing admission and board-write
+rules. The async accept/self-claim reply additionally waits for bounded host
+dependency preparation, then rechecks the accepted owner's identity, session
+authority and privacy. A preparation failure is advisory: the accepted task stays
+in progress, with fixed readiness/cause text in the accept answer and next Pi
+prompt. No installer output is stored on the board or copied to peer text.
+Inputs are the recorded reviewed Git base, never mutable task files; changed
+inputs or unsupported install settings/layouts remain unprepared. No new public
+task schema or local-worker preparation is added.
+
 Pressure checkpoints remain peer/session operations, including for taskless peers.
 A host waiter additionally captures its owned-work task ids, creation identities
 and actual owner-history epochs (#1447 T4). Move, unassign, cancellation or a
