@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.36.0 and control protocols 16 through 17. Live verification
+This guide describes ahub 0.40.0 and control protocols 16 through 17. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -63,7 +63,7 @@ smoke ledger; the presence of this option proves no outstanding #273 live leg.
 
 ## Command output
 
-`ahub status`, `board`, `budget`, `doctor`, `projects`, `queue list`, `turns`, `report` and `usage` print shared console tables and labelled details.
+`ahub status` defaults to an attention-first summary with next-step commands; `--verbose` or `--full` prints the detailed view, `--full` also keeps long identifiers whole, and `--ascii` uses ASCII markers. `board`, `budget`, `doctor`, `projects`, `queue list`, `turns`, `report` and `usage` print shared console tables and labelled details.
 `status --all` uses the projects table. `queue show`, `models status` and `budget execution status` show labelled fields; add `--json` for the raw fetched document.
 `report --by task` keeps the attribution and coverage sentences with section headings and aligned counters.
 Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
@@ -75,15 +75,18 @@ Text columns are a human interface, not a scripting contract. An identifier acce
 turn ids, queue ids, project ids, execution budget ids and ids in labelled views. Only status's informational settlement and hold ids are shortened;
 `status --full` keeps those whole too. Identifiers in suggested commands are always whole.
 
-`--color=auto|always|never` uses the console palette. Auto colors only a TTY with `TERM` other than `dumb`
-and empty `NO_COLOR`; pipes and redirects stay plain. Color never replaces a state or level word.
+`--color=auto|always|never` uses the CLI output palette. `always` and `never` force the choice;
+otherwise a non-empty `NO_COLOR` disables color, non-empty `FORCE_COLOR` or `CLICOLOR_FORCE`
+enables it unless set to `0`, `FORCE_COLOR=0` or `CLICOLOR=0` disables it, and the fallback
+colors a TTY whose `TERM` is not `dumb`. Pipes and redirects are plain by default. Color never
+replaces a state or level word.
 TTY width is its columns (at least 80). A pipe uses a positive integer `COLUMNS` when supplied, otherwise rows
 are complete and unwrapped. Long fields wrap within their column; when whole metadata words and the readable flexible-column minimum do not fit, table bands retain every field. Each band carries the row id; when it cannot share a line with the metadata, a per-row id banner links them. Labelled two-column views keep each label beside its value, wrapping the value instead of separating labels and values into bands. In `turns`, the time and state cells wrap at word boundaries only when the file list needs the room and the listing gets shorter for it. When `projects` bands, the task list stays with the state columns in the first band and the second band is always PROJECT and ROOT. Console children receive the console's width
 minus its four-column indent and remain uncolored.
 
 ## Command help
 
-`ahub help`, `ahub --help` and `ahub -h` print the commands grouped by section;
+`ahub help`, `ahub --help` and `ahub -h` print a short command summary grouped by section;
 `ahub help <command>` prints only that command's entries, and so does
 `ahub <command> -h` (or `--help`) when the flag is the only argument, and
 `ahub <command> <sub> -h` when the help lists that subcommand (#1433); anywhere else
@@ -96,11 +99,14 @@ prints `unknown command "<name>"; run ahub help` and exits non-zero. Usages star
 at two spaces and descriptions at one fixed column, wrapped at word boundaries to
 the terminal width, read as at least 80 and at most 100 columns.
 
-Help uses the console palette: section headings bold cyan, `ahub <command>` words
+Help uses the CLI output palette: section headings bold magenta, command words
 cyan, arguments and descriptions the terminal's default foreground. It has no
-`--color` flag: color is on only when standard output is a terminal, `TERM` is
-not `dumb` and `NO_COLOR` is empty or absent. Pipes and redirects get plain text
-without escape sequences, laid out for 80 columns.
+`--color` flag. The same environment precedence as other CLI output applies:
+non-empty `NO_COLOR` disables color; `FORCE_COLOR` or `CLICOLOR_FORCE` enables it
+when non-empty and not `0`; `FORCE_COLOR=0` or `CLICOLOR=0` disables it; otherwise
+color follows whether standard output is a terminal with `TERM` other than
+`dumb`. Pipes and redirects are plain by default and the overview is laid out
+for 80 columns.
 
 ### Shell completion
 
@@ -579,9 +585,10 @@ with kind and task ids; all three carry task and peer ids only, and a PII task
 never joins a link.
 
 Console color policy is `--color=auto|always|never`, with `auto` as the default.
-Auto enables color only when both input and output are TTYs, `TERM` is not
-`dumb`, and `NO_COLOR` is empty or absent. Explicit `always` overrides these
-conditions, including redirected stream output; `never` disables styling.
+Explicit `always` and `never` force the choice; otherwise the same `NO_COLOR`,
+`FORCE_COLOR`, `CLICOLOR_FORCE`, `CLICOLOR=0` and `TERM` rules apply, using both
+input and output TTY state for the fallback. Explicit `always` enables color on
+redirected stream output.
 Neither option changes terminal size requirements, panel decisions, cursor
 management or the final reset. Invalid values fail before connecting.
 
@@ -656,7 +663,7 @@ and so is every help entry the gate has no class for yet;
 | `ahub doctor [--json] [--full] [--color=...]` | Allowed | a read-only check of tools, daemon, plugin, gateway, models and memory; the `memory capture: codex` and `memory capture: kimi` rows come from agent-mem's setup state (`amem setup <tool> --json` on PATH, a preview that writes nothing), as set up, `amem setup <tool> --apply` needed, client missing, or unknown when `amem` is missing, refuses or prints no setup plan (#1008) |
 | `ahub doctor --stale-anchors [--json]` | Allowed | a bounded read-only report of memory symbol anchors at current HEAD |
 | `ahub queue list [--peer <id>] [--json] [--full] [--color=...]` | Allowed | public queue metadata only; inspect your own public held bodies through `hub_inbox`; `ahub queue show` and operator resolution remain person/conductor operations |
-| `ahub roster [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |
+| `ahub roster [list] [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |
 | `ahub roles [--json] [--color=...]` | Allowed | each rostered peer's flow roles as the running hub settled them (#1411 T2); no operand |
 | `ahub settings [list] [--json]`, `ahub settings get <key> [--json]` | Allowed | public registry values; secret-locating values, paths, undo records and config-editor details are withheld |
 | `ahub sdlc status\|explain [<task>] [--json] [--color=...]` | Allowed | public lifecycle status; private tasks stay stubs, without private evidence or receipts |
@@ -2612,7 +2619,7 @@ global CLI the way it was installed; `ahub doctor` names the exact step.
 
 ## Change the participating peers while the hub runs
 
-`ahub roster` lists every known peer, whether it participates, its start mode,
+`ahub roster` or `ahub roster list` lists every known peer, whether it participates, its start mode,
 current state, queued messages and open tasks. `ahub roster --json` is the same
 ordered catalog view for scripts. Status and the console keep their existing lazy
 rows; an off-roster peer is shown only while it has retained messages, an uncertain
@@ -3706,7 +3713,12 @@ for that head (#785): one `gh pr view` a minute, ended by a passed CI result, by
 shutdown; a restart does not restore it, and the next `hub_task_done` starts a new
 one. A failed or incomplete result is told once and the watcher keeps reading for a
 rerun of the same head: the first pending read after a newly told result renews the
-deadline once, and a deadline after a told result ends silently (#540). On the result the owner and the reviewer each get one
+deadline once, and a deadline after a told result ends silently (#540). Cancelled
+attempts and a draft PR's deferred `check (macos-latest)` are pending to this watcher,
+not failures; it keeps watching for a replacement run. If GitHub returns multiple
+rows for one check, the hub uses an older-run filter only when workflow identity and
+start times identify one unique latest run; ambiguous duplicates cannot establish a
+pass (#1527). On the result the owner and the reviewer each get one
 `ci_completed: #<id> head <sha12> passed|failed|incomplete` task notice (ids only, the
 head cut to 12 characters; a person reviewer gets a console line instead), and
 unless CI failed, a review the hub held as premature for that head is offered
@@ -4344,9 +4356,9 @@ are a terminal and neither `--dry-run` nor `--yes` is given. With either flag, o
 through a pipe, the plan is printed as readable text (#814) and `--json` keeps the JSON plan and the `ahub: blocker:` lines; the exit codes are unchanged. The screens add no way to change an operation: every choice runs one
 of the commands in this section for you, so that command's refusals decide.
 
-The screens use the console palette and `--color=auto|always|never`, with the
-same `NO_COLOR` and `TERM=dumb` precedence. Auto colours a suitable TTY; explicit
-always has the console's override behaviour. Raw JSON bypasses colour and width
+The screens use the CLI output palette and `--color=auto|always|never`, with the
+same `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR_FORCE`, `CLICOLOR=0` and `TERM` rules.
+Auto colors a suitable TTY; explicit always has the console's override behaviour. Raw JSON bypasses colour and width
 handling. Default and never print the same readable pipe, dry-run, status and
 dispose text, and `--json` keeps the previous documents byte for byte. Presentation flags go after the command, for
 example `ahub recovery --color=never` or
@@ -6009,6 +6021,25 @@ recovery; its row/link digest is part of the recovery proof. Empty databases
 retain the old format and integrity shape. R1 creates no GitHub milestone or issue,
 model answer, export, dashboard view or console panel. See [the module contract](design/roadmap.md).
 
+### Bottom-up placement (R3)
+
+`ahub roadmap unplaced [--repo owner/name]` lists open issues, tasks and active or
+draft specs with their placement reason. Private tasks are counted but not shown;
+unavailable sources and capped or partial reads remain explicit, so an empty
+list is not proof that everything is placed. `ahub roadmap triage [--repo]`
+asks the configured planner or unique conductor's hub model for evidence-backed
+suggestions. It stores suggestions without linking anything; `triage --list`
+reads pending suggestions without a model call. The planner or conductor can
+accept or reject each suggestion with `ahub roadmap accept|reject <id>`. Accept
+creates a proposed milestone first when the suggestion names a new milestone,
+then adds its link; no link is applied without acceptance.
+
+The person can use `ahub roadmap import-github [--repo owner/name]` to preview
+open GitHub milestones and their issue links. Add `--apply` to import them as
+proposed milestones and link open issues. Imports are idempotent, partial reads
+are marked, and nothing is written back to GitHub. See the [bottom-up placement
+contract](design/roadmap.md#bottom-up-placement-r3).
+
 ## Planning and phased releases (#263)
 
 Use `ahub backlog list` to read public staged work (a table by rank with the reserved owner, dependencies and cut titles, then a count by reserved owner; `--full` and piped output keep whole titles and `--json` prints the raw listing), then `ahub backlog plan <id>
@@ -7204,7 +7235,7 @@ A peer asks with `hub_ask` (the same tool for Claude, Codex, Kimi, Jcode, Pi and
   ahub answer qs-0123456789ab choice=option --instructed "Record the option I just selected."
   ```
 
-  Use the actual open set, question and offered option ids; the example records no standing authority. Without `--instructed`, an agent shell retains the existing person-only refusal. The person's console and ordinary terminal answers are unchanged.
+  Use the actual open set, question and offered option ids; the example records no standing authority. Without `--instructed`, an agent shell retains the existing person-only refusal. The Agents view shows completed instructed answers under Recorded answers; the acon inbox also lists a read-only answered item that links to that view. The instruction quote is not shown. The person's console and ordinary terminal answers are unchanged.
 - **Attention.** An open question is a `question` need (level `act`) and the status `waiting` while one is open, ranked after approvals and permission defaults. It is level-triggered: viewing or listing it never clears it; only an answer, a supersede, a cancel or an expiry does. The model carries the set id, the asking peer and the time, never a prompt or an option. The console reads the list only from a hub whose status lists the `questions` feature, and prints one stream line (peer and count, no text) when a new question arrives.
 - **Recovery.** A new daemon feature label, `questions`, marks the protocol. Recovery refuses a target without it while a question is open or an answer is still owed (`target lacks questions`), because an older daemon would silently ignore the table; answer or cancel the questions first. A recovery `prepare` ends every waiting call as `pending` at once, so a waiting `hub_ask` never holds the prepare for its window. The Claude plugin reports a hub without the label as "this hub does not support questions".
 - **Events.** `question` records `set`, `peer`, `event` (`asked`, `answered`, `pending`, `superseded`, `cancelled`, `expired`, `unavailable`), `latencyMs`, `surface`, `reason`, `questions` (a count) and `private`; never any text.

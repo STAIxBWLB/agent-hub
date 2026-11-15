@@ -37,6 +37,7 @@ Scope: the security pass of a review (`REVIEW.md`), and any change under `src/lo
 
 ## Supply chain and release (companion `supply-chain`)
 
+- When reviewing Pi dependency preparation, also check the Pi dependencies rule in `docs/agent-notes/adapters.md` and the Pi prepared dependencies section in `docs/security.md`.
 - Workflow actions are pinned by commit SHA with the version in a comment; `test/workflow-pins.test.ts` refuses a tag. Workflow `permissions` stay at the minimum each job needs (`.github/workflows/`).
 - The dependency volume key covers everything that decides `node_modules` (`dependencyKey` in `src/hub/check-runner.ts`); a manifest with an install lifecycle script is refused, never keyed. Never add `--ignore-scripts` or a writable shared cache to make a run pass.
 - Runtime dependencies stay at zero third-party packages; `@staix/agent-mem` stays exact-pinned.

@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.39.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.40.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 Inspect bounded task and attempt metadata with `ahub lineage show`; admit external
@@ -143,9 +143,9 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   Pi can checkpoint and continue after a tool-step ceiling, within a configured
   continuation allowance; exhausted ceilings and model failures have distinct
   task-move reasons ([Pi operations](docs/operations.md#pi-with-dgx-and-mlx)).
-- **Guard rails.** The local worker and Pi run in a sandbox, and their writes and
-  shell commands wait for your approval unless you choose a looser permission mode.
-  Publish, external-write, destroy and install calls ask a person in every mode for
+- **Guard rails.** The local worker and Pi run in a sandbox, and peer-issued writes
+  and shell commands wait for your approval unless you choose a looser permission mode.
+  Peer-issued publish, external-write, destroy and install calls ask a person in every mode for
   Claude Code, the local worker, Pi, hub-owned ACP peers such as Kimi and the
   approval requests Codex sends, wherever the hub sees the call before it runs;
   `ahub status` names each peer where it cannot. The opt-in floor

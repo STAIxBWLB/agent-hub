@@ -162,6 +162,8 @@ A reviewer records the head it actually reviewed. If GitHub no longer reports th
 
 Use structured gh JSON/GraphQL read-only calls (the guarded merge below is the one exception) with validated repository and numeric artifact identities. No shell interpolation, PR/issue body fetching, token logging or unbounded comment storage. Failure yields unknown. Required checks come from repository rules or explicitly configured names; an empty/unknown set is not silently green. Review-thread status is counted, not copied. Cancellation and task-owner generation fencing prevent a late read from approving reassigned work.
 
+GitHub may return more than one row for a named check after a rerun or cancellation. When every row has a workflow identity and start time, and those identify one uniquely newest run of the same workflow, the hub evaluates that run and drops older rows. If workflow identity or ordering is ambiguous, it retains the rows; duplicate evidence remains a blocker rather than a guessed pass. In the CI watcher, cancelled attempts and a draft PR's deferred `check (macos-latest)` read as pending so the watcher can wait for a replacement run; the aggregate draft check still must pass before review readiness.
+
 ahub sdlc status and explain expose mode, stage, gate, observed/reviewed/local-check heads, next actor and next action. Console/dashboard derive the same result. Merge ordering compares exact PR path sets, reports intersections and never guesses an automatic landing order where dependencies are unknown. Release readiness lists merged work since the tag, stale/nonancestor documentation stamps and open native/live receipts; each unknown remains visible.
 
 ## Composition and measurement

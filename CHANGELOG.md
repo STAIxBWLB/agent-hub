@@ -4,6 +4,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.40.0
+
+- Release N-1 for 0.40.x is published 0.39.0, with exact agent-mem 0.26.0 and control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.0. The isolated fixture exercises old client and plugin against the new daemon and the new client and plugin against the old daemon. It does not establish live-agent, rollback or shared-home compatibility. The wire retains protocol 16 through 17; roadmap adds a conditional recovery feature and additive milestone tables. New roadmap CLI and MCP forms are not available from a 0.39.0 daemon. File and format-floor compatibility beyond these fixtures remains subject to the release verification report.
+
 - Companion CLI contract v1 lists the existing optional per-peer context occupancy and freshness (hub task 974, Refs #1511). A scratch hub with a fixture status-line reading verifies the real status JSON; no context measurement or wire field was added.
 
 - Execution lineage accepts `atex` as an opaque declared producer (hub task 972, Refs #1510). A build reference can carry its receipt id and PDF SHA-256; the hub does not execute atex, fetch the receipt or attest the build.
