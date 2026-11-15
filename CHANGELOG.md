@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Companion CLI contract v1 lists the existing optional per-peer context occupancy and freshness (hub task 974, Refs #1511). A scratch hub with a fixture status-line reading verifies the real status JSON; no context measurement or wire field was added.
+
 - Execution lineage accepts `atex` as an opaque declared producer (hub task 972, Refs #1510). A build reference can carry its receipt id and PDF SHA-256; the hub does not execute atex, fetch the receipt or attest the build.
 
 - `ahub help <command>` says what each flag is for (hub task 971, #1504 AC3). A Flags line was the flag, its value shape and the forms that take it (`--sync in handoff`); it is now one short description (`--sync  sync handoff states from the targets`), at most 46 cells so it fits 80 columns. The words live in `FLAG_DESCRIPTIONS` in `src/cli/help.ts`, keyed by the flag or by `<command> <flag>` where a command uses a flag differently (`--all` means every project for `status`, decided candidates for `learn`, completed goals for `goal`). A flag with no entry falls back to the forms line. `test/help.test.ts` fails a flag of any command without a description, a line over the width, and a table entry that names no flag.
