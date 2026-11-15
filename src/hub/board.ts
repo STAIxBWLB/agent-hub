@@ -20,7 +20,7 @@ import type { Database } from "./db-schema.ts";
 import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
-import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry } from "./roadmap.ts";
+import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry, type MilestoneSuggestion, type SuggestionItemKind, type SuggestionState } from "./roadmap.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { AuditFinding, AuditProfile, AuditUnit } from "./security-audit.ts";
 import type { ReviewFinding } from "./review-findings.ts";
@@ -635,6 +635,15 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS milestone_links (
       milestone INTEGER NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, by TEXT NOT NULL, at INTEGER NOT NULL,
       PRIMARY KEY(milestone,kind,ref))`);
+    // R3 (#1481): advisory model suggestions and the one-time GitHub milestone import marks. Additive, outside the roadmap integrity digest:
+    // a lost suggestion is triaged again, and an import mark only stops a repeat from creating a second milestone.
+    this.db.run(`CREATE TABLE IF NOT EXISTS milestone_suggestions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, ref TEXT NOT NULL, milestone INTEGER,
+      proposal TEXT, cite_milestone TEXT, cite_item TEXT NOT NULL, state TEXT NOT NULL, by TEXT NOT NULL,
+      created INTEGER NOT NULL, settled INTEGER, settled_by TEXT, created_milestone INTEGER)`);
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS milestone_suggestions_pending ON milestone_suggestions(kind,ref) WHERE state='pending'");
+    this.db.run(`CREATE TABLE IF NOT EXISTS milestone_imports (
+      repo TEXT NOT NULL, number INTEGER NOT NULL, milestone INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(repo,number))`);
 
     this.db.run(`CREATE TABLE IF NOT EXISTS research_campaigns (
       id TEXT NOT NULL, project TEXT NOT NULL, parent_task_id INTEGER NOT NULL, revision INTEGER NOT NULL,
@@ -2988,6 +2997,70 @@ export class Board {
     })();
   }
 
+  /** R3: a pending model suggestion. One per item at a time; a repeat for the same item is ignored, never doubled. */
+  addSuggestion(row: { kind: SuggestionItemKind; ref: string; milestone: number | null; proposal: { title: string; outcome: string } | null; citeMilestone: string | null; citeItem: string }, by: string, now = Date.now()): MilestoneSuggestion | undefined {
+    const actor = milestoneActor(by), at = milestoneId(now);
+    return this.db.transaction(() => {
+      if (this.db.query("SELECT 1 FROM milestone_suggestions WHERE kind=? AND ref=? AND state='pending'").get(row.kind, row.ref)) return undefined;
+      const inserted = this.db.query("INSERT INTO milestone_suggestions(kind,ref,milestone,proposal,cite_milestone,cite_item,state,by,created) VALUES(?,?,?,?,?,?,'pending',?,?)")
+        .run(row.kind, row.ref, row.milestone, row.proposal ? JSON.stringify(row.proposal) : null, row.citeMilestone, row.citeItem, actor, at);
+      // Settled rows are history, not storage: keep the newest 500.
+      this.db.query("DELETE FROM milestone_suggestions WHERE state<>'pending' AND id NOT IN (SELECT id FROM milestone_suggestions WHERE state<>'pending' ORDER BY id DESC LIMIT 500)").run();
+      return this.suggestion(Number(inserted.lastInsertRowid))!;
+    })();
+  }
+
+  suggestion(id: number): MilestoneSuggestion | undefined {
+    milestoneId(id);
+    const row = this.db.query("SELECT * FROM milestone_suggestions WHERE id=?").get(id) as Record<string, unknown> | null;
+    return row ? parseSuggestion(row) : undefined;
+  }
+
+  suggestions(state?: SuggestionState): MilestoneSuggestion[] {
+    const rows = (state === undefined ? this.db.query("SELECT * FROM milestone_suggestions ORDER BY id").all() : this.db.query("SELECT * FROM milestone_suggestions WHERE state=? ORDER BY id").all(state)) as Record<string, unknown>[];
+    return rows.map(parseSuggestion);
+  }
+
+  /** Remember the milestone an accepted "new milestone" suggestion created, so a retry after a failed link never creates a second one. */
+  suggestionCreated(id: number): number | undefined {
+    const row = this.db.query("SELECT created_milestone AS made FROM milestone_suggestions WHERE id=?").get(milestoneId(id)) as { made: number | null } | null;
+    return row?.made ?? undefined;
+  }
+
+  setSuggestionCreated(id: number, milestone: number): void {
+    this.db.query("UPDATE milestone_suggestions SET created_milestone=? WHERE id=? AND state='pending' AND created_milestone IS NULL").run(milestoneId(milestone), milestoneId(id));
+  }
+
+  /** Compare-and-set from pending: a second settle of the same suggestion changes nothing. */
+  settleSuggestion(id: number, state: "accepted" | "rejected" | "superseded", by: string, now = Date.now()): MilestoneSuggestion {
+    const actor = milestoneActor(by), at = milestoneId(now);
+    return this.db.transaction(() => {
+      const result = this.db.query("UPDATE milestone_suggestions SET state=?,settled=?,settled_by=? WHERE id=? AND state='pending'").run(state, at, actor, milestoneId(id));
+      const row = this.suggestion(id);
+      if (!row) throw new PreEffectToolRefusal("roadmap suggestion does not exist; use ahub roadmap triage");
+      if (result.changes !== 1 && row.state !== state) throw new PreEffectToolRefusal(`roadmap suggestion was already ${row.state}; run ahub roadmap triage for current suggestions`);
+      return row;
+    })();
+  }
+
+  importedMilestone(repo: string, number: number): number | undefined {
+    const row = this.db.query("SELECT milestone FROM milestone_imports WHERE repo=? AND number=?").get(repo.toLowerCase(), milestoneId(number)) as { milestone: number } | null;
+    return row?.milestone;
+  }
+
+  /** One transaction: the milestone and its import mark exist together or not at all, so a repeat finds the mark. */
+  importMilestone(repo: string, number: number, input: MilestoneInput, by: string, now = Date.now()): { milestone: Milestone; created: boolean } {
+    const key = repo.toLowerCase();
+    return this.db.transaction(() => {
+      const prior = this.importedMilestone(key, number);
+      const existing = prior === undefined ? undefined : this.milestone(prior);
+      if (existing) return { milestone: existing, created: false };
+      const milestone = this.newMilestone(input, by, now);
+      this.db.query("INSERT OR REPLACE INTO milestone_imports(repo,number,milestone,at) VALUES(?,?,?,?)").run(key, milestoneId(number), milestone.id, milestoneId(now));
+      return { milestone, created: true };
+    })();
+  }
+
   private currentMilestone(id: number, revision: number): Milestone {
     milestoneRevision(revision);
     const row = this.milestone(id);
@@ -3149,6 +3222,13 @@ function parse(row: Record<string, unknown>): Task {
 function parseMilestone(row: Record<string, unknown>): Milestone {
   return { ...parseMilestoneInput({ title: row.title, outcome: row.outcome, state: row.state, horizon: row.horizon, order: row.milestone_order, target: row.target, parent: row.parent }),
     id: milestoneId(row.id), revision: milestoneRevision(row.revision), history: milestoneHistory(JSON.parse(String(row.history))), created: milestoneId(row.created), updated: milestoneId(row.updated) };
+}
+
+function parseSuggestion(row: Record<string, unknown>): MilestoneSuggestion {
+  return { id: milestoneId(row.id), kind: row.kind as SuggestionItemKind, ref: String(row.ref), milestone: row.milestone == null ? null : milestoneId(row.milestone),
+    proposal: row.proposal == null ? null : JSON.parse(String(row.proposal)) as { title: string; outcome: string }, citeMilestone: row.cite_milestone == null ? null : String(row.cite_milestone),
+    citeItem: String(row.cite_item), state: row.state as SuggestionState, by: milestoneActor(row.by), created: milestoneId(row.created),
+    settled: row.settled == null ? null : milestoneId(row.settled), settledBy: row.settled_by == null ? null : milestoneActor(row.settled_by) };
 }
 
 function parseRelease(row: Record<string, unknown>): Release {
