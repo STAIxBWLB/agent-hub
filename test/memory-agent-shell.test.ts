@@ -114,7 +114,7 @@ test("the real CLI runs an agent-shell memory change and the audit names the age
     try { const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]); return { code, stdout, stderr }; }
     finally { clearTimeout(timer); }
   };
-  for (const markers of [{ CODEX_THREAD_ID: "fixture-thread" }, { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "fixture-session" }, { AGENTHUB_PEER_ID: "kimi" }]) {
+  for (const markers of [{ CODEX_THREAD_ID: "fixture-thread" }, { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "fixture-session" }, { AGENTHUB_PEER_ID: "kimi" }] as Record<string, string>[]) {
     const allowed = await run(["memory", "machine"], markers);
     expect(allowed.code, allowed.stderr).toBe(0); expect(allowed.stdout).toContain("this machine:");
     const forgetMissing = await run(["memory", "forget", "deadbeef"], markers);
