@@ -44,7 +44,7 @@ It names evidence; it does not attest to it or grant access to it.
 | Field | Rule |
 | --- | --- |
 | `v` | Exactly the integer 1 |
-| `tool` | Known producer id: `ahub`, `ares`, `amem`, `vmem` |
+| `tool` | Known producer id: `ahub`, `ares`, `amem`, `vmem`, `atex` |
 | `projectKey` | Opaque producer project identity, nonempty, at most 256 UTF-8 bytes |
 | `kind` | Producer-namespaced by `(tool, kind)`, lowercase token matching `[a-z][a-z0-9._-]*`, at most 64 bytes |
 | `id` | Opaque source identity, nonempty, at most 256 UTF-8 bytes |
@@ -59,6 +59,11 @@ resolvers: an unknown kind can be syntactically valid yet unsupported by its own
 Consumers validate this boundary locally without importing hub internals or a new
 shared runtime dependency. Neutral valid/invalid JSON vectors live in
 `test/fixtures/execution-reference-v1.json`; UTF-8 limits include multibyte cases.
+
+An `atex` build reference uses `kind: "build"`, its opaque receipt id and an
+optional output PDF `sha256` under the general address contract. It is declared
+metadata: the hub never calls atex or verifies the build. A writing project's
+configured class check may separately run `atex check --json`.
 
 A path-like or URL-like id is still opaque data. Never open, execute, fetch,
 route to another node or interpret credentials from any address field. A resolver

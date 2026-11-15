@@ -2,6 +2,18 @@
   "contract": "ExecutionReferenceV1",
   "vectors": [
     {
+      "name": "atex-build",
+      "valid": true,
+      "input": {
+        "v": 1,
+        "tool": "atex",
+        "projectKey": "writing-project",
+        "kind": "build",
+        "id": "receipt-1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
       "name": "minimal",
       "valid": true,
       "input": {

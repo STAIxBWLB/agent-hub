@@ -8,6 +8,7 @@
 
 - Research: question=plan, survey=summarize, extract=bulk_edit, analyze=implement, synthesize=summarize, draft=implement, fact_check=test, review=review, triage=triage.
 - Writing: outline=plan, draft=implement, edit=bulk_edit, translate=implement, fact_check=test, format=bulk_edit, review=review, summarize=summarize.
+- A writing project may configure a class check to run `atex check --json`. Selecting the profile does not install atex or run that check automatically.
 - General: plan=plan, do=implement, check=test, review=review, summarize=summarize, triage=triage.
 - Existing base names remain accepted in every profile. Unknown aliases and another profile's aliases refuse before proposal effects. The board stores the base plus the selected profile/class on non-dev tasks; old rows stay unchanged. Routing, reviewer choice, budgets, outcomes and checks run on the base.
 - Non-dev plans accept paths, sections, sources and claims. Use full section anchors such as `report.md#methods` and explicit source ids. Equal declared anchors or source ids produce overlap notices. Two document tasks naming distinct section anchors can share a file without a broad path notice; a task without section declarations still reserves the whole path. Claims are evidence ids, not overlap claims. Dev keeps its existing four plan keys.
