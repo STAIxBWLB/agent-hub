@@ -57,6 +57,10 @@ bottom-up placement, updates the status and help presentation, and prepares
 dependencies for accepted Pi task worktrees. The exact agent-mem dependency is
 0.26.3. Pi's sandbox listener policy remains unchanged.
 
+CI readbacks now select the uniquely newest run when same-name check rows have
+unambiguous workflow and start-time evidence. Cancelled and draft-deferred
+checks stay pending in the CI watcher while it waits for a replacement run.
+
 `ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.40.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.39.0

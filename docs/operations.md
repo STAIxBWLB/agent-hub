@@ -3713,7 +3713,12 @@ for that head (#785): one `gh pr view` a minute, ended by a passed CI result, by
 shutdown; a restart does not restore it, and the next `hub_task_done` starts a new
 one. A failed or incomplete result is told once and the watcher keeps reading for a
 rerun of the same head: the first pending read after a newly told result renews the
-deadline once, and a deadline after a told result ends silently (#540). On the result the owner and the reviewer each get one
+deadline once, and a deadline after a told result ends silently (#540). Cancelled
+attempts and a draft PR's deferred `check (macos-latest)` are pending to this watcher,
+not failures; it keeps watching for a replacement run. If GitHub returns multiple
+rows for one check, the hub uses an older-run filter only when workflow identity and
+start times identify one unique latest run; ambiguous duplicates cannot establish a
+pass (#1527). On the result the owner and the reviewer each get one
 `ci_completed: #<id> head <sha12> passed|failed|incomplete` task notice (ids only, the
 head cut to 12 characters; a person reviewer gets a console line instead), and
 unless CI failed, a review the hub held as premature for that head is offered
