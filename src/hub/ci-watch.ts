@@ -26,9 +26,23 @@ type Entry = { watch: CiWatch; timer?: ReturnType<typeof setTimeout>; reported?:
  */
 const DEFERRED_ON_DRAFT: readonly string[] = ["check (macos-latest)"];
 
+/** A ready run's shards can appear before its aggregate; only later, same-workflow running shards fence the old deferred failure. */
+function awaitingDeferredReplacement(check: Record<string, unknown>, rows: readonly Record<string, unknown>[]): boolean {
+  const name = check.name;
+  if (typeof name !== "string" || !DEFERRED_ON_DRAFT.includes(name) || check.conclusion !== "FAILURE") return false;
+  const workflow = check.workflowName, at = typeof check.startedAt === "string" ? Date.parse(check.startedAt) : NaN;
+  if (typeof workflow !== "string" || !workflow || !Number.isFinite(at)) return false;
+  const prefix = `${name} shard `;
+  return rows.some(row => typeof row.name === "string" && row.name.startsWith(prefix)
+    && /^\d+\/\d+$/.test(row.name.slice(prefix.length)) && row.workflowName === workflow
+    && (row.status === "QUEUED" || row.status === "IN_PROGRESS")
+    && typeof row.startedAt === "string" && Date.parse(row.startedAt) > at);
+}
+
 /**
  * One read of the PR: the head, its state and the required checks of that head. A failed or unreadable read is `pending`; the deadline bounds the retries.
  * #1490: a cancelled check (a superseded run, or the draft run that `gh pr ready` replaces) and a draft PR's deferred macOS check are `pending`, never `failed`: nobody has to fix them.
+ * After a PR becomes ready, a later same-workflow macOS shard also keeps the older aggregate pending until the replacement aggregate appears.
  * A cancelled run of an older head never gets here (the head differs: `superseded`).
  */
 export async function pollCi(target: { repo: string; pr: number }, head: string, required: readonly string[], run: SdlcGh): Promise<CiPoll> {
@@ -42,9 +56,10 @@ export async function pollCi(target: { repo: string; pr: number }, head: string,
     if (body?.headRefOid !== head) return "superseded";
     if (body.state !== "OPEN") return "closed";
     const draft = body.isDraft === true;
-    const rollup = Array.isArray(body.statusCheckRollup) ? latestCheckRuns(body.statusCheckRollup as Record<string, unknown>[]).map((check: Record<string, unknown>) => {
+    const allRows: Record<string, unknown>[] = Array.isArray(body.statusCheckRollup) ? body.statusCheckRollup : [];
+    const rollup = Array.isArray(body.statusCheckRollup) ? latestCheckRuns(allRows).map((check: Record<string, unknown>) => {
       const native = String(check?.conclusion ?? check?.state ?? "");
-      return native === "CANCELLED" || draft && DEFERRED_ON_DRAFT.includes(String(check?.name ?? check?.context)) && native !== "SUCCESS" ? { ...check, status: "PENDING" } : check;
+      return native === "CANCELLED" || draft && DEFERRED_ON_DRAFT.includes(String(check?.name ?? check?.context)) && native !== "SUCCESS" || awaitingDeferredReplacement(check, allRows) ? { ...check, status: "PENDING" } : check;
     }) : body.statusCheckRollup;
     // The same check-state mapping as every other PR read; files are not requested here.
     const evidence = parsePrEvidence({ ...body, statusCheckRollup: rollup, files: [], changedFiles: 0 });
