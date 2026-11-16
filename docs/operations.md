@@ -3715,7 +3715,9 @@ one. A failed or incomplete result is told once and the watcher keeps reading fo
 rerun of the same head: the first pending read after a newly told result renews the
 deadline once, and a deadline after a told result ends silently (#540). Cancelled
 attempts and a draft PR's deferred `check (macos-latest)` are pending to this watcher,
-not failures; it keeps watching for a replacement run. If GitHub returns multiple
+not failures; it keeps watching for a replacement run. After `gh pr ready`, an older
+macOS aggregate failure stays pending while a newer same-workflow macOS shard is queued
+or running (#1490). If GitHub returns multiple
 rows for one check, the hub uses an older-run filter only when workflow identity and
 start times identify one unique latest run; ambiguous duplicates cannot establish a
 pass (#1527). On the result the owner and the reviewer each get one
