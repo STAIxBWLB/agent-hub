@@ -6,7 +6,7 @@ import { MemoryStore, memoryProjectKey } from "@staix/agent-mem";
 import { memoryCommand } from "../src/cli/memory.ts";
 import { memoryRead } from "../src/hub/read-tools.ts";
 
-test("0.27.0 groups visible CLI search hits by task while the hub tool keeps individual hits", async () => {
+test("0.27.1 groups visible CLI search hits by task while the hub tool keeps individual hits", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-grouping-")));
   const project = memoryProjectKey(root), store = new MemoryStore({ home: join(root, "home") });
   try {
