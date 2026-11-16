@@ -13518,7 +13518,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.4"
     },
     dependencies: {
-      "@staix/agent-mem": "0.27.1"
+      "@staix/agent-mem": "0.28.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -14430,6 +14430,11 @@ var init_note_add = __esm(() => {
   init_cli_attribution();
 });
 
+// node_modules/@staix/agent-mem/src/memory/candidate-origin.ts
+var init_candidate_origin = __esm(() => {
+  init_screen();
+});
+
 // node_modules/@staix/agent-mem/src/memory/candidates.ts
 var CANDIDATE_RETENTION, COUNTER_RETENTION;
 var init_candidates = __esm(() => {
@@ -14440,6 +14445,7 @@ var init_candidates = __esm(() => {
   init_home();
   init_platform();
   init_private_spans();
+  init_candidate_origin();
   CANDIDATE_RETENTION = { count: 500, ageMs: 30 * 86400000 };
   COUNTER_RETENTION = { count: 1e4, ageMs: 90 * 86400000 };
 });
@@ -14691,6 +14697,7 @@ var init_mcp_memory = __esm(() => {
   init_repo_scope();
   init_store();
   init_vault();
+  init_candidate_origin();
   init_work_lists();
 });
 
@@ -14895,6 +14902,7 @@ var init_goal_promotion = __esm(() => {
 var init_consolidation_model = __esm(() => {
   init_candidates();
   init_policy();
+  init_candidate_origin();
   init_platform();
 });
 
@@ -14911,6 +14919,7 @@ var init_consolidate = __esm(() => {
   init_consolidation_clusters();
   init_policy();
   init_platform();
+  init_candidate_origin();
   init_consolidation_model();
   init_record_candidates();
 });
@@ -15017,6 +15026,14 @@ var init_sync_placement_writer_history = __esm(() => {
   init_sync_placement_writer_revision_format();
 });
 
+// node_modules/@staix/agent-mem/src/memory/sync-placement-batch-intent.ts
+var PLACEMENT_BATCH_INTENT_MAX_BYTES;
+var init_sync_placement_batch_intent = __esm(() => {
+  init_generation();
+  init_sync_placement_journal_format();
+  PLACEMENT_BATCH_INTENT_MAX_BYTES = 20 * 1024 * 1024;
+});
+
 // node_modules/@staix/agent-mem/src/memory/sync-placement-journal-storage.ts
 var inflight, publicationDurability;
 var init_sync_placement_journal_storage = __esm(() => {
@@ -15030,6 +15047,8 @@ var init_sync_placement_journal_storage = __esm(() => {
   init_sync_placement_projection();
   init_sync_placement_writer_revision_format();
   init_sync_placement_writer_history();
+  init_sync_placement_batch_intent();
+  init_formats();
   inflight = new WeakSet;
   publicationDurability = new WeakMap;
 });

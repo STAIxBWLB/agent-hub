@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Agent shells can run the supported `ahub memory` commands with their own attribution (hub task 969, Refs #1522). Memory writes retain the existing policy and confirmation checks and record the agent; person-only hub verdicts stay restricted. The implementation uses agent-mem's public attribution API.
+- The hub exact-pins `@staix/agent-mem` 0.28.0 (hub task 988, from 0.27.1). Candidates gain a nullable `origin` column that agent-mem fills from the optional `origin()` option of `createMemoryMcp`, which the hub does not set, so no candidate gets an origin from the hub. Placement sync can batch its journal appends only after a person raises the sync/home format floor to 0.28.0; no floor is raised implicitly, so behavior is unchanged until then. The N-1 compatibility baseline is 0.27.1. Package, lockfile integrity, the pin sentences in the docs and the plugin bundles move together. This is not a release.
 
 ## 0.41.0
 
