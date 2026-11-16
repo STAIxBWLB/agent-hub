@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import type { Envelope } from "../hub/envelope.ts";
+import { applyTurnAttribution, type TurnAttribution } from "../hub/turn-attribution.ts";
 
 export interface OwnedInputContext { readonly sessionId: string; readonly inputId: string }
 export type OwnedInputObserver = (context: OwnedInputContext, envs: readonly Envelope[]) => void;
@@ -12,6 +13,8 @@ export interface OwnedPrintChildOptions {
   args: readonly string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  /** Host-derived hints for this child; never native or project configuration authority. */
+  attribution?: TurnAttribution;
   envMode?: "replace";
   input: string;
   /** Metadata only: fires after stdin has flushed successfully while the owning generation is current. */
@@ -58,7 +61,7 @@ export class OwnedPrintChild {
     if (!command) throw new Error("print child command is missing");
     const child = this.process = spawn(command, [...prefix, ...options.args], {
       cwd: options.cwd, detached: true,
-      env: peerChildEnv(options.peer, options.envMode === "replace" ? options.env : { ...process.env, ...options.env }),
+      env: applyTurnAttribution(peerChildEnv(options.peer, options.envMode === "replace" ? options.env : { ...process.env, ...options.env }), options.attribution),
       stdio: ["pipe", "pipe", options.captureStderr ? "pipe" : "ignore"],
     });
     // ponytail: 256 KiB per NDJSON frame and 4 MiB stdout by default; raise only with native receipts.

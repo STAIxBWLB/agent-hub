@@ -6412,6 +6412,8 @@ view (#935), available through `acon ui`. It sends through the existing plugin
 
 ## Additional headless peer instances
 
+Per-turn Claude print children and local/Pi sandbox commands may receive `AGENTHUB_TASK_ID` and `AGENTHUB_TRIGGER` (`assign`, `review`, `message`, `manual` or `schedule`) when the host has an unambiguous attribution. `AGENTHUB_ATTEMPT_ID` is reserved for a host-known research attempt (`ra-` plus 12 lowercase hex digits); the current dispatch has no persisted attempt link, so it is normally absent. A private task ID is omitted for cloud children. These are hints only, not authority; absent values are unset, inherited values cannot override them, and long-lived sessions retain their existing environment.
+
 Declare extra instances only in an untracked `.agenthub/config.local.json`, then
 restart the hub. For example, a reviewer can use:
 

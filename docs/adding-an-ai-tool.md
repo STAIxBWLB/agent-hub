@@ -56,6 +56,8 @@ Defines how the agent process is started and commanded:
 * `conductorStartable`: Boolean indicating if `ahub up` or conductor can spawn this peer automatically. The conductor's start refusal and the `hub_peer_start` description name these kinds from this flag and `optional` (`conductorStartText`, `src/adapters/registry.ts`), so a new kind needs no text edit.
 * `ownedFlags`: CLI flags owned by this tool's launcher.
 
+For a host-owned per-turn child, the hub reserves `AGENTHUB_TASK_ID`, `AGENTHUB_ATTEMPT_ID` and `AGENTHUB_TRIGGER` after any configured environment is merged. These are optional attribution hints, not authority; a definition must not supply or rely on them for authorization. `AGENTHUB_PEER_ID` remains the single peer marker. Long-lived sessions do not receive per-turn values.
+
 #### `identity`
 Defines how the hub MCP server identity reaches the tool:
 * `"acp-session"`: Sent in `session/new` `mcpServers` parameter.

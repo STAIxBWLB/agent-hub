@@ -11,6 +11,7 @@ paths:
   - src/hub/permission-mode.ts
   - src/hub/tool-refusal.ts
   - src/hub/child-process.ts
+  - src/hub/turn-attribution.ts
   - src/hub/lifecycle.ts
   - src/hub/start-mode.ts
   - src/hub/terminal-open.ts
@@ -184,6 +185,8 @@ The channel's `hub_inbox` also renders the authenticated caller's bounded public
 Permission modes control whether native actions prompt; they do not widen a sandbox or path grant. The local worker's file tools use path guards, and its command tools run through the host's OS sandbox. Vendor-native tools use their vendor/runtime permission and isolation boundaries; the hub does not claim to confine every ACP or TUI tool. This distinction prevents an approval-mode setting from being mistaken for filesystem or network confinement ([#242](https://github.com/STAIxBWLB/agent-hub/issues/242), [#39](https://github.com/STAIxBWLB/agent-hub/issues/39), [#270](https://github.com/STAIxBWLB/agent-hub/issues/270)).
 
 When the hub starts a child, the host constructs its environment, binds its launch and generation, and owns its process-group lifecycle. Stop and recovery require current evidence for the process actually started; a PID, adapter label, successful start call, or stale session record is not enough. This keeps teardown from signaling a person's unrelated process and prevents a late native callback from acquiring a replaced session's authority ([#115](https://github.com/STAIxBWLB/agent-hub/issues/115), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625)).
+
+Per-turn print children and local/Pi sandbox tools may receive the host's task ID and trigger as environment hints (#1516). A research attempt ID is set only when the host knows the `ra-<12 hex>` identity for that turn; dispatch currently has no persisted attempt link. Missing, invalid, ambiguous or private cloud task context leaves the corresponding value unset. The host removes inherited or configured values before setting its own. These hints confer no identity or authority, and long-lived session environments do not gain per-turn values.
 
 Fresh Kimi reviews keep the complete synchronous isolation fence before spawn and
 at verdict/task-MCP authority boundaries. Periodic full checks use one review-owned

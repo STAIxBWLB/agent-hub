@@ -17,6 +17,8 @@ import { FakeMemoryClient as MemoryClient } from "./fakes/mem-worker.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall, type Script } from "./fakes/model-server.ts";
+import { runTool, type ToolContext } from "../src/local/tools.ts";
+import { sandboxAvailable } from "../src/local/sandbox.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
@@ -69,6 +71,26 @@ async function setup(script: Script, extra: Partial<LocalOptions> = {}, permit =
   cleanup.push(model.stop, () => peer.stop());
   return { cwd, model, omni, bus, peer, said, asked, lines, events, log, limits };
 }
+
+test("local turn sandbox context carries host task and trigger hints", async () => {
+  const r = await setup(() => ({ content: "unused" }), { scheduledTask: () => false });
+  cleanup.unshift(() => rmSync(r.cwd, { recursive: true, force: true }));
+  const env = newEnvelope("hub", "private title is not an environment value", { kind: "task", refs: { task: "21", taskOffer: 1 } });
+  const context = (r.peer as unknown as { toolContext(envs: Envelope[], signal: AbortSignal, pii: boolean, reply: object, task?: string): ToolContext })
+    .toolContext([env], new AbortController().signal, false, {}, "21");
+  expect(context.sandboxEnv).toMatchObject({ AGENTHUB_PEER_ID: "local", AGENTHUB_TASK_ID: "21", AGENTHUB_TRIGGER: "assign" });
+  expect(context.sandboxEnv?.AGENTHUB_ATTEMPT_ID).toBeUndefined();
+  expect(JSON.stringify(context.sandboxEnv)).not.toContain("private title");
+  const next = (r.peer as unknown as { toolContext(envs: Envelope[], signal: AbortSignal, pii: boolean, reply: object): ToolContext })
+    .toolContext([newEnvelope("user", "next")], new AbortController().signal, false, {});
+  expect(next.sandboxEnv?.AGENTHUB_TASK_ID).toBeUndefined();
+  expect(next.sandboxEnv?.AGENTHUB_TRIGGER).toBe("manual");
+  if (sandboxAvailable()) {
+    const output = await runTool("bash", JSON.stringify({ command: "printf '%s:%s:%s' \"$AGENTHUB_PEER_ID\" \"$AGENTHUB_TASK_ID\" \"$AGENTHUB_TRIGGER\"" }), context);
+    expect(output).toContain("local:21:assign");
+    expect(output).toContain("(exit 0)");
+  }
+});
 
 test("a bulk edit: tool calls run in the project, one conclusion is shared, the provider is recorded, no reasoning or key leaks", async () => {
   const { cwd, model, bus, peer, said, asked, lines } = await setup(bulkEdit);

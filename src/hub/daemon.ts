@@ -112,7 +112,7 @@ import { CONSOLE_POLL_SETTING, CONSOLE_NOTICE_SETTING, CONSOLE_HISTORY_SETTING, 
 import { MODEL_COOLDOWN_FAILURES_SETTING, MODEL_COOLDOWN_SETTING, MODEL_COOLDOWN_CAP_SETTING, MODEL_TERMINAL_HISTORY_SETTING, modelOperationalReaders, type ModelOperationalConfig } from "./operational-settings.ts";
 import { ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING, adapterOperationalReaders, type AdapterTimingConfig } from "./operational-settings.ts";
 import { BUS_ACCEPTED_SETTLE_MS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
-import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
+import { foldersConfig, scheduleKeyOf, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import { QuestionStore, QUESTION_SURFACES, questionView } from "./questions.ts";
 import { RunTracker, outcomeOf, settleVerdict, type Run } from "./completions.ts";
@@ -185,6 +185,7 @@ import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type
 import { UsageRollup, USAGE_GROUPS, LIMITS_MAX, type UsageGroup } from "./usage-rollup.ts";
 import { Budget, readNativeQuota, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { remoteEnvelope, HUB } from "./envelope.ts";
+import { applyTurnAttribution, turnAttribution } from "./turn-attribution.ts";
 import { recallMemoryLines, trimToTokens, aggregateUse, orderByUse } from "../memory/recall.ts";
 import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
@@ -4487,6 +4488,14 @@ export async function startDaemon(opts: DaemonOptions) {
   function implementerChatTask(peer: string): number | undefined {
     const owned = board.list("in_progress").filter(task => task.owner === peer && !tasks.isPii(task));
     return owned.length === 1 ? owned[0]!.id : undefined;
+  }
+  /** Attribution only: the same board provenance check used by the schedule inventory. */
+  function scheduledTask(taskId: number): boolean | undefined {
+    try {
+      const task = board.get(taskId);
+      if (!task?.history[0]) return undefined;
+      return task.history[0].by === HUB && scheduleKeyOf(task.detail) !== undefined;
+    } catch { return undefined; }
   }
   type ImplementerFailureEntry = { launchId: string; generation: string; signal: AbortSignal; trace: ClaudeFailureTrace; probeCount: number; permissionAttempt: number };
   const implementerFailures = new WeakMap<PeerAdapter, ImplementerFailureEntry>();
@@ -8920,11 +8929,15 @@ export async function startDaemon(opts: DaemonOptions) {
           if (signal?.aborted) return "error: turn cancelled before tool effects";
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
           const humanBash = context?.userBash === true && name === "bash";
+          const attributionEnvs = humanBash ? [] : pi.budgetEnvelopes;
+          let attributionTask: string | undefined;
+          try { if (!humanBash) attributionTask = tasks.turnPolicy(attributionEnvs)?.task; } catch { /* Hints never block a tool. */ }
           let exitCode: number | null = null;
           const result = await piReceipts!.execute(sessionId ?? "", callId, name, humanBash ? { origin: "verified-user-bash", args: raw } : raw, async () => {
             if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "error: invalid tool arguments";
             const nativeTurn = pi.observationTurn;
             const output = TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name) ? await (name === "hub_ask" && signal ? invocationRequestSignal.run({ signal, current: () => !signal.aborted }, () => taskOp(peer, name, raw as Record<string, unknown>, true)) : taskOp(peer, name, raw as Record<string, unknown>, true)) : await runTool(name, JSON.stringify(raw), { ...ctx, signal,
+              sandboxEnv: applyTurnAttribution(ctx.sandboxEnv ?? {}, humanBash ? { trigger: "manual" } : turnAttribution(attributionEnvs, { task: attributionTask === undefined ? undefined : Number(attributionTask), scheduled: scheduledTask })) as Record<string, string>,
               ...(humanBash ? { onProcessExit: (code: number | null) => { exitCode = code; } } : {}),
               shellExecutionCheck: input => signal?.aborted || context?.isCurrent?.() === false || bus.peers.get(peer) !== pi ? "aborted" : humanBash ? "valid" : shellProofs.check(input),
               permit: async (title, tool, toolSignal, path, _observe, originalPath, input, policy) => {
@@ -9166,6 +9179,7 @@ export async function startDaemon(opts: DaemonOptions) {
         beforeInput: (context, envs) => beforeOwnedObserverInput(peer, local, context, envs),
         inputReleased: (context, envs) => ownedObserverInputReleased(peer, local, context, envs),
         titlePreface: () => titlePreface(peer),
+        scheduledTask,
         turnPolicy: (envs) => {
           const policy = tasks.turnPolicy(envs);
           if (!policy) return undefined;
@@ -9215,6 +9229,11 @@ export async function startDaemon(opts: DaemonOptions) {
           } catch { return false; }
         },
         chatTask: () => implementerChatTask(peer),
+        scheduledTask,
+        taskHintAllowed: taskId => {
+          try { const task = board.get(taskId); return !!task && task.owner === peer && !tasks.isPii(task) && currentRoot(); }
+          catch { return false; }
+        },
         failureTrace: (launch, nativeVersion) => {
           const trace = createClaudeFailureTrace({ instanceId, nativeVersion, current: () => {
             const active = implementer.ownedTools?.(launch.launchId);

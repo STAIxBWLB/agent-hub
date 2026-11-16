@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ReviewerPrintPeer, type ReviewerBackend, type ReviewerFailure, type ReviewerLaunch, type ReviewerPrepareContext } from "../src/adapters/reviewer-print.ts";
@@ -10,6 +10,15 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 const scratch = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-review-print-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 const until = async (done: () => boolean) => { for (let i = 0; i < 200 && !done(); i++) await Bun.sleep(5); expect(done()).toBe(true); };
 const request = (id: number) => newEnvelope(HUB, `Review task #${id}`, { kind: "review", to: ["fixture-review"], refs: { task: String(id), commit: "a".repeat(40), reviewRevision: "7" } });
+
+test("reviewer child receives host review hints after configured environment merging", async () => {
+  const dir = scratch(), script = join(dir, "fake-env.ts"), output = join(dir, "env.json");
+  writeFileSync(script, `await new Response(Bun.stdin.stream()).text(); await Bun.write(${JSON.stringify(output)}, JSON.stringify({task:process.env.AGENTHUB_TASK_ID, attempt:process.env.AGENTHUB_ATTEMPT_ID, trigger:process.env.AGENTHUB_TRIGGER, peer:process.env.AGENTHUB_PEER_ID})); console.log(JSON.stringify({type:"completed"}));`);
+  const peer = new ReviewerPrintPeer("fixture-review", { cwd: dir, mcpConfig: "{}", systemPrompt: "role", watchdogMs: 5000,
+    backend: { id: "fixture", prepare: async ctx => ({ ...plan(ctx, join(dir, "unused")), command: [process.execPath, script], args: [], env: { ...process.env, AGENTHUB_TASK_ID: "forged", AGENTHUB_ATTEMPT_ID: "forged", AGENTHUB_TRIGGER: "forged" } }) }, verdictSince: () => true });
+  cleanup.push(() => peer.stop()); await peer.start(); await peer.deliver([request(42)], "fixture"); await until(() => peer.state === "idle");
+  expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({ task: "42", trigger: "review", peer: "fixture-review" });
+});
 const plan = (ctx: ReviewerPrepareContext, log: string): ReviewerLaunch => ({ command: [process.execPath, fake, log], args: ["--fresh", ctx.sessionId, "--mcp", ctx.mcpConfig],
   isolation: { backend: "fixture", version: "test", binary: process.execPath, profile: "fixture-profile", readOnly: true, strictMcp: true, ephemeral: true, evidence: ["fixture only, not native isolation evidence"] } });
 
