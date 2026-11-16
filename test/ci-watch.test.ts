@@ -311,6 +311,19 @@ const row = (name: string, startedAt: string, conclusion: string, status = "COMP
 const draftRun = (at = "2026-11-15T21:13:28Z") => NAMES.map(name => row(name, at, "FAILURE"));
 const readyRun = (conclusion: string, status = "COMPLETED", at = "2026-11-15T21:14:43Z") => NAMES.map(name => row(name, at, conclusion, status));
 
+test("#1490: a newer ready-run macOS shard holds the old aggregate pending without hiding a new failure", async () => {
+  const mac = "check (macos-latest)", old = "2026-11-15T21:13:28Z", newer = "2026-11-15T21:14:43Z";
+  const poll = (rows: object[]) => pollCi({ repo: "o/r", pr: 1 }, head, NAMES, async () => ({ code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", isDraft: false, statusCheckRollup: rows }) }));
+  const baseline = NAMES.map(name => row(name, old, name === mac ? "FAILURE" : "SUCCESS"));
+  const shard = row(`${mac} shard 1/4`, newer, "", "IN_PROGRESS");
+  expect(await poll([...baseline, shard])).toBe("pending");
+  expect(await poll([...baseline, { ...shard, status: "QUEUED" }])).toBe("pending");
+  expect(await poll([...baseline, shard, row(mac, "2026-11-15T21:15:43Z", "FAILURE")])).toBe("failed");
+  expect(await poll([...baseline, { ...shard, workflowName: "other" }])).toBe("failed");
+  expect(await poll([...baseline, { ...shard, startedAt: undefined }])).toBe("failed");
+  expect(await poll([...baseline, { ...shard, status: "COMPLETED" }])).toBe("failed");
+});
+
 test("#1490 AC5: latestCheckRuns keeps only the newest run's row of a check name, and keeps every row when it cannot be sure", () => {
   const older = row("check (ubuntu-latest)", "2026-11-15T21:13:28Z", "CANCELLED"), newer = row("check (ubuntu-latest)", "2026-11-15T21:14:43Z", "SUCCESS");
   expect(latestCheckRuns([older, newer])).toEqual([newer]);
