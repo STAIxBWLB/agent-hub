@@ -12,6 +12,7 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { HUB, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { isWsPeer } from "../src/adapters/channel-peer.ts";
+import { CHECKPOINT_FIELDS_SENTENCE } from "../src/hub/checkpoint-fields.ts";
 import { CodexPeer, isCodexPeer } from "../src/adapters/codex-appserver.ts";
 import { PiPeer, isPiPeer } from "../src/adapters/pi.ts";
 import type { PermissionMode } from "../src/hub/permission-mode.ts";
@@ -118,6 +119,8 @@ function generationRig(peer: PlainPeer) {
   const externalIds = new Set<string>(), executionOwners = new Map<string, { owner: PlainPeer }>();
   const context = { ...peerContracts, isExternalInstance: (id: string) => externalIds.has(id), currentExecutionOwner: (id: string) => executionOwners.get(id), bus, checkConnections: new WeakMap(), instanceId: "fixture-instance", randomUUID: () => crypto.randomUUID(),
     isWsPeer, isCodexPeer, isPiPeer, stopping: false, recoveryActive: () => false, checkpointWaits: waits, checkpointOwnershipRefusals,
+    // #1331: the checkpoint request text names the structured fields, so the evaluated closure needs the real sentence (the same value the daemon imports).
+    CHECKPOINT_FIELDS_SENTENCE,
     contextSession: () => peer.session, contextPii: () => false, turns: new Map(), board,
     config: { budget: { checkpoint_timeout_s: 1 } }, HUB, newEnvelope, log: () => {}, setTimeout, clearTimeout,
   };
