@@ -6,7 +6,7 @@ Status 2026-10-12: keep optional. No measured effect yet.
 
 - Through the hub: nothing at runtime. Session-start recall, task briefs, the local worker's capture and `hub_remember` all use the in-process amem store (`@staix/agent-mem`); the hub makes no claude-mem worker request and ignores `memory.worker_url` (`ahub doctor`: "in-process, no claude-mem worker").
 - Native plugin: claude-mem installed as a Claude Code or Codex plugin runs its own hooks inside those sessions; the hub neither reads nor writes them. The add-on fingerprint records it when it is enabled there, so `ahub research addons` and `ahub bench run --addon claude-mem=on|off` can compare on against off.
-- Import: `ahub memory import claude-mem` is a person's one-way, read-only copy of past hub observations into hub memory (`docs/memory.md`). The bench memory arms `claude-mem` and `both` are historical labels for `memory.enabled`, not a live claude-mem path.
+- Import: `ahub memory import claude-mem` is a one-way, read-only copy of past hub observations into hub memory (`docs/memory.md`). The bench memory arms `claude-mem` and `both` are historical labels for `memory.enabled`, not a live claude-mem path.
 
 ## Evidence
 

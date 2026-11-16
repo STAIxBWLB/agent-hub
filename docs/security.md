@@ -876,8 +876,8 @@ narrowed by the hub's deny paths, PII patterns and project-private paths; a prom
 that fails it leaves the note short-term (#1173). Status exposes safe sync state and
 counts, including verified withheld/exported counts from a successful SDK placement
 result. Failure logs retain only the closed cause and known declined count.
-`ahub memory declined` is person-only (refused to agent shells and `--live-test`)
-and uses bounded physical-row inspection to show IDs and rule categories, never
+`ahub memory declined` is read-only (an agent shell may run it since #1522; `--live-test`
+still does not delegate it) and uses bounded physical-row inspection to show IDs and rule categories, never
 note text or literal patterns; incomplete inspection is not a zero count.
 Since agent-mem 0.23.0 the daemon passes a fresh `placementAttestation` on every
 sync pass, built by the package's own `createPlacementAttestation` for the memory
