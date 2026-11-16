@@ -153,6 +153,7 @@ import { PiToolReceipts, packPiShellResult } from "../pi/tool-receipts.ts";
 import { preparePiDependencies } from "../pi/task-dependencies.ts";
 import { publishPiDependencies } from "../pi/dependency-publish.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
+import { CHECKPOINT_FIELDS, CHECKPOINT_FIELDS_SENTENCE, checkpointFieldCount, parseCheckpointFields, renderCheckpoint } from "./checkpoint-fields.ts";
 import { ModelOverrides, ModelOverrideLatches, type RuntimeModelStatus, type ModelSource } from "./model-overrides.ts";
 import { isNativeModelToken } from "../adapters/model-token.ts";
 import { processSignature, processLiveness } from "../pi/process-signature.ts";
@@ -3968,8 +3969,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (previousRefusal) { clearTimeout(previousRefusal.timer); checkpointOwnershipRefusals.delete(peer); }
     const requestId = randomUUID();
     const body = reason === "quota"
-      ? "Checkpoint request: your quota window is almost used up and the hub is about to pause you. Finish the step you are on, write what you were doing, what is half done and what whoever continues must know to .agenthub/checkpoint.md, then call hub_checkpoint {summary} with the same text. Your open tasks will be handed to another peer; you will be resumed when the window resets."
-      : `Checkpoint request: your native context window is near the configured threshold. Finish the step you are on and call hub_checkpoint {summary, request_id: "${requestId}"} with what you were doing, what is half done and what a fresh session would need. This only saves a checkpoint; keep your tasks and session. The operator decides whether to continue or restart. Do not include private task text.`;
+      ? `Checkpoint request: your quota window is almost used up and the hub is about to pause you. Finish the step you are on, write what you were doing, what is half done and what whoever continues must know to .agenthub/checkpoint.md, then call hub_checkpoint {summary} with the same text. Your open tasks will be handed to another peer; you will be resumed when the window resets. ${CHECKPOINT_FIELDS_SENTENCE}`
+      : `Checkpoint request: your native context window is near the configured threshold. Finish the step you are on and call hub_checkpoint {summary, request_id: "${requestId}"} with what you were doing, what is half done and what a fresh session would need. This only saves a checkpoint; keep your tasks and session. The operator decides whether to continue or restart. ${CHECKPOINT_FIELDS_SENTENCE} Do not include private task text.`;
     const ask = newEnvelope(HUB, body, { to: [peer], kind: "budget", priority: "important" });
     return new Promise((resolve) => {
       const identityCurrent = () => !stopping && !recoveryActive() && bus.peers.get(peer) === owner && (!generationFenced || owner.sessionGeneration === generation) && contextSession(peer) === session;
@@ -6139,8 +6140,12 @@ export async function startDaemon(opts: DaemonOptions) {
         return saved;
       }
       case "hub_checkpoint": {
-        const summary = String(a.summary ?? "").trim();
-        if (!summary) throw new Error("summary is required");
+        const written = String(a.summary ?? "").trim();
+        if (!written) throw new Error("summary is required");
+        // #1331: the structured fields are validated before anything is saved, so an over-length field leaves the request open for a corrected call.
+        const checkpointFields = parseCheckpointFields(a);
+        const summary = renderCheckpoint(written, checkpointFields);
+        const checkpointNames = CHECKPOINT_FIELDS.filter(name => checkpointFields[name] !== undefined);
         const pending = checkpointWaits.get(by);
         if (!pending) {
           const refusal = checkpointOwnershipRefusals.get(by);
@@ -6163,11 +6168,13 @@ export async function startDaemon(opts: DaemonOptions) {
           renameSync(`${file}.tmp`, file);
           pending.done(summary);
           if (config.memory.enabled) await memory.save({ text: summary, title: `agent-hub ${by} context checkpoint`, project: memoryProject, metadata: { peer: by, kind: "handover" } }).catch(() => undefined);
+          event({ type: "checkpoint", peer: by, reason: "context", fields: [...checkpointNames] });
           notify(`context: ${by} checkpoint saved locally; no tasks or session changed`);
           return "context checkpoint saved locally; keep your tasks and session, the operator decides the next step";
         }
         if (a.request_id && a.request_id !== pending.requestId) throw new Error("checkpoint request_id does not match");
         budget.checkpointed(by, summary);
+        event({ type: "checkpoint", peer: by, reason: "quota", fields: [...checkpointNames] });
         pending.done(summary);
         return "checkpoint received; you will be paused now and resumed when your window resets";
       }

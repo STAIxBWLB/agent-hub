@@ -373,6 +373,24 @@ test("budget pause: open work goes to local first through the constraints, revie
   expect(Object.values(peers).filter((p) => p.id !== "local").flatMap((p) => p.got).some((e) => e.body.includes("900101"))).toBe(false);
 });
 
+test("hub task 975: the next owner's handoff prompt shows the checkpoint fields in the fixed order and omits a missing one", async () => {
+  const { renderCheckpoint, parseCheckpointFields } = await import("../src/hub/checkpoint-fields.ts");
+  const { tasks, peers, bus } = await setup(undefined, undefined, undefined, 2);
+  await tasks.propose("claude", { title: "implement parser", class: "implement", owner: "codex" }); // #1
+  await tasks.propose("claude", { title: "implement lexer", class: "implement", owner: "codex" }); // #2
+  tasks.accept("codex", 1); tasks.accept("codex", 2);
+  await tick();
+  const fields = parseCheckpointFields({ traps: "the cache is shared", done: "tokenizer", next: "grammar", verified_by: "bun test test/parser.test.ts" });
+  bus.pause("codex");
+  await tasks.reassignForPause("codex", renderCheckpoint("halfway through the parser", fields));
+  await tick();
+  const handed = peers.local!.got.find((e) => e.refs?.task === "1")!;
+  expect(handed.body).toContain("Handoff from the previous owner:\nhalfway through the parser\n\nDone:\ntokenizer\n\nNext:\ngrammar\n\nVerified by:\nbun test test/parser.test.ts\n\nTraps:\nthe cache is shared");
+  expect(handed.body).not.toContain("In progress:");
+  // The fields are not lost to the handoff cap: the render stays within it by construction.
+  expect(handed.body.indexOf("Traps:")).toBeGreaterThan(handed.body.indexOf("Done:"));
+});
+
 test("triage: a task without a class gets one from the hub's model, recorded in its history; PII goes to the model only on campus", async () => {
   const base = await setup();
   const asked: string[] = [];

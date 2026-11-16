@@ -5492,6 +5492,37 @@ nor hands work over. Continue normally or deliberately restart into a fresh
 session with your chosen checkpoint as preface. No automatic restart or native
 compaction override is performed.
 
+### Structured checkpoint fields (#1331)
+
+`hub_checkpoint` keeps `summary` and accepts five optional fields next to it:
+`done`, `in_progress`, `next`, `verified_by` (how each done item was checked:
+test, run or review) and `traps`. Each is at most 5 lines of 200 characters, and
+the rendered checkpoint (summary and fields together) stays within 3000
+characters, which is what a handoff keeps. A field over its limit is refused
+with the field and the limit named, nothing is saved, and the request stays open
+for a corrected call; nothing is truncated. A call with only `summary` behaves as
+before.
+
+The private context-checkpoint file, the shared-memory note and the quota
+handoff prompt ("Handoff from the previous owner") render the summary first and
+then each present field under its heading (`Done`, `In progress`, `Next`,
+`Verified by`, `Traps`) in that fixed order. A missing field is omitted, never
+invented. Both checkpoint requests name the fields and ask for the same
+headings in `.agenthub/checkpoint.md`; the repository has no template file for
+it, so the request text is the template. The PII handling is unchanged: the
+fields are screened with the summary, and the envelope shows only the public
+view.
+
+Each saved checkpoint writes one `checkpoint` event with the peer, the reason
+(`quota` or `context`) and the names of the fields it carried, never their
+text. `quality.json` counts them under `events.checkpoints` (total, by number of
+fields, by field name), so field use is measurable.
+
+A context reset is an operator option, not something the hub does: when a
+session is long, you can start a new session and give it the structured
+checkpoint as its preface, or continue the same session after the native
+compaction. Nothing resets automatically.
+
 ## Context headroom admission for new work (#802)
 
 `context.max_assignment_used` is a separate, default-off admission threshold.
