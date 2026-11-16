@@ -105,8 +105,50 @@ export function recallMemoryLine(note: RecallNote, idChars = 8, stale = false): 
   return header + (whole ? `${whole} ...` : "...");
 }
 
-/** Filter before the display cap, so outcome noise cannot displace an older relevant contract or fail. */
-export function recallMemoryLines(notes: readonly RecallNote[], limit = 30, stale: (about: readonly string[]) => boolean = () => false): string[] {
+/**
+ * #1330: counter rows are keyed per delivery (`{ entryId, task, deliveryId }`), so one entry has many rows. The use of an entry is
+ * the sum of its rows. A row whose `delivered` and `cited` are both null observed nothing and adds nothing, so an entry with no
+ * observed row has no figure at all: unknown is never read as zero.
+ */
+export interface MemoryUse { delivered: number; cited: number }
+interface CounterRow { key: { entryId: string }; delivered?: number | null; cited?: number | null }
+const count = (n: number | null | undefined): number | undefined => typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+export function aggregateUse(rows: readonly CounterRow[]): Map<string, MemoryUse> {
+  const use = new Map<string, MemoryUse>();
+  for (const row of rows) {
+    const delivered = count(row.delivered), cited = count(row.cited);
+    if (delivered === undefined && cited === undefined) continue;
+    const entry = use.get(row.key.entryId) ?? { delivered: 0, cited: 0 };
+    entry.delivered += delivered ?? 0; entry.cited += cited ?? 0;
+    use.set(row.key.entryId, entry);
+  }
+  return use;
+}
+
+/**
+ * Orders one preface section by observed use, keeping the caller's order inside each tier (a stable sort, so fixed counters give one
+ * result). Tier 0: entries with a cited/delivered ratio above zero, highest ratio first. Tier 1: everything else, including every entry
+ * with no observed use (unknown is not zero) and entries delivered fewer than `unusedAfter` times. Tier 2: entries delivered at least
+ * `unusedAfter` times and never cited, so the display cap cuts them first. The section's own kind order is the caller's and is not
+ * regrouped here: today the long-term section is the store's newest-first order across decisions, contracts and fails.
+ * `unusedAfter` of 0, or no usage at all, returns the input unchanged.
+ */
+export function orderByUse<T extends { id: string }>(notes: readonly T[], usage: ReadonlyMap<string, MemoryUse> | undefined, unusedAfter: number): T[] {
+  if (!usage || usage.size === 0 || !(unusedAfter > 0)) return [...notes];
+  const rank = (note: T): { tier: 0 | 1 | 2; ratio: number } => {
+    const use = usage.get(note.id);
+    if (!use) return { tier: 1, ratio: 0 };
+    if (use.cited === 0 && use.delivered >= unusedAfter) return { tier: 2, ratio: 0 };
+    return use.cited > 0 && use.delivered > 0 ? { tier: 0, ratio: Math.min(1, use.cited / use.delivered) } : { tier: 1, ratio: 0 };
+  };
+  return notes.map((note, index) => ({ note, index, ...rank(note) }))
+    .sort((a, b) => a.tier - b.tier || (a.tier === 0 ? b.ratio - a.ratio : 0) || a.index - b.index)
+    .map(row => row.note);
+}
+
+/** Filter before the display cap, so outcome noise cannot displace an older relevant contract or fail. `order` runs before the cap, so a re-ordering decides what the cap cuts. */
+export function recallMemoryLines<N extends RecallNote>(notes: readonly N[], limit = 30, stale: (about: readonly string[]) => boolean = () => false, order?: (notes: readonly N[]) => readonly N[]): string[] {
+  notes = order ? order(notes) : notes;
   const prefixes = new Map<string, string | null>();
   for (const note of notes) {
     const prefix = note.id.slice(0, 8), previous = prefixes.get(prefix);

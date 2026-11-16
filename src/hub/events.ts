@@ -71,6 +71,8 @@ export type HubEvent =
   | { type: "tooling"; peer: string; addons: import("./tooling.ts").Addon[] }
   /** #258: a task brief handed to its owner: how many hub-memory items (and fails among them) and supplemental items (legacy claudeMem field), never their text. New local-library records identify source amem. */
   | { type: "memory_brief"; source?: "amem"; peer: string; task: number; native: number; fails: number; claudeMem: number }
+  /** #1330: the session preface a peer was given: its size in bytes, the number of memory lines in it, and whether observed use reordered the long-term section. Numbers and a boolean only, never a line. */
+  | { type: "preface"; peer: string; bytes: number; lines: number; ordered: boolean }
   | { type: "split"; task: number; where?: "routing" | "cohort"; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string; trace?: string[] }
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
