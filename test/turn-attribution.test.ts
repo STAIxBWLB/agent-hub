@@ -11,6 +11,7 @@ test("turn hints are bounded, host-selected and removed from inherited configura
   expect(applyTurnAttribution(forged, turnAttribution([offer]))).toEqual({ SAFE: "yes" });
   expect(applyTurnAttribution(forged, { task: 12, attempt: "ra-0123456789ab", trigger: "review", private: true, cloud: true })).toEqual({ SAFE: "yes", AGENTHUB_TRIGGER: "review" });
   expect(applyTurnAttribution(forged, { task: 12, attempt: "ra-0123456789ab", trigger: "review" })).toEqual({ SAFE: "yes", AGENTHUB_TASK_ID: "12", AGENTHUB_ATTEMPT_ID: "ra-0123456789ab", AGENTHUB_TRIGGER: "review" });
+  expect(applyTurnAttribution(forged, { attempt: "ra-0123456789ab" })).toEqual({ SAFE: "yes" });
   expect(applyTurnAttribution(forged, { attempt: "delivery-id" })).toEqual({ SAFE: "yes" });
   const other = newEnvelope(HUB, "other", { kind: "task", refs: { task: "13", taskOffer: 2 } });
   expect(turnAttribution([offer, other], { scheduled: () => false }).task).toBeUndefined();

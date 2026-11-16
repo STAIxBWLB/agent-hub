@@ -38,8 +38,9 @@ export function applyTurnAttribution(source: NodeJS.ProcessEnv, context?: TurnAt
   const env = { ...source };
   delete env.AGENTHUB_TASK_ID; delete env.AGENTHUB_ATTEMPT_ID; delete env.AGENTHUB_TRIGGER;
   const hidden = context?.private === true && context.cloud === true;
-  if (!hidden && context?.task !== undefined && Number.isSafeInteger(context.task) && context.task > 0) env.AGENTHUB_TASK_ID = String(context.task);
-  if (!hidden && typeof context?.attempt === "string" && /^ra-[0-9a-f]{12}$/.test(context.attempt)) env.AGENTHUB_ATTEMPT_ID = context.attempt;
+  const hasTask = !hidden && context?.task !== undefined && Number.isSafeInteger(context.task) && context.task > 0;
+  if (hasTask) env.AGENTHUB_TASK_ID = String(context!.task);
+  if (hasTask && typeof context?.attempt === "string" && /^ra-[0-9a-f]{12}$/.test(context.attempt)) env.AGENTHUB_ATTEMPT_ID = context.attempt;
   if (context?.trigger && ["assign", "review", "message", "manual", "schedule"].includes(context.trigger)) env.AGENTHUB_TRIGGER = context.trigger;
   return env;
 }
