@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.41.0
+bun add -g github:STAIxBWLB/agent-hub#v0.42.0
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -49,6 +49,12 @@ move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
+
+## Upgrading to 0.42.0
+
+Agent sessions (Claude, Codex and the other managed peers) can now run `ahub memory` changes themselves: `forget`, `promote`, `demote`, `supersede`, `rebuild`, `sync`, `import`, `dedupe`, `decay` and `declined`. amem records each change under the agent's peer id, not under you. `graph`, `confirm`, `reject` and `profile-check` stay yours. The memory library moves to agent-mem 0.28.0. Your memory home and sync format are unchanged, so a 0.41.0 hub can keep sharing it, and no floor is raised until you choose to.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.42.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.41.0
 

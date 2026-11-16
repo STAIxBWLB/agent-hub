@@ -2068,7 +2068,7 @@ Task briefs, session-start recall and `ahub ask` read it first, and the dashboar
 ahub memory                              # this project's entries, newest first
 ahub memory search parser                # every word must match
 ahub memory show 1a2b3c4d                # one entry, its provenance and edges
-ahub memory forget 1a2b3c4d              # a person's; also promote, demote, supersede, rebuild
+ahub memory forget 1a2b3c4d              # also promote, demote, supersede, rebuild; an agent shell's change is recorded as that agent (#1522)
 ```
 
 `"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
@@ -7301,7 +7301,7 @@ Corrupt or unreadable provenance stays unknown and held. The status next step di
 
 A ready memory profile does not prove a successful sync. Read the separate automatic-sync result and timestamp in `ahub status` or Memory. It resets to not run after daemon restart; it is not a machine-global record of manual CLI attempts. Missing remote configuration (shared v1, generation and sharded homes alike) is the neutral `not-configured` state; an interrupted/stopped attempt is neutral `stopped`. Both keep their safe next step and produce no failure log under `quietSyncError`.
 
-For policy-declined rows, a person runs `ahub memory declined --json` to inspect IDs and safe rule categories, never note text. The pinned agent-mem 0.28.0 public `inspectSyncPolicy` API bounds physical outbound inspection for shared-v1 and generation profiles. A complete result supplies the declined IDs and rules; `complete:false` means the scan is unavailable, stale or over its diagnostic bound, not zero declined rows. The command stays read-only and rechecks its profile binding. No migration or policy edit is performed automatically.
+For policy-declined rows, a person or an agent shell runs `ahub memory declined --json` to inspect IDs and safe rule categories, never note text. The pinned agent-mem 0.28.0 public `inspectSyncPolicy` API bounds physical outbound inspection for shared-v1 and generation profiles. A complete result supplies the declined IDs and rules; `complete:false` means the scan is unavailable, stale or over its diagnostic bound, not zero declined rows. The command stays read-only and rechecks its profile binding. No migration or policy edit is performed automatically.
 
 The hub projects verified withheld/exported counts when a trusted SDK sync returns a successful placement result. That projection is covered by an injected-result fixture, not an activated-store sync. Agent-mem requires a fresh `placementAttestation` even for an already active v3 store; since 0.35.0 the daemon builds one with the package's own `createPlacementAttestation` on every sync pass and supplies no writer facts of its own, so no attestation is fabricated. A refused attestation is the closed cause `writer` in status, the dashboard and the log: its category, its cause class (`missing`, `changed`, `unavailable`) and the next step (repair the amem install and its host pin, then a person runs `amem migrate --sync-placement --dry-run`). Activation remains a person-run action. A nonzero withheld count in a successful result is not a transport failure and does not mean those rows were deleted, rewritten or published. Inspect the IDs and rules before deliberately changing any source or approved policy; a forget operation does not remove its original text from physical history.
 

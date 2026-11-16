@@ -4,6 +4,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.42.0
+
+- Release N-1 for 0.42.x is published 0.41.0, with exact agent-mem 0.27.1 and control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.0. The isolated fixture exercises old client and plugin against the new daemon and the new client and plugin against the old daemon. It does not establish live-agent, rollback or shared-home compatibility. The wire is unchanged from 0.41.0. This release pins agent-mem 0.28.0 while 0.41.0 pins 0.27.1; agent-mem 0.28.0 raises no sync/home format floor, so both can share a memory home until a person raises it, and file compatibility beyond these fixtures remains subject to the release verification report.
+- `ahub help memory` and the memory docs no longer call memory changes, `sync`, `import`, `decay` and `declined` person-only; an agent shell runs them as itself since hub task 969 (#1522). `graph`, `confirm`, `reject` and `profile-check` stay the person's.
 - Agent shells can run the supported `ahub memory` commands with their own attribution (hub task 969, Refs #1522). Memory writes retain the existing policy and confirmation checks and record the agent; person-only hub verdicts stay restricted. The implementation uses agent-mem's public attribution API.
 - The hub exact-pins `@staix/agent-mem` 0.28.0 (hub task 988, from 0.27.1). Candidates gain a nullable `origin` column that agent-mem fills from the optional `origin()` option of `createMemoryMcp`, which the hub does not set, so no candidate gets an origin from the hub. Placement sync can batch its journal appends only after a person raises the sync/home format floor to 0.28.0; no floor is raised implicitly, so behavior is unchanged until then. The N-1 compatibility baseline is 0.27.1. Package, lockfile integrity, the pin sentences in the docs and the plugin bundles move together. This is not a release.
 
