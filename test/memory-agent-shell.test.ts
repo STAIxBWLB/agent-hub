@@ -89,7 +89,7 @@ test("reads and the two review listings run for an agent without the agent scope
   expect(JSON.stringify(ops(f.store))).toBe(before);
 });
 
-test("the attribution seam sets and clears amem's scope, and refuses cleanly when amem's module cannot be reached", async () => {
+test("the attribution seam sets and clears amem's public scope", async () => {
   const f = fixture();
   const seen = await withAgentAttribution("codex", f.cwd, async () => {
     const note = f.make("inside the scope");
@@ -103,7 +103,7 @@ test("the attribution seam sets and clears amem's scope, and refuses cleanly whe
   expect(lastOp(f.store, "forget")?.actor).toBe("user");
 });
 
-test("the real CLI runs an agent-shell memory change and the audit names the agent, while a non-memory person-only command is still refused", async () => {
+for (const markers of [{ CODEX_THREAD_ID: "fixture-thread" }, { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "fixture-session" }, { AGENTHUB_PEER_ID: "kimi" }] as Record<string, string>[]) test(`the real CLI keeps memory and non-memory authority for ${Object.keys(markers)[0]}`, async () => {
   const cwd = temp(), home = temp(), cli = join(import.meta.dir, "../src/cli/main.ts");
   mkdirSync(join(cwd, ".agenthub"), { recursive: true });
   writeFileSync(join(cwd, ".agenthub/config.json"), "{}");
@@ -114,16 +114,14 @@ test("the real CLI runs an agent-shell memory change and the audit names the age
     try { const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]); return { code, stdout, stderr }; }
     finally { clearTimeout(timer); }
   };
-  for (const markers of [{ CODEX_THREAD_ID: "fixture-thread" }, { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "fixture-session" }, { AGENTHUB_PEER_ID: "kimi" }] as Record<string, string>[]) {
-    const allowed = await run(["memory", "machine"], markers);
-    expect(allowed.code, allowed.stderr).toBe(0); expect(allowed.stdout).toContain("this machine:");
-    const forgetMissing = await run(["memory", "forget", "deadbeef"], markers);
-    // It reaches amem (and says there is no such entry) instead of being refused at the identity gate.
-    expect(forgetMissing.stderr).not.toMatch(/cannot run ahub memory|person-only|console user/i);
-    expect(forgetMissing.stderr + forgetMissing.stdout).toMatch(/no memory entry|unavailable|refused/i);
-    const personOnly = await run(["permission", "claude", "never-ask", "--yes"], markers);
-    expect(personOnly.code).not.toBe(0); expect(personOnly.stderr).toMatch(/cannot run ahub permission|person/i);
-    const graph = await run(["memory", "graph", "x"], markers);
-    expect(graph.code).not.toBe(0); expect(graph.stderr).toMatch(/cannot run ahub memory graph|person/i);
-  }
-}, 120_000);
+  const allowed = await run(["memory", "machine"], markers);
+  expect(allowed.code, allowed.stderr).toBe(0); expect(allowed.stdout).toContain("this machine:");
+  const forgetMissing = await run(["memory", "forget", "deadbeef"], markers);
+  // It reaches amem (and says there is no such entry) instead of being refused at the identity gate.
+  expect(forgetMissing.stderr).not.toMatch(/cannot run ahub memory|person-only|console user/i);
+  expect(forgetMissing.stderr + forgetMissing.stdout).toMatch(/no memory entry|unavailable|refused/i);
+  const personOnly = await run(["permission", "claude", "never-ask", "--yes"], markers);
+  expect(personOnly.code).not.toBe(0); expect(personOnly.stderr).toMatch(/cannot run ahub permission|person/i);
+  const graph = await run(["memory", "graph", "x"], markers);
+  expect(graph.code).not.toBe(0); expect(graph.stderr).toMatch(/cannot run ahub memory graph|person/i);
+}, 20_000);
