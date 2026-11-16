@@ -2857,7 +2857,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (!result.ready) process.exitCode = 1;
       return;
     }
-    try { console.log(await memoryCommand(args, cwd, { person: caller.role === "console" })); } catch (e) { fail((e as Error).message); }
+    // #1522: an agent shell runs this as itself; its peer id, not the person, is what amem records for a change.
+    try { console.log(await memoryCommand(args, cwd, { person: caller.role === "console", ...(caller.role === "tools" ? { agent: caller.peer } : {}) })); } catch (e) { fail((e as Error).message); }
   },
   goal: async () => {
     // #258: long-term tasks; a link goes through the project's hub, so Tasks validates the board task.

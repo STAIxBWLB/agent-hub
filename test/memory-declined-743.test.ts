@@ -31,7 +31,10 @@ test("person declined CLI lists physical forgotten ids and rules completely with
   expect(human).toContain(`mem:${id} personal-data`);
   expect(human).not.toContain("incomplete");
   expect(human).not.toContain("PRIVATE-CANARY-743");
-  await expect(memoryCommand(["declined", "--json"], f.root, { store: f.store, person: false })).rejects.toThrow("person authority");
+  // #1522: an agent may run the read-only inspection too; it sees the same ids and rules and never the note text.
+  const agent = await memoryCommand(["declined", "--json"], f.root, { store: f.store, person: false });
+  expect(JSON.parse(agent).rows.map((row: { id: string }) => row.id)).toContain(id);
+  expect(agent).not.toContain("PRIVATE-CANARY-743");
 });
 
 test("inspection policy changes return incomplete with no partial ids (#1173)", () => {

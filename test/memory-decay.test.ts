@@ -81,28 +81,32 @@ test("decay screens current policy, rejects malformed days, and never appends he
   await expect(memoryCommand(["decay"], cwd, { store, now: () => NOW })).rejects.toThrow("does not load");
 });
 
-test("decay is refused at the real CLI boundary for native and hub agents, including live-test delegation", async () => {
-  const root = temp(), cli = join(import.meta.dir, "../src/cli/main.ts");
-  const markerNames = ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_PROJECT_DIR", "AGENTHUB_STATE_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION"];
-  for (const args of [["decay"], ["--json", "decay"], ["decay", "--days", "30"], ["decay", "--as-user"]]) {
-    expect(classifyPeerCommand("memory", args)).toBe("console");
-    expect(liveTestRefusal("memory", args)).toBe(true);
+test("decay is a review-only agent form and cannot be delegated to the person (#1522)", () => {
+  for (const args of [["decay"], ["--json", "decay"], ["decay", "--days", "30"]]) {
+    expect(classifyPeerCommand("memory", args)).toBe("allowed");
+    expect(liveTestRefusal("memory", args)).toBe(true); // delegation to the person is still refused
     expect(cliCommandLabel("memory", args)).toBe("memory decay");
   }
-  for (const [markers, prefix] of [
-    [{ CODEX_THREAD_ID: "fixture-thread" }, []],
-    [{ CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "fixture-session" }, []],
-    [{ AGENTHUB_PEER_ID: "pi" }, []],
-    [{ AGENTHUB_PEER_ID: "codex" }, ["--live-test"]],
-  ] as [Record<string, string>, string[]][]) {
+  expect(classifyPeerCommand("memory", ["decay", "--as-user"])).toBe("console"); // the --as-user flag keeps its person-only meaning
+});
+
+for (const [markers, prefix] of [
+  [{ CODEX_THREAD_ID: "fixture-thread" }, []],
+  [{ CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "fixture-session" }, []],
+  [{ AGENTHUB_PEER_ID: "pi" }, []],
+  [{ AGENTHUB_PEER_ID: "codex" }, ["--live-test"]],
+] as [Record<string, string>, string[]][]) {
+  test(`decay runs as agent for ${Object.keys(markers)[0]} ${prefix.join(" ")}`, async () => {
+    const root = temp(), cli = join(import.meta.dir, "../src/cli/main.ts");
+    const markerNames = ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_PROJECT_DIR", "AGENTHUB_STATE_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION"];
     const wrapper = join(root, `decay-${crypto.randomUUID()}.ts`);
     writeFileSync(wrapper, `for (const key of ${JSON.stringify(markerNames)}) delete process.env[key];\nObject.assign(process.env, ${JSON.stringify(markers)}, {AGENTHUB_HOME: ${JSON.stringify(join(root, "home"))}});\nprocess.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify([...prefix, "memory", "decay"])}];\nawait import(${JSON.stringify(cli)});\n`);
-    const child = Bun.spawn([process.execPath, wrapper], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+    const child = Bun.spawn([process.execPath, wrapper], { cwd: root, env: { ...process.env, HOME: root }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 8000);
     try {
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-      expect(code).toBe(1); expect(stdout).toBe("");
-      expect(stderr).toMatch(/cannot run ahub memory decay|live-test.*(?:refus|person|memory)/i);
+      expect(code, stderr).toBe(0);
+      expect(stdout).toMatch(/decay candidate|no decay candidates/i);
     } finally { clearTimeout(timer); }
-  }
-}, 25_000);
+  }, 20_000);
+}

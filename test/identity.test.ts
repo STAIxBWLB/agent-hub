@@ -109,11 +109,13 @@ test("structural config edits and their backups are human-only for an agent iden
 });
 
 
-test("memory dedupe listing and apply are console-only and audit-labeled without note text (#380)", () => {
-  for (const args of [["dedupe"], ["dedupe", "--json"], ["dedupe", "--apply"], ["dedupe", "--apply", "--as-user"]]) {
-    expect(classifyPeerCommand("memory", args)).toBe("console");
+test("memory dedupe listing and apply are an agent form, audit-labeled without note text, and still not delegated by live-test (#380, #1522)", () => {
+  for (const args of [["dedupe"], ["dedupe", "--json"], ["dedupe", "--apply"]]) {
+    expect(classifyPeerCommand("memory", args)).toBe("allowed");
     expect(cliCommandLabel("memory", args)).toBe("memory dedupe");
+    expect(liveTestRefusal("memory", args)).toBe(true);
   }
+  expect(classifyPeerCommand("memory", ["dedupe", "--apply", "--as-user"])).toBe("console"); // the person's own flag keeps its meaning
 });
 
 test("explicit Pi history replacement is a person-only CLI command", () => {
@@ -320,11 +322,13 @@ const consoleClassForms: readonly [string, readonly string[], PeerCommandAccess]
   ["schedule", ["pause", "nightly"], "conductor"],
   ["schedule", ["resume", "nightly"], "conductor"],
   ["schedule", ["list"], "console"],
-  // amem 0.12.0 records these as "user": they stay the person's until the hub passes an agent actor
-  ...["promote", "demote", "forget", "supersede", "rebuild"].map((sub): [string, string[], PeerCommandAccess] => ["memory", [sub, "x"], "console"]),
-  ["memory", ["machine", "--label", "office"], "console"],
-  ["memory", ["sync"], "console"],
+  // #1522 (hub task 969): an agent shell runs the memory family as itself, recorded as the agent; graph, the suggestion judgments and every other command stay the person's
+  ...["promote", "demote", "forget", "supersede", "rebuild"].map((sub): [string, string[], PeerCommandAccess] => ["memory", [sub, "x"], "allowed"]),
+  ["memory", ["machine", "--label", "office"], "allowed"],
+  ["memory", ["sync"], "allowed"],
+  ["memory", ["sync", "--remote", "git@example.com:o/r.git"], "allowed"],
   ["memory", ["graph", "x"], "console"],
+  ["memory", ["confirm", "x"], "console"],
   ...["new", "state", "done", "take"].map((sub): [string, string[], PeerCommandAccess] => ["goal", [sub, "x"], "console"]),
   ["goal", ["link", "x", "1"], "conductor"], // the daemon records the peer as the link's actor
   ["goal", ["take", "x", "--force"], "console"],
