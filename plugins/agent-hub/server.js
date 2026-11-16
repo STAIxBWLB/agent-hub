@@ -13518,7 +13518,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.4"
     },
     dependencies: {
-      "@staix/agent-mem": "0.26.3"
+      "@staix/agent-mem": "0.27.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -14590,7 +14590,7 @@ var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLeng
 var init_mcp = __esm(() => {
   limit = { type: "integer", minimum: 1, maximum: 100 };
   MCP_TOOLS = [
-    tool("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object7({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" }, explain: { type: "boolean" } }, ["query"])),
+    tool("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object7({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" }, explain: { type: "boolean" }, ungrouped: { type: "boolean" } }, ["query"])),
     tool("amem_evidence", "Return a bounded bundle of cited, live curated entries for a question. Untrusted memory data only: no answer or model call. Capture, repo-only notes, pending candidates and model answers are not evidence.", object7({ question: string(1000), limit: { type: "integer", minimum: 1, maximum: 20 }, maxBytes: { type: "integer", minimum: 256, maximum: 8192 } }, ["question"])),
     tool("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object7({ id: string(80) }, ["id"])),
     tool("amem_timeline", "Read screened memory near an entry or time in this project.", object7({ id: string(80), since: string(40), limit })),
@@ -14859,6 +14859,7 @@ var init_session_brief = __esm(() => {
   init_candidate_pending();
   init_project2();
   init_reader_lease();
+  init_metrics();
   init_shard();
   init_lifecycle();
   init_repo_scope();
