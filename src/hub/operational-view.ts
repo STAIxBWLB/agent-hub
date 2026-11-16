@@ -23,7 +23,7 @@ const EVENT_FIELDS: Record<string,readonly string[]>={
   pii_screen:["task","item","label","source","category","miss","ms"],
   overflow:["id","from","peer"],undeliverable:["id","from","peer"],stale:["id","from","peer","task"],quiet:["id","from","peers"],
   envelope:["id","from","to","priority","hop","kind","task","bytes","private","dropped"],
-  memory_brief:["source","peer","task","native","fails","claudeMem"],
+  memory_brief:["source","peer","task","native","fails","claudeMem"],preface:["peer","bytes","lines","ordered"],
   fact:["peer","id","files","plans","unknown","named","bytes","via","ms","hookMs","rttMs","accepted","unanswered","probe","coverage"],
   fact_ack:["peer","id","via","ms"],permission_mode:["peer","from","to"],
   permission:["id","peer","event","latencyMs","surface","option"],
@@ -38,13 +38,13 @@ const EVENT_REQUIRED:Record<string,readonly string[]>={
   task:["id","event","by","state","owner","reviewer","class","pii"],tokens:["peer","n"],usage:["peer","source","id"],turn_end:["peer","turn","ms"],
   conduct:["peer","action"],agent_cli:["peer","command","refused"],pii_screen:["item","label","source"],
   overflow:["id","from","peer"],undeliverable:["id","from","peer"],stale:["id","from","peer"],quiet:["id","from","peers"],envelope:["id","from","priority","hop"],
-  memory_brief:["peer","task","native","fails","claudeMem"],fact:["peer","id","files","plans","unknown","named","bytes","via"],fact_ack:["peer","id","via","ms"],
+  memory_brief:["peer","task","native","fails","claudeMem"],preface:["peer","bytes","lines","ordered"],fact:["peer","id","files","plans","unknown","named","bytes","via"],fact_ack:["peer","id","via","ms"],
   permission_mode:["peer","from","to"],permission:["id","peer","event"],supervision_turn:["peer","turn"],hook_stats:["peer","n","startupMs","hubMs","maxStartupMs"],
   capability:["peer","state"],cohort:["id","event","silent","tasks","owners"],planning:["by","fields","revision"],context_pressure:["peer","source","measuredAt","used","window"],
   budget_pause:["peer","reason","window","resetsAt","by"],budget_resume:["peer","reason","window","resetsAt","by"],quota_reset:["peer","window","cause","used","previousUsed"],
 };
-const NUMBERS=new Set(["n","ms","tokens","files","snapshotMs","reasoningTokens","inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens","hop","bytes","native","fails","claudeMem","plans","unknown","named","hookMs","rttMs","latencyMs","startupMs","hubMs","maxStartupMs","used","previousUsed","previousResetsAt","resetsAt","plannedStart","due","revision"]);
-const BOOLEANS=new Set(["pii","private","fresh","refused","delegated","accepted","unanswered","probe","coverage","silent"]);
+const NUMBERS=new Set(["n","ms","tokens","files","snapshotMs","reasoningTokens","inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens","hop","bytes","lines","native","fails","claudeMem","plans","unknown","named","hookMs","rttMs","latencyMs","startupMs","hubMs","maxStartupMs","used","previousUsed","previousResetsAt","resetsAt","plannedStart","due","revision"]);
+const BOOLEANS=new Set(["pii","private","fresh","refused","delegated","accepted","unanswered","probe","coverage","silent","ordered"]);
 const TASK_EVENTS=new Set(["proposed","backlogged","backlog pulled","backlog returned","accepted","assigned","reassigned","unassigned","reserved","ready","blocked","declined","escalated","done","approved","changes_requested","cancelled","lifecycle"]);
 const identifier=(value:unknown):value is string=>typeof value==="string" && /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$/.test(value);
 const peerId=(value:unknown):value is string=>typeof value==="string" && /^[a-z][a-z0-9-]{0,63}$/.test(value);

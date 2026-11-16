@@ -30,8 +30,8 @@ export interface QualityReport {
   budget: { pauses: number; resumes: number; handoffs: number | null; byFamily: Record<string, { pauses: number; resumes: number }> };
   /** Task and review outcomes per (peer family, class), by the family of the task's last owner. */
   outcomes: Record<string, Record<string, OutcomeCounts>>;
-  /** Every event type seen in the window with its count, and the types this report knows that did not occur. */
-  events: { present: Record<string, number>; absent: string[] };
+  /** Every event type seen in the window with its count, and the types this report knows that did not occur. `preface` (#1330): the session prefaces injected in the window, their total bytes and memory lines, and how many were reordered by observed use; null when none was recorded. */
+  events: { present: Record<string, number>; absent: string[]; preface: { prefaces: number; bytes: number; lines: number; ordered: number } | null };
   /** The share of attributed token increments by the attribution rule (#200) and the total; null when no tokens were counted. */
   tokenAttribution: { total: number; share: Record<"delivery" | "single_open" | "unattributed", number | null> };
 }
@@ -77,6 +77,7 @@ export function buildResearchQuality(records: readonly ResearchRecord[], events:
   const quota: Record<string, { times: number[]; measured: number; event: number }> = {};
   const budget: QualityReport["budget"] = { pauses: 0, resumes: 0, handoffs: null, byFamily: {} };
   const attribution: Record<string, number> = { delivery: 0, single_open: 0, unattributed: 0 };
+  let preface: NonNullable<QualityReport["events"]["preface"]> | null = null;
   let tokenTotal = 0;
   for (const e of windowEvents) {
     present[e.type] = (present[e.type] ?? 0) + 1;
@@ -90,6 +91,11 @@ export function buildResearchQuality(records: readonly ResearchRecord[], events:
     } else if (e.type === "budget_pause" || e.type === "budget_resume") {
       const fam = family(e.peer), row = budget.byFamily[fam] ??= { pauses: 0, resumes: 0 };
       if (e.type === "budget_pause") { budget.pauses++; row.pauses++; } else { budget.resumes++; row.resumes++; }
+    } else if (e.type === "preface") {
+      if (Number.isSafeInteger(e.bytes) && e.bytes >= 0 && Number.isSafeInteger(e.lines) && e.lines >= 0) {
+        preface ??= { prefaces: 0, bytes: 0, lines: 0, ordered: 0 };
+        preface.prefaces++; preface.bytes += e.bytes; preface.lines += e.lines; if (e.ordered === true) preface.ordered++;
+      }
     } else if (e.type === "tokens" && Number.isFinite(e.n) && e.n > 0) {
       tokenTotal += e.n; const rule = e.attribution === "delivery" || e.attribution === "single_open" ? e.attribution : "unattributed"; attribution[rule]! += e.n;
     }
@@ -112,7 +118,7 @@ export function buildResearchQuality(records: readonly ResearchRecord[], events:
     window: { since: window.since !== undefined ? new Date(window.since).toISOString() : null, until: window.until !== undefined && Number.isFinite(window.until) ? new Date(window.until).toISOString() : null },
     records: tasks.length, fields: Object.fromEntries(Object.entries(fields).sort(([a], [b]) => a.localeCompare(b))),
     quota: Object.fromEntries(Object.entries(quotaOut).sort(([a], [b]) => a.localeCompare(b))), budget, outcomes,
-    events: { present: Object.fromEntries(Object.entries(present).sort(([a], [b]) => a.localeCompare(b))), absent: EXPECTED_EVENTS.filter(type => !(type in present)) },
+    events: { present: Object.fromEntries(Object.entries(present).sort(([a], [b]) => a.localeCompare(b))), absent: EXPECTED_EVENTS.filter(type => !(type in present)), preface },
     tokenAttribution: { total: tokenTotal, share: { delivery: share(attribution.delivery!), single_open: share(attribution.single_open!), unattributed: share(attribution.unattributed!) } },
   };
 }

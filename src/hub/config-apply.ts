@@ -196,7 +196,7 @@ const schema: Record<string, Check> = {
   adapters: v => { createProjectAdapterCatalog(v); }, instances: v => { validateInstances(v, createProjectAdapterCatalog()); }, pet: validatePetConfig,
   batch_max: number(1, 100_000, true), batch_ms: number(0, 2_147_483_647), queue_cap: number(1, 1_000_000, true),
   memory: block({ enabled: bool, worker_url: text, inject_tokens: number(0, 1_000_000, true), brief_items: number(0, 10_000, true), native: bool,
-    short_ttl_days: number(1, 3650, true), sync_interval_min: number(0, 1440, true), suggest_edges: bool }),
+    short_ttl_days: number(1, 3650, true), sync_interval_min: number(0, 1440, true), suggest_edges: bool, preface_unused_after: number(0, 100_000, true) }),
   roster: peerMap(bool), roles: map(strings), planner: words(PLANNER_PEERS), profile: words(["dev", "research", "writing", "general"]),
   profile_overrides: (v, k) => { map(() => {})(v, k); const fields = object(v, k); for (const name of ["classes", "role_text", "catalog_roles"]) if (fields[name] !== undefined) map(() => {})(fields[name], `${k}.${name}`); resolveProfile("dev", v); },
   catalog_roles: (v, k) => { map(() => {})(v, k); catalogAssignments(v); },
@@ -282,7 +282,7 @@ const restart: Record<string, string> = {
   text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
 const live = new Set(["visuals", "action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "worktrees", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "questions", "pet", "specs", "supervision"]);
-const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
+const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges", "memory.preface_unused_after"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {
   const top = key.split(".")[0]!;

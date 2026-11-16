@@ -184,7 +184,7 @@ import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type
 import { UsageRollup, USAGE_GROUPS, LIMITS_MAX, type UsageGroup } from "./usage-rollup.ts";
 import { Budget, readNativeQuota, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { remoteEnvelope, HUB } from "./envelope.ts";
-import { recallMemoryLines, trimToTokens } from "../memory/recall.ts";
+import { recallMemoryLines, trimToTokens, aggregateUse, orderByUse } from "../memory/recall.ts";
 import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -300,8 +300,8 @@ export interface HubConfig {
   model_relay?: ModelOperationalConfig["model_relay"];
   /** #489 H7: accepted presentation preferences read by a new console through settings_get. */
   console?: ConsoleOperationalConfig["console"];
-  /** `native` (#258): the hub's own store in ~/.agenthub/memory, on with any project config; `short_ttl_days`: short-term lifetime after approval; `sync_interval_min`: machine sync while a remote is set (default 10, 0 off). */
-  memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number; sync_interval_min?: number; suggest_edges?: boolean };
+  /** `native` (#258): the hub's own store in ~/.agenthub/memory, on with any project config; `short_ttl_days`: short-term lifetime after approval; `sync_interval_min`: machine sync while a remote is set (default 10, 0 off); `preface_unused_after` (#1330): a long-term preface line delivered at least this many times and never cited moves to the end of its section, so the cap cuts it first (default 20, 0 keeps the store order). */
+  memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number; sync_interval_min?: number; suggest_edges?: boolean; preface_unused_after?: number };
   roster: PeerRoster;
   roles: Record<string, string[]>;
   /** #455: the one peer that holds the planner role; unset, the `roles` planners stand, or the hub assigns one. */
@@ -396,7 +396,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   queue_cap: 200,
   bus: { max_attempts: BUS_MAX_ATTEMPTS_SETTING.defaultValue, digest_max: BUS_DIGEST_MAX_SETTING.defaultValue, pull_budget_bytes: BUS_PULL_BUDGET_BYTES_SETTING.defaultValue, notes_kept: BUS_NOTES_KEPT_SETTING.defaultValue, terminal_history_limit: BUS_TERMINAL_HISTORY_LIMIT_SETTING.defaultValue, accepted_settle_ms: BUS_ACCEPTED_SETTLE_MS_SETTING.defaultValue },
   adapter_timing: { acp_tool_ceiling_min: ACP_TOOL_CEILING_SETTING.defaultValue, acp_activity_batch_ms: ACP_ACTIVITY_BATCH_SETTING.defaultValue, jcode_steer_timeout_s: JCODE_STEER_TIMEOUT_SETTING.defaultValue },
-  memory: { enabled: true, inject_tokens: 2000, brief_items: 8 },
+  memory: { enabled: true, inject_tokens: 2000, brief_items: 8, preface_unused_after: 20 },
   roster: {},
   roles: DEFAULT_ROLES,
   conductor: { feed: "own", approval_wait_s: 30 },
@@ -2276,13 +2276,18 @@ export async function startDaemon(opts: DaemonOptions) {
   async function ensurePreface(peer: PeerId): Promise<void> {
     if ((!config.memory.enabled && !memoryStore) || recalled.has(peer) || reviewOnlyPeer(peer)) return; // #223 R2: no shared memory in a fresh review
     // The hub's own long-term decisions, contracts and fails lead; amem's curated short-term notes follow, each with half the budget.
-    let own: string | undefined;
+    let own: string | undefined, orderedByUse = false;
     try {
       checkMemory();
       // This project's active long-term tasks lead, then its latest long-term decisions, contracts and fails.
       const goals = memoryStore ? screenMemory(memoryStore.goals(memoryProject).filter((g) => g.state !== "done" && g.state !== "dropped").map((g) => ({ ...g, text: "" }))).map(goalLine) : [];
       // Entries and titles are agents' words from any synced machine: one line each, and no forged message header.
-      own = memoryStore ? nativeRecall([...goals, ...recallMemoryLines(screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")), 30, staleness())], config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, (line) => sanitize(line.replace(/\s+/g, " "))) : undefined;
+      // #1330: order by observed use. Counter rows are per delivery, so they are summed per entry first; any read failure, a missing sidecar or a setting of 0 keeps the store order.
+      let usage: ReturnType<typeof aggregateUse> | undefined;
+      const unusedAfter = config.memory.preface_unused_after ?? 20;
+      if (candidates && unusedAfter > 0) { try { usage = aggregateUse(candidates.counters(memoryProject)); } catch { usage = undefined; } }
+      orderedByUse = usage !== undefined && usage.size > 0;
+      own = memoryStore ? nativeRecall([...goals, ...recallMemoryLines(screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")), 30, staleness(), notes => orderByUse(notes, usage, unusedAfter))], config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, (line) => sanitize(line.replace(/\s+/g, " "))) : undefined;
     }
     catch (e) { log(`hub memory recall failed: ${(e as Error).message}`); }
     const recordRecallTask: BriefTask = { owner: peer, title: "", refs: {} };
@@ -2297,6 +2302,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!block || recalled.has(peer)) return; // nothing yet (worker down, no memory): the peer's next session tries again
     recalled.add(peer);
     bus.preface(peer, block);
+    // #1330: the size of what was injected and whether use reordered it, as numbers only, so the preface can be measured before and after.
+    event({ type: "preface", peer, bytes: Buffer.byteLength(block), lines: block.split("\n").filter(line => line.startsWith("mem:")).length, ordered: orderedByUse });
     log(`recall ${peer}: ${block.length} chars`);
   }
 

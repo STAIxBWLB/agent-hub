@@ -123,7 +123,7 @@ record file names). It is built to leave the machine, so it is an allowlist:
 `unknown`, null or the vocabulary's own `unknown`), `quota` per family (`readings`, `gaps` over one hour, their total
 `gapMs`, `stalenessP95Ms` between readings, and `clock`: how many readings used the event's time or their own
 `measuredAt`), `budget` (pauses and resumes per family, and `handoffs`: the owner moves a budget pause drove, counted from the `reassigned` task events whose board reason is `budget`, once per move; null when the window holds no task event at all, never 0), `outcomes` per family of the last owner and class, `events`
-(the types present with counts, and the ones the report expects that did not occur), and `tokenAttribution` (`total` and the
+(the types present with counts, and the ones the report expects that did not occur, plus `preface` (#1330): how many session prefaces were injected in the window, their total `bytes` and memory `lines`, and how many were `ordered` by observed use; null when none was recorded), and `tokenAttribution` (`total` and the
 share by `delivery`, `single_open`, `unattributed`; null shares when nothing was counted). The 2026-10-21 field analysis found
 40.2% of token increments unattributed: a dataset now says so itself.
 
