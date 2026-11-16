@@ -105,7 +105,9 @@ test("notes on an open task are short-term; approval promotes decisions, contrac
 
   // The CLI reads the same store; changing it is a person's.
   expect(await memoryCommand(["list", "--tier", "long"], h.root, { store })).toContain("long-term");
-  expect(await memoryCommand(["search", "quoted"], h.root, { store })).toContain("regex split fails");
+  // agent-mem 0.27 groups visible hits from one task into its best-ranked hit (#1533); --ungrouped lists each one.
+  expect(await memoryCommand(["search", "quoted"], h.root, { store })).toContain("quoted commas");
+  expect(await memoryCommand(["search", "quoted", "--ungrouped"], h.root, { store })).toContain("regex split fails");
   await expect(memoryCommand(["list", "--since", "yesterday-ish"], h.root, { store })).rejects.toThrow("--since");
   expect(classifyPeerCommand("memory", ["search", "x"])).toBe("allowed");
   expect(classifyPeerCommand("memory", ["--json"])).toBe("allowed");

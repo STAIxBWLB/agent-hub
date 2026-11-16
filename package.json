@@ -17,7 +17,7 @@
     "bun": ">=1.4.4"
   },
   "dependencies": {
-    "@staix/agent-mem": "0.26.3"
+    "@staix/agent-mem": "0.27.1"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
