@@ -3008,8 +3008,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const projectSpecs = specInspectorAt(opts.cwd);
   let specsMissingBlockHintShown = false;
   let releaseReportPolicy: ((head: string, repo: string) => ReleaseReportPolicy | undefined) | undefined;
+  let questionStore!: QuestionStore;
   startupTimings.mark("task_ports");
   const tasks: Tasks = new Tasks({
+    ownerQuestionWait: (task, peer) => questionStore?.ownerWait(task, peer),
     guidanceProbes: { store: guidanceProbeStore, session: by => {
       const request = guidanceProbeRequestContext.getStore();
       return request?.actor === by ? { generation: request.generation, nativeSession: request.nativeSession,
@@ -6596,7 +6598,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const nativeUnattended = (peer: string): boolean => startingUnattended.get(peer) ?? unattendedPeers.has(peer);
   // #1053: questions a peer asks the person. The store is the one record; the desk owns the waiting calls, supersede, cancel, expiry and the late-answer envelope.
   // Question text lives in hub.db and the envelope to the asking peer only: never a log line, an event, a notice or memory capture.
-  const questionStore = new QuestionStore(join(opts.stateDir, "hub.db"));
+  questionStore = new QuestionStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => questionStore.close());
   const questionAttributions = new Map<string, TaskAttribution>();
   /**

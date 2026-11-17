@@ -11,6 +11,7 @@ import { loadRouting } from "../src/hub/routing.ts";
 import { TASK_TOOLS, TASK_TOOL_NAMES, WAIT_TOOL, profileTaskTools } from "../src/hub/hub-tools.ts";
 import { DEFAULT_TASK_SWEEP, TASK_WAIT_MAX_MS, nextSweep, taskWait } from "../src/hub/task-sweep.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
+import { QuestionStore } from "../src/hub/questions.ts";
 
 // #1454: a bounded wait on an in_progress task suspends the idle-owner ladder and the ladder restarts from `until`.
 class Peer extends BasePeer {
@@ -56,6 +57,33 @@ const refusal = async (promise: Promise<unknown>): Promise<string> => {
   try { await promise; } catch (error) { expect(error).toBeInstanceOf(PreEffectToolRefusal); return (error as Error).message; }
   throw new Error("expected a refusal");
 };
+
+test("an owner's open question suspends idle-owner and settlement restarts the ladder", async () => {
+  const f = await fixture({}, { idle_min: 1, ladder_min: 1 });
+  const store = new QuestionStore(join(f.deps.cwd, "hub.db")); cleanup.push(() => store.close());
+  f.deps.ownerQuestionWait = (id, peer) => store.ownerWait(id, peer);
+  const task = f.make();
+  f.at(T0 + MIN); expect(await f.tasks.sweep(T0 + MIN)).toMatchObject([{ task: task.id, finding: { step: 1 } }]);
+  const asked = store.ask({ peer: "codex", session: "", task: task.id, private: false, questions: [{ id: "q", prompt: "Choose", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] }] }, T0 + MIN + 1);
+  if ("error" in asked) throw new Error(asked.error);
+  f.at(T0 + 5 * MIN); expect(await f.tasks.sweep(T0 + 5 * MIN)).toEqual([]);
+  const settled = T0 + 6 * MIN;
+  expect(store.answer(asked.set, [{ questionId: "q", optionIds: ["a"] }], "console", settled, false).ok).toBe(true);
+  f.at(settled + MIN - 1); expect(await f.tasks.sweep(settled + MIN - 1)).toEqual([]);
+  f.at(settled + MIN); expect(await f.tasks.sweep(settled + MIN)).toMatchObject([{ task: task.id, finding: { kind: "idle-owner", step: 1 } }]);
+  const proposed = f.make("proposed"), review = f.make("in_review");
+  expect(nextSweep(proposed, f.deps.sweep!, settled + 10 * MIN, true, { open: true })).toMatchObject({ kind: "unaccepted-assignment" });
+  expect(nextSweep(review, f.deps.sweep!, settled + 10 * MIN, true, { open: true })).toMatchObject({ kind: "review-pending" });
+  const ready = f.board.propose("user", { title: "ready", class: "implement" });
+  expect(nextSweep(ready, { ...f.deps.sweep!, ready_min: 1 }, settled + 10 * MIN, true, { open: true })).toMatchObject({ kind: "ready-unassigned" });
+  expect(store.ownerWait(task.id, "kimi").open).toBe(false);
+  const other = store.ask({ peer: "kimi", session: "", task: task.id, private: false, questions: asked.questions }, settled + 1);
+  if ("error" in other) throw new Error(other.error);
+  expect(store.ownerWait(task.id, "codex").open).toBe(false);
+  expect(store.ownerWait(task.id + 100, "kimi").open).toBe(false);
+  expect(store.settle(other.set, "expired", "expired", settled + 2)).toBeDefined();
+  expect(store.ownerWait(task.id, "kimi")).toEqual({ open: false, settled: settled + 2 });
+});
 
 test("a pending wait gives no idle-owner finding at 2, 4 and 24 hours; step 1 fires idle_min after until and step 3 still reassigns", async () => {
   const f = await fixture({}, { auto_reassign: true });

@@ -204,6 +204,12 @@ export class QuestionStore {
   }
   close(): void { try { this.db.close(); } catch { /* already closed */ } }
 
+  /** Timing only: never hydrate question text for the idle-owner sweep. */
+  ownerWait(task: number, peer: string): { open: boolean; settled?: number } {
+    const row = this.db.query("SELECT MAX(CASE WHEN state = 'open' THEN 1 ELSE 0 END) AS open, MAX(settled) AS settled FROM questions WHERE task = ? AND peer = ?").get(task, peer) as { open: number | null; settled: number | null };
+    return { open: row.open === 1, ...(row.settled === null ? {} : { settled: row.settled }) };
+  }
+
   get(set: string): QuestionRow | undefined {
     if (typeof set !== "string" || !QUESTION_SET.test(set)) return undefined;
     const raw = this.db.query("SELECT * FROM questions WHERE set_id = ?").get(set) as RawRow | null;
