@@ -74,10 +74,10 @@ export function nextSweep(task: Task, config: TaskSweepConfig, now: number, read
   }
   const threshold = kind === "ready-unassigned" ? config.ready_min ?? 60 : kind === "unaccepted-assignment" ? config.unaccepted_min : kind === "idle-owner" ? config.idle_min : config.review_min;
   if (now - at < threshold * 60_000) return undefined;
-  const previous = task.history.flatMap((h) => h.sweep?.kind === kind && h.sweep.activity === activity ? [h.sweep] : []).at(-1);
-  const current = questionSettled !== undefined && previous && previous.at <= questionSettled ? undefined : previous;
-  if (current && (current.step === 3 || now - current.at < config.ladder_min * 60_000)) return undefined;
-  return { kind, activity, step: current ? (current.step + 1) as 2 | 3 : 1, at: now };
+  let previous = task.history.flatMap((h) => h.sweep?.kind === kind && h.sweep.activity === activity ? [h.sweep] : []).at(-1);
+  if (questionSettled !== undefined && previous && previous.at <= questionSettled) previous = undefined;
+  if (previous && (previous.step === 3 || now - previous.at < config.ladder_min * 60_000)) return undefined;
+  return { kind, activity, step: previous ? (previous.step + 1) as 2 | 3 : 1, at: now };
 }
 
 /** #1454: the longest a bounded wait may reach ahead of the moment it is recorded. */
