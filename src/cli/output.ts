@@ -488,6 +488,7 @@ export function renderStatusDefault(data: StatusOutput, columns?: number, now = 
   const hub: [string, unknown][] = [["version", data.version ?? "unknown"], ["pid", data.pid ?? "unknown"], ["control", `127.0.0.1:${data.controlPort ?? "unknown"}`], ["project", data.cwd ?? ""]];
   if (data.planner) hub.push(["planner", `${data.planner.peers?.join(", ") || "nobody"} (${data.planner.source ?? "unknown"})`]);
   if (data.memoryProfile) hub.push(["memory", `${data.memoryProfile.profile === "generation" ? `generation ${data.memoryProfile.generation?.slice(0, 8) ?? "unknown"}` : data.memoryProfile.profile ?? "unbound"}; ${data.memoryProfile.state ?? "unknown"}`]);
+  if (data.memoryProfile?.sync) hub.push(["memory sync", memorySyncLine(data.memoryProfile.sync)]);
   const specs = data.specs;
   if (specs && [specs.specCount, specs.documents, specs.errors, specs.stale].every(value => Number.isSafeInteger(value) && value >= 0) && (specs.specCount > 0 || specs.documents > 0 || specs.errors > 0)) hub.push(["specs", `${specs.specCount} (errors ${specs.errors}, stale ${specs.stale})`]);
   const outside = (data.agentDrift ?? []).filter(row => row.state !== "refused");

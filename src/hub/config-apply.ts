@@ -308,6 +308,7 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
   }
   const operational = operationalNumber(key);
   if (operational) return { applies: operational.applies, ...(operational.restartReason ? { reason: operational.restartReason } : {}) };
+  if (key === "memory.sync_interval_min") return { applies: "live" };
   if (nextMemory.has(key)) return { applies: "next use" };
   for (const [path, reason] of Object.entries(restart)) if (key === path || key.startsWith(`${path}.`)) return { applies: "restart", reason };
   if ([...live].some(path => key === path || key.startsWith(`${path}.`))) return { applies: "live" };
