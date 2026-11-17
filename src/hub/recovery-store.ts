@@ -282,3 +282,42 @@ export function claimRunner(id: string, home = hubHome()): () => void {
     db.close();
   };
 }
+
+/** True when any machine or project recovery hold exists, or the coordination state cannot be read: unknown is held. */
+export function anyRecoveryHold(home = hubHome()): boolean {
+  try {
+    if (legacyRecoveryLock(home)) return true;
+    const db = projectLocks(home);
+    if (!db) return false;
+    try { return !!db.query("SELECT 1 FROM project_locks LIMIT 1").get(); } finally { db.close(); }
+  } catch { return true; }
+}
+
+/**
+ * #1541: remove one terminal receipt and its runner db. The exclusive runner claim is the only mutual exclusion: a live or
+ * unidentifiable runner keeps the receipt, a dead one is replaced by `claimRunner` in its own transaction, so two retirers
+ * on the same stale claim cannot both proceed. Under the claim `confirm` sees the receipt as it is now; the receipt leaves
+ * first, then the claim row is released, then the runner db. An interruption between them leaves only a runner db without
+ * a receipt, which the next call settles through the ENOENT branch (a later claimant re-reads the receipt, finds none and
+ * fails). A runner db whose receipt is gone is settled the same way (`settled`, `confirm` never called); only the call that
+ * removed the receipt answers `retired`.
+ */
+export function retireOperation(id: string, home: string, confirm: (record: unknown) => boolean, hooks: { betweenPair?: () => void } = {}): "retired" | "settled" | "kept" {
+  const file = operationPath(id, home);
+  let release: () => void;
+  try { release = claimRunner(id, home); } catch { return "kept"; }
+  let result: "retired" | "settled" = "settled";
+  try {
+    let record: unknown, removed = false;
+    try { record = readOperation(id, home); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "kept"; }
+    if (record !== undefined) {
+      if (!confirm(record)) return "kept";
+      rmSync(file); removed = true;
+      hooks.betweenPair?.();
+    }
+    result = removed ? "retired" : "settled";
+  } finally { release(); }
+  rmSync(`${file}.runner.db`, { force: true });
+  return result;
+}

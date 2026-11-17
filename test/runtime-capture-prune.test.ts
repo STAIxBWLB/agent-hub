@@ -1,17 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { realPath } from "../src/hub/project.ts";
 import { Registry, REGISTRY_DB_BUSY_TIMEOUT_MS } from "../src/hub/registry.ts";
 import { projectRuntimeFile, writeProjectRuntimeState } from "../src/hub/project-runtime-state.ts";
-import { planRuntimeCapturePrune, pruneRuntimeCaptures, scheduleRuntimeCapturePrune, RUNTIME_PRUNE_INTERVAL_MS, RUNTIME_PRUNE_MAX_BATCH } from "../src/hub/runtime-capture-prune.ts";
+import { planRuntimeCapturePrune, pruneRuntimeCaptures, retireTerminalReceipts, scheduleRuntimeCapturePrune, RETAINED_TERMINAL_RECEIPTS, RUNTIME_PRUNE_INTERVAL_MS, RUNTIME_PRUNE_MAX_BATCH } from "../src/hub/runtime-capture-prune.ts";
 import { stageCurrentRuntime } from "../src/cli/recovery-package.ts";
 import { createOperation, planFingerprint, type UpgradePlan } from "../src/cli/upgrade.ts";
-import { releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
+import { claimRunner, operationPath, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
+import { runtimePruneHealth } from "../src/hub/runtime-prune-health.ts";
 import { processSignature, processLiveness } from "../src/pi/process-signature.ts";
 
 const VERSION = "0.99.0", CORE = "0.18.0", cleanup: (() => void)[] = [];
@@ -53,6 +54,7 @@ function copyPruner(target: string, verifier?: string): string {
   reexport("src/hub/project-runtime-state.ts", "readProjectRuntimeReference, projectRuntimeFile", "../src/hub/project-runtime-state.ts");
   reexport("src/hub/registry.ts", "Registry, REGISTRY_DB_BUSY_TIMEOUT_MS", "../src/hub/registry.ts");
   reexport("src/hub/child-process.ts", "childEnv", "../src/hub/child-process.ts");
+  reexport("src/hub/recovery-store.ts", "anyRecoveryHold, retireOperation", "../src/hub/recovery-store.ts");
   return file;
 }
 
@@ -550,3 +552,83 @@ for (const [name, change] of [
     expect(existsSync(orphan.root)).toBe(true); expect(existsSync(capture.root)).toBe(true);
   });
 }
+
+/** #1541: a synthetic receipt of the shape the walk reads; `at` orders it, `age` 0 is the newest. */
+function receipt(f: ReturnType<typeof fixture>, sourceRoot: string, options: { phase?: string; at?: number; runnerDb?: boolean } = {}): string {
+  const id = randomUUID(), phase = options.phase ?? "completed", terminal = phase === "completed" || phase === "cancelled";
+  const body = { schema: 1, id, phase, createdAt: options.at ?? 1, updatedAt: options.at ?? 1, sourceRoot, step: "fixture",
+    plan: { schema: 1, kind: "upgrade", version: VERSION, sourceRoot, sourceDigest: "a".repeat(64), projects: [], blockers: [] }, projects: [],
+    ...(phase === "completed" ? { targetRoot: sourceRoot, targetDigest: "a".repeat(64) } : {}) };
+  void terminal;
+  writeOperation(id, body, f.home);
+  if (options.runnerDb !== false) { const db = new Database(`${operationPath(id, f.home)}.runner.db`, { create: true }); db.run("CREATE TABLE runner (slot INTEGER PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL, signature TEXT)"); db.close(); }
+  return id;
+}
+const files = (f: ReturnType<typeof fixture>) => readdirSync(join(f.home, "recovery"));
+const receiptsOf = (f: ReturnType<typeof fixture>) => files(f).filter(name => name.endsWith(".json"));
+const orphans = (f: ReturnType<typeof fixture>) => files(f).filter(name => name.endsWith(".json.runner.db") && !existsSync(join(f.home, "recovery", name.slice(0, -".runner.db".length))));
+
+test("#1541 AC1 140 terminal receipts and none open: one maintenance pass leaves a bounded set, pruning runs and doctor reads ok", () => {
+  const f = fixture(), keep = f.capture(), orphan = f.capture();
+  for (let i = 0; i < 140; i++) receipt(f, keep.root, { phase: i % 5 ? "completed" : "cancelled", at: 1000 + i });
+  expect(planRuntimeCapturePrune(f.home, 0).deferred).toContain("safety ceiling");
+  const result = pruneRuntimeCaptures(f.home, 0);
+  expect(result.deferred).toBeUndefined(); expect(result.removed).toEqual([orphan.root]);
+  expect(receiptsOf(f).length).toBe(RETAINED_TERMINAL_RECEIPTS); expect(orphans(f)).toEqual([]);
+  expect(files(f).filter(name => name.endsWith(".runner.db")).length).toBe(RETAINED_TERMINAL_RECEIPTS);
+  // The newest are the ones kept.
+  const newest = receiptsOf(f).map(name => (JSON.parse(readFileSync(join(f.home, "recovery", name), "utf8")) as { updatedAt: number }).updatedAt);
+  expect(Math.min(...newest)).toBe(1000 + 140 - RETAINED_TERMINAL_RECEIPTS);
+  expect(runtimePruneHealth(f.home)).toEqual([]);
+});
+
+test("#1541 AC2 a non-terminal receipt is never removed, and a terminal receipt whose capture a registered runtime selects stays", () => {
+  const f = fixture(), selectedCapture = f.capture(), other = f.capture(), project = f.project();
+  writeProjectRuntimeState(project, { ...selectedCapture, kind: "restart" }, null);
+  const oldSelected = receipt(f, selectedCapture.root, { at: 1 }), open = receipt(f, other.root, { phase: "blocked", at: 2 });
+  const old = Array.from({ length: 40 }, (_, i) => receipt(f, other.root, { at: 10 + i }));
+  for (let i = 0; i < RETAINED_TERMINAL_RECEIPTS; i++) receipt(f, other.root, { at: 1000 + i });
+  const result = pruneRuntimeCaptures(f.home, 0);
+  expect(result.deferred).toContain("not terminal"); expect(result.deferred).toContain(`ahub recovery status ${open}`);
+  const left = receiptsOf(f);
+  expect(left).toContain(`${open}.json`); expect(left).toContain(`${oldSelected}.json`); expect(existsSync(`${operationPath(open, f.home)}.runner.db`)).toBe(true);
+  for (const id of old) { expect(left).not.toContain(`${id}.json`); expect(existsSync(`${operationPath(id, f.home)}.runner.db`)).toBe(false); }
+  expect(existsSync(selectedCapture.root)).toBe(true);
+});
+
+test("#1541 any recovery hold, and a receipt whose runner is alive, stop retirement", () => {
+  const f = fixture(), capture = f.capture(); f.capture();
+  const ids = Array.from({ length: RETAINED_TERMINAL_RECEIPTS + 3 }, (_, i) => receipt(f, capture.root, { at: 10 + i }));
+  writeFileSync(join(f.home, "recovery.lock"), JSON.stringify({ operationId: randomUUID() }));
+  expect(retireTerminalReceipts(f.home, f.registry)).toBe(0); expect(receiptsOf(f).length).toBe(ids.length);
+  rmSync(join(f.home, "recovery.lock"));
+  const release = claimRunner(ids[0]!, f.home);
+  try { expect(retireTerminalReceipts(f.home, f.registry)).toBe(2); expect(receiptsOf(f)).toContain(`${ids[0]}.json`); }
+  finally { release(); }
+  expect(retireTerminalReceipts(f.home, f.registry)).toBe(1); expect(receiptsOf(f).length).toBe(RETAINED_TERMINAL_RECEIPTS);
+});
+
+test("#1541 AC3 a pass interrupted between a receipt and its runner db leaves no orphan after the next pass", () => {
+  const f = fixture(), capture = f.capture();
+  for (let i = 0; i < RETAINED_TERMINAL_RECEIPTS + 4; i++) receipt(f, capture.root, { at: 10 + i });
+  expect(() => retireTerminalReceipts(f.home, f.registry, { betweenPair: () => { throw new Error("simulated crash"); } })).toThrow("simulated crash");
+  // The receipt left first, so the stranded half is a runner db; the next pass settles it and finishes the rest.
+  expect(orphans(f).length).toBe(1);
+  retireTerminalReceipts(f.home, f.registry);
+  expect(orphans(f)).toEqual([]); expect(receiptsOf(f).length).toBe(RETAINED_TERMINAL_RECEIPTS);
+  expect(files(f).filter(name => name.endsWith(".runner.db")).length).toBe(RETAINED_TERMINAL_RECEIPTS);
+});
+
+test("#1541 AC4 more than 128 open receipts, or a ceiling that retention did not clear: the refusal names the cause and a supported command, not runtime-prune.db", () => {
+  const f = fixture(), capture = f.capture();
+  for (let i = 0; i < 130; i++) receipt(f, capture.root, { phase: "blocked", at: i });
+  const open = planRuntimeCapturePrune(f.home, 0);
+  expect(open.deferred).toContain("not terminal"); expect(open.deferred).toContain("ahub recovery status "); expect(open.deferred).toContain("resume or abort");
+  expect(open.deferred).not.toContain("runtime-prune.db"); expect(receiptsOf(f).length).toBe(130);
+  expect(pruneRuntimeCaptures(f.home, 0).deferred).toContain("ahub recovery status ");
+  // Terminal receipts above the ceiling (a preview never retires them) say what clears them.
+  const g = fixture(), kept = g.capture();
+  for (let i = 0; i < 130; i++) receipt(g, kept.root, { at: i });
+  const ceiling = planRuntimeCapturePrune(g.home, 0).deferred;
+  expect(ceiling).toContain("safety ceiling"); expect(ceiling).toContain("next maintenance pass"); expect(ceiling).not.toContain("runtime-prune.db");
+});

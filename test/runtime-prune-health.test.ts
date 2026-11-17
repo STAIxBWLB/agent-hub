@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { realPath } from "../src/hub/project.ts";
-import { RUNTIME_PRUNE_INTERVAL_MS } from "../src/hub/runtime-capture-prune.ts";
+import { RETAINED_SELECTED_RECEIPTS, RETAINED_TERMINAL_RECEIPTS, RUNTIME_PRUNE_INTERVAL_MS } from "../src/hub/runtime-capture-prune.ts";
 import { REGISTRY_DB_BUSY_TIMEOUT_MS } from "../src/hub/registry.ts";
 import { runtimePruneHealth } from "../src/hub/runtime-prune-health.ts";
 
@@ -116,4 +116,14 @@ test("#610 a retired unsigned legacy worker is diagnosed without rewriting its o
 test("#610 an oversized scheduled outcome remains unknown rather than being mistaken for NULL", () => {
   const f = fixture(); ledger(f, { phase: "scheduled", outcome: "x".repeat(16 * 1024 + 1) });
   const checks = runtimePruneHealth(f.home); expect(checks).toContainEqual(expect.objectContaining({ ok: undefined })); expect(detail(checks)).toContain(f.ledger);
+});
+
+test("#1541 a receipt-ceiling deferral names the supported command and states the retention rule, not the ledger alone", () => {
+  const f = fixture(), deferred = "recovery receipts exceed the 128 receipt safety ceiling: the hub keeps open receipts and removes finished ones itself; run ahub recovery status abc, then ahub recovery resume abc or ahub recovery abort abc";
+  ledger(f, { outcome: JSON.stringify({ removed: 0, quarantined: [], deferred }) });
+  const checks = runtimePruneHealth(f.home), text = detail(checks);
+  expect(checks).toContainEqual(expect.objectContaining({ ok: false, name: "runtime pruning" }));
+  expect(text).toContain("ahub recovery status abc"); expect(text).toContain("Retention: maintenance keeps every open recovery receipt");
+  expect(text).toContain(`newest ${RETAINED_TERMINAL_RECEIPTS} finished`); expect(text).toContain(`${RETAINED_SELECTED_RECEIPTS} finished ones naming a runtime`);
+  expect(text).not.toContain("runtime-prune.db");
 });
