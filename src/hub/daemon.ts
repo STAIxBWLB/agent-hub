@@ -4932,6 +4932,26 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   rescheduleSweep();
   startupCleanup.push(() => clearInterval(sweepTimer));
+  let memorySyncFirst: ReturnType<typeof setTimeout> | undefined;
+  let memorySyncTimer: ReturnType<typeof setInterval> | undefined;
+  const clearMemorySyncTimers = () => {
+    clearTimeout(memorySyncFirst);
+    clearInterval(memorySyncTimer);
+    memorySyncFirst = undefined;
+    memorySyncTimer = undefined;
+  };
+  const rescheduleMemorySync = (firstPass: boolean) => {
+    clearMemorySyncTimers();
+    const every = config.memory.sync_interval_min ?? 10;
+    if (!memoryStore || opts.memorySyncTrigger || every <= 0) return;
+    if (firstPass) {
+      memorySyncFirst = setTimeout(() => void syncNow(), 5_000);
+      memorySyncFirst.unref?.();
+    }
+    memorySyncTimer = setInterval(() => void syncNow(), every * 60_000);
+    memorySyncTimer.unref?.();
+  };
+  startupCleanup.push(clearMemorySyncTimers);
   // #512a: the schedules timer is its own interval, started whenever `schedules` is configured, whatever `task_sweep.enabled` says, and re-armed on reload.
   // It runs no task sweep. Held while stopping or recovering (inside `proposeFromSchedules`), where a due schedule counts the skip and coalesces.
   const schedulesStore = new ScheduleStore(join(opts.stateDir, "hub.db"));
@@ -10181,6 +10201,8 @@ export async function startDaemon(opts: DaemonOptions) {
       refreshAutonomyConsent(prepared.fileConfig);
       for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
       if (changes.some(change => change.key === "task_sweep" || change.key.startsWith("task_sweep."))) rescheduleSweep();
+      const syncChange = changes.find(change => change.key === "memory.sync_interval_min");
+      if (syncChange) rescheduleMemorySync((Number(syncChange.before ?? 10) <= 0) && Number(syncChange.after ?? 10) > 0);
       if (changes.some(change => change.key === "schedules" || change.key.startsWith("schedules.") || change.key === "folder_triggers" || change.key.startsWith("folder_triggers."))) rescheduleSchedules();
       if (changes.some(change => ["batch_max", "batch_ms", "queue_cap"].includes(change.key))) bus.configureScheduling({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap });
       if (changes.some(change => change.key === "watchdog_ms")) for (const peer of bus.peers.values()) if (peer instanceof BasePeer) peer.configureWatchdog(config.watchdog_ms);
@@ -13302,6 +13324,7 @@ export async function startDaemon(opts: DaemonOptions) {
     dashboard?.stop();
     stopConfigWatch();
     clearInterval(sweepTimer);
+    clearMemorySyncTimers();
     clearInterval(schedulesTimer);
     tasks.stopCiWatchers(); // #785 P1b: no per-head CI watcher outlives the hub
     for (const i of intervals) clearInterval(i);
@@ -13423,11 +13446,7 @@ export async function startDaemon(opts: DaemonOptions) {
     catch (e) { log(`hub memory goals unreadable: ${(e as Error).message}`); }
     renewAllLeases();
     const leases = setInterval(renewAllLeases, 10 * 60_000); leases.unref?.(); intervals.push(leases);
-    const every = config.memory.sync_interval_min ?? 10;
-    if (every > 0 && !opts.memorySyncTrigger) {
-      const first = setTimeout(() => void syncNow(), 5_000); first.unref?.(); intervals.push(first);
-      const timer = setInterval(() => void syncNow(), every * 60_000); timer.unref?.(); intervals.push(timer);
-    }
+    rescheduleMemorySync(true);
   }
   opts.memorySyncTrigger?.(syncNow);
   if (crashed) {

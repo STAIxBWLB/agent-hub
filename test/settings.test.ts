@@ -503,6 +503,23 @@ await import(${JSON.stringify(CLI)});
   } finally { clearTimeout(timer); }
 }
 
+test("#1543 the person sets the live memory sync interval through the CLI", async () => {
+  const rig = await hub({}, { git: true });
+  const result = await cli(rig.cwd, ["settings", "set", "memory.sync_interval_min", "0"]);
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain("in force now");
+  expect(JSON.parse(text(rig.file("config.local.json"))!).memory.sync_interval_min).toBe(0);
+  expect((await cli(rig.cwd, ["status"])).stdout).not.toContain("memory sync failed");
+  const verbose = (await cli(rig.cwd, ["status", "--verbose"])).stdout;
+  expect(verbose).toContain("memory sync");
+  expect(verbose).toContain("disabled");
+  for (const value of ["-1", "1.5", "1441"]) {
+    const invalid = await cli(rig.cwd, ["settings", "set", "memory.sync_interval_min", value]);
+    expect(invalid.code).not.toBe(0);
+    expect(invalid.stderr).toContain("memory.sync_interval_min must be 0 (off) or a whole number of minutes up to 1440");
+  }
+});
+
 test("AC8: ahub settings list, get, set, undo and ahub ui --settings work from a terminal and are refused in an agent shell", async () => {
   const rig = await hub({}, { git: true });
   const local = rig.file("config.local.json");

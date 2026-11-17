@@ -102,6 +102,9 @@ test("#439 every effective block and editable config key has an apply class, res
     expect(configApply(key).applies).toBe("restart"); expect(configApply(key).reason?.length).toBeGreaterThan(10);
   }
   expect(configApply("memory.brief_items").applies).toBe("next use");
+  expect(configApply("memory.sync_interval_min").applies).toBe("live");
+  for (const key of ["memory.enabled", "memory.native", "memory.worker_url", "memory.short_ttl_days"]) expect(configApply(key).applies).toBe("restart");
+  for (const key of ["memory.inject_tokens", "memory.suggest_edges", "memory.preface_unused_after"]) expect(configApply(key).applies).toBe("next use");
   for (const key of ["unknown", "memory.typo", "approvals.typo"]) expect(() => configApply(key)).toThrow();
 });
 

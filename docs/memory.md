@@ -91,6 +91,8 @@ A person configures the private remote with `ahub memory sync --remote <private-
 
 A running hub syncs 5 seconds after start and every `memory.sync_interval_min` minutes (default 10; 0 disables it) once a remote is set. Failure produces one log line and never blocks a turn; without a remote it does nothing and creates nothing. The package retains one sync per machine, public-GitHub-remote refusal and unknown-visibility warnings. Credential-helper use is restricted to the memory repository the hub creates, never a project's git repository, and never prompts. Transport, segment merge, lock and retained-history semantics belong to agent-mem.
 
+The person can change the interval live with `ahub settings set memory.sync_interval_min 0` (or a whole number of minutes up to 1440). Turning it off stops future passes; a pass already running finishes. Enabling it schedules a first pass after 5 seconds.
+
 ## Reading it
 
 - **Task briefs**: when a task is handed to an owner, its brief lists hub memory first (entries one or two hops from

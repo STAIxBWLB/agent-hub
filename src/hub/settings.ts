@@ -58,6 +58,7 @@ const perClass = (name: TaskClass): SettingDef[] => [
   { key: `routing.classes.${name}.pi_backend`, group: "Routing", label: `${name}: Pi backend`, type: "enum", values: ["dgx", "mlx"], store: "routing", applies: "live", risk: "raises", path: ["classes", name, "pi_backend"] },
 ];
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "memory.sync_interval_min", group: "Switches", label: "Memory sync interval in minutes (0 disables)", type: "integer", min: 0, max: 1440, store: "config", applies: "live", risk: "raises", path: ["memory", "sync_interval_min"] },
   ...["enabled", "auto_reassign"].map((key): SettingDef => ({ key: `task_sweep.${key}`, group: "Switches", label: `Task sweep: ${key}`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["task_sweep", key] })),
   { key: "task_sweep.no_writes_turns", group: "Switches", label: "Consecutive owner turns without writes (0 disables)", type: "integer", min: 0, max: Number.MAX_SAFE_INTEGER, store: "config", applies: "live", risk: "raises", path: ["task_sweep", "no_writes_turns"] },
   ...["interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"].map((key): SettingDef => ({ key: `task_sweep.${key}`, group: "Switches", label: `Task sweep: ${key}`, type: "number", min: 1, max: 2_147_483_647 / (key === "interval_s" ? 1000 : 60_000), store: "config", applies: "live", risk: "raises", path: ["task_sweep", key] })),
@@ -193,6 +194,7 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
     if (def.store === "runtime") throw new Error(`${def.key} has no stored value to remove`);
     return null;
   }
+  if (def.key === "memory.sync_interval_min" && (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 1440)) throw new Error("memory.sync_interval_min must be 0 (off) or a whole number of minutes up to 1440");
   if (def.type === "number-or-off" && raw === "off") return raw;
   if (def.type === "integer" || def.type === "number" || def.type === "number-or-off") {
     if (typeof raw !== "number" || !(def.type === "integer" ? Number.isSafeInteger(raw) : Number.isFinite(raw)) || raw < (def.min ?? 0) || raw > (def.max ?? Number.MAX_SAFE_INTEGER)) throw new Error(`${def.key} takes ${def.type === "integer" ? "an integer" : def.type === "number-or-off" ? "off or a finite number" : "a number"} from ${def.min ?? 0} to ${def.max ?? Number.MAX_SAFE_INTEGER}`);
