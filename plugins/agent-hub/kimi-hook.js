@@ -1548,6 +1548,74 @@ var init_model_token = __esm(() => {
   NATIVE_WORD = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 });
 
+// src/hub/turn-attribution.ts
+function turnAttribution(envs, options = {}) {
+  let invalidTask = false;
+  const refs = new Set(envs.flatMap((env) => {
+    const value = env.refs?.task;
+    if (value === undefined)
+      return [];
+    if (!/^[1-9][0-9]*$/.test(value)) {
+      invalidTask = true;
+      return [];
+    }
+    const id = Number(value);
+    if (!Number.isSafeInteger(id)) {
+      invalidTask = true;
+      return [];
+    }
+    return [id];
+  }));
+  const task = options.task === undefined || invalidTask ? undefined : refs.size === 1 ? [...refs][0] : refs.size === 0 ? options.task : undefined;
+  const validTask = task !== undefined && Number.isSafeInteger(task) && task > 0 && (options.task === undefined || task === options.task);
+  let scheduled;
+  if (validTask && options.scheduled)
+    try {
+      scheduled = options.scheduled(task);
+    } catch {}
+  let uncertainTrigger = false;
+  const triggers = new Set(envs.flatMap((env) => {
+    if (env.from === HUB && env.kind === "review")
+      return ["review"];
+    if (env.from === HUB && env.kind === "task" && env.refs?.taskOffer !== undefined) {
+      if (scheduled === undefined) {
+        uncertainTrigger = true;
+        return [];
+      }
+      return [scheduled ? "schedule" : "assign"];
+    }
+    if (env.from === USER)
+      return ["manual"];
+    if (env.kind === "chat" && env.from !== HUB)
+      return ["message"];
+    return [];
+  }));
+  return {
+    ...validTask ? { task } : {},
+    ...!uncertainTrigger && triggers.size === 1 ? { trigger: [...triggers][0] } : {},
+    ...envs.some((env) => env.private) ? { private: true } : {},
+    ...options.cloud ? { cloud: true } : {}
+  };
+}
+function applyTurnAttribution(source, context) {
+  const env = { ...source };
+  delete env.AGENTHUB_TASK_ID;
+  delete env.AGENTHUB_ATTEMPT_ID;
+  delete env.AGENTHUB_TRIGGER;
+  const hidden = context?.private === true && context.cloud === true;
+  const hasTask = !hidden && context?.task !== undefined && Number.isSafeInteger(context.task) && context.task > 0;
+  if (hasTask)
+    env.AGENTHUB_TASK_ID = String(context.task);
+  if (hasTask && typeof context?.attempt === "string" && /^ra-[0-9a-f]{12}$/.test(context.attempt))
+    env.AGENTHUB_ATTEMPT_ID = context.attempt;
+  if (context?.trigger && ["assign", "review", "message", "manual", "schedule"].includes(context.trigger))
+    env.AGENTHUB_TRIGGER = context.trigger;
+  return env;
+}
+var init_turn_attribution = __esm(() => {
+  init_envelope();
+});
+
 // src/adapters/claude-print-child.ts
 import { spawn as spawn2 } from "child_process";
 
@@ -1579,7 +1647,7 @@ class OwnedPrintChild {
     const child = this.process = spawn2(command, [...prefix, ...options.args], {
       cwd: options.cwd,
       detached: true,
-      env: peerChildEnv(options.peer, options.envMode === "replace" ? options.env : { ...process.env, ...options.env }),
+      env: applyTurnAttribution(peerChildEnv(options.peer, options.envMode === "replace" ? options.env : { ...process.env, ...options.env }), options.attribution),
       stdio: ["pipe", "pipe", options.captureStderr ? "pipe" : "ignore"]
     });
     const frameLimit = options.maxFrameBytes ?? 256 * 1024, outputLimit = options.maxOutputBytes ?? 4 * 1024 * 1024;
@@ -1690,6 +1758,7 @@ class OwnedPrintChild {
 var PrintChildCleanupError;
 var init_claude_print_child = __esm(() => {
   init_child_process();
+  init_turn_attribution();
   PrintChildCleanupError = class PrintChildCleanupError extends Error {
   };
 });
@@ -1913,6 +1982,7 @@ var ReviewerUsageCleanupError, ReviewerUnavailableError, ReviewerAdmissionError,
 var init_reviewer_print = __esm(() => {
   init_model_token();
   init_claude_print_child();
+  init_turn_attribution();
   init_envelope();
   init_review_budget();
   init_native_quota();
@@ -2412,6 +2482,7 @@ ${facts}` : ""}`;
           accountingAttempt = attempt;
           this.assertAdmission(env, task, binding);
         }
+        this.assertAdmission(env, task, binding);
         const child = new OwnedPrintChild({
           peer: this.id,
           command: launch.command,
@@ -2420,6 +2491,7 @@ ${facts}` : ""}`;
           env: launch.env,
           envMode: launch.envMode,
           input,
+          attribution: turnAttribution([env], { task, cloud: true }),
           ...this.opts.backend.failureOnExit ? { captureStderr: true } : {},
           current: () => generation === this.generation,
           stop: launch.stop,
@@ -18840,6 +18912,7 @@ var init_local_worker = __esm(() => {
   init_sandbox();
   init_tools();
   init_routing();
+  init_turn_attribution();
   init_guidance_probes();
   init_probe_types();
   init_probe_sandbox();
@@ -19206,7 +19279,7 @@ var init_local_worker = __esm(() => {
       const fixedPrompt = this.probeConfinement ? this.probeSession?.prepared.request.messages[0]?.content ?? (() => {
         throw new ProbeLocalError("invalid");
       })() : this.turnRecordPrompt(system(this.opts.cwd, this.opts.preamble));
-      const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
+      const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply, policy?.task);
       let usedTools = false;
       let captureInvocation = 0;
       for (let step = 0;step < maxSteps; step++) {
@@ -19303,7 +19376,7 @@ var init_local_worker = __esm(() => {
       const extra = [...this.opts.tools.docRead ? [DOC_READ_SCHEMA] : [], ...this.opts.tools.webFetch ? [WEB_FETCH_SCHEMA] : []];
       return extra.length ? [...TOOL_SCHEMAS, ...extra] : TOOL_SCHEMAS;
     }
-    toolContext(envs, turnSignal, pii, reply) {
+    toolContext(envs, turnSignal, pii, reply, task) {
       const executionGeneration = this.turn;
       const probe = this.probeSession;
       const context = {
@@ -19378,7 +19451,7 @@ var init_local_worker = __esm(() => {
         },
         shellExecutionCheck: (input) => turnSignal.aborted || executionGeneration !== this.turn ? "aborted" : this.opts.tools.shellExecutionCheck?.(input) ?? "valid",
         sandboxProfile: this.sandboxProfile,
-        sandboxEnv: this.probeConfinement ? { ...this.probeConfinement.env } : { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },
+        sandboxEnv: applyTurnAttribution(this.probeConfinement ? { ...this.probeConfinement.env } : { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id }, this.probeConfinement ? undefined : turnAttribution(envs, { task: task === undefined ? undefined : Number(task), scheduled: this.opts.scheduledTask })),
         signal: turnSignal,
         send: (text, to) => {
           if (this.probeConfinement)
@@ -19916,6 +19989,7 @@ var init_claude_implementer = __esm(() => {
   init_launch2();
   init_compat();
   init_claude_print_child();
+  init_turn_attribution();
   init_claude_task_sessions();
   init_print_result_model();
   provenVersions = new WeakMap;
@@ -20138,6 +20212,16 @@ var init_claude_implementer = __esm(() => {
           };
           const mcp = JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", this.options.server], env } } });
           let result = false, failed = false;
+          if (!current() || !this.binding?.() || group.envs.some((env) => env.private || !this.options.admit(env)))
+            throw new Error("Claude implementer admission changed before child start");
+          let taskPrivate = group.task !== undefined;
+          try {
+            if (group.task !== undefined)
+              taskPrivate = this.options.taskHintAllowed?.(group.task) !== true;
+          } catch {}
+          const attribution = turnAttribution(group.envs, { task: group.task, cloud: true, scheduled: this.options.scheduledTask });
+          if (taskPrivate)
+            attribution.private = true;
           const child = new OwnedPrintChild({
             peer: this.id,
             command: this.command,
@@ -20147,6 +20231,7 @@ var init_claude_implementer = __esm(() => {
 
 `),
             env,
+            attribution,
             current,
             stop: this.options.stopChild,
             onSpawn: () => {

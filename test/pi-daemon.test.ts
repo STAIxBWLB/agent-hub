@@ -58,7 +58,7 @@ function requireFakePiCommand(config: typeof DEFAULT_CONFIG): void {
   }
 }
 
-async function hub(config = DEFAULT_CONFIG, unattended = false, extra: { repo?: string; commit?: boolean; boundedTools?: DaemonOptions["boundedTools"] } = {}) {
+async function hub(config = DEFAULT_CONFIG, unattended = false, extra: { repo?: string; commit?: boolean; boundedTools?: DaemonOptions["boundedTools"]; permissionTimeoutMs?: number } = {}) {
   requireFakePiCommand(config);
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-pi-daemon-"));
   // #1129: write-class work for Pi needs the hub's task worktree, so a test that accepts such work as Pi needs a repository with a first commit (`commit: true`).
@@ -68,7 +68,7 @@ async function hub(config = DEFAULT_CONFIG, unattended = false, extra: { repo?: 
       if (hubGitSync(["-C", stateDir, ...args], { encoding: "utf8" }).status) throw new Error("fixture git failed");
     }
   }
-  const daemon = await startDaemon({ boundedTools: extra.boundedTools ?? fakeSpecTools(), cwd: stateDir, permissionTimeoutMs: 20, unattended, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...config, memory: { ...config.memory, enabled: false } } });
+  const daemon = await startDaemon({ boundedTools: extra.boundedTools ?? fakeSpecTools(), cwd: stateDir, permissionTimeoutMs: extra.permissionTimeoutMs ?? 20, unattended, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...config, memory: { ...config.memory, enabled: false } } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
   cleanup.push(() => console_.close());
@@ -1460,13 +1460,13 @@ test("a Pi bridge client that drops a waiting hub_ask leaves the question open f
 }, 30_000);
 
 /** #1447: real Bus/adapter/daemon callbacks, fake Pi only; routing is spied at the escalation boundary. */
-async function continuationPi(maxContinuations = DEFAULT_CONFIG.pi.max_continuations) {
+async function continuationPi(maxContinuations = DEFAULT_CONFIG.pi.max_continuations, permissionTimeoutMs = 20) {
   const dir = mkdtempSync(join(tmpdir(), "pi-continuation-fake-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const config = { ...DEFAULT_CONFIG, batch_ms: 0,
     pi: { ...DEFAULT_CONFIG.pi, enabled: true, max_continuations: maxContinuations, cmd: [process.execPath, fakePi(dir)] },
     inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
     specs: { ...DEFAULT_CONFIG.specs, enabled: false }, pii: { paths: ["private-data/"] } };
-  const h = await hub(config, false, { commit: true });
+  const h = await hub(config, false, { commit: true, permissionTimeoutMs });
   cleanup.push(async () => { await h.daemon.stop(); rmSync(h.stateDir, { recursive: true, force: true }); });
   const board = new Board(join(h.stateDir, "hub.db")); cleanup.push(() => board.close());
   const task = board.propose("user", { title: "Pi continuation fixture", class: "implement" });
@@ -1517,6 +1517,21 @@ async function continuationPi(maxContinuations = DEFAULT_CONFIG.pi.max_continuat
   const failureLines = () => readFileSync(join(h.stateDir, "hub.log"), "utf8").split("\n").filter(line => line.includes("Pi turn failed:"));
   return { ...h, board, task, pi, native, metadata, event, start, publish, fail, settle, wait, continuations, escalations, failureLines };
 }
+
+test.skipIf(process.platform !== "darwin")("Pi tool sandbox receives turn hints without changing its long-lived process env", async () => {
+  const h = await continuationPi(undefined, 10_000), asks: { id: string }[] = [];
+  h.console_.onPush = message => { if (message.t === "permission") asks.push(message as { id: string }); };
+  h.console_.send({ t: "tail" });
+  expect(h.native.tuiLaunch.env.AGENTHUB_TASK_ID).toBeUndefined();
+  await h.publish();
+  const call = piToolCall(h.pi, "bash", { command: "printf '%s:%s:%s:%s' \"$AGENTHUB_PEER_ID\" \"$AGENTHUB_TASK_ID\" \"$AGENTHUB_TRIGGER\" \"${AGENTHUB_ATTEMPT_ID-unset}\"" }, "turn-env");
+  await h.wait(() => asks.length === 1, "the sandbox command requests approval");
+  expect((await h.console_.request({ t: "permit", id: asks[0]!.id, option: "allow", surface: "console" })).ok).toBe(true);
+  const result = await call;
+  expect(result.text).toContain(`pi:${h.task.id}:manual:unset`);
+  expect(result.text).toContain("(exit 0)");
+  await h.settle();
+}, 20_000);
 
 test("two real-Bus Pi ceiling continuations precede step_limit escalation on the third stop (#1447)", async () => {
   const h = await continuationPi(); await h.publish();

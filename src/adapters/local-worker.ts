@@ -23,6 +23,7 @@ import { safeModelLabel } from "../omniroute/usage.ts";
 import { effectiveLocalRoute } from "../hub/routing.ts";
 import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
 import type { OwnedInputContext, OwnedInputObserver } from "./claude-print-child.ts";
+import { applyTurnAttribution, turnAttribution } from "../hub/turn-attribution.ts";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { GUIDANCE_PROBE_MODEL, GUIDANCE_PROBE_SESSION_BYTES, guidanceProbeCanonical, probeHash, probeInteger,
   type ProbeResourceCharges, type ProbeSlot, type ProbeStoredState } from "../hub/guidance-probes.ts";
@@ -83,6 +84,8 @@ export interface LocalOptions {
   admitBudget?: (envs: Envelope[], unit: "model_calls" | "tool_calls") => Promise<ExecutionBudgetDecision[]>;
   /** Per-turn policy from the task the delivery carries: the class's route, and whether it is a PII task. */
   turnPolicy?: (envs: Envelope[]) => { route?: string; fixedModel?: string; pii: boolean; task?: string } | undefined;
+  /** Host-only schedule provenance for a task associated with this turn. */
+  scheduledTask?: (task: number) => boolean | undefined;
   /** Role contract, appended to the system prompt. */
   preamble?: string;
   watchdogMs?: number;
@@ -483,7 +486,7 @@ export class LocalPeer extends BasePeer {
     const fixedPrompt = this.probeConfinement
       ? this.probeSession?.prepared.request.messages[0]?.content ?? (() => { throw new ProbeLocalError("invalid"); })()
       : this.turnRecordPrompt(system(this.opts.cwd, this.opts.preamble));
-    const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
+    const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply, policy?.task);
     let usedTools = false;
     let captureInvocation = 0;
     for (let step = 0; step < maxSteps; step++) {
@@ -556,7 +559,7 @@ export class LocalPeer extends BasePeer {
   /** The base tools, plus `doc_read` and `web_fetch` only when the project opted in (`local.doc_read`, `local.web_fetch.allow`; both off by default). */
   private toolSchemas() { if (this.probeConfinement) return probeSchemas(); const extra = [...(this.opts.tools.docRead ? [DOC_READ_SCHEMA] : []), ...(this.opts.tools.webFetch ? [WEB_FETCH_SCHEMA] : [])]; return extra.length ? [...TOOL_SCHEMAS, ...extra] : TOOL_SCHEMAS; }
 
-  private toolContext(envs: Envelope[], turnSignal: AbortSignal, pii: boolean, reply: EnvelopeOpts): ToolContext {
+  private toolContext(envs: Envelope[], turnSignal: AbortSignal, pii: boolean, reply: EnvelopeOpts, task?: string): ToolContext {
     const executionGeneration=this.turn;
     const probe = this.probeSession;
     const context: ToolContext = {
@@ -608,7 +611,8 @@ export class LocalPeer extends BasePeer {
       },
       shellExecutionCheck: input=>turnSignal.aborted||executionGeneration!==this.turn?"aborted":this.opts.tools.shellExecutionCheck?.(input)??"valid",
       sandboxProfile: this.sandboxProfile,
-      sandboxEnv: this.probeConfinement ? { ...this.probeConfinement.env } : { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },
+      sandboxEnv: applyTurnAttribution(this.probeConfinement ? { ...this.probeConfinement.env } : { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },
+        this.probeConfinement ? undefined : turnAttribution(envs, { task: task === undefined ? undefined : Number(task), scheduled: this.opts.scheduledTask })) as Record<string, string>,
       signal: turnSignal,
       send: (text, to) => {
         if (this.probeConfinement) return "error: messaging unavailable in guidance probe";

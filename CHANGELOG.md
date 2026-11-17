@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Per-turn Claude print children and local/Pi sandbox tools receive optional host-derived task and trigger hints through the `AGENTHUB_` environment. Research attempt IDs are set only when the host has a matching `ra-<12 hex>` identity; no dispatch-to-attempt link is inferred. Reserved hints override inherited configuration, private task IDs are withheld from cloud children, and the hints grant no authority. Refs #1516.
+
 ## 0.42.0
 
 - Release N-1 for 0.42.x is published 0.41.0, with exact agent-mem 0.27.1 and control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.0. The isolated fixture exercises old client and plugin against the new daemon and the new client and plugin against the old daemon. It does not establish live-agent, rollback or shared-home compatibility. The wire is unchanged from 0.41.0. This release pins agent-mem 0.28.0 while 0.41.0 pins 0.27.1; agent-mem 0.28.0 raises no sync/home format floor, so both can share a memory home until a person raises it, and file compatibility beyond these fixtures remains subject to the release verification report.

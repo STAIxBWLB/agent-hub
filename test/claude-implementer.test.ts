@@ -27,6 +27,32 @@ function rig(mode = "success", extra: Partial<ClaudeImplementerOptions> = {}) {
 const message = (task?: number) => newEnvelope("hub", "fixture only", { kind: "task", to: ["claude-worker"], ...(task ? { refs: { task: String(task) } } : {}) });
 const arg = (args: string[], name: string) => args[args.indexOf(name) + 1];
 
+test("implementer child receives only host turn hints, not inherited values", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-impl-env-")), script = join(dir, "fake.ts"), log = join(dir, "env.json");
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(script, `await new Response(Bun.stdin.stream()).text(); await Bun.write(${JSON.stringify(log)}, JSON.stringify({task:process.env.AGENTHUB_TASK_ID, attempt:process.env.AGENTHUB_ATTEMPT_ID, trigger:process.env.AGENTHUB_TRIGGER, peer:process.env.AGENTHUB_PEER_ID})); console.log(JSON.stringify({type:"result",subtype:"success",is_error:false}));`);
+  const old = process.env.AGENTHUB_ATTEMPT_ID; process.env.AGENTHUB_ATTEMPT_ID = "forged";
+  try {
+    let scheduled = false, publicTask = true;
+    const r = rig("success", { command: [process.execPath, script], scheduledTask: () => scheduled, taskHintAllowed: () => publicTask });
+    await r.peer.start();
+    await r.peer.deliver([newEnvelope("hub", "not in environment", { kind: "task", refs: { task: "17", taskOffer: 1 } })]);
+    await until(() => r.peer.state === "idle");
+    expect(JSON.parse(readFileSync(log, "utf8"))).toEqual({ task: "17", trigger: "assign", peer: "claude-worker" });
+    scheduled = true;
+    await r.peer.deliver([newEnvelope("hub", "scheduled", { kind: "task", refs: { task: "18", taskOffer: 1 } })]);
+    await until(() => r.peer.state === "idle");
+    expect(JSON.parse(readFileSync(log, "utf8"))).toEqual({ task: "18", trigger: "schedule", peer: "claude-worker" });
+    publicTask = false;
+    await r.peer.deliver([newEnvelope("hub", "withheld", { kind: "task", refs: { task: "19", taskOffer: 1 } })]);
+    await until(() => r.peer.state === "idle");
+    expect(JSON.parse(readFileSync(log, "utf8"))).toEqual({ trigger: "schedule", peer: "claude-worker" });
+    await r.peer.deliver([newEnvelope("user", "hello")]);
+    await until(() => r.peer.state === "idle");
+    expect(JSON.parse(readFileSync(log, "utf8"))).toEqual({ trigger: "manual", peer: "claude-worker" });
+  } finally { if (old === undefined) delete process.env.AGENTHUB_ATTEMPT_ID; else process.env.AGENTHUB_ATTEMPT_ID = old; }
+});
+
 test("headless Claude first task starts its own UUID, resumes only that task, and keeps unscoped chat ephemeral", async () => {
   const r = rig(); await r.peer.start();
   for (const task of [1, 1, 2, undefined]) { await r.peer.deliver([message(task)], String(task)); await until(() => r.peer.state === "idle"); }

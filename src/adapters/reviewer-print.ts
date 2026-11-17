@@ -2,6 +2,7 @@ import type { ModelOverrideSelection } from "./registry-types.ts";
 import { isNativeModelToken } from "./model-token.ts";
 import type { ChildProcess } from "node:child_process";
 import { OwnedPrintChild, PrintChildCleanupError, type OwnedInputContext, type OwnedInputObserver, type OwnedStderrReceipt } from "./claude-print-child.ts";
+import { turnAttribution } from "../hub/turn-attribution.ts";
 import { randomUUID } from "node:crypto";
 import { HUB, frame, sanitize } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
@@ -555,8 +556,9 @@ export class ReviewerPrintPeer extends BasePeer {
       // The journal intent precedes spawn: the native agent-file already contains the review facts.
       this.assertAdmission(env, task, binding);
     }
+    this.assertAdmission(env, task, binding);
     const child = new OwnedPrintChild({ peer: this.id, command: launch.command, args: launch.args,
-      cwd: launch.cwd ?? this.opts.cwd, env: launch.env, envMode: launch.envMode, input,
+      cwd: launch.cwd ?? this.opts.cwd, env: launch.env, envMode: launch.envMode, input, attribution: turnAttribution([env], { task, cloud: true }),
       ...(this.opts.backend.failureOnExit ? { captureStderr: true as const } : {}),
       current: () => generation === this.generation, stop: launch.stop,
       onInputReleased: () => { inputReleased = true; this.opts.inputReleased?.(inputContext, [env]); },

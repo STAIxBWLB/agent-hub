@@ -13,6 +13,7 @@ import { claudeStateFile } from "../hub/claude-state.ts";
 import { sessionSettings } from "../cli/launch.ts";
 import { assessVersion, COMPAT } from "./compat.ts";
 import { OwnedPrintChild, PrintChildCleanupError, type OwnedInputContext, type OwnedInputObserver, type OwnedPrintChildOptions } from "./claude-print-child.ts";
+import { turnAttribution } from "../hub/turn-attribution.ts";
 import { ClaudeTaskSessions } from "./claude-task-sessions.ts";
 import { formatClaudeFailure, type ClaudeFailureTrace } from "../hub/claude-failure-stage.ts";
 import type { PermissionMode } from "../hub/permission-mode.ts";
@@ -52,6 +53,10 @@ export interface ClaudeImplementerOptions {
   /** Host-owned policy and board reads, never native or model-selected authority. */
   admit(env: Envelope): boolean;
   chatTask(): number | undefined;
+  /** Host-only schedule provenance; unknown is not an assignment trigger. */
+  scheduledTask?(task: number): boolean | undefined;
+  /** Host-only privacy and current-owner check for the task-id hint; absent or unknown withholds it. */
+  taskHintAllowed?(task: number): boolean;
   onUsage?(usage: ReviewerPrintUsage, task?: number): void;
   notify?(message: string): void;
   /** Test/embedding-only proof port; project configuration cannot select it. */
@@ -243,8 +248,13 @@ export class ClaudeImplementerPeer extends BasePeer {
           AGENTHUB_INSTANCE_ID: this.options.instanceId, AGENTHUB_LAUNCH_ID: launchId, AGENTHUB_HOOK_PURPOSE: "permission", AGENTHUB_PERMISSION_TOOL: "1" };
         const mcp = JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", this.options.server], env } } });
         let result = false, failed = false;
+        if (!current() || !this.binding?.() || group.envs.some(env => env.private || !this.options.admit(env))) throw new Error("Claude implementer admission changed before child start");
+        let taskPrivate = group.task !== undefined;
+        try { if (group.task !== undefined) taskPrivate = this.options.taskHintAllowed?.(group.task) !== true; } catch { /* Unknown is private. */ }
+        const attribution = turnAttribution(group.envs, { task: group.task, cloud: true, scheduled: this.options.scheduledTask });
+        if (taskPrivate) attribution.private = true;
         const child = new OwnedPrintChild({ peer: this.id, command: this.command!, args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt, model), cwd: this.options.cwd,
-          input: group.envs.map(frame).join("\n\n"), env, current, stop: this.options.stopChild,
+          input: group.envs.map(frame).join("\n\n"), env, attribution, current, stop: this.options.stopChild,
           onSpawn: () => {
             try {
               if (!this.binding?.() || group.envs.some(env => env.private || !this.options.admit(env))) throw new Error("Claude implementer admission changed before child start");
