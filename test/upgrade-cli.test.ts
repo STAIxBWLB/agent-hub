@@ -744,7 +744,9 @@ case "$1 $2 $3" in
 esac
 `);
   const stub = join(temp, "bin/stub-bun");
-  writeFileSync(stub, "#!/bin/sh\nexit 0\n");
+  // #1540 AC10: through a pipe `upgrade --yes` now waits for its operation, so the stub ends it the way a runner does, by writing the completed receipt, and exits.
+  const finishing = '#!/bin/sh\nf="$AGENTHUB_HOME/recovery/$AGENTHUB_RECOVERY_OPERATION.json"\nsed \'s/"phase": "pending"/"phase": "completed"/\' "$f" > "$f.tmp" && mv "$f.tmp" "$f"\nexit 0\n';
+  writeFileSync(stub, finishing);
   for (const file of ["npm", "claude"]) chmodSync(join(temp, "bin", file), 0o755);
   chmodSync(stub, 0o755);
   const main = join(import.meta.dir, "../src/cli/main.js"), wrapper = join(temp, "cli.ts");
@@ -791,6 +793,15 @@ await import(${JSON.stringify(main)});
     expect(() => JSON.parse(json.out)).not.toThrow();
     expect(json.out).not.toContain("does not update the global CLI");
     expect(json.err).not.toContain("does not update the global CLI");
+    clear();
+    // #1540 AC10: a runner that ends with the receipt still open is a failure through a pipe, never a silent success, and `ahub down` is not left racing it.
+    writeFileSync(stub, "#!/bin/sh\nexit 0\n");
+    const stuck = await cli(["upgrade", "--to", VERSION, "--yes"], "current");
+    expect(stuck.code).toBe(1);
+    expect(stuck.err).toContain("did not finish (its runner stopped");
+    expect(stuck.out).not.toContain("completed");
+    // AC9: under --yes the plan does not end with "Nothing was changed"
+    expect(stuck.out).not.toContain("Nothing was changed");
   } finally {
     try { await cli(["kill"]); } catch { /* best effort; the pid sweep below is the guarantee */ }
     try { const manifest = JSON.parse(readFileSync(join(home, "manager", "status.json"), "utf8")); if (typeof manifest?.pid === "number") pids.add(manifest.pid); } catch { /* no manager */ }

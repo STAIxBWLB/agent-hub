@@ -18,6 +18,8 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
   if (command === "roadmap" && ![undefined, "list", "show", "--json"].includes(args[0])) return true;
   if (command === "roadmap" && args[0] === "--json" && ![undefined, "list", "show"].includes(args[1])) return true;
   if (command === "sdlc" && args[0] === "configure") return true;
+  // #1540: retargeting a stopped project's runtime or every stopped one is the person's choice of which code runs next; an agent shell must not reach it through `--live-test`.
+  if (command === "upgrade" && args.includes("--all-stopped")) return true;
   if (command === "lineage" && args[0] === "link") return true;
   if (command === "guidance" && ["create", "withdraw"].includes(args[0] ?? "")) return true;
   if (command === "sdlc" && args[0] === "survey" && args[1] !== "show") return true;

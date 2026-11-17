@@ -100,11 +100,13 @@ import { childEnv, personEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, recordRecoveryDelegation, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource, reattachPlannedTerminals } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
+import { applyStoppedRetargets, planStoppedRetargets } from "./upgrade-stopped.ts";
+import { awaitOperationEnd } from "./upgrade-wait.ts";
 import { globalUpdateAdvice, runtimeVersionWarnings } from "./runtime-version-warning.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { readRecoveryPresentationFlags } from "./upgrade-presentation-flags.ts";
 import { renderOperation, renderBlocked, renderSummary, type RecoveryPresentationOptions } from "./upgrade-presentation.ts";
-import { renderBudgetResult, renderRecoveryStatus, renderUpgradePlan } from "./upgrade-output.ts";
+import { renderBudgetResult, renderRecoveryStatus, renderStoppedPlan, renderStoppedResults, renderUpgradePlan } from "./upgrade-output.ts";
 import { recordTerminalLaunch, prepareTerminalLaunch, registerTerminalLaunch, type TerminalPeer } from "./terminal-recovery.ts";
 import { effectiveStartAgents, inheritMachineStart, setupStartAgents, startProjectAgents } from "./start-agents-run.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -771,11 +773,53 @@ function globalUpdateLines(target: string): string[] {
     probe: () => spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8", timeout: 10_000 }) });
 }
 
+/**
+ * #1540: `ahub upgrade` for a project whose hub is stopped (this one, or every registered one with `--all-stopped`): the runtime selection is rewritten and nothing else is started or recorded.
+ * True when it handled the command. A single project whose hub is running, or that is not registered, is left to the ordinary recovery plan.
+ */
+async function stoppedUpgrade(to: string, all: boolean, display: ReturnType<typeof recoveryDisplay>, yes: boolean, dry: boolean): Promise<boolean> {
+  let plan: Awaited<ReturnType<typeof planStoppedRetargets>>;
+  try { plan = await planStoppedRetargets(to, all ? "all" : { root: cwd }); } catch (error) { return fail((error as Error).message); }
+  // One project whose hub is not positively stopped (or missing) keeps the ordinary plan, with its own blockers; "unknown" is never read as stopped.
+  if (!all && !plan.rows.some((row) => row.inspected === "stopped" || row.inspected === "missing")) return false;
+  if (display.json) {
+    if (!yes || dry) console.log(JSON.stringify(plan, null, 2));
+    for (const blocker of plan.blockers) console.error(`ahub: blocker: ${blocker}`);
+  } else printRecovery(renderStoppedPlan(plan, VERSION, display.options, yes && !dry));
+  if (dry) return true;
+  if (plan.blockers.length) fail("plan has blockers; no runtime was changed");
+  const retargets = plan.rows.filter((row) => row.outcome === "retarget");
+  // Nothing to retarget is still an outcome: a JSON consumer of an idempotent `--yes` run gets the same results document the apply path prints, with no results.
+  if (!retargets.length) { if (display.json && yes) console.log(JSON.stringify({ version: plan.version, results: [] }, null, 2)); return true; }
+  // The runtime selection decides which code runs a project next: that is the person's choice, as the plan of a running hub is for a conductor only with its source-issued proof.
+  if (conductorPeer || delegatedPeer) fail("retargeting a stopped project's runtime is the person's: run it in ahub console or a terminal; no runtime was changed");
+  if (!yes) {
+    if (!process.stdin.isTTY) fail("review --dry-run and use --yes in non-interactive sessions");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      if (!/^(y|yes)$/i.test((await rl.question(`Retarget ${retargets.length} stopped project${retargets.length === 1 ? "" : "s"} without starting ${retargets.length === 1 ? "its hub" : "their hubs"}? [y/N] `)).trim())) return true;
+    } finally { rl.close(); }
+    const current = await planStoppedRetargets(to, all ? "all" : { root: cwd });
+    if (current.fingerprint !== plan.fingerprint) fail("plan changed during review; run the command again");
+  }
+  const results = await applyStoppedRetargets(plan);
+  const failed = results.filter((result) => result.outcome === "failed");
+  if (display.json) console.log(JSON.stringify({ version: plan.version, results }, null, 2));
+  else {
+    printRecovery(renderStoppedResults(results, display.options));
+    if (!failed.length) printRecovery(globalUpdateLines(plan.version));
+  }
+  if (failed.length) fail(`${failed.length} of ${results.length} planned retarget${results.length === 1 ? "" : "s"} failed (${failed.map((result) => result.id).join(", ")}); the others stay retargeted`);
+  return true;
+}
+
 async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   const display = recoveryDisplay();
   const { one, rest } = takeFlags(display.args, ["--to"], []);
-  if (rest.some((a) => !["--dry-run", "--yes"].includes(a)) || (kind === "restart" && one["--to"])) fail("usage: ahub upgrade [--project <path|id>] [--to <version>] [--dry-run] [--yes] | ahub restart [--dry-run] [--yes]");
+  if (rest.some((a) => !["--dry-run", "--yes", ...(kind === "upgrade" ? ["--all-stopped"] : [])].includes(a)) || (kind === "restart" && one["--to"])) fail("usage: ahub upgrade [--project <path|id> | --all-stopped] [--to <version>] [--dry-run] [--yes] | ahub restart [--dry-run] [--yes]");
   const yes = rest.includes("--yes"), dry = rest.includes("--dry-run") || (display.json && !yes);
+  const allStopped = rest.includes("--all-stopped");
+  if (allStopped && selector !== undefined) fail("--all-stopped and --project are conflicting selectors: --all-stopped covers every registered stopped project");
   // #272: on a terminal, with neither flag, the plan is reviewed, applied and followed in one session.
   const interactive = !dry && !yes && humanRecovery(display.json);
   let to = one["--to"];
@@ -789,7 +833,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   // An older CLI must not coordinate a newer target (docs/operations.md): the target's own coordinator takes over.
   if (conductorPeer && kind === "upgrade" && newerVersion(to!, VERSION)) fail("a supporting target coordinator is required; the person runs it in ahub console or a terminal");
   if (kind === "upgrade" && newerVersion(to!, VERSION) && process.env.AGENTHUB_UPGRADE_HANDOVER !== "1") {
-    const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", "--project", cwd, ...liveTestArgs, "upgrade", "--to", to!, ...rest, ...display.flags, ...(dry && !rest.includes("--dry-run") ? ["--dry-run"] : [])];
+    const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", ...(allStopped ? [] : ["--project", cwd]), ...liveTestArgs, "upgrade", "--to", to!, ...rest, ...display.flags, ...(dry && !rest.includes("--dry-run") ? ["--dry-run"] : [])];
     console.error(`ahub: ${to} is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${argv.join(" ")}`);
     if (interactive) {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -805,6 +849,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     });
     process.exit(code);
   }
+  if (kind === "upgrade" && await stoppedUpgrade(to!, allStopped, display, yes, dry)) return;
   if (kind === "upgrade") console.error("ahub: Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode. To keep ACP: ahub settings set peers.kimi.start_mode headless");
   if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io), display.options);
   const plan = await makeUpgradePlan(kind, to ?? VERSION, cwd, undefined, conductorPeer);
@@ -816,7 +861,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     if (!jsonApply) console.log(JSON.stringify(plan, null, 2));
     for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
     for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);
-  } else printRecovery(renderUpgradePlan(plan, VERSION, display.options));
+  } else printRecovery(renderUpgradePlan(plan, VERSION, display.options, yes && !dry));
   const blockers = [...plan.blockers, ...plan.projects.flatMap((p) => p.blockers.map((b) => `${p.project.id}: ${b}`))];
   if (display.json) for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
   if (dry) return;
@@ -849,6 +894,13 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
     // #718: the upgrade is only scheduled here, but the step is already known: the CLI and the plugin are compared with the daemon this upgrade installs. Never in --json, which stays the raw document.
     if (kind === "upgrade") printRecovery(globalUpdateLines(plan.version));
+  }
+  if (kind === "upgrade" && yes && !process.stdout.isTTY) {
+    const ended = await awaitOperationEnd(operation, { read: (id) => readOperation<RecoveryOperation>(id), runner: (id) => recoveryRunner(id), now: Date.now, sleep: Bun.sleep });
+    if (ended.phase === "completed") { if (!display.json) console.log(`${kind} to ${plan.version} completed`); return; }
+    fail(ended.phase === "blocked" || ended.phase === "cancelled"
+      ? `${kind} operation ${operation.id} is ${ended.phase}${ended.error ? `: ${ended.error.split("; next actions: ")[0]}` : ""}; ${nextActionsText(ended)}`
+      : `operation ${operation.id} did not finish (its runner stopped, or is still working after the wait limit); ${recoveryCommand(operation, "status")}`);
   }
 }
 
