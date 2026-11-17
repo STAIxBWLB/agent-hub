@@ -899,7 +899,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     if (ended.phase === "completed") { if (!display.json) console.log(`${kind} to ${plan.version} completed`); return; }
     fail(ended.phase === "blocked" || ended.phase === "cancelled"
       ? `${kind} operation ${operation.id} is ${ended.phase}${ended.error ? `: ${ended.error.split("; next actions: ")[0]}` : ""}; ${nextActionsText(ended)}`
-      : `the recovery runner stopped before operation ${operation.id} finished; ${recoveryCommand(operation, "status")}`);
+      : `operation ${operation.id} did not finish (its runner stopped, or is still working after the wait limit); ${recoveryCommand(operation, "status")}`);
   }
 }
 

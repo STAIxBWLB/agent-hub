@@ -10,6 +10,12 @@ export interface OperationWaitPorts {
 
 /** A runner claims and writes within a moment of being spawned; this long without either reads as gone. */
 export const RUNNER_APPEARS_MS = 10_000;
+/**
+ * The longest `upgrade --yes` waits for an operation that is still running. A restart waits up to 10 minutes for a quiet hub and each peer restore can wait as long (docs/operations.md), so this is
+ * several of those; past it the command fails and names the status command, leaving the operation to its runner.
+ * ponytail: a fixed cap; read it from a recovery setting if a longer upgrade needs it.
+ */
+export const OPERATION_WAIT_MS = 2 * 60 * 60 * 1000;
 
 /**
  * #1540 AC10: wait until a scheduled recovery operation is terminal (completed, cancelled or blocked), so `ahub upgrade --yes; ahub down` no longer races "recovery operation <id> is active".
@@ -25,6 +31,7 @@ export async function awaitOperationEnd(operation: Pick<RecoveryOperation, "id" 
     const runner = ports.runner(operation.id);
     if (runner !== undefined || op.updatedAt !== operation.updatedAt) seen = true;
     if (runner === undefined && (seen || ports.now() - started > RUNNER_APPEARS_MS)) return ports.read(operation.id);
+    if (ports.now() - started > OPERATION_WAIT_MS) return op;
     await ports.sleep(250);
   }
 }

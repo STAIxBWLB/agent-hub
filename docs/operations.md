@@ -4420,8 +4420,9 @@ line, because the command goes on to apply it (#1540). For a running hub, when
 standard output is not a terminal, `ahub upgrade --yes` then waits until the
 recovery operation is completed, blocked or cancelled and exits nonzero unless it
 completed, so `ahub upgrade --to <v> --yes && ahub down` no longer races
-`recovery operation <id> is active`. A runner that never appears (10 s) or ends
-with the receipt still open is a failure. On a terminal it still returns as soon
+`recovery operation <id> is active`. A runner that never appears (10 s), ends
+with the receipt still open, or is still working after two hours is a failure
+that names `recovery status`. On a terminal it still returns as soon
 as the operation is scheduled, and `--json` prints the scheduled operation
 document as before.
 

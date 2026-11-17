@@ -7,7 +7,7 @@ import { stageCurrentRuntime } from "../src/cli/recovery-package.ts";
 import type { RunCommand } from "../src/cli/recovery-package.ts";
 import { applyStoppedRetargets, planStoppedRetargets, type StoppedDeps, type StoppedPlan } from "../src/cli/upgrade-stopped.ts";
 import { renderStoppedPlan, renderStoppedResults, renderUpgradePlan } from "../src/cli/upgrade-output.ts";
-import { awaitOperationEnd } from "../src/cli/upgrade-wait.ts";
+import { awaitOperationEnd, OPERATION_WAIT_MS } from "../src/cli/upgrade-wait.ts";
 import type { RecoveryOperation, UpgradePlan } from "../src/cli/upgrade.ts";
 import { realPath } from "../src/hub/project.ts";
 import { resolveProjectRuntime, recordProjectRuntime, verifyProjectRuntime } from "../src/hub/project-runtime.ts";
@@ -255,6 +255,10 @@ test("#1540 AC10: the wait returns only when the operation is terminal, and an o
   const never = waitPorts([receipt("pending")], [undefined]);
   expect((await awaitOperationEnd({ id: "op", updatedAt: 1 }, never)).phase).toBe("pending");
   expect(never.now()).toBeGreaterThan(10_000);
+  // a runner that keeps its claim on a hung operation is waited for at most the cap, then the open receipt comes back as a failure
+  const hung = waitPorts([receipt("running", 2)], [1234]);
+  expect((await awaitOperationEnd({ id: "op", updatedAt: 1 }, hung)).phase).toBe("running");
+  expect(hung.now()).toBeGreaterThan(OPERATION_WAIT_MS);
 });
 
 // The CLI, for real: stopped projects need no daemon, so a real registry and real inspection exercise the flags and the dry run end to end.

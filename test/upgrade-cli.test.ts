@@ -798,7 +798,7 @@ await import(${JSON.stringify(main)});
     writeFileSync(stub, "#!/bin/sh\nexit 0\n");
     const stuck = await cli(["upgrade", "--to", VERSION, "--yes"], "current");
     expect(stuck.code).toBe(1);
-    expect(stuck.err).toContain("the recovery runner stopped before operation");
+    expect(stuck.err).toContain("did not finish (its runner stopped");
     expect(stuck.out).not.toContain("completed");
     // AC9: under --yes the plan does not end with "Nothing was changed"
     expect(stuck.out).not.toContain("Nothing was changed");

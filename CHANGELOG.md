@@ -8,8 +8,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - `memory.sync_interval_min` can be set by the person with `ahub settings set` and takes effect without a hub restart (hub task 992, Refs #1543). Turning it off lets an in-flight pass finish.
 
-||||||| parent of b15ff6e2c (feat(upgrade): retarget stopped projects' runtimes without starting their hubs (Refs #1540))
 - `ahub upgrade` retargets the runtime of a stopped project without starting its hub, one project or all of them (hub task 991, #1540). `ahub upgrade --to <v>` in a stopped project, or `ahub upgrade --all-stopped --to <v>`, rewrites `runtime.json` through the verified startup write after staging the package once; it starts no daemon, touches no terminal or peer and records no recovery operation. Unknown, unavailable, uninitialized, missing, snapshot-held, recovery-held or Git-tracked projects are refused with a next step, and a hub that starts before the write is refused. Under `--yes` the plan no longer ends with "Nothing was changed", and `ahub upgrade --yes` on a running hub waits through a pipe until its recovery operation ends and exits nonzero unless it completed.
+
 - Per-turn Claude print children and local/Pi sandbox tools receive optional host-derived task and trigger hints through the `AGENTHUB_` environment. Research attempt IDs are set only when the host has a matching `ra-<12 hex>` identity; no dispatch-to-attempt link is inferred. Reserved hints override inherited configuration, private task IDs are withheld from cloud children, and the hints grant no authority. Refs #1516.
 
 ## 0.42.0

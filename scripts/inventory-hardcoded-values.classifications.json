@@ -891,6 +891,10 @@
   "src/cli/upgrade-runtime.ts:timeoutMs:inline:timeoutMs=180_000#1": "operational",
   "src/cli/upgrade-runtime.ts:timeoutMs:inline:timeoutMs=3000#0": "operational",
   "src/cli/upgrade-runtime.ts:waiting:inline:(Array.isArray(response.recovery?.blockers) ? response.recovery.blockers : []).filter((b: unknown): b is string => typeof b === string).slice=20#0": "safety floor",
+  "src/cli/upgrade-stopped.ts:message:inline:(error instanceof Error ? error.message : String(error)).split(\\n)[0]!.slice=300#0": "safety floor",
+  "src/cli/upgrade-wait.ts:OPERATION_WAIT_MS:constant:OPERATION_WAIT_MS=2 * 60 * 60 * 1000#0": "operational",
+  "src/cli/upgrade-wait.ts:RUNNER_APPEARS_MS:constant:RUNNER_APPEARS_MS=10000#0": "operational",
+  "src/cli/upgrade-wait.ts:awaitOperationEnd:inline:ports.sleep=250#0": "operational",
   "src/cli/upgrade.ts:MAX_RECOVERY_DELEGATIONS:constant:MAX_RECOVERY_DELEGATIONS=256#0": "safety floor",
   "src/cli/upgrade.ts:runRecovery:inline:idleTimeoutMs=600_000#0": "test seam",
   "src/cli/watch.ts:time:inline:new Date(item.at).toISOString().slice=19#0": "contract",
@@ -3079,8 +3083,5 @@
   "src/ui/plugin.ts:title:inline:#${p.task}: ${String(p.action).slice(0, 32)}.slice=200#0": "safety floor",
   "src/ui/plugin.ts:title:inline:String(p.action).slice=32#0": "safety floor",
   "src/ui/task-progress.ts:waiting:inline:waiting=0#0": "contract",
-  "src/version.ts:displayVersion:inline:value.length <= 64=64#0": "safety floor",
-  "src/cli/upgrade-stopped.ts:message:inline:(error instanceof Error ? error.message : String(error)).split(\\n)[0]!.slice=300#0": "safety floor",
-  "src/cli/upgrade-wait.ts:RUNNER_APPEARS_MS:constant:RUNNER_APPEARS_MS=10000#0": "operational",
-  "src/cli/upgrade-wait.ts:awaitOperationEnd:inline:ports.sleep=250#0": "operational"
+  "src/version.ts:displayVersion:inline:value.length <= 64=64#0": "safety floor"
 }
