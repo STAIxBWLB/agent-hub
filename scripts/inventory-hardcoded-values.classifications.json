@@ -3079,5 +3079,8 @@
   "src/ui/plugin.ts:title:inline:#${p.task}: ${String(p.action).slice(0, 32)}.slice=200#0": "safety floor",
   "src/ui/plugin.ts:title:inline:String(p.action).slice=32#0": "safety floor",
   "src/ui/task-progress.ts:waiting:inline:waiting=0#0": "contract",
-  "src/version.ts:displayVersion:inline:value.length <= 64=64#0": "safety floor"
+  "src/version.ts:displayVersion:inline:value.length <= 64=64#0": "safety floor",
+  "src/cli/upgrade-stopped.ts:message:inline:(error instanceof Error ? error.message : String(error)).split(\\n)[0]!.slice=300#0": "safety floor",
+  "src/cli/upgrade-wait.ts:RUNNER_APPEARS_MS:constant:RUNNER_APPEARS_MS=10000#0": "operational",
+  "src/cli/upgrade-wait.ts:awaitOperationEnd:inline:ports.sleep=250#0": "operational"
 }
