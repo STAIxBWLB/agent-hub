@@ -6,6 +6,8 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { configApply } from "../src/hub/config-apply.ts";
 import { checkSettingValue, settingDef } from "../src/hub/settings.ts";
+import { paint } from "../src/cli/console-state.ts";
+import { renderStatusDefault } from "../src/cli/output.ts";
 
 test("#1543 live sync interval replaces both timers and lets a running pass finish", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-sync-live-")), stateDir = join(root, ".agenthub/state");
@@ -32,27 +34,33 @@ test("#1543 live sync interval replaces both timers and lets a running pass fini
   let client: ControlClient | undefined;
   try {
     daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
-      memorySync: () => { calls++; return inFlight; },
+      memorySync: () => { calls++; return calls === 1 ? Promise.resolve({ ok: false, pushed: false, entries: 0, error: "push failed" }) : inFlight; },
       config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, native: true, sync_interval_min: 10 } } });
     client = await ControlClient.connect(stateDir, { role: "console" });
     const set = async (value: number) => client!.request({ t: "settings_set", key: "memory.sync_interval_min", value });
     expect([...active.values()].map(x => x.ms).sort((a, b) => a - b)).toEqual([5_000, 600_000]);
     [...active.values()].find(x => x.ms === 600_000)!.run();
     expect(calls).toBe(1);
+    let status = (await client.request({ t: "status" })).status;
+    expect(renderStatusDefault(status).map(line => paint(line, false)).join("\n")).toContain("memory sync failed");
+    [...active.values()].find(x => x.ms === 600_000)!.run();
+    expect(calls).toBe(2);
     const off = await set(0);
     expect(off.ok, JSON.stringify(off)).toBe(true);
     expect(active.size).toBe(0);
-    expect((await client.request({ t: "status" })).status.memoryProfile.sync.state).toBe("disabled");
+    status = (await client.request({ t: "status" })).status;
+    expect(status.memoryProfile.sync.state).toBe("disabled");
+    expect(renderStatusDefault(status).map(line => paint(line, false)).join("\n")).not.toContain("memory sync failed");
     finish({ ok: true, pushed: false, entries: 0 });
     await inFlight;
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
     expect(JSON.parse(readFileSync(join(root, ".agenthub/config.local.json"), "utf8")).memory.sync_interval_min).toBe(0);
     expect((await set(1)).ok).toBe(true);
     expect([...active.values()].map(x => x.ms).sort((a, b) => a - b)).toEqual([5_000, 60_000]);
     expect((await set(2)).ok).toBe(true);
     expect([...active.values()].map(x => x.ms)).toEqual([120_000]);
     active.values().next().value!.run();
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
     for (const value of [-1, 1.5, 1441]) expect((await set(value)).error).toContain("memory.sync_interval_min must be 0 (off) or a whole number of minutes up to 1440");
   } finally {
     finish({ ok: true, pushed: false, entries: 0 });

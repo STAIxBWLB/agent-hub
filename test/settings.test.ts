@@ -509,8 +509,10 @@ test("#1543 the person sets the live memory sync interval through the CLI", asyn
   expect(result.code).toBe(0);
   expect(result.stdout).toContain("in force now");
   expect(JSON.parse(text(rig.file("config.local.json"))!).memory.sync_interval_min).toBe(0);
-  expect((await cli(rig.cwd, ["status"])).stdout).toContain("memory sync");
-  expect((await cli(rig.cwd, ["status"])).stdout).toContain("disabled");
+  expect((await cli(rig.cwd, ["status"])).stdout).not.toContain("memory sync failed");
+  const verbose = (await cli(rig.cwd, ["status", "--verbose"])).stdout;
+  expect(verbose).toContain("memory sync");
+  expect(verbose).toContain("disabled");
   for (const value of ["-1", "1.5", "1441"]) {
     const invalid = await cli(rig.cwd, ["settings", "set", "memory.sync_interval_min", value]);
     expect(invalid.code).not.toBe(0);
