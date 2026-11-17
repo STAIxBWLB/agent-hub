@@ -83,6 +83,10 @@ test("an owner's open question suspends idle-owner and settlement restarts the l
   expect(store.ownerWait(task.id + 100, "kimi").open).toBe(false);
   expect(store.settle(other.set, "expired", "expired", settled + 2)).toBeDefined();
   expect(store.ownerWait(task.id, "kimi")).toEqual({ open: false, settled: settled + 2 });
+  const prunedAt = settled + 8 * 24 * HOUR;
+  expect(store.prune(prunedAt, 7 * 24 * HOUR)).toBe(2);
+  expect(store.ownerWait(task.id, "codex")).toEqual({ open: false });
+  expect(nextSweep(f.board.get(task.id)!, f.deps.sweep!, prunedAt, true, store.ownerWait(task.id, "codex"))).toMatchObject({ kind: "idle-owner", step: 2 });
 });
 
 test("a pending wait gives no idle-owner finding at 2, 4 and 24 hours; step 1 fires idle_min after until and step 3 still reassigns", async () => {

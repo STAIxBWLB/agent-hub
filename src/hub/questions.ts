@@ -204,7 +204,8 @@ export class QuestionStore {
   }
   close(): void { try { this.db.close(); } catch { /* already closed */ } }
 
-  /** Timing only: never hydrate question text for the idle-owner sweep. */
+  /** Timing only: never hydrate question text for the idle-owner sweep.
+   * ponytail: QuestionDesk's KEEP_SETTLED_MS (7 days) is the anchor ceiling; after pruning the ladder falls back to its own state. A durable board marker is the upgrade path. */
   ownerWait(task: number, peer: string): { open: boolean; settled?: number } {
     const row = this.db.query("SELECT MAX(CASE WHEN state = 'open' THEN 1 ELSE 0 END) AS open, MAX(settled) AS settled FROM questions WHERE task = ? AND peer = ?").get(task, peer) as { open: number | null; settled: number | null };
     return { open: row.open === 1, ...(row.settled === null ? {} : { settled: row.settled }) };
