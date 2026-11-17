@@ -289,6 +289,14 @@ test("#1540 CLI: --all-stopped conflicts with --project, names its plan rows in 
   expect(JSON.parse(json.out)).toMatchObject({ mode: "runtime-selection", scope: "all-stopped", version: VERSION });
   expect(readProjectRuntime(a)?.version).toBe(OLD); expect(readProjectRuntime(b)).toBeUndefined();
   expect(existsSync(join(f.home, "recovery"))).toBe(false);
+  // an idempotent run: nothing to retarget under --yes --json still prints one results document and exits 0
+  const none = cli("upgrade", "--all-stopped", "--to", "0.0.1", "--yes", "--json");
+  expect(none.code, none.err).toBe(0);
+  expect(JSON.parse(none.out)).toEqual({ version: "0.0.1", results: [] });
+  const noneSingle = cli("upgrade", "--to", "0.0.1", "--yes", "--json");
+  expect(noneSingle.code, noneSingle.err).toBe(0);
+  expect(JSON.parse(noneSingle.out)).toEqual({ version: "0.0.1", results: [] });
+  expect(readProjectRuntime(a)?.version).toBe(OLD);
   // the single-project form on a stopped project is the same plan, with no running-hub blocker
   const single = cli("upgrade", "--to", VERSION, "--dry-run");
   expect(single.code, single.err).toBe(0);

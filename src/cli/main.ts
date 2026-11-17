@@ -789,7 +789,8 @@ async function stoppedUpgrade(to: string, all: boolean, display: ReturnType<type
   if (dry) return true;
   if (plan.blockers.length) fail("plan has blockers; no runtime was changed");
   const retargets = plan.rows.filter((row) => row.outcome === "retarget");
-  if (!retargets.length) return true;
+  // Nothing to retarget is still an outcome: a JSON consumer of an idempotent `--yes` run gets the same results document the apply path prints, with no results.
+  if (!retargets.length) { if (display.json && yes) console.log(JSON.stringify({ version: plan.version, results: [] }, null, 2)); return true; }
   // The runtime selection decides which code runs a project next: that is the person's choice, as the plan of a running hub is for a conductor only with its source-issued proof.
   if (conductorPeer || delegatedPeer) fail("retargeting a stopped project's runtime is the person's: run it in ahub console or a terminal; no runtime was changed");
   if (!yes) {
