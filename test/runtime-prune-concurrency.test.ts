@@ -217,4 +217,4 @@ try { writeFileSync(${JSON.stringify(out)}, JSON.stringify({ retired: retireTerm
     await Promise.all(children.map(child => child.exited));
     f.registry.close(); rmSync(f.root, { recursive: true, force: true });
   }
-}, 30_000);
+}, 20_000);
