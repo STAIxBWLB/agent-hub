@@ -4085,6 +4085,23 @@ fenced. Worker completion uses the normal database wait bound, while startup
 admission keeps its 1 ms contention bound. `ahub doctor` names an uncertain or
 stuck ledger and leftover quarantine paths without changing either. Leftover
 containers remain available for inspection even after a dead worker is replaced.
+Recovery receipts (`<hub home>/recovery/<operation-id>.json` and its
+`.json.runner.db`) follow a retention rule the hub applies itself at the start
+of each maintenance pass (#1541): it keeps every receipt that is not terminal,
+the newest 32 `completed` or `cancelled` receipts, and up to 64 more finished
+receipts that name a runtime a registered project or the live manager still
+selects; it removes older finished receipts together with their runner database,
+under the same exclusive runner claim every recovery command takes, so a live or
+unidentifiable runner keeps its receipt. It does nothing while any recovery
+hold (`recovery.lock` or `recovery/project-locks.db`) exists, and it never
+removes a capture: captures are still retained by `runtime.json` and the
+newest-three rule. An interrupted pass leaves at most a runner database with no
+receipt, which the next pass removes. The inventory walk keeps 128 receipts as
+a safety ceiling. Open receipts are the only way to reach it, and the deferral
+then names the open operation and the commands to finish it
+(`ahub recovery status <id>`, then `ahub recovery resume <id>` or
+`ahub recovery abort <id>`), not the ledger. `ahub doctor` prints that text with
+the same retention rule. Nothing asks you to delete a receipt by hand.
 Startup still succeeds when maintenance defers. A damaged runtime
 record/capture requires inspection or restoration.
 Archiving the record deliberately resets first-use selection; archived copies

@@ -4,12 +4,14 @@ import { isAbsolute, join, normalize } from "node:path";
 import { processLiveness } from "../pi/process-signature.ts";
 import { hubHome } from "./project.ts";
 import { REGISTRY_DB_BUSY_TIMEOUT_MS } from "./registry.ts";
-import { RUNTIME_PRUNE_INTERVAL_MS } from "./runtime-capture-prune.ts";
+import { RETAINED_SELECTED_RECEIPTS, RETAINED_TERMINAL_RECEIPTS, RUNTIME_PRUNE_INTERVAL_MS } from "./runtime-capture-prune.ts";
 
 export interface RuntimePruneHealthCheck { ok: boolean | undefined; name: string; detail: string }
 const MAX_LEDGER_BYTES = 1024 * 1024, MAX_OUTCOME_BYTES = 16 * 1024;
 const MAX_SCAN_ENTRIES = 1024, MAX_QUARANTINES = 64, SCAN_MS = 250;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
+/** #1541: the one retention rule, as docs/operations.md states it. */
+export const RECEIPT_RETENTION_RULE = `Retention: maintenance keeps every open recovery receipt, the newest ${RETAINED_TERMINAL_RECEIPTS} finished ones and up to ${RETAINED_SELECTED_RECEIPTS} finished ones naming a runtime a project still selects, and removes older finished ones with their runner database itself`;
 const columns = "slot,id,admitted_at,phase,pid,outcome";
 const issue = (detail: string, ok: boolean | undefined = undefined): RuntimePruneHealthCheck => ({ ok, name: "runtime pruning", detail });
 const info = (file: string): Stats | undefined => {
@@ -63,7 +65,9 @@ function admissionHealth(file: string): LedgerHealth {
       || outcome.quarantined.some(value => typeof value !== "string" || value.length > 4096 || isAbsolute(value) || normalize(value) !== value || value.split(/[\\/]/).some(part => part === ".."))
       || outcome.deferred !== undefined && (typeof outcome.deferred !== "string" || Buffer.byteLength(outcome.deferred) > 512)) throw new Error("invalid completed outcome");
     if (outcome.deferred !== undefined || outcome.quarantined.length) {
-      const detail = typeof outcome.deferred === "string" ? `maintenance deferred: ${outcome.deferred.replace(/[\x00-\x1f\x7f]/g, " ")}; inspect ${file}` : `maintenance retained quarantine paths; inspect ${file}`;
+      // #1541: a deferral that already names a supported command (the receipt ceiling, an open operation) is not sent to the ledger.
+      const text = typeof outcome.deferred === "string" ? outcome.deferred.replace(/[\x00-\x1f\x7f]/g, " ") : undefined;
+      const detail = text !== undefined ? `maintenance deferred: ${text}${text.includes("ahub recovery") ? `. ${RECEIPT_RETENTION_RULE}` : `; inspect ${file}`}` : `maintenance retained quarantine paths; inspect ${file}`;
       return { active: false, checks: [issue(detail, false)] };
     }
     return { checks: [], active: false };

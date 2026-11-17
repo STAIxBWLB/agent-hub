@@ -9,6 +9,7 @@ import { childEnv } from "./child-process.ts";
 import { hubHome, realPath } from "./project.ts";
 import { readProjectRuntimeReference, projectRuntimeFile } from "./project-runtime-state.ts";
 import { Registry, REGISTRY_DB_BUSY_TIMEOUT_MS } from "./registry.ts";
+import { anyRecoveryHold, retireOperation } from "./recovery-store.ts";
 
 export interface RuntimeCapturePrunePlan { remove: string[]; kept: string[]; deferred?: string }
 export interface RuntimeCapturePruneResult { removed: string[]; kept: string[]; quarantined?: string[]; deferred?: string }
@@ -24,6 +25,13 @@ const MAX_INVENTORY_BYTES = 16 * 1024 * 1024;
 // ponytail: larger inventories defer; upgrade to indexed/batched reference inventory, never larger lock/busy limits.
 const MAX_PROJECTS = 128, MAX_RECEIPTS = 128, MAX_CAPTURE_ENTRIES = 512, MAX_REFERENCE_FILES = 512;
 const LOCK_METADATA_MS = 250;
+/** #1541: finished receipts the hub keeps (newest first), and the extra newest-per-selected-runtime ones; both stay far below MAX_RECEIPTS. */
+export const RETAINED_TERMINAL_RECEIPTS = 32, RETAINED_SELECTED_RECEIPTS = 64;
+// ponytail: one pass retires at most this many receipts and reads at most this many directory entries; a larger backlog drains over later passes.
+const MAX_RETIRED_PER_PASS = 256, MAX_RECEIPT_SCAN_ENTRIES = 4096, MAX_RECEIPT_BYTES = 1024 * 1024, MAX_RECEIPT_SCAN_BYTES = 64 * 1024 * 1024;
+const RUNNER_DB = /^[a-f0-9-]{36}\.json\.runner\.db$/;
+/** What a deferral for the receipt ceiling starts with; doctor keys on it to add the retention rule. */
+export const RECEIPT_CEILING_REASON = `recovery receipts exceed the ${MAX_RECEIPTS} receipt safety ceiling`;
 export const RUNTIME_PRUNE_MAX_BATCH = 3;
 export const RUNTIME_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const RUNTIME_PRUNE_ADMISSION_BUSY_TIMEOUT_MS = 1;
@@ -166,14 +174,15 @@ function observeReferences(home: string, registry: Registry): Observation {
     observeDatabase(locks, observation, db => { if (db.query("SELECT 1 FROM project_locks LIMIT 1").get()) fail("project recovery coordination is present"); });
   }
   let receipts = 0;
-  for (const entry of entries(recovery, observation)) {
+  const rows = entries(recovery, observation);
+  for (const entry of rows) {
     if (!entry.name.endsWith(".json")) continue;
-    if (++receipts > MAX_RECEIPTS) fail("recovery receipt inventory exceeds its bound");
+    if (++receipts > MAX_RECEIPTS) fail(receiptCeilingRefusal(recovery, rows));
     if (OPERATION.exec(entry.name)?.[0] !== entry.name || !entry.isFile() || entry.isSymbolicLink()) fail("recovery receipt inventory is invalid");
     const record = metadata(join(recovery, entry.name), observation);
     if (!object(record) || ![1, 2, 3].includes(record.schema as number) || `${record.id}.json` !== entry.name
       || !["pending", "running", "blocked", "completed", "cancelled"].includes(record.phase as string)) fail("recovery receipt inventory is invalid");
-    if (record.phase !== "completed" && record.phase !== "cancelled") fail("a retained recovery operation is not terminal");
+    if (record.phase !== "completed" && record.phase !== "cancelled") fail(`a retained recovery operation is not terminal: run ahub recovery status ${record.id}, then resume or abort it`);
     if (!object(record.plan) || !Array.isArray(record.plan.projects) || !Array.isArray(record.projects)
       || record.plan.projects.length !== record.projects.length || !["restart", "upgrade"].includes(record.plan.kind as string)
       || typeof record.plan.sourceDigest !== "string" || !/^[a-f0-9]{64}$/.test(record.plan.sourceDigest)) fail("retained recovery runtime references are incomplete");
@@ -190,6 +199,21 @@ function observeReferences(home: string, registry: Registry): Observation {
       || record.targetRoot === undefined && (record.phase === "completed" || record.targetDigest !== undefined)) fail("retained recovery target identity is incomplete");
   }
   return observation;
+}
+/** AC4: the cause and a supported command. Only open receipts can hold the count above the ceiling, so name the first one found. */
+function receiptCeilingRefusal(recovery: string, rows: Dirent[]): string {
+  const scratch: Observation = { files: new Map(), lists: new Map(), projects: "", roots: new Set(), bytes: 0 };
+  let first: string | undefined;
+  for (const row of rows) {
+    if (!row.name.endsWith(".json") || !OPERATION.test(row.name)) continue;
+    try {
+      const record = metadata(join(recovery, row.name), scratch);
+      if (object(record) && record.phase !== "completed" && record.phase !== "cancelled") { first = row.name.slice(0, -".json".length); break; }
+    } catch { /* an unreadable receipt is reported by the generic refusal below */ }
+  }
+  const next = first ? `run ahub recovery status ${first}, then ahub recovery resume ${first} or ahub recovery abort ${first}`
+    : "no open receipt was found, so the next maintenance pass (after a hub start, at most hourly) removes the finished ones; ahub recovery status <operation-id> shows one the hub keeps";
+  return `${RECEIPT_CEILING_REASON}: the hub keeps open receipts and removes finished ones itself; ${next}`;
 }
 function validateObservation(registry: Registry, observation: Observation, budget: LockBudget): void {
   tick(budget);
@@ -269,6 +293,92 @@ function openRegistry(home: string): { home: string; registry: Registry } {
 const deferred = (error: unknown): string => `runtime capture pruning deferred: ${error instanceof Error ? error.message : "inventory unavailable"}`;
 function checkRetention(keepNewest: number): void { if (!Number.isSafeInteger(keepNewest) || keepNewest < 0) fail("runtime capture retention must be a nonnegative integer"); }
 
+interface ReceiptRow { name: string; id: string; at: number; roots: string[] }
+function receiptRoot(value: unknown): string | undefined {
+  if (typeof value !== "string" || !isAbsolute(value) || value.includes(String.fromCharCode(0))) return undefined;
+  try { return realPath(value); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return resolve(value); }
+}
+function readReceipt(file: string, budget: { bytes: number }): unknown {
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.nlink !== 1 || info.size > MAX_RECEIPT_BYTES || budget.bytes + info.size > MAX_RECEIPT_SCAN_BYTES) return undefined;
+    const bytes = Buffer.alloc(info.size), count = readSync(fd, bytes, 0, info.size, 0);
+    if (count !== info.size) return undefined;
+    budget.bytes += count;
+    try { return JSON.parse(bytes.toString("utf8")); } catch { return undefined; }
+  } finally { closeSync(fd); }
+}
+const terminalReceipt = (record: unknown, name: string): record is Record<string, unknown> =>
+  object(record) && [1, 2, 3].includes(record.schema as number) && `${record.id}.json` === name && OPERATION.test(name) && (record.phase === "completed" || record.phase === "cancelled");
+/** Runtime roots a registered project's runtime.json (or the live manager) selects, canonical; undefined when any of them cannot be read, which stops retention. */
+function selectedRuntimeRoots(home: string, registry: Registry): string[] | undefined {
+  try {
+    const roots: string[] = [], projects = registry.list();
+    if (projects.length > MAX_PROJECTS) return undefined;
+    for (const project of projects) { const runtime = readProjectRuntimeReference(project); if (runtime) roots.push(realPath(runtime.root)); }
+    const manager = managerRuntimeRoot(home, { files: new Map(), lists: new Map(), projects: "", roots: new Set(), bytes: 0 });
+    if (manager) roots.push(manager);
+    return roots;
+  } catch { return undefined; }
+}
+/**
+ * #1541: the hub's own retention rule for finished recovery receipts. Keeps every receipt that is not terminal, the newest
+ * RETAINED_TERMINAL_RECEIPTS terminal ones, and the newest RETAINED_SELECTED_RECEIPTS terminal ones that name a runtime a
+ * registered project (or the live manager) still selects. The rest leave with their `.runner.db` through
+ * `retireOperation` (the exclusive runner claim, never check-then-unlink). The captures themselves stay protected by
+ * runtime.json, not by a receipt, so retention never releases one a project selects. Skips everything while any recovery hold exists.
+ */
+export function retireTerminalReceipts(home: string, registry: Registry, hooks: { betweenPair?: () => void } = {}): number {
+  const recovery = join(home, "recovery");
+  if (!directory(recovery) || anyRecoveryHold(home)) return 0;
+  const selected = selectedRuntimeRoots(home, registry);
+  if (!selected) return 0;
+  const names: string[] = [], handle = opendirSync(recovery);
+  try {
+    for (;;) {
+      const entry = handle.readSync(); if (!entry) break;
+      if (names.length >= MAX_RECEIPT_SCAN_ENTRIES) return 0;
+      if (entry.isFile() && (entry.name.endsWith(".json") || RUNNER_DB.test(entry.name))) names.push(entry.name);
+    }
+  } finally { handle.closeSync(); }
+  const budget = { bytes: 0 }, terminal: ReceiptRow[] = [], receipts = new Set<string>();
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    receipts.add(name);
+    let record: unknown;
+    try { record = readReceipt(join(recovery, name), budget); } catch { continue; }
+    if (!terminalReceipt(record, name)) continue; // open, unreadable or unknown receipts always stay
+    const roots: string[] = [];
+    try {
+      for (const value of [record.sourceRoot, object(record.plan) ? record.plan.sourceRoot : undefined, record.targetRoot]) { const root = receiptRoot(value); if (root) roots.push(root); }
+    } catch { continue; }
+    const at = Number.isFinite(record.updatedAt) ? record.updatedAt as number : Number.isFinite(record.createdAt) ? record.createdAt as number : 0;
+    terminal.push({ name, id: record.id as string, at, roots });
+  }
+  terminal.sort((a, b) => b.at - a.at || b.id.localeCompare(a.id));
+  const keep = new Set(terminal.slice(0, RETAINED_TERMINAL_RECEIPTS).map(row => row.name));
+  let extra = 0;
+  for (const row of terminal) {
+    if (extra >= RETAINED_SELECTED_RECEIPTS) break;
+    if (keep.has(row.name) || !selected.some(root => row.roots.some(own => contains(root, own) || contains(own, root)))) continue;
+    keep.add(row.name); extra++;
+  }
+  let retired = 0;
+  for (const row of terminal) {
+    if (keep.has(row.name)) continue;
+    if (retired >= MAX_RETIRED_PER_PASS) break;
+    const outcome = retireOperation(row.id, home, record => terminalReceipt(record, row.name), hooks);
+    if (outcome === "retired") retired++;
+  }
+  // A runner db whose receipt is gone (an interrupted earlier pass) is settled through the same claim; a live claim keeps it.
+  for (const name of names) {
+    const receipt = name.replace(/\.runner\.db$/, "");
+    if (RUNNER_DB.test(name) && !receipts.has(receipt) && retired < MAX_RETIRED_PER_PASS && retireOperation(receipt.slice(0, -".json".length), home, () => false, hooks) === "retired") retired++;
+  }
+  return retired;
+}
+
 /** Metadata preview only; execution always refreshes reference observations before quarantining each candidate. */
 export function planRuntimeCapturePrune(home = hubHome(), keepNewest = 3): RuntimeCapturePrunePlan {
   let registry: Registry | undefined;
@@ -283,6 +393,7 @@ export function pruneRuntimeCaptures(home = hubHome(), keepNewest = 3): RuntimeC
   const removed: string[] = [], quarantined: string[] = []; let kept: string[] = [], registry: Registry | undefined;
   try {
     checkRetention(keepNewest); const opened = openRegistry(home); registry = opened.registry; home = opened.home;
+    retireTerminalReceipts(home, registry);
     const initial = lockedPlan(home, registry, observeReferences(home, registry), keepNewest); kept = initial.plan.kept;
     // Reject unknown layouts across the small batch before moving any entry; no package contents are hashed here.
     for (const root of initial.plan.remove) captureLayout(root);

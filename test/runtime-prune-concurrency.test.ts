@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,6 +65,7 @@ function copiedPruner(f: ReturnType<typeof fixture>, held: string, release: stri
   reexport("src/hub/project-runtime-state.ts", "readProjectRuntime, readProjectRuntimeReference, projectRuntimeFile", "../src/hub/project-runtime-state.ts");
   reexport("src/hub/registry.ts", "Registry, REGISTRY_DB_BUSY_TIMEOUT_MS", "../src/hub/registry.ts");
   reexport("src/hub/child-process.ts", "childEnv", "../src/hub/child-process.ts");
+  reexport("src/hub/recovery-store.ts", "anyRecoveryHold, retireOperation", "../src/hub/recovery-store.ts");
   put(coordinator, "src/cli/recovery-package.ts", `import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { verifyPackage as realVerifyPackage, verifyRecoveryTarget as realVerifyRecoveryTarget } from ${JSON.stringify(actual("../src/cli/recovery-package.ts"))};
@@ -169,3 +172,49 @@ try {
     f.registry.close(); rmSync(f.root, { recursive: true, force: true });
   }
 }, 20_000);
+
+/** #1541 / AGENTS.md "Lock files and stale holders": two retirers on the same inventory, some receipts under a stale runner claim. */
+test("#1541 two maintenance passes on one inventory, with stale runner claims, retire each receipt once and never leave a half", async () => {
+  const f = fixture(), children: Child[] = [];
+  try {
+    const keep = f.capture("keep"), recovery = join(f.home, "recovery"), total = 90, stale = new Set<number>();
+    mkdirSync(recovery, { recursive: true });
+    const ids: string[] = [];
+    for (let i = 0; i < total; i++) {
+      const id = randomUUID(); ids.push(id);
+      const body = { schema: 1, id, phase: i % 2 ? "completed" : "cancelled", createdAt: 1000 + i, updatedAt: 1000 + i, sourceRoot: keep.root, step: "fixture",
+        plan: { schema: 1, kind: "upgrade", version: VERSION, sourceRoot: keep.root, sourceDigest: "a".repeat(64), projects: [], blockers: [] }, projects: [],
+        ...(i % 2 ? { targetRoot: keep.root, targetDigest: "a".repeat(64) } : {}) };
+      writeFileSync(join(recovery, `${id}.json`), JSON.stringify(body), { mode: 0o600 });
+      const db = new Database(join(recovery, `${id}.json.runner.db`), { create: true });
+      db.run("CREATE TABLE runner (slot INTEGER PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL, signature TEXT)");
+      if (i % 3 === 0) { stale.add(i); db.query("INSERT INTO runner VALUES(1,?,?,?)").run(process.pid, "stale", "retired-signature"); }
+      db.close();
+    }
+    const module = copiedPruner(f, join(f.root, "unused-held"), join(f.root, "unused-release"), join(f.root, "unused-calls")), start = join(f.root, "start");
+    const runner = (name: string) => { const out = join(f.root, `${name}.json`), driver = join(f.root, `${name}.ts`);
+      writeFileSync(driver, `import { writeFileSync, existsSync } from 'node:fs';
+import { retireTerminalReceipts } from ${JSON.stringify(module)};
+import { Registry } from ${JSON.stringify(fileURLToPath(new URL("../src/hub/registry.ts", import.meta.url)))};
+while (!existsSync(${JSON.stringify(start)})) Bun.sleepSync(1);
+const registry = new Registry(${JSON.stringify(join(f.home, "registry.db"))});
+try { writeFileSync(${JSON.stringify(out)}, JSON.stringify({ retired: retireTerminalReceipts(${JSON.stringify(f.home)}, registry) })); } finally { registry.close(); }
+`);
+      const child = Bun.spawn([process.execPath, driver], { env: f.env, stdin: "ignore", stdout: "ignore", stderr: "pipe" }); children.push(child);
+      return { out, child }; };
+    const [a, b] = [runner("a"), runner("b")];
+    writeFileSync(start, "go\n");
+    for (const r of [a, b]) expect(await r.child.exited, await new Response(r.child.stderr).text()).toBe(0);
+    const retired = [a, b].map(r => (JSON.parse(readFileSync(r.out, "utf8")) as { retired: number }).retired);
+    const left = readdirSync(recovery), receipts = left.filter(name => name.endsWith(".json")), dbs = left.filter(name => name.endsWith(".json.runner.db"));
+    expect(receipts.length).toBe(32); expect(dbs.length).toBe(32);
+    expect(dbs.map(name => name.slice(0, -".runner.db".length)).sort()).toEqual(receipts.sort());
+    expect(retired[0]! + retired[1]!).toBe(total - 32); // each receipt is retired by exactly one pass
+    // The newest 32 stay; no receipt a pass still read was taken from under it.
+    for (const id of ids.slice(total - 32)) expect(receipts).toContain(`${id}.json`);
+  } finally {
+    for (const child of children) if (child.exitCode === null) child.kill("SIGTERM");
+    await Promise.all(children.map(child => child.exited));
+    f.registry.close(); rmSync(f.root, { recursive: true, force: true });
+  }
+}, 30_000);
