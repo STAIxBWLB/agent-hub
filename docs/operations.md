@@ -4059,6 +4059,36 @@ upgrade targets use the same version directory, with the verified registry
 install kept separately in `registry/`. Recovery uses its authority receipt's
 exact target path and records that selection through the updated startup path.
 
+A project whose hub is stopped upgrades without starting it (#1540).
+`ahub upgrade --to <version>` in such a project, or `ahub --project <id> upgrade
+--to <version>`, shows `stopped: runtime selection only`, with no peers and
+nothing carried over. With `--yes` it stages and verifies the target once, then
+rewrites that project's `runtime.json` through the same verified write a startup
+uses, under the registry's runtime-capture lock. It starts no daemon, opens or
+closes no terminal, touches no peer and records no recovery operation. The next
+`ahub up` with a CLI at that version or later starts the new runtime; an older
+CLI refuses with `this project runs X`. A project that reads as anything but a
+positive `stopped` (unknown, unavailable, starting, stopping, incompatible) is
+never retargeted, and a hub that starts between planning and the write is refused
+and never written over: the write rechecks the registry claim, the control
+manifest, the recovery hold, the restart snapshot and the recorded selection
+under the lock. These refuse and name their next step: a stopped project that
+holds an unreleased or unreadable restart snapshot, a missing project, a root
+that is not initialized, an unreadable or Git-tracked `runtime.json`, and a
+project under a recovery hold. The retarget is the person's choice of which code
+runs next, so a conductor or a `--live-test` delegation is refused.
+
+`ahub upgrade --all-stopped --to <version>` covers every registered project that
+reads as `stopped`. Each project is planned and applied on its own and the
+package is staged once. A dry run lists one row per registered project: `retarget`,
+`already at <version>` (also for a newer recorded version, never a downgrade),
+`skipped: running` with that project's own `ahub --project <id> upgrade` command,
+or `refused: <cause>` with its next step. `--yes` writes the `retarget` rows only
+and requires `--to <exact-version>`. The result lists each project's outcome and
+the exit code is nonzero when a planned retarget failed; the successful rewrites
+stay and the failed projects are named. `--all-stopped` with `--project` is
+refused as conflicting selectors.
+
 This selector/refusal guarantee starts with 0.26.0. Published CLIs older than
 0.26.0 ignore the runtime record. After a scoped upgrade, invoke `ahub up` with a
 0.26.0-or-later CLI that is at least the selected project's version; keeping an
@@ -4384,6 +4414,16 @@ example `ahub recovery --color=never` or
 `ahub recovery status <operation-id> --json`. An explicit `--json` returns only
 the raw document, without a human suffix. `upgrade --json` reviews a JSON plan;
 `--yes` is still needed to apply it without the interactive review.
+
+Under `--yes` the plan is printed without its closing "Nothing was changed"
+line, because the command goes on to apply it (#1540). For a running hub, when
+standard output is not a terminal, `ahub upgrade --yes` then waits until the
+recovery operation is completed, blocked or cancelled and exits nonzero unless it
+completed, so `ahub upgrade --to <v> --yes && ahub down` no longer races
+`recovery operation <id> is active`. A runner that never appears (10 s) or ends
+with the receipt still open is a failure. On a terminal it still returns as soon
+as the operation is scheduled, and `--json` prints the scheduled operation
+document as before.
 
 The plan screen lists each project with its hub version and, per attached peer,
 its state, how it runs (`TUI` in a terminal the plan bound to its session,

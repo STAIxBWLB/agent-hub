@@ -49,6 +49,10 @@ move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
+A project whose hub is stopped is upgraded without starting it: `ahub upgrade
+--to <version>` in it only retargets its runtime selection, and `ahub upgrade
+--all-stopped --to <version>` does that for every stopped project at once
+(`--dry-run` lists each one first).
 
 ## Upgrading to 0.42.0
 
