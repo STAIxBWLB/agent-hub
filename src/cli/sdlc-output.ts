@@ -176,6 +176,9 @@ function taskBlock(row: any, columns: number | undefined, detail: boolean): Line
 function lifecycleView(reply: any, columns: number | undefined, detail: boolean): Line[] {
   const rows = list(reply?.rows);
   const out: Line[] = [...heading(`SDLC lifecycle, mode ${reply?.mode ?? "unknown"}`, columns)];
+  if (reply?.securityScan && typeof reply.securityScan === "object") {
+    out.push(...pair("security scan", Object.entries(reply.securityScan).map(([source, value]) => `${source}: ${value === null ? "unknown" : value}`).join(", "), columns, 14));
+  }
   if (!rows.length) return [...out, [s("no task has lifecycle state yet", "muted")]];
   if (!detail || rows.length > 1) {
     out.push(...grid(["ID", "STAGE", "READY", "ACTOR", "PR"], rows.map(row => [s(`#${row.id}`, "taskRef"), s(row.stage ?? "unknown"), s(yes(row.ready), readyTone(row.ready)), s(row.actor ?? "-"), s(row.receipt?.pr ? `#${row.receipt.pr}` : "-")]), columns));
@@ -263,7 +266,7 @@ export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.n
 // ---- sdlc metrics / costs -----------------------------------------------------------------------------------------
 
 const SUMMARY_ROWS: [string, string, boolean][] = [
-  ["acceptance_to_plan_ms", "acceptance to plan", true], ["acceptance_to_first_review_ms", "acceptance to first review", true], ["acceptance_to_merge_ms", "acceptance to merge", true],
+  ["acceptance_to_plan_ms", "acceptance to plan", true], ["accepted_to_plan_ms", "task acceptance to plan", true], ["acceptance_to_first_review_ms", "acceptance to first review", true], ["acceptance_to_merge_ms", "acceptance to merge", true],
   ["rework_rounds", "rework rounds", false], ["same_head_ci_reruns", "same-head CI reruns", false], ["stale_head_re_reviews", "stale-head re-reviews", false],
   ["review_rounds_at_merge", "review rounds at merge", false], ["ci_runs_at_merge", "CI runs at merge", false], ["github_reviews_at_merge", "GitHub reviews at merge", false],
 ];

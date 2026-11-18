@@ -50,6 +50,8 @@ export interface MergeOutcome {
   result?: { exit: number; state: "merged" | "not_merged" | "unknown"; mergeCommit?: string; cleanup?: MergeRecord["cleanup"]; reason?: MergeRecord["reason"] };
 }
 
+export const MERGE_READBACK_INTERVAL_MS = 5 * 60_000;
+export const MERGE_READBACK_DEADLINE_MS = 8_000;
 const SHA = /^[0-9a-f]{40}$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 /**
@@ -92,10 +94,10 @@ function checkGates(evidence: PrEvidence, required: readonly string[], extra: re
 }
 
 /** One bounded GitHub snapshot for adoption: no bodies, no merge or cleanup mutation, and complete head-bound review/check coverage. */
-export async function readAdoptMergeEvidence(receipt: SdlcReceipt, run: SdlcGh): Promise<PrEvidence | undefined> {
+export async function readAdoptMergeEvidence(receipt: SdlcReceipt, run: SdlcGh): Promise<(PrEvidence & { costSnapshot?: unknown }) | undefined> {
   if (!REPO.test(receipt.repo ?? "") || receipt.repo!.startsWith("-") || !Number.isSafeInteger(receipt.pr) || receipt.pr! <= 0) return undefined;
   const [owner, name] = receipt.repo!.split("/");
-  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state reviewDecision isDraft mergeCommit{oid} reviewRequests(first:100){nodes{requestedReviewer{__typename}} pageInfo{hasNextPage}} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}} commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion startedAt checkSuite{workflowRun{workflow{resourcePath}}}} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}}}}}";
+  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number headRefOid state mergedAt reviews(first:100){nodes{databaseId commit{oid}} pageInfo{hasNextPage}} costCommits:commits(first:100){nodes{commit{oid}} pageInfo{hasNextPage}} reviewDecision isDraft mergeCommit{oid} reviewRequests(first:100){nodes{requestedReviewer{__typename}} pageInfo{hasNextPage}} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}} commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion startedAt checkSuite{workflowRun{workflow{resourcePath}}}} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}}}}}";
   try {
     const result = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${receipt.pr}`]);
     if (result.code !== 0) return undefined;
@@ -113,7 +115,9 @@ export async function readAdoptMergeEvidence(receipt: SdlcReceipt, run: SdlcGh):
       return check.state === "passed" && !green ? { ...check, state: "unknown" } : check;
     });
     // Files are outside adoption's decision. Keep their coverage explicitly unknown in the shared evidence shape.
-    return { ...evidence, pathsComplete: false, typesComplete: false };
+    const costSnapshot = pr.number === receipt.pr && typeof pr.mergedAt === "string" && pr.costCommits && pr.reviews
+      ? { ...pr, commits: pr.costCommits } : undefined;
+    return { ...evidence, pathsComplete: false, typesComplete: false, ...(costSnapshot ? { costSnapshot } : {}) };
   } catch { return undefined; }
 }
 

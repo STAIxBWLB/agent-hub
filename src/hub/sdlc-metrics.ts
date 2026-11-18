@@ -26,6 +26,7 @@ export interface TaskSample {
   /** When the task was approved, else null: `rework_rounds` and `stale_head_re_reviews` are final only then, and sit at this time in their series. */
   approved_at: number | null;
   acceptance_to_plan_ms: number | null;
+  accepted_to_plan_ms: number | null;
   acceptance_to_first_review_ms: number | null;
   acceptance_to_merge_ms: number | null;
   first_pass_approval: 0 | 1 | null;
@@ -105,8 +106,9 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
   const history = [...task.history].filter(entry => Number.isFinite(entry.at) && entry.at >= 0).sort((a, b) => a.at - b.at);
   const view: MetricTask = { id: task.id, history };
   const accepted = first(view, ["accepted"]);
-  const spec = first(view, ["spec accepted"]);
+  const spec = first(view, ["spec accepted", "spec acceptance carried"]);
   const plan = spec ? first(view, ["plan reviewed"], spec.at) : undefined;
+  const acceptedPlan = !spec && accepted ? first(view, ["plan reviewed"], accepted.at) : undefined;
   const verdict = accepted ? first(view, VERDICTS, accepted.at) : first(view, VERDICTS);
   // Evidence-only still ends the actual wait for a first review, but says nothing about whether the work passed.
   const substantiveVerdict = history.find(entry => entry.at >= (accepted?.at ?? -Infinity) && VERDICTS.includes(entry.event) && entry.evidenceOnly !== true);
@@ -123,6 +125,7 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
     at: verdict?.at ?? accepted?.at ?? history[0]?.at ?? 0,
     approved_at: approvedAt,
     acceptance_to_plan_ms: spec && plan ? plan.at - spec.at : null,
+    accepted_to_plan_ms: accepted && acceptedPlan ? acceptedPlan.at - accepted.at : null,
     acceptance_to_first_review_ms: accepted && verdict ? verdict.at - accepted.at : null,
     acceptance_to_merge_ms: accepted && extra.mergedAt !== undefined && Number.isFinite(extra.mergedAt) && extra.mergedAt >= accepted.at ? extra.mergedAt - accepted.at : null,
     first_pass_approval: substantiveVerdict ? (substantiveVerdict.event === "approved" ? 1 : 0) : null,
@@ -207,8 +210,9 @@ export interface MetricsReport {
   since: number | null;
   tasks: number;
   withheldPrivate: number;
+  securityScan?: Record<string, number | null>;
   metrics: {
-    acceptance_to_plan_ms: Summary; acceptance_to_first_review_ms: Summary; acceptance_to_merge_ms: Summary;
+    acceptance_to_plan_ms: Summary; accepted_to_plan_ms: Summary; acceptance_to_first_review_ms: Summary; acceptance_to_merge_ms: Summary;
     first_pass_approval: { n: number; unknown: number; rate: number | null };
     rework_rounds: Summary;
     first_pass_check: { n: number; unknown: number; rate: number | null };
@@ -241,7 +245,7 @@ export function sdlcMetrics(tasks: readonly MetricTask[], opts: { since?: number
   return {
     since: opts.since ?? null, tasks: samples.length, withheldPrivate: tasks.length - visible.length,
     metrics: {
-      acceptance_to_plan_ms: summarize(samples.map(s => s.acceptance_to_plan_ms)), acceptance_to_first_review_ms: summarize(samples.map(s => s.acceptance_to_first_review_ms)),
+      acceptance_to_plan_ms: summarize(samples.map(s => s.acceptance_to_plan_ms)), accepted_to_plan_ms: summarize(samples.map(s => s.accepted_to_plan_ms)), acceptance_to_first_review_ms: summarize(samples.map(s => s.acceptance_to_first_review_ms)),
       acceptance_to_merge_ms: summarize(samples.map(s => s.acceptance_to_merge_ms)),
       first_pass_approval: rate(samples.map(s => s.first_pass_approval)), rework_rounds: summarize(samples.map(s => s.rework_rounds)),
       first_pass_check: rate(samples.map(s => s.first_pass_check)), same_head_ci_reruns: summarize(samples.map(s => s.same_head_ci_reruns)),

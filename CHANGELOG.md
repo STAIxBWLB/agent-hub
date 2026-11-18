@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Record observed merge costs, carried-spec timing and per-source security scan availability (Refs #1555).
+
 - Record isolated check outcomes as text-free task evidence for matching-head metrics and supervision (Refs #1555).
 
 ## 0.43.0

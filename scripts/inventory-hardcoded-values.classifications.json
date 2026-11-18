@@ -2236,6 +2236,8 @@
   "src/hub/schedules.ts:min:inline:min=1#0": "contract",
   "src/hub/schedules.ts:min:inline:min=1#1": "contract",
   "src/hub/schedules.ts:zoneFormat:inline:zoneFormats.size >= 64=64#0": "operational",
+  "src/hub/sdlc-merge.ts:MERGE_READBACK_DEADLINE_MS:constant:MERGE_READBACK_DEADLINE_MS=8000#0": "operational",
+  "src/hub/sdlc-merge.ts:MERGE_READBACK_INTERVAL_MS:constant:MERGE_READBACK_INTERVAL_MS=5 * 60000#0": "operational",
   "src/hub/sdlc-merge.ts:attempt:inline:attempt=0#0": "operational",
   "src/hub/sdlc-merge.ts:guardedMerge:inline:attempt < 2=2#0": "operational",
   "src/hub/sdlc-metrics.ts:EPISODE_LOOKBACK:constant:EPISODE_LOOKBACK=200#0": "operational",
