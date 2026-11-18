@@ -409,6 +409,8 @@ QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or
 QUIET_EVENTS.add("planner changed"); // Planning authority does not move the execution owner or revoke its handoff.
 QUIET_EVENTS.add("claim verdict"); // #901: a person's bookkeeping on a plan claim moves nothing, so it must not turn a running check into "check finished late".
 QUIET_EVENTS.add("invocation");
+QUIET_EVENTS.add("check run passed"); // Isolated check bookkeeping does not invalidate an in-flight completion check.
+QUIET_EVENTS.add("check run failed");
 QUIET_EVENTS.add("wait recorded"); // #1454: a recorded wait moves nothing; it only suspends the idle-owner ladder, so it must not turn a running check into "check finished late".
 QUIET_EVENTS.add("shell branch bound"); // #880: the hub's host-observed branch binding (#845) is bookkeeping; it neither moves nor settles the task.
 /** The records of the `done (checking)` entry a passed check now completes: what the owner delivered then (#509a). */

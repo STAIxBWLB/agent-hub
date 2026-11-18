@@ -307,3 +307,18 @@ test("comment validators reject inert-array violations and malformed recovered a
   expect(() => reviewCommentBody("가".repeat(683))).toThrow("2048");
   for (const author of ["AUTHOR_CANARY\nspoof", "X".repeat(513)]) expect(() => parseStoredReviewComment({ task: 1, taskCreated: 1, commit: HEAD, lifecycle: "draft", revision: 1, private: false, thread: { id, anchor: { path: "a.md", selectors: [{ kind: "lineRange", startLine: 1, endLine: 1 }] }, body: "ok", author, at: new Date().toISOString() } })).toThrow("storage invalid");
 });
+
+test("#1555 isolated results do not invalidate an in-flight completion check", async () => {
+  for (const exit of [0, 1]) {
+    const f = await fixture(true);
+    await f.tasks.done("codex", f.task.id, "ready");
+    await f.checkStart;
+    f.tasks.recordCheckResult({ task: f.task.id, owner: "codex", check: "typecheck", sha: HEAD, exit, timed_out: false, cancelled: false, interrupted: false } as never);
+    f.control.releaseCheck!({ code: 0, timedOut: false, tail: "completion passed" });
+    await (f.tasks as unknown as { checkQueue: Promise<void> }).checkQueue;
+    const done = f.board.get(f.task.id)!;
+    expect(done.state).toBe("in_review");
+    expect(done.history.some(entry => entry.event === "check finished late")).toBe(false);
+    expect(done.history.some(entry => entry.event === "check passed")).toBe(true);
+  }
+});
