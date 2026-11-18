@@ -157,6 +157,7 @@ import { CHECKPOINT_FIELDS, CHECKPOINT_FIELDS_SENTENCE, checkpointFieldCount, pa
 import { ModelOverrides, ModelOverrideLatches, type RuntimeModelStatus, type ModelSource } from "./model-overrides.ts";
 import { isNativeModelToken } from "../adapters/model-token.ts";
 import { processSignature, processLiveness } from "../pi/process-signature.ts";
+import { processSignatureAsync } from "@staix/agent-mem/platform";
 import { PiSessionBookmarkMismatch, PiSessionUnresumable, recordPiReplacement, validatePiSession } from "../pi/session.ts";
 import { profile, proxyEnv, sandboxAvailable, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
@@ -5264,9 +5265,20 @@ export async function startDaemon(opts: DaemonOptions) {
       if (stopping) return;
       try {
         const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
-        const descriptor = project && readControl(project.stateDir);
         if (!project) { handoffStateGate(handoffCatchUpState, remote, "moved"); handoffLog(remote, "project not registered (moved?)", `handoff catch-up of ${remote} skipped: project not registered (moved?)`); continue; }
-        if (handoffTargetStopped(descriptor, processLiveness)) {
+        const before = readControl(project.stateDir);
+        const signature = before?.pidSignature && Number.isSafeInteger(before.pid) && before.pid! > 0
+          ? await processSignatureAsync(before.pid!).catch(() => undefined) : undefined;
+        if (stopping) return;
+        const currentProject = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
+        if (!currentProject || currentProject.root !== project.root || currentProject.stateDir !== project.stateDir) {
+          handoffStateGate(handoffCatchUpState, remote, "moved");
+          handoffLog(remote, "project not registered (moved?)", `handoff catch-up of ${remote} skipped: project not registered (moved?)`);
+          continue;
+        }
+        const descriptor = readControl(project.stateDir);
+        const sameIdentity = before?.pid === descriptor?.pid && before?.pidSignature === descriptor?.pidSignature;
+        if (handoffTargetStopped(descriptor, (pid, expected) => processLiveness(pid, expected, () => sameIdentity ? signature : undefined))) {
           handoffFailures.set(remote, { cause: "not running", at: Date.now() });
           if (handoffStateGate(handoffCatchUpState, remote, "stopped")) log(`handoff catch-up of ${remote} skipped: its hub is not running`);
           continue;
@@ -5300,8 +5312,7 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const remote of targets) {
       const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
       const descriptor = project && readControl(project.stateDir);
-      const seen = descriptor && !handoffTargetStopped(descriptor, processLiveness) ? `${descriptor.instanceId ?? ""}|${descriptor.url}|${descriptor.pid ?? ""}|${descriptor.pidSignature ?? ""}` : "";
-      if (seen) handoffStateGate(handoffCatchUpState, remote, "available");
+      const seen = descriptor ? `${descriptor.instanceId ?? ""}|${descriptor.url}|${descriptor.pid ?? ""}|${descriptor.pidSignature ?? ""}` : "";
       const before = handoffDescriptors.get(remote);
       handoffDescriptors.set(remote, seen);
       if (before !== undefined && before !== seen && seen) changed.add(remote);

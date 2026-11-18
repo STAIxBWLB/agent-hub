@@ -836,7 +836,7 @@ test("#734 AC6: --list shows each handoff's age and reachability, with the cause
 }, 60_000);
 
 test("#1550 stopped target with a stale descriptor is never connected and logs once", async () => {
-  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000, handoffLogWindowMs: 1 } });
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 50, handoffLogWindowMs: 1 } });
   const planner = await a.connect({ role: "tools", peer: "claude" });
   expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" })).ok).toBe(true);
   let connections = 0;
@@ -846,6 +846,7 @@ test("#1550 stopped target with a stale descriptor is never connected and logs o
   const restore = holdStatus(b, status => ({ ...status, pid: 2_147_483_647, controlPort: decoy.port }));
   try {
     await task(a.person, "hub_task_handoff_sync");
+    await Bun.sleep(150); // allow repeated descriptor-watch ticks while the stale descriptor remains unchanged
     await task(a.person, "hub_task_handoff_sync");
     expect(connections).toBe(0);
     expect(logOf(a).split("\n").filter(line => line.includes(`handoff catch-up of ${b.id} skipped: its hub is not running`))).toHaveLength(1);
