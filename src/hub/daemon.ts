@@ -157,6 +157,7 @@ import { CHECKPOINT_FIELDS, CHECKPOINT_FIELDS_SENTENCE, checkpointFieldCount, pa
 import { ModelOverrides, ModelOverrideLatches, type RuntimeModelStatus, type ModelSource } from "./model-overrides.ts";
 import { isNativeModelToken } from "../adapters/model-token.ts";
 import { processSignature, processLiveness } from "../pi/process-signature.ts";
+import { processSignatureAsync } from "@staix/agent-mem/platform";
 import { PiSessionBookmarkMismatch, PiSessionUnresumable, recordPiReplacement, validatePiSession } from "../pi/session.ts";
 import { profile, proxyEnv, sandboxAvailable, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
@@ -191,7 +192,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalPath, realPath, hubHome } from "./project.ts";
-import { HandoffRefusal, checkTarget, handoffAge, handoffCatchUpRow, handoffChunks, handoffConnectFailure, handoffLogGate, handoffOutcomeUnknown, handoffReach, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
+import { HandoffRefusal, checkTarget, handoffAge, handoffCatchUpRow, handoffChunks, handoffConnectFailure, handoffLogGate, handoffOutcomeUnknown, handoffReach, handoffStateGate, handoffTargetStopped, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { QUESTION_TOOLS, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, LINEAGE_TOOL_NAMES, GUIDANCE_TOOL_NAMES, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
@@ -5111,6 +5112,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * target is unreachable without asking it again.
    */
   const handoffLogSeen = new Map<string, number>(), handoffFailures = new Map<string, { cause: string; at: number }>();
+  const handoffCatchUpState = new Map<string, string>();
   const handoffLog = (target: string, cause: string, line: string): void => {
     handoffFailures.set(target, { cause, at: Date.now() });
     if (handoffLogGate(handoffLogSeen, `${target}|${cause}`, Date.now(), opts.handoffLogWindowMs ?? 15 * 60_000)) log(line);
@@ -5265,9 +5267,26 @@ export async function startDaemon(opts: DaemonOptions) {
       if (stopping) return;
       try {
         const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
-        const descriptor = project && readControl(project.stateDir);
-        if (!project) { handoffLog(remote, "project not registered (moved?)", `handoff catch-up of ${remote} skipped: project not registered (moved?)`); continue; }
-        if (!descriptor) { handoffLog(remote, "not running", `handoff catch-up of ${remote} skipped: its hub is not running`); continue; }
+        if (!project) { handoffStateGate(handoffCatchUpState, remote, "moved"); handoffLog(remote, "project not registered (moved?)", `handoff catch-up of ${remote} skipped: project not registered (moved?)`); continue; }
+        const before = readControl(project.stateDir);
+        const signature = before?.pidSignature && Number.isSafeInteger(before.pid) && before.pid! > 0
+          ? await processSignatureAsync(before.pid!).catch(() => undefined) : undefined;
+        if (stopping) return;
+        const currentProject = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
+        if (!currentProject || currentProject.root !== project.root || currentProject.stateDir !== project.stateDir) {
+          handoffStateGate(handoffCatchUpState, remote, "moved");
+          handoffLog(remote, "project not registered (moved?)", `handoff catch-up of ${remote} skipped: project not registered (moved?)`);
+          continue;
+        }
+        const descriptor = readControl(project.stateDir);
+        const sameIdentity = before?.pid === descriptor?.pid && before?.pidSignature === descriptor?.pidSignature;
+        if (handoffTargetStopped(descriptor, (pid, expected) => processLiveness(pid, expected, () => sameIdentity ? signature : undefined))) {
+          handoffFailures.set(remote, { cause: "not running", at: Date.now() });
+          if (handoffStateGate(handoffCatchUpState, remote, "stopped")) log(`handoff catch-up of ${remote} skipped: its hub is not running`);
+          continue;
+        }
+        handoffStateGate(handoffCatchUpState, remote, "available");
+        if (!descriptor) continue; // handoffTargetStopped handles absence above
         if (!descriptor.features?.includes("task_handoff")) { handoffLog(remote, "too old for handoffs", `handoff catch-up of ${remote} skipped: its hub is too old for handoffs`); continue; }
         const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
         let answered = true;
@@ -5289,10 +5308,13 @@ export async function startDaemon(opts: DaemonOptions) {
   const handoffDescriptors = new Map<string, string>();
   const handoffWatch = (): void => {
     const changed = new Set<string>();
-    for (const remote of new Set(board.handoffOutboundOpen().filter(row => handoffCatchUpRow(row, Date.now())).map(row => row.remoteProject))) {
+    const targets = new Set(board.handoffOutboundOpen().filter(row => handoffCatchUpRow(row, Date.now())).map(row => row.remoteProject));
+    for (const target of handoffCatchUpState.keys()) if (!targets.has(target)) handoffCatchUpState.delete(target);
+    for (const target of handoffDescriptors.keys()) if (!targets.has(target)) handoffDescriptors.delete(target);
+    for (const remote of targets) {
       const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
       const descriptor = project && readControl(project.stateDir);
-      const seen = descriptor ? `${descriptor.instanceId ?? ""}|${descriptor.url}` : "";
+      const seen = descriptor ? `${descriptor.instanceId ?? ""}|${descriptor.url}|${descriptor.pid ?? ""}|${descriptor.pidSignature ?? ""}` : "";
       const before = handoffDescriptors.get(remote);
       handoffDescriptors.set(remote, seen);
       if (before !== undefined && before !== seen && seen) changed.add(remote);

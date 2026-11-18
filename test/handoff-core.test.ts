@@ -4,9 +4,24 @@ import { newEnvelope } from "../src/hub/envelope.ts";
 import { parseHandoffArgs } from "../src/cli/handoff-args.ts";
 import { HANDOFF_CONNECT_MS, HANDOFF_CONTROL_TIMEOUT_MS, HANDOFF_LOOKUP_CONNECT_MS, HANDOFF_LOOKUP_REQUEST_MS, HANDOFF_REQUEST_MS, controlRequestTimeout } from "../src/hub/control-client.ts";
 import { handoffAge, handoffConnectFailure, handoffLogGate, handoffReach, HANDOFF_APPROVED_GRACE_MS, HANDOFF_KEY, HANDOFF_LIMITS, HANDOFF_STATES_CHUNK, handoffCatchUpRow, handoffChunks, HandoffRefusal, type HandoffRefusalCode, checkTarget, handoffOutcomeUnknown, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
+import { handoffStateGate, handoffTargetStopped } from "../src/hub/handoff.ts";
 
 const refusal = (run: () => unknown): HandoffRefusal => { try { run(); } catch (error) { if (error instanceof HandoffRefusal) return error; throw error; } throw new Error("expected a refusal"); };
 const good = { project: "p_aaaa", title: "Raise the exact pin", class: "implement", detail: "to 0.16.0", paths: ["package.json", "bun.lock"], issue: 12 };
+
+test("#1550 stopped target requires absence or proven dead identity and logs only state changes", () => {
+  expect(handoffTargetStopped(undefined, () => "unknown")).toBe(true);
+  expect(handoffTargetStopped({ pid: 42, pidSignature: "old" }, (pid, signature) => pid === 42 && signature === "old" ? "gone" : "unknown")).toBe(true);
+  expect(handoffTargetStopped({ pid: 42 }, () => "live")).toBe(false);
+  expect(handoffTargetStopped({ pid: 42 }, () => "unknown")).toBe(false);
+  expect(handoffTargetStopped({ pid: 42 }, () => { throw new Error("unavailable"); })).toBe(false);
+  expect(handoffTargetStopped({}, () => "gone")).toBe(false);
+  const seen = new Map<string, string>();
+  expect(handoffStateGate(seen, "p", "stopped")).toBe(true);
+  expect(handoffStateGate(seen, "p", "stopped")).toBe(false);
+  expect(handoffStateGate(seen, "p", "available")).toBe(true);
+  expect(handoffStateGate(seen, "p", "stopped")).toBe(true);
+});
 
 test("a valid handoff parses to a bounded, normalised request", () => {
   expect(parseHandoff(good)).toEqual({ project: "p_aaaa", title: "Raise the exact pin", class: "implement", detail: "to 0.16.0", paths: ["package.json", "bun.lock"], issue: 12 });
