@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Record the requested review commit independently of cost plans and recover it from older bound spec reports for SDLC metrics (Refs #1555).
+
 - The delivery instruction tells peers to end with exactly `[FYI]` when nothing needs their answer, and to start progress notes with `[FYI]` (hub task 997, Refs #1550). Marker-only finals send no message.
 
 - Runtime pruning is no longer deferred for good once a machine has more than 128 recovery receipts (hub task 990, #1541). Each maintenance pass now keeps every open receipt, the newest 32 finished ones and up to 64 more finished ones naming a runtime a project or the live manager still selects, and removes older finished receipts with their `.runner.db` under the exclusive runner claim (no check-then-unlink; none while a recovery hold exists). The 128 bound stays as a safety ceiling, and its refusal names the open operation and `ahub recovery status|resume|abort`; `ahub doctor` and `docs/operations.md` state the same rule. Capture retention is unchanged.

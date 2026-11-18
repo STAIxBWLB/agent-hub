@@ -368,3 +368,13 @@ test("Board persists the head-bound spec report and internal ref binding across 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("#1555 a done spec report binds the submitted head rather than an earlier plan observation", async () => {
+  const f = fixture(), task = f.task(), submitted = "b".repeat(40);
+  f.board.update(task.id, "hub", "plan observed", {}, undefined, { planObservation: { repo: "fixture/project", pr: 1, head: HEAD, revision: 1, fingerprint: "x" } });
+  const done = await f.tasks.done("codex", task.id, "ready", { commit: submitted });
+  const entry = done.history.findLast(item => item.event === "done")!;
+  expect(entry.specReport?.head).toBe(submitted);
+  expect(entry.requestHead).toBe(submitted);
+  expect(f.inspected().at(-1)?.head).toBe(submitted);
+});
