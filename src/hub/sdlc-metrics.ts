@@ -14,7 +14,7 @@ export type BandTier = typeof BAND_TIERS[number];
 export interface MetricTask {
   id: number;
   private?: boolean;
-  /** `evidenceOnly` marks a code-scope verdict with no open finding (#852): it is not a rework round. `requestHead` is the head a `done` asked review for (reviewCost.head); `verdictHead` the head a verdict was bound to (reviewFindings.head). Compared for equality only, never printed. */
+  /** `evidenceOnly` marks a code-scope verdict with no open finding (#852): it is not a rework round. `requestHead` is the head a `done` asked review for (requestHead, with historical fallbacks); `verdictHead` the head a verdict was bound to (reviewFindings.head). Compared for equality only, never printed. */
   history: { at: number; event: string; requestHead?: string; verdictHead?: string; evidenceOnly?: true }[];
 }
 
@@ -84,7 +84,7 @@ const VERDICTS = ["approved", "changes_requested"];
  * Review rounds whose verdict was bound to a different head than the review was requested for: the head moved while the review ran.
  * Known only for a round with both heads recorded; a task with no such round is unknown, never 0. (A `done` after an `approved` is not
  * evidence: the board cannot produce one.)
- * ponytail: the request head is `reviewCost.head` (the commit the done named first) while a verdict's head prefers the lifecycle receipt's
+ * ponytail: the request head is the commit recorded for the done while a verdict's head prefers the lifecycle receipt's
  * `head`/`localHead` over `refs.commit` (`findingHead`), so a receipt head that differs from the commit can read as stale. Ceiling: a
  * spurious stale round for a task whose receipt head and commit disagree; the upgrade is one shared head rule for both sides.
  */
