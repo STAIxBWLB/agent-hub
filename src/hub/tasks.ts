@@ -9049,11 +9049,6 @@ export class Tasks {
     return [head, "The done counts once the files did not change between two calls and the others have stopped.", ...lines, facts?.text ?? ""].filter(Boolean).join("\n");
   }
 
-  /**
-   * #901: which check key produced this result, and how many citation keys the example citation check said were unresolved. The key is the hub's own selection (`Deps.checkKey`, the lookup
-   * `Deps.check` makes), never read from output; without that dependency it is not recorded. The count is read only from the example check's own last line (`citations: N declared keys, M missing`, scripts/check-citations.ts);
-   * a tail without that exact line, or with a number past the bound, records no count: unknown, never zero.
-   */
   /** Record an already-admitted isolated run without retaining its output. */
   recordCheckResult(receipt: import("./check-runner.ts").RunReceipt): void {
     const task = this.d.board.get(receipt.task);
@@ -9063,6 +9058,11 @@ export class Tasks {
       { checkKey: receipt.check, requestHead: receipt.sha }, task.history.length);
   }
 
+  /**
+   * #901: which check key produced this result, and how many citation keys the example citation check said were unresolved. The key is the hub's own selection (`Deps.checkKey`, the lookup
+   * `Deps.check` makes), never read from output; without that dependency it is not recorded. The count is read only from the example check's own last line (`citations: N declared keys, M missing`, scripts/check-citations.ts);
+   * a tail without that exact line, or with a number past the bound, records no count: unknown, never zero.
+   */
   private checkProvenance(task: Task, tail: string): Pick<HistoryEntry, "checkKey" | "missingKeys"> {
     let key: string | undefined;
     try { key = this.d.checkKey?.(task.class, task); } catch { key = undefined; }

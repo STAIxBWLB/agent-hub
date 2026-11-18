@@ -2894,8 +2894,8 @@ export async function startDaemon(opts: DaemonOptions) {
       checkBindings.set(receipt.run, { task: receipt.task, owner: receipt.owner, generation: receipt.generation, updated: receipt.updated, revision: receipt.revision });
       while (checkBindings.size > 200) checkBindings.delete(checkBindings.keys().next().value!);
       if (stopping || !currentCheck(receipt)) { await checkRunner.markStale(receipt.run); return; }
-      tasks.recordCheckResult(receipt);
       bus.publish(newEnvelope(HUB, sanitize(JSON.stringify(view)), { to: [receipt.owner], kind: "task", refs: { task: String(receipt.task), boundedCheck: receipt.run } }));
+      if (currentCheck(receipt)) tasks.recordCheckResult(receipt);
       log(`check ${receipt.run}: exit ${receipt.exit ?? "unknown"}, bytes ${receipt.output_bytes}`);
     },
   };
