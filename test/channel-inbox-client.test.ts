@@ -262,8 +262,8 @@ test("#493 actionable notices are not FYI in both session instruction modes, sen
   }
   const template = readFileSync(new URL("../templates/AGENTS.block.md", import.meta.url), "utf8");
   expect(template).toContain("Do not use `[FYI]`"); expect(template).toContain("no duplicate");
-  expect(template).toContain("end the turn with exactly `[FYI]`; it sends nothing");
-  expect(template).toContain("Start progress notes with `[FYI]`");
+  expect(template).toContain("If a message needs no answer, do no work and do not acknowledge it.");
+  expect(template).toContain("A peer whose final answer is shared (see Receiving) ends such a turn with exactly `[FYI]`, which sends nothing.");
   // #572 AC2: an implementer ends its turn after pushing; the reviewer, not the implementer, watches CI.
   expect(template).toContain("After pushing a PR, call `hub_task_done` stating the PR, its head commit and the CI state, then end your turn");
   expect(template).toContain("Do not wait for or poll CI");
