@@ -171,6 +171,20 @@ export function handoffLogGate(seen: Map<string, number>, key: string, now: numb
   return true;
 }
 
+/** Missing descriptors or proven-gone processes are stopped; uncertain identity keeps the existing probe path. */
+export function handoffTargetStopped(descriptor: { pid?: number; pidSignature?: string } | undefined, liveness: (pid: number, signature?: string) => "live" | "gone" | "unknown"): boolean {
+  if (!descriptor) return true;
+  if (!Number.isSafeInteger(descriptor.pid) || descriptor.pid! <= 0) return false;
+  try { return liveness(descriptor.pid!, descriptor.pidSignature) === "gone"; } catch { return false; }
+}
+
+/** Report only a change; the host prunes entries for targets no longer in its open handoffs. */
+export function handoffStateGate(seen: Map<string, string>, target: string, state: string): boolean {
+  if (seen.get(target) === state) return false;
+  seen.set(target, state);
+  return true;
+}
+
 /** What the target's own status descriptor says. A daemon that is not running, or does not know the handoff, is refused with the person's action. */
 export function checkTarget(project: RegisteredProject, descriptor: TargetDescriptor | undefined): void {
   if (!descriptor) throw new HandoffRefusal("not_running", `the hub of ${project.id} is not running; run \`ahub up\` in ${project.root}, then hand the task off again (handoffs are not queued)`);

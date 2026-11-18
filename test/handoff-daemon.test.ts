@@ -835,6 +835,32 @@ test("#734 AC6: --list shows each handoff's age and reachability, with the cause
   expect(body(await task(a.person, "hub_task_handoff_sync")).handoffs[0]).toMatchObject({ reach: "reachable" });
 }, 60_000);
 
+test("#1550 stopped target with a stale descriptor is never connected and logs once", async () => {
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000, handoffLogWindowMs: 1 } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" })).ok).toBe(true);
+  let connections = 0;
+  const decoy = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { connections++; return new Response("offline", { status: 503 }); } });
+  cleanup.push(() => decoy.stop(true));
+  const file = join(b.stateDir, "status.json"), original = readFileSync(file, "utf8");
+  const restore = holdStatus(b, status => ({ ...status, pid: 2_147_483_647, controlPort: decoy.port }));
+  try {
+    await task(a.person, "hub_task_handoff_sync");
+    await task(a.person, "hub_task_handoff_sync");
+    expect(connections).toBe(0);
+    expect(logOf(a).split("\n").filter(line => line.includes(`handoff catch-up of ${b.id} skipped: its hub is not running`))).toHaveLength(1);
+    expect(logOf(a)).not.toContain(`handoff catch-up of ${b.id} failed: no answer in time`);
+  } finally { restore(); writeFileSync(file, original); }
+  const recovered = body(await task(a.person, "hub_task_handoff_sync"));
+  expect(recovered.handoffs[0]).toMatchObject({ reach: "reachable" });
+  const downAgain = holdStatus(b, status => ({ ...status, pid: 2_147_483_647, controlPort: decoy.port }));
+  try {
+    await task(a.person, "hub_task_handoff_sync");
+    expect(connections).toBe(0);
+    expect(logOf(a).split("\n").filter(line => line.includes(`handoff catch-up of ${b.id} skipped: its hub is not running`))).toHaveLength(2);
+  } finally { downAgain(); writeFileSync(file, original); }
+});
+
 test("#734 AC6: a project the registry no longer holds shows moved, logs once, and is never asked", async () => {
   const { a, b } = await pair({ a: { handoffCatchUpMs: 400, handoffWatchMs: 3_600_000, handoffLogWindowMs: 3_600_000 } });
   const planner = await a.connect({ role: "tools", peer: "claude" });
