@@ -473,12 +473,22 @@ test("the timer consumes a board revision only for a pass that ran, and re-runs 
   } finally { db.close(); await daemon.stop(); rmSync(cwd, { recursive: true, force: true }); }
 });
 
-test("#1555 historical plan heads make stale review metrics known", () => {
+test("#1555 unbound historical plan heads do not make stale review metrics known", () => {
   const { board, tasks } = rig();
   const a = "a".repeat(40), b = "b".repeat(40);
   const t = board.propose("claude", { title: "old review", class: "implement" });
   board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
   board.update(t.id, "codex", "done", { state: "in_review" }, undefined, { planObservation: { repo: "o/r", pr: 1, head: a, revision: 1, fingerprint: "x" } });
+  board.update(t.id, "claude", "approved", { state: "approved" }, undefined, { reviewFindings: { head: b, items: [] } });
+  expect(tasks.sdlcMetrics("claude").metrics.stale_head_re_reviews).toMatchObject({ n: 0, unknown: 1, max: null });
+});
+
+test("#1555 a bound historical spec-report head provides stale-review evidence", () => {
+  const { board, tasks } = rig();
+  const a = "a".repeat(40), b = "b".repeat(40);
+  const t = board.propose("claude", { title: "old report", class: "implement" });
+  board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
+  board.update(t.id, "codex", "done", { state: "in_review" }, undefined, { specReport: { head: a, complete: true, errors: 0, unchanged: [], changed: [] }, specRefBinding: "0".repeat(64) });
   board.update(t.id, "claude", "approved", { state: "approved" }, undefined, { reviewFindings: { head: b, items: [] } });
   expect(tasks.sdlcMetrics("claude").metrics.stale_head_re_reviews).toMatchObject({ n: 1, unknown: 0, max: 1 });
 });

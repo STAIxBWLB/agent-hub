@@ -103,7 +103,7 @@ no-write detection. Ordinary shared tools and the local worker can publish where
 their role permits; isolated fresh-reviewer MCP keeps its exact two-tool contract.
 
 
-A commit-bound done records the requested review head independent of its cost plan. Historical metrics and research records fall back to the recorded cost head or plan observation; missing evidence stays unknown (#1555 AC1).
+A commit-bound done records the requested review head independent of its cost plan. Historical metrics and research records fall back to the recorded cost head or bound spec-report head on done entries; missing evidence stays unknown (#1555 AC1).
 
 `Tasks` mediates task proposals, planning, owner/reviewer changes, acceptance, completion and review. `Board` persists the rows, history and typed evidence in SQLite; transport, CLI and UI layers do not independently apply task transitions. The issue remains the change spec and GitHub remains authority for PR/check/tag facts. Separating these authorities prevents a chat claim or adapter callback from bypassing task policy ([#481](https://github.com/STAIxBWLB/agent-hub/issues/481)).
 

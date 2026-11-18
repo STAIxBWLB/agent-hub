@@ -6778,7 +6778,7 @@ export class Tasks {
     }
     const rows = this.d.board.list();
     const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), history: task.history.map(entry => ({ at: entry.at, event: entry.event,
-      ...((entry.requestHead ?? entry.reviewCost?.head ?? entry.planObservation?.head) ? { requestHead: entry.requestHead ?? entry.reviewCost?.head ?? entry.planObservation?.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
+      ...(entry.event === "done" && (entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head) ? { requestHead: entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
     const visibleIds = new Set(rows.filter(task => !this.isPii(task)).map(task => task.id));
     const byKind: Record<string, number> = {};
     for (const stall of this.stalled()) if (visibleIds.has(stall.task)) byKind[stall.cause.kind] = (byKind[stall.cause.kind] ?? 0) + 1;
@@ -9141,7 +9141,7 @@ export class Tasks {
     if (specInspection?.report?.head && !completedRefs.commit) completedRefs.commit = specInspection.report.head;
     if (specInspection?.report && specInspection.repo && !completedRefs.repo) completedRefs.repo = specInspection.repo;
     const storedRefs = { ...task.refs, ...completedRefs };
-    const requestedHead = completedRefs.commit ?? admission?.head ?? this.planObservation(task).planObservation?.head;
+    const requestedHead = completedRefs.commit ?? admission?.head ?? specInspection?.report?.head;
     const requestHead = requestedHead && /^[a-f0-9]{40}$/.test(requestedHead) ? requestedHead : undefined;
     if (specInspection) {
       if (asyncCheckCompletion) {
