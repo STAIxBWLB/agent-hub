@@ -86,17 +86,6 @@ test("#1550 several boundaries in one burst count once and produce no cooldown l
     await io(); peer.begin(); peer.finish();
     expect(calls).toBe(7);
     expect(readFileSync(join(stateDir, "hub.log"), "utf8").match(/snapshot unavailable: snapshot burst budget exhausted/g)).toHaveLength(1);
-  } finally { turns.close(); }
-    expect(readFileSync(join(stateDir, "hub.log"), "utf8").match(/snapshot unavailable: snapshot burst budget exhausted/g)).toHaveLength(1);
-    expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("inspect snapshots.enabled");
-    clock += SNAPSHOT_COOLDOWN_MS;
-    peer.begin(); await io(); expect(calls).toBe(4); peer.finish(); await io(); expect(calls).toBe(4);
-    clock += SNAPSHOT_COOLDOWN_MS; fail = false;
-    peer.begin(); await io(); writeFileSync(join(root, "file.txt"), "after\n"); peer.finish(); await io();
-    expect(calls).toBe(6);
-    const verified = new Turns(join(stateDir, "hub.db"), true);
-    try { expect(verified.list("kimi")[0]).toMatchObject({ changed: ["file.txt"] }); } finally { verified.close(); }
-    expect(readFileSync(join(stateDir, "hub.log"), "utf8").match(/snapshot unavailable: snapshot burst budget exhausted/g)).toHaveLength(2);
   } finally {
     await daemon?.stop();
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
