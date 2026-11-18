@@ -4772,7 +4772,7 @@ next actions").
   its own (that hub keeps running), stops a target hub it started and has not
   released (one an older coordinator started is stopped at that release's
   control protocol), moves that operation's
-  `restart.json` aside as `restart.abandoned.<hash>.json` and leaves any other
+  `restart.json` aside as `restart.abandoned.<hash>.json` (only the 5 newest released and abandoned copies are kept) and leaves any other
   hub running; only then is the operation recorded `cancelled` and the lock
   released. If it fails partway it keeps the lock, records what it did, and
   `resume` refuses until you run it again. Once a stop-and-archive is recorded,

@@ -247,7 +247,7 @@ import { crashPlan, lossNotice, openCrashNotices, readSessions, removeSessions, 
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
 import { soleWorktree, branchHeads, changedPaths, dirtySubmodules, submodulePaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, SnapshotCooldown, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
-import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
+import { archiveRestartSnapshot, compactRestartBus, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate, launcherOf } from "../cli/terminal-recovery.ts";
 import { TerminalLaunches, terminalOwnerReads } from "./terminal-launch.ts";
@@ -3638,6 +3638,7 @@ export async function startDaemon(opts: DaemonOptions) {
     turnFreeNow = undefined;
     scopes = new Map();
     progress.prune();
+    if (t.state === "approved" || t.state === "cancelled") { facts.closeTask(t.id); for (const store of worktreeFacts.values()) store.closeTask(t.id); } // #1556 T1: receipts end with the task
     factsOn(); // a PII task opening or closing switches tracking at once, not at the next boundary (issue #108)
     if (t.state !== "in_progress" || ownerWriteStarts.get(t.id)?.owner !== t.owner) ownerWriteStarts.delete(t.id);
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
@@ -11211,7 +11212,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sourceInstanceId: instanceId,
         operationId: op,
         committedAt: Date.now(),
-        bus: bus.snapshot(),
+        bus: compactRestartBus(bus.snapshot()),
         manualPaused: [...manualPaused],
         peers,
         integrity: integrity(),
