@@ -2386,7 +2386,7 @@
   "src/hub/snapshots.ts:HEAD_LOG_MAX_APPEND_BYTES:constant:HEAD_LOG_MAX_APPEND_BYTES=128 * 1024#0": "safety floor",
   "src/hub/snapshots.ts:HEAD_LOG_MAX_MOVES:constant:HEAD_LOG_MAX_MOVES=64#0": "safety floor",
   "src/hub/snapshots.ts:HEAD_LOG_TAIL_BYTES:constant:HEAD_LOG_TAIL_BYTES=4096#0": "safety floor",
-  "src/hub/snapshots.ts:SNAPSHOT_COOLDOWN_FAILURES:constant:SNAPSHOT_COOLDOWN_FAILURES=3#0": "operational",
+  "src/hub/snapshots.ts:SNAPSHOT_COOLDOWN_FAILURES:constant:SNAPSHOT_COOLDOWN_FAILURES=5#0": "operational",
   "src/hub/snapshots.ts:SNAPSHOT_COOLDOWN_MS:constant:SNAPSHOT_COOLDOWN_MS=10 * 60000#0": "operational",
   "src/hub/snapshots.ts:SNAPSHOT_TIMEOUT_MS:constant:SNAPSHOT_TIMEOUT_MS=10000#0": "operational",
   "src/hub/snapshots.ts:childTimeoutMs:inline:Math.max=1#0": "operational",

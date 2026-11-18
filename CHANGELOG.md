@@ -6,7 +6,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Open questions from a task's owner suspend its idle-owner ladder until settlement; the ladder then restarts from that time (hub task 994, Refs #1550).
 - Handoff catch-up skips targets whose control process is proven stopped and records that state once until it changes; a restart still triggers catch-up (hub task 995, Refs #1550).
-- After three consecutive exhausted snapshot bursts, routine boundaries skip capture for ten minutes and record unknown evidence; the next boundary retries (hub task 996, Refs #1550).
+- After five consecutive exhausted snapshot bursts, routine boundaries skip capture for ten minutes and record unknown evidence; the next boundary retries (hub task 996, Refs #1550).
 
 - The delivery instruction tells peers to end with exactly `[FYI]` when nothing needs their answer, and to start progress notes with `[FYI]` (hub task 997, Refs #1550). Marker-only finals send no message.
 

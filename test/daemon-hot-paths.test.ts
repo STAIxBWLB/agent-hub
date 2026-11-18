@@ -7,7 +7,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { mainCheckoutBranch } from "../src/hub/main-checkout.ts";
-import { headTree, repoOf, snapshot, SnapshotBudgetExceeded, Turns } from "../src/hub/snapshots.ts";
+import { headTree, repoOf, snapshot, SnapshotBudgetExceeded, SnapshotCooldown, Turns } from "../src/hub/snapshots.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -20,7 +20,7 @@ class FakePeer extends BasePeer {
   begin() { this.setState("busy"); }
   finish() { this.setState("idle"); }
 }
-async function fixture(tasks = 1, slow = false, linked = false) {
+async function fixture(tasks = 1, slow = false, linked = false, uncooled = false) {
   let root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-hot-path-")));
   const container = root;
   cleanup.push(() => rmSync(container, { recursive: true, force: true }));
@@ -43,6 +43,7 @@ async function fixture(tasks = 1, slow = false, linked = false) {
   const options: DaemonOptions = {
     cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     boundedTools: emulatedBoundedTools(),
+    ...(uncooled ? { snapshotCooldown: new (class extends SnapshotCooldown { override blocked() { return false; } override exhausted() { return false; } })() } : {}),
     checkoutBranch: (...args) => { checkoutReads++; return slow ? undefined : mainCheckoutBranch(...args); },
     config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] }, snapshots: { enabled: true, keep: 20 }, batch_ms: 0,
@@ -116,7 +117,7 @@ test("#576 real concurrent edits publish linearly in tasks, not one notice per t
 // The proof is ordering (answered before the producer finished its waves), which a starved runner cannot change. The old 1 s elapsed bound
 // measured the runner (idle 0.52 s, 17 of 20 failures with 64 CPU spinners on 4 cores), so the request timeout is only a hang guard.
 test("#576 status answers within its timeout while a longer slow-snapshot burst is still running", async () => {
-  const f = await fixture(8, true);
+  const f = await fixture(8, true, false, true);
   let reply: ReturnType<ControlClient["request"]> | undefined;
   f.onSnapshot(() => {
     if (reply) return;

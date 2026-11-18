@@ -26,8 +26,8 @@ export const budgetNow = (budget: SnapshotBudget): number => budget.now ? budget
 export class SnapshotBudgetExceeded extends Error {
   constructor() { super("snapshot burst budget exhausted; boundary evidence is unknown"); }
 }
-// ponytail: three consecutive exhausted bursts suspend a repository for ten minutes; an isolated capture worker is the upgrade path to avoiding this evidence-loss ceiling.
-export const SNAPSHOT_COOLDOWN_FAILURES = 3;
+// ponytail: five consecutive exhausted bursts suspend a repository for ten minutes; an isolated capture worker is the upgrade path to avoiding this evidence-loss ceiling.
+export const SNAPSHOT_COOLDOWN_FAILURES = 5;
 export const SNAPSHOT_COOLDOWN_MS = 10 * 60_000;
 
 /** In-memory, per-repository circuit breaker; a restart begins with no observations. */

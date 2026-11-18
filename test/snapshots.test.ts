@@ -12,16 +12,18 @@ test("#1550 snapshot cooldown is per repository, retries once, and resets after 
   const burst = (now: number) => ({ deadline: now, now: () => now });
   expect(cooldown.exhausted("a", burst(0))).toBe(false);
   expect(cooldown.exhausted("a", burst(1))).toBe(false);
-  expect(cooldown.exhausted("a", burst(2))).toBe(true);
-  expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS - 1)).toBe(true);
+  expect(cooldown.exhausted("a", burst(2))).toBe(false);
+  expect(cooldown.exhausted("a", burst(3))).toBe(false);
+  expect(cooldown.exhausted("a", burst(4))).toBe(true);
+  expect(cooldown.blocked("a", 4 + SNAPSHOT_COOLDOWN_MS - 1)).toBe(true);
   expect(cooldown.blocked("b", 2)).toBe(false);
-  expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
-  expect(cooldown.exhausted("a", burst(2 + SNAPSHOT_COOLDOWN_MS))).toBe(true);
+  expect(cooldown.blocked("a", 4 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
+  expect(cooldown.exhausted("a", burst(4 + SNAPSHOT_COOLDOWN_MS))).toBe(true);
   cooldown.reset("a");
-  expect(cooldown.exhausted("a", burst(2 + SNAPSHOT_COOLDOWN_MS))).toBe(false);
-  expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
+  expect(cooldown.exhausted("a", burst(4 + SNAPSHOT_COOLDOWN_MS))).toBe(false);
+  expect(cooldown.blocked("a", 4 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
   cooldown.reset("a");
-  expect(cooldown.exhausted("a", burst(3 + SNAPSHOT_COOLDOWN_MS))).toBe(false);
+  expect(cooldown.exhausted("a", burst(5 + SNAPSHOT_COOLDOWN_MS))).toBe(false);
   expect(cooldown.exhausted("a", burst(4 + SNAPSHOT_COOLDOWN_MS))).toBe(false);
 });
 test("#1550 repeated boundaries count once per repository and burst", () => {
@@ -32,6 +34,8 @@ test("#1550 repeated boundaries count once per repository and burst", () => {
   expect(cooldown.exhausted("a", burst)).toBe(false);
   expect(cooldown.blocked("a", 0)).toBe(false);
   expect(cooldown.exhausted("b", burst)).toBe(false);
+  expect(cooldown.exhausted("a", { ...burst })).toBe(false);
+  expect(cooldown.exhausted("a", { ...burst })).toBe(false);
   expect(cooldown.exhausted("a", { ...burst })).toBe(false);
   expect(cooldown.exhausted("a", { ...burst })).toBe(true);
   expect(cooldown.blocked("a", 0)).toBe(true);

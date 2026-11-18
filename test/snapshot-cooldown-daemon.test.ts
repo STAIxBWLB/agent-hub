@@ -36,7 +36,7 @@ test("#1550 cooldown skips unknown boundaries and retries without losing later e
     peer.begin(); await io(); peer.finish(); await io(); peer.begin(); await io();
     expect(calls).toBe(3);
     peer.finish(); await io(); peer.begin(); await io(); peer.finish(); await io();
-    expect(calls).toBe(3);
+    expect(calls).toBe(5);
     const turns = new Turns(join(stateDir, "hub.db"), true);
     try {
       const skipped = turns.list("kimi");
@@ -48,10 +48,10 @@ test("#1550 cooldown skips unknown boundaries and retries without losing later e
     expect(readFileSync(join(stateDir, "hub.log"), "utf8").match(/snapshot unavailable: snapshot burst budget exhausted/g)).toHaveLength(1);
     expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("inspect snapshots.enabled");
     clock += SNAPSHOT_COOLDOWN_MS;
-    peer.begin(); await io(); expect(calls).toBe(4); peer.finish(); await io(); expect(calls).toBe(4);
+    peer.begin(); await io(); expect(calls).toBe(6); peer.finish(); await io(); expect(calls).toBe(6);
     clock += SNAPSHOT_COOLDOWN_MS; fail = false;
     peer.begin(); await io(); writeFileSync(join(root, "file.txt"), "after\n"); peer.finish(); await io();
-    expect(calls).toBe(6);
+    expect(calls).toBe(8);
     const verified = new Turns(join(stateDir, "hub.db"), true);
     try { expect(verified.list("kimi")[0]).toMatchObject({ changed: ["file.txt"] }); } finally { verified.close(); }
     expect(readFileSync(join(stateDir, "hub.log"), "utf8").match(/snapshot unavailable: snapshot burst budget exhausted/g)).toHaveLength(2);
@@ -84,7 +84,11 @@ test("#1550 several boundaries in one burst count once and produce no cooldown l
     expect(calls).toBe(6);
     expect(readFileSync(join(stateDir, "hub.log"), "utf8")).not.toContain("snapshot unavailable: snapshot burst budget exhausted");
     await io(); peer.begin(); peer.finish();
-    expect(calls).toBe(7);
+    expect(calls).toBe(8);
+    await io(); peer.begin(); peer.finish();
+    expect(calls).toBe(10);
+    await io(); peer.begin(); peer.finish();
+    expect(calls).toBe(11);
     expect(readFileSync(join(stateDir, "hub.log"), "utf8").match(/snapshot unavailable: snapshot burst budget exhausted/g)).toHaveLength(1);
   } finally {
     await daemon?.stop();
