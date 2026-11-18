@@ -13193,6 +13193,7 @@ function controlWriteSpan(phase, fn) {
   }
   span.async = true;
   request.telemetry.recordSyncPrefix(span);
+  request.telemetry.followSpan(span);
   return Promise.resolve(result).then((value) => {
     request.telemetry.finishSpan(span);
     return value;
@@ -13412,6 +13413,23 @@ class ControlWriteTelemetry {
     request.phases.set(span.phase, prior + durationMs);
     if (!span.async && !span.prefixRecorded)
       this.rememberSyncInterval(span, endedAt);
+    else if (span.async && this.nextSampleAt !== undefined && endedAt - this.nextSampleAt >= CONTROL_WRITE_LOOP_DELAY_MS && !span.overlapRecorded) {
+      span.overlapRecorded = true;
+      this.rememberSyncInterval({ ...span, startedAt: Math.max(span.startedAt, this.nextSampleAt) }, endedAt);
+    }
+  }
+  followSpan(span) {
+    let last = this.readNow(), hopsLeft = MAX_PROBE_HOPS;
+    const hop = () => {
+      if (span.finished || span.request.settled || this.stopped || hopsLeft-- <= 0)
+        return;
+      const now = this.readNow();
+      if (now - last >= MIN_SYNC_PREFIX_MS)
+        this.rememberSyncInterval({ ...span, startedAt: last }, now);
+      last = now;
+      queueMicrotask(hop);
+    };
+    queueMicrotask(hop);
   }
   recordSyncPrefix(span) {
     if (span.finished || span.prefixRecorded || span.request.settled)
@@ -13542,7 +13560,7 @@ class ControlWriteTelemetry {
     return Math.round(bounded * 10) / 10;
   }
 }
-var CONTROL_WRITE_KINDS, CONTROL_WRITE_PHASES, CONTROL_WRITE_SLOW_MS = 1000, CONTROL_WRITE_LOOP_DELAY_MS = 250, CONTROL_WRITE_SAMPLE_MS = 100, CONTROL_WRITE_MAX_LINE_BYTES = 2048, CONTROL_WRITE_MAX_DURATION_MS = 86400000, CONTROL_WRITE_REQUEST_MAX_AGE_MS, MAX_ACTIVE_REQUESTS = 128, MAX_ACTIVE_SPANS = 256, MAX_RECENT_SPANS = 512, MAX_LOOP_SPANS = 8, MIN_SYNC_PREFIX_MS = 10, MAX_EMITS_PER_MINUTE = 60, RATE_LIMIT_MS = 1000, currentTrace, OPERATIONS;
+var CONTROL_WRITE_KINDS, CONTROL_WRITE_PHASES, CONTROL_WRITE_SLOW_MS = 1000, CONTROL_WRITE_LOOP_DELAY_MS = 250, CONTROL_WRITE_SAMPLE_MS = 100, CONTROL_WRITE_MAX_LINE_BYTES = 2048, CONTROL_WRITE_MAX_DURATION_MS = 86400000, CONTROL_WRITE_REQUEST_MAX_AGE_MS, MAX_ACTIVE_REQUESTS = 128, MAX_ACTIVE_SPANS = 256, MAX_RECENT_SPANS = 512, MAX_LOOP_SPANS = 8, MIN_SYNC_PREFIX_MS = 10, MAX_PROBE_HOPS = 4096, MAX_EMITS_PER_MINUTE = 60, RATE_LIMIT_MS = 1000, currentTrace, OPERATIONS;
 var init_control_write_trace = __esm(() => {
   CONTROL_WRITE_KINDS = [
     "hub_task_propose",
