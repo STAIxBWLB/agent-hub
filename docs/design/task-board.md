@@ -111,7 +111,7 @@ Owner, reviewer and planner are distinct responsibilities. A reservation or offe
 
 ## Selection and admission
 
-Cross-project handoff catch-up treats a missing control descriptor or a descriptor whose process identity is proven gone as stopped (#1550 AC2). It does not connect to that target, and reports the stopped state once until the target changes state. Unknown liveness is not proof of a stop. Descriptor changes still trigger catch-up when a target starts; live handoff delivery keeps its own path.
+Cross-project handoff catch-up treats a missing control descriptor or a descriptor whose process identity is proven gone as stopped (#1550 AC2). It does not connect to that target, and reports the stopped state once until the target changes state or the observing daemon restarts. Unknown liveness is not proof of a stop. Descriptor changes still trigger catch-up when a target starts; live handoff delivery keeps its own path.
 
 `routing.ts` selects candidates as a pure function over declared policy and current facts. `Tasks` applies admission and writes through the same selection rules used by route explanation. Roster, roles, privacy, availability, capability evidence and WIP remain explicit inputs, which prevents explanations and actual offers from becoming separate policies ([#525](https://github.com/STAIxBWLB/agent-hub/issues/525), [#418](https://github.com/STAIxBWLB/agent-hub/issues/418)).
 
