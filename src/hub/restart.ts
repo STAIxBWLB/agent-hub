@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { BusSnapshot } from "./bus.ts";
@@ -200,7 +200,7 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
       || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }
-  return s as RestartSnapshot;
+  return { ...s, bus: expandRestartBus(s.bus as BusSnapshot) } as RestartSnapshot;
 }
 
 /** Atomic, owner-readable recovery state. The file never carries delivery bodies outside this 0600 path. */
@@ -241,10 +241,56 @@ export function abandonRestartSnapshot(stateDir: string, operationId: string): v
   const archived = join(stateDir, `restart.abandoned.${createHash("sha256").update(operationId).digest("hex")}.json`);
   renameSync(restartPath(stateDir), archived);
   chmodSync(archived, 0o600);
+  pruneRestartArchives(stateDir);
 }
 
 /** Preserve an uncertain release outcome for manual reconciliation without making it authoritative on startup. */
 export function archiveRestartSnapshot(stateDir: string, operationId: string): void {
   renameSync(restartPath(stateDir), releasedRestartPath(stateDir, operationId));
   chmodSync(releasedRestartPath(stateDir, operationId), 0o600);
+  pruneRestartArchives(stateDir);
+}
+
+/** Recent archived copies kept per kind (#1546). ponytail: a fixed count; a configurable one can follow if a person needs more history. */
+export const RESTART_ARCHIVES_KEPT = 5;
+/** Terminal delivery bodies in a restart snapshot are cut to this many characters (#1546). */
+export const RESTART_TERMINAL_BODY = 256;
+
+/** Keep the newest `keep` restart.released.* and restart.abandoned.* files; best effort, never throws. */
+export function pruneRestartArchives(stateDir: string, keep = RESTART_ARCHIVES_KEPT): void {
+  for (const kind of ["released", "abandoned"]) {
+    try {
+      const files = readdirSync(stateDir).filter((f) => f.startsWith(`restart.${kind}.`) && f.endsWith(".json")).map((f) => {
+        const path = join(stateDir, f);
+        return { path, at: statSync(path).mtimeMs };
+      }).sort((a, b) => b.at - a.at || (a.path < b.path ? 1 : -1));
+      for (const old of files.slice(keep)) { try { unlinkSync(old.path); } catch { /* already gone */ } }
+    } catch { /* state dir unreadable: keep everything */ }
+  }
+}
+
+/**
+ * The bus as written to restart.json: `seen` is stored once (the nested journal's copy is emptied and restored from the
+ * top level on read), and completed, discarded and failed deliveries keep identity and state but only a cut body.
+ * Pending and in-flight deliveries are untouched. Both fields stay valid for an older hub, which reads an empty nested seen.
+ */
+export function compactRestartBus(bus: BusSnapshot): BusSnapshot {
+  const journal = bus.journal;
+  if (!journal) return bus;
+  const cut = (e: Envelope): Envelope => e.body.length > RESTART_TERMINAL_BODY ? { ...e, body: e.body.slice(0, RESTART_TERMINAL_BODY) } : e;
+  const terminal = new Set(["completed", "discarded", "failed"]);
+  return {
+    ...bus,
+    journal: {
+      ...journal,
+      bus: { ...journal.bus, seen: [] },
+      deliveries: journal.deliveries.map((d) => terminal.has(d.state) ? { ...d, originals: d.originals.map(cut), out: d.out.map(cut) } : d),
+    },
+  };
+}
+
+/** Undo the single-stored `seen` on read. */
+export function expandRestartBus(bus: BusSnapshot): BusSnapshot {
+  if (!bus.journal || bus.journal.bus.seen.length) return bus;
+  return { ...bus, journal: { ...bus.journal, bus: { ...bus.journal.bus, seen: bus.seen } } };
 }
