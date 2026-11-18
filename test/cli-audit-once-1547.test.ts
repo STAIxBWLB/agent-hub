@@ -53,5 +53,5 @@ test("an authority refusal from the daemon is audited as refused; the up-front r
   const f = fixture({ ok: false, authorityRefused: true, error: "planning requires a person or configured planner role" });
   const result = await run(f.root, ["task", "show", "99"]);
   expect(result.code).not.toBe(0);
-  expect(outcomes(f.stateDir)).toEqual(["run", "refused"]); // the up-front run audit is unchanged
+  expect(outcomes(f.stateDir).sort()).toEqual(["refused", "run"]); // the up-front run audit is unchanged; drain order is by file name, not time
 }, 20_000);
