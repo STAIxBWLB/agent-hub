@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.42.0
+bun add -g github:STAIxBWLB/agent-hub#v0.43.0
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -53,6 +53,12 @@ A project whose hub is stopped is upgraded without starting it: `ahub upgrade
 --to <version>` in it only retargets its runtime selection, and `ahub upgrade
 --all-stopped --to <version>` does that for every stopped project at once
 (`--dry-run` lists each one first).
+
+## Upgrading to 0.43.0
+
+The memory library moves to agent-mem 0.29.0, which stops a hub memory sync from holding the daemon for minutes. If you turned the periodic sync off while waiting for that fix, turn it back on with `ahub settings set memory.sync_interval_min 10 --now` (the key now applies without a restart), or delete the `memory` block you added to `.agenthub/config.local.json`. Each memory profile rebuilds its index once on first open, so the first memory call after the upgrade can be slower on a large home; a 0.42.0 hub keeps its own index file and can still share the home. `ahub upgrade --all-stopped --to 0.43.0` retargets every stopped project without starting its hub. Nothing else changes until you use it.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.43.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.42.0
 
