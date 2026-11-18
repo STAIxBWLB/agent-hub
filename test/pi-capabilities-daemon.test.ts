@@ -353,3 +353,31 @@ test("runner-off daemon starts with malformed receipt and exposes only its id as
   expect(JSON.stringify(status.isolatedChecks)).not.toContain("private malformed payload");
   expect(readFileSync(join(stateDir, "checks", `${bad}.json`), "utf8")).toBe("private malformed payload");
 });
+
+test("#1555 isolated results preserve current output and concurrent checks", async () => {
+  const f = await fixture(), t = f.task();
+  const one = JSON.parse((await f.call("codex", "hub_check_start", { id: t.id, check: "typecheck" })).text).run;
+  const two = JSON.parse((await f.call("codex", "hub_check_start", { id: t.id, check: "typecheck" })).text).run;
+  await f.complete(one, { tail: "private output marker", exit: 0 });
+  expect((await f.call("codex", "hub_check_result", { run: one })).ok).toBe(true);
+  await f.complete(two, { tail: "other marker", exit: 1 });
+  expect((await f.call("codex", "hub_check_result", { run: two })).ok).toBe(true);
+  const entries = f.board.get(t.id)!.history.filter(entry => entry.event.startsWith("check run "));
+  expect(entries.map(entry => entry.event)).toEqual(["check run passed", "check run failed"]);
+  expect(entries.every(entry => entry.checkKey === "typecheck" && entry.requestHead === "a".repeat(40) && entry.note === undefined)).toBe(true);
+  expect(JSON.stringify(f.board.get(t.id))).not.toContain("private output marker");
+  const three = JSON.parse((await f.call("codex", "hub_check_start", { id: t.id, check: "typecheck" })).text).run;
+  f.board.update(t.id, "user", "ordinary note", {});
+  await f.complete(three);
+  expect(f.records.get(three)?.status).toBe("stale");
+  expect(f.board.get(t.id)!.history.filter(entry => entry.event.startsWith("check run "))).toHaveLength(2);
+});
+
+test("#1555 timed out isolated checks record failure without output", async () => {
+  const f = await fixture(), t = f.task();
+  const { run } = JSON.parse((await f.call("codex", "hub_check_start", { id: t.id, check: "typecheck" })).text);
+  await f.complete(run, { timed_out: true, exit: 0, tail: "timeout marker" });
+  const entry = f.board.get(t.id)!.history.at(-1)!;
+  expect(entry).toMatchObject({ event: "check run failed", checkKey: "typecheck", requestHead: "a".repeat(40) });
+  expect(JSON.stringify(entry)).not.toContain("timeout marker");
+});

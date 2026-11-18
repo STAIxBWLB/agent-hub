@@ -301,3 +301,10 @@ test("the coverage list is bounded like the rest, and what a bound refused is co
   expect(second.evaluated().filter((entry) => entry.rule === "declared_overlap_without_integration")).toEqual([{ rule: "declared_overlap_without_integration", task: 410, revision: "1:none" }]);
   expect(second.observations()).toHaveLength(1);
 });
+
+test("#1555 isolated checks contribute invalidation but not the failure streak", () => {
+  const passed: readonly Item[] = ["proposed", "accepted", ["done", { deliverables: [RECORD] }], ["check run passed", { checkKey: "implement" }]];
+  expect(kinds({ tasks: [task(90, passed)], deliverables: [{ task: 90, checked: true, changed: [RECORD.id] }] })).toEqual(["deliverable_invalidated_check"]);
+  const failed: readonly Item[] = ["proposed", "accepted", ["check run failed", { checkKey: "implement" }], ["check run failed", { checkKey: "implement" }]];
+  expect(kinds({ tasks: [task(91, failed)] })).toEqual([]);
+});

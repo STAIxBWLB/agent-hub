@@ -9052,6 +9052,15 @@ export class Tasks {
    * `Deps.check` makes), never read from output; without that dependency it is not recorded. The count is read only from the example check's own last line (`citations: N declared keys, M missing`, scripts/check-citations.ts);
    * a tail without that exact line, or with a number past the bound, records no count: unknown, never zero.
    */
+  /** Record an already-admitted isolated run without retaining its output. */
+  recordCheckResult(receipt: import("./check-runner.ts").RunReceipt): void {
+    const task = this.d.board.get(receipt.task);
+    if (!task || task.state !== "in_progress" || task.owner !== receipt.owner) return;
+    const passed = receipt.exit === 0 && !receipt.timed_out && !receipt.cancelled && !receipt.interrupted;
+    this.d.board.update(task.id, HUB, passed ? "check run passed" : "check run failed", {}, undefined,
+      { checkKey: receipt.check, requestHead: receipt.sha }, task.history.length);
+  }
+
   private checkProvenance(task: Task, tail: string): Pick<HistoryEntry, "checkKey" | "missingKeys"> {
     let key: string | undefined;
     try { key = this.d.checkKey?.(task.class, task); } catch { key = undefined; }

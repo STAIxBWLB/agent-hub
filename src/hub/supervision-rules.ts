@@ -213,7 +213,7 @@ function invalidatedCheck(side: Side, measurement: DeliverableMeasurementFact | 
   let check: number | undefined;
   const recorded = new Set<string>();
   for (const [offset, entry] of side.window.entries()) {
-    if (entry.event === "check passed") check = offset;
+    if (entry.event === "check passed" || entry.event === "check run passed") check = offset;
     for (const record of (entry.deliverables ?? []) as readonly DeliverableRecord[]) recorded.add(record.id);
   }
   if (check === undefined || !recorded.size) return {};
