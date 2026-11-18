@@ -40,9 +40,13 @@ test("prompt round trip: chunks are aggregated into one reply that inherits the 
 
 test("#1550 ACP marker-only final sends no message", async () => {
   const { bus, said } = await setup({ env: { FAKE_ACP_DELAY_MS: "100" } });
+  const forward = peer!.onFinalAnswer!;
+  let final: string | undefined;
+  peer!.onFinalAnswer = (body, opts, complete) => { final = body; return forward(body, opts, complete); };
   bus.publish(newEnvelope("codex", "FINAL_FYI_TEST_ONLY", { to: ["kimi"] }));
   await until(() => peer!.state === "busy");
   await until(() => peer!.state === "idle");
+  expect(final).toBe("[FYI]");
   expect(said).toEqual([]);
 });
 
