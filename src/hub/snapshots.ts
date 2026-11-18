@@ -34,6 +34,7 @@ export const SNAPSHOT_COOLDOWN_MS = 10 * 60_000;
 export class SnapshotCooldown {
   private readonly states = new Map<string, { failures: number; until: number }>();
   private readonly observed = new WeakMap<SnapshotBudget, Set<string>>();
+  private readonly successful = new WeakMap<SnapshotBudget, Set<string>>();
   blocked(repository: string, now: number): boolean {
     const state = this.states.get(repository);
     return !!state && now < state.until;
@@ -54,6 +55,17 @@ export class SnapshotCooldown {
     }
     this.states.set(repository, state);
     return false;
+  }
+  success(repository: string, budget: SnapshotBudget): void {
+    let repositories = this.successful.get(budget);
+    if (!repositories) { repositories = new Set(); this.successful.set(budget, repositories); }
+    repositories.add(repository);
+  }
+  finish(budget: SnapshotBudget): void {
+    for (const repository of this.successful.get(budget) ?? []) {
+      if (!this.observed.get(budget)?.has(repository)) this.reset(repository);
+    }
+    this.successful.delete(budget);
   }
   reset(repository: string): void { this.states.delete(repository); }
 }

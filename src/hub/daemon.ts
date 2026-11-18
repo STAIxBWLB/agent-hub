@@ -4330,7 +4330,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const ms = Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
       const now = opts.snapshotClock;
       snapshotBudget = { deadline: (now ? now() : performance.now()) + ms, ...(now ? { now } : {}) };
-      setImmediate(() => { snapshotBudget = undefined; snapshotBudgetNoticed = false; });
+      const burst = snapshotBudget;
+      setImmediate(() => { snapshotCooldown.finish(burst); snapshotBudget = undefined; snapshotBudgetNoticed = false; });
     }
     return snapshotBudget;
   };
@@ -4353,7 +4354,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!routine || routine.skipped) return;
     if (routine.exhausted) {
       if (snapshotCooldown.exhausted(routine.repository, routine.budget)) log("snapshot unavailable: snapshot burst budget exhausted; boundary evidence is unknown; inspect snapshots.enabled");
-    } else snapshotCooldown.reset(routine.repository);
+    } else snapshotCooldown.success(routine.repository, routine.budget);
   };
   const snap = (what: string, capture = config.snapshots.enabled, peer?: string, routine = false): { tree?: string; head?: string | null; commit?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo; routine?: RoutineSnapshot } => {
     if (!capture) return { ms: 0 };

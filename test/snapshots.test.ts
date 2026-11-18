@@ -43,6 +43,22 @@ test("#1550 repeated boundaries count once per repository and burst", () => {
   expect(cooldown.exhausted("a", burst)).toBe(false);
   expect(cooldown.blocked("a", 0)).toBe(false);
 });
+test("#1550 a successful boundary cannot erase an exhausted burst", () => {
+  const cooldown = new SnapshotCooldown();
+  const budget = () => ({ deadline: 0, now: () => 0 });
+  for (let i = 0; i < 5; i++) {
+    const burst = budget();
+    cooldown.success("a", burst);
+    expect(cooldown.exhausted("a", burst)).toBe(i === 4);
+    cooldown.finish(burst);
+  }
+  expect(cooldown.blocked("a", 0)).toBe(true);
+  const retry = budget();
+  cooldown.success("a", retry);
+  cooldown.finish(retry);
+  expect(cooldown.blocked("a", 0)).toBe(false);
+  expect(cooldown.exhausted("a", budget())).toBe(false);
+});
 afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });
