@@ -12,7 +12,7 @@ Bun + TypeScript daemon that lets coding agents (Claude Code, Codex, Kimi Code, 
 
 ## Verifying your work
 
-Run this before pushing a PR or reporting a task complete, and paste the output. A failing test is fixed in the code, never by editing the test.
+Run this before pushing a PR or reporting a task complete, and paste the output. A test that already exists on main and fails is fixed in the code, never by editing the test. A test written in the same change may have its fixture corrected before it first passes, without weakening what it asserts.
 
 - `scripts/check.sh --changed` (healthy output ends with `check: OK (changed)` or `check: OK`; it runs typecheck, the bundle freshness check, npm tarball contents and the tests the change touches, and the full suite when the gate, package metadata or a shared fixture changed). The full `scripts/check.sh` is CI's gate on both OSes; run it locally only for a release, when CI cannot run, or when a reviewer asks.
 - Live legs that need real accounts are manual: `docs/smoke.md`, plus `bun scripts/smoke-acp.ts` and `bun scripts/smoke-codex.ts`.
