@@ -2,10 +2,24 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changedPaths, childTimeoutMs, dirtySubmodules, knownChangedPaths, parseDirtySubmodules, planUndo, repoOf, restore, snapshot, SnapshotBudgetExceeded, Turns, type Repo } from "../src/hub/snapshots.ts";
+import { changedPaths, childTimeoutMs, dirtySubmodules, knownChangedPaths, parseDirtySubmodules, planUndo, repoOf, restore, snapshot, SnapshotBudgetExceeded, SnapshotCooldown, SNAPSHOT_COOLDOWN_MS, Turns, type Repo } from "../src/hub/snapshots.ts";
 
 // issue #33: per-turn snapshots as git trees, and undo that refuses to destroy work it should keep.
 const cleanup: (() => void)[] = [];
+
+test("#1550 snapshot cooldown is per repository, retries once, and resets after success", () => {
+  const cooldown = new SnapshotCooldown();
+  expect(cooldown.exhausted("a", 0)).toBe(false);
+  expect(cooldown.exhausted("a", 1)).toBe(false);
+  expect(cooldown.exhausted("a", 2)).toBe(true);
+  expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS - 1)).toBe(true);
+  expect(cooldown.blocked("b", 2)).toBe(false);
+  expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
+  expect(cooldown.exhausted("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(true);
+  cooldown.reset("a");
+  expect(cooldown.exhausted("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
+  expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
+});
 afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });

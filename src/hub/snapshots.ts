@@ -26,6 +26,31 @@ export const budgetNow = (budget: SnapshotBudget): number => budget.now ? budget
 export class SnapshotBudgetExceeded extends Error {
   constructor() { super("snapshot burst budget exhausted; boundary evidence is unknown"); }
 }
+// ponytail: three consecutive exhausted boundaries suspend a repository for ten minutes; an isolated capture worker is the upgrade path to avoiding this evidence-loss ceiling.
+export const SNAPSHOT_COOLDOWN_FAILURES = 3;
+export const SNAPSHOT_COOLDOWN_MS = 10 * 60_000;
+
+/** In-memory, per-repository circuit breaker; a restart begins with no observations. */
+export class SnapshotCooldown {
+  private readonly states = new Map<string, { failures: number; until: number }>();
+  blocked(repository: string, now: number): boolean {
+    const state = this.states.get(repository);
+    return !!state && now < state.until;
+  }
+  /** True only when this observation starts a cooldown and needs one diagnostic. */
+  exhausted(repository: string, now: number): boolean {
+    const state = this.states.get(repository) ?? { failures: 0, until: 0 };
+    state.failures = Math.min(SNAPSHOT_COOLDOWN_FAILURES, state.failures + 1);
+    if (state.failures >= SNAPSHOT_COOLDOWN_FAILURES) {
+      state.until = now + SNAPSHOT_COOLDOWN_MS;
+      this.states.set(repository, state);
+      return true;
+    }
+    this.states.set(repository, state);
+    return false;
+  }
+  reset(repository: string): void { this.states.delete(repository); }
+}
 const SNAPSHOT_TIMEOUT_MS = 10_000;
 /**
  * The wall-clock timeout of one git child. Production (no `budget.now`): the remaining budget, between 1 ms and the 10 s ceiling, so a child is killed at the budget.
