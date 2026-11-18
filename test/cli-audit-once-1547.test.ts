@@ -30,8 +30,8 @@ function fixture(reply: Record<string, unknown>) {
     message(socket, value) {
       const message = JSON.parse(String(value));
       const send = (r: Record<string, unknown>) => socket.send(JSON.stringify({ rid: message.rid, ...r }));
-      if (message.t === "hello") return send({ t: "welcome", ok: true, cwd: root, projectId: "fixture", instanceId: "fixture", protocol: PROTOCOL, features: DAEMON_FEATURES });
-      if (message.t === "task") return send(reply);
+      if (message.t === "hello") { send({ t: "welcome", ok: true, cwd: root, projectId: "fixture", instanceId: "fixture", protocol: PROTOCOL, features: DAEMON_FEATURES }); return; }
+      if (message.t === "task") { send(reply); return; }
       send({ ok: false, error: "unexpected fixture request" });
     },
   } });
@@ -49,9 +49,9 @@ test("a domain error from the daemon leaves exactly one audit outcome, run, neve
   expect(outcomes(f.stateDir)).toEqual(["run"]);
 }, 20_000);
 
-test("an authority refusal from the daemon is audited as refused (#1547)", async () => {
+test("an authority refusal from the daemon is audited as refused; the up-front run record stays, so it is two records (#1547)", async () => {
   const f = fixture({ ok: false, authorityRefused: true, error: "planning requires a person or configured planner role" });
   const result = await run(f.root, ["task", "show", "99"]);
   expect(result.code).not.toBe(0);
-  expect(outcomes(f.stateDir)).toContain("refused");
+  expect(outcomes(f.stateDir)).toEqual(["run", "refused"]); // the up-front run audit is unchanged
 }, 20_000);
