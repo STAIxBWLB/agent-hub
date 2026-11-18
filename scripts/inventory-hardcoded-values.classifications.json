@@ -1643,6 +1643,7 @@
   "src/hub/execution-reference.ts:revision:inline:revision=128#0": "contract",
   "src/hub/facts.ts:EXPANDED_KEPT:constant:EXPANDED_KEPT=200#0": "operational",
   "src/hub/facts.ts:HASHED_BYTES:constant:HASHED_BYTES=64 * 1024 * 1024#0": "safety floor",
+  "src/hub/facts.ts:MAX_RECEIPTS_PER_PEER:constant:MAX_RECEIPTS_PER_PEER=256#0": "safety floor",
   "src/hub/facts.ts:MAX_BYTES:constant:MAX_BYTES=256 * 1024#0": "safety floor",
   "src/hub/facts.ts:MAX_LINES:constant:MAX_LINES=60#0": "operational",
   "src/hub/facts.ts:NAMES_SHOWN:constant:NAMES_SHOWN=20#0": "operational",
