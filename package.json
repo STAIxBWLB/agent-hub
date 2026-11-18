@@ -1,6 +1,6 @@
 {
   "name": "@staix/agent-hub",
-  "version": "0.42.0",
+  "version": "0.43.0",
   "description": "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   "license": "MIT",
   "type": "module",
@@ -17,7 +17,7 @@
     "bun": ">=1.4.4"
   },
   "dependencies": {
-    "@staix/agent-mem": "0.28.0"
+    "@staix/agent-mem": "0.29.0"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

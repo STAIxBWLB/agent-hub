@@ -211,3 +211,14 @@ test("#1290 review: a label resolves against the latest revision of a task, so a
   expect(labelTarget([bare, v2], [], 1)).toBe(v2);
   expect(labelTarget([v1, v2], [], 1, v2.createdAt!)).toBe(v2);
 });
+
+test("#1555 request heads prefer explicit evidence and fall back for older history", async () => {
+  const { evidenceEntry } = await import("../src/hub/research-record.ts");
+  const a = "a".repeat(40), b = "b".repeat(40), c = "c".repeat(40);
+  expect(evidenceEntry({ at: 1, event: "done", requestHead: a, reviewCost: { head: b }, specReport: { head: c } })?.requestHead).toBe(a);
+  expect(evidenceEntry({ at: 1, event: "done", reviewCost: { head: b }, specReport: { head: c } })?.requestHead).toBe(b);
+  expect(evidenceEntry({ at: 1, event: "done", specReport: { head: c } })?.requestHead).toBe(c);
+  expect(evidenceEntry({ at: 1, event: "done", planObservation: { head: c } })?.requestHead).toBeUndefined();
+  expect(evidenceEntry({ at: 1, event: "approved", requestHead: a, specReport: { head: c } })?.requestHead).toBeUndefined();
+  expect(evidenceEntry({ at: 1, event: "done" })?.requestHead).toBeUndefined();
+});

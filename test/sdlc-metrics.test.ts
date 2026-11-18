@@ -472,3 +472,43 @@ test("the timer consumes a board revision only for a pass that ran, and re-runs 
     expect(daemon.bandEvaluations()).toBe(1);
   } finally { db.close(); await daemon.stop(); rmSync(cwd, { recursive: true, force: true }); }
 });
+
+test("#1555 unbound historical plan heads do not make stale review metrics known", () => {
+  const { board, tasks } = rig();
+  const a = "a".repeat(40), b = "b".repeat(40);
+  const t = board.propose("claude", { title: "old review", class: "implement" });
+  board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
+  board.update(t.id, "codex", "done", { state: "in_review" }, undefined, { planObservation: { repo: "o/r", pr: 1, head: a, revision: 1, fingerprint: "x" } });
+  board.update(t.id, "claude", "approved", { state: "approved" }, undefined, { reviewFindings: { head: b, items: [] } });
+  expect(tasks.sdlcMetrics("claude").metrics.stale_head_re_reviews).toMatchObject({ n: 0, unknown: 1, max: null });
+});
+
+test("#1555 a bound historical spec-report head provides stale-review evidence", () => {
+  const { board, tasks } = rig();
+  const a = "a".repeat(40), b = "b".repeat(40);
+  const t = board.propose("claude", { title: "old report", class: "implement" });
+  board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
+  board.update(t.id, "codex", "done", { state: "in_review" }, undefined, { specReport: { head: a, complete: true, errors: 0, unchanged: [], changed: [] }, specRefBinding: "0".repeat(64) });
+  board.update(t.id, "claude", "approved", { state: "approved" }, undefined, { reviewFindings: { head: b, items: [] } });
+  expect(tasks.sdlcMetrics("claude").metrics.stale_head_re_reviews).toMatchObject({ n: 1, unknown: 0, max: 1 });
+});
+
+test("#1555 isolated checks apply only at the first done head and defer to completion checks", () => {
+  const a = "a".repeat(40), b = "b".repeat(40);
+  const sample = (events: [number, string, { requestHead?: string }][]) => taskSample(task(9, ...events));
+  expect(sample([[0, "check run failed", { requestHead: a }], [1, "check run passed", { requestHead: a }], [2, "done", { requestHead: a }]]).first_pass_check).toBe(1);
+  expect(sample([[0, "check run passed", { requestHead: a }], [1, "check run failed", { requestHead: b }], [2, "done", { requestHead: a }]]).first_pass_check).toBeNull();
+  expect(sample([[0, "check run failed", { requestHead: b }], [1, "done", { requestHead: a }]]).first_pass_check).toBeNull();
+  expect(sample([[0, "check run passed", { requestHead: a }], [1, "done", { requestHead: a }], [2, "check failed", {}]]).first_pass_check).toBe(0);
+  expect(sample([[0, "done", { requestHead: a }], [1, "check run passed", { requestHead: a }]]).first_pass_check).toBeNull();
+});
+
+test("#1555 the live metrics projection retains isolated run heads", () => {
+  const { board, tasks } = rig(), head = "c".repeat(40);
+  const t = board.propose("claude", { title: "isolated check", class: "implement" });
+  board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
+  board.update(t.id, "hub", "check run passed", {}, undefined, { checkKey: "typecheck", requestHead: head });
+  board.update(t.id, "codex", "done", { state: "in_review" }, undefined, { requestHead: head });
+  board.update(t.id, "claude", "approved", { state: "approved" });
+  expect(tasks.sdlcMetrics("claude").metrics.first_pass_check).toMatchObject({ n: 1, unknown: 0, rate: 1 });
+});

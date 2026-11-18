@@ -15,7 +15,7 @@ import type { DeliverableRecord } from "./deliverables.ts";
 export const SUPERVISION_RULES = ["repeated_failure", "deliverable_invalidated_check", "declared_overlap_without_integration"] as const;
 export type SupervisionRuleId = (typeof SUPERVISION_RULES)[number];
 /** Bump one rule when its trigger, refs or reason codes change meaning: a stored observation names the version it was made under. */
-export const SUPERVISION_RULE_VERSION: Readonly<Record<SupervisionRuleId, number>> = { repeated_failure: 1, deliverable_invalidated_check: 1, declared_overlap_without_integration: 1 };
+export const SUPERVISION_RULE_VERSION: Readonly<Record<SupervisionRuleId, number>> = { repeated_failure: 1, deliverable_invalidated_check: 2, declared_overlap_without_integration: 1 };
 
 /** The existing hub operation an observation names. T1 names one; nothing in this module runs it. */
 export const SUPERVISION_ACTIONS = ["escalate", "recheck", "request_integration"] as const;
@@ -213,7 +213,7 @@ function invalidatedCheck(side: Side, measurement: DeliverableMeasurementFact | 
   let check: number | undefined;
   const recorded = new Set<string>();
   for (const [offset, entry] of side.window.entries()) {
-    if (entry.event === "check passed") check = offset;
+    if (entry.event === "check passed" || entry.event === "check run passed") check = offset;
     for (const record of (entry.deliverables ?? []) as readonly DeliverableRecord[]) recorded.add(record.id);
   }
   if (check === undefined || !recorded.size) return {};
