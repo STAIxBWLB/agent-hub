@@ -46,6 +46,7 @@ test("#1550 cooldown skips unknown boundaries and retries without losing later e
       expect(events.filter(event => event.type === "conflict")).toEqual([]);
     } finally { turns.close(); }
     expect(readFileSync(join(stateDir, "hub.log"), "utf8").match(/snapshot unavailable: snapshot burst budget exhausted/g)).toHaveLength(1);
+    expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("inspect snapshots.enabled");
     clock += SNAPSHOT_COOLDOWN_MS;
     peer.begin(); await io(); expect(calls).toBe(4); peer.finish(); await io(); expect(calls).toBe(4);
     clock += SNAPSHOT_COOLDOWN_MS; fail = false;
