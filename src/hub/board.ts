@@ -485,8 +485,8 @@ export interface Task extends PlanningFields {
 
 /** Structured execution evidence, including legacy rows whose owner was later cleared. */
 export function taskHasStarted(task: Pick<Task, "history">): boolean {
-  return task.history.some(entry => ["accepted", "done", "done (checking)", "check passed", "check failed", "changes_requested", "approved", "reopened", "integration requested", "integrated"].includes(entry.event))
-    || task.history.some(entry => entry.event === "check run passed" || entry.event === "check run failed");
+  if (task.history.some(entry => entry.event === "check run passed" || entry.event === "check run failed")) return true;
+  return task.history.some(entry => ["accepted", "done", "done (checking)", "check passed", "check failed", "changes_requested", "approved", "reopened", "integration requested", "integrated"].includes(entry.event));
 }
 /** S9 return eligibility never erases the historical acceptance used by cancellation and undo. */
 export function taskHasWorkEvidence(task: Pick<Task, "history" | "refs" | "sdlc">): boolean {
