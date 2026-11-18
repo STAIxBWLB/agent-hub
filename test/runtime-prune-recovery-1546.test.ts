@@ -50,3 +50,23 @@ test("#1546 a real completed pass still holds the one-hour cooldown", async () =
   const read = new Database(join(h, "runtime-prune.db"), { readonly: true });
   try { expect((read.query("SELECT id FROM admission WHERE slot=1").get() as { id: string }).id).toBe("22222222-2222-4222-8222-222222222222"); } finally { read.close(); }
 });
+
+test("#1546 a project-locks.db another connection holds a write lock on makes the schedule return at once and record no admission", async () => {
+  const h = home(); mkdirSync(join(h, "recovery"));
+  const file = join(h, "recovery", "project-locks.db");
+  const holder = new Database(file, { create: true });
+  holder.run("CREATE TABLE project_locks (project_root TEXT PRIMARY KEY, operation_id TEXT NOT NULL)");
+  chmodSync(file, 0o600);
+  holder.run("BEGIN EXCLUSIVE");
+  try {
+    const { anyRecoveryHold } = await import("../src/hub/recovery-store.ts");
+    const started = performance.now();
+    expect(anyRecoveryHold(h, 0)).toBe(true); // busy is a hold
+    expect(performance.now() - started).toBeLessThan(500);
+    const before = performance.now();
+    scheduleRuntimeCapturePrune(h);
+    await settle();
+    expect(admissionRows(h)).toBe(0);
+    expect(performance.now() - before).toBeLessThan(1500);
+  } finally { holder.run("ROLLBACK"); holder.close(); }
+});

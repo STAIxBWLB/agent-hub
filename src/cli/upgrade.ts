@@ -660,12 +660,12 @@ export function guardedRecoveryDriver(driver: RecoveryDriver, operation: () => R
   };
 }
 
-/** Resumable state machine. Driver actions are preceded by receipts and followed by live readback. */
 /** #1546: a start that ran while this operation held its lock scheduled nothing; schedule runtime maintenance now that the lock is released. */
 function pruneAfterRelease(home: string): void {
   try { scheduleRuntimeCapturePrune(home); } catch { /* maintenance never changes a recovery outcome */ }
 }
 
+/** Resumable state machine. Driver actions are preceded by receipts and followed by live readback. */
 export async function runRecovery(id: string, driver: RecoveryDriver, home = hubHome(), idleTimeoutMs = 600_000): Promise<RecoveryOperation> {
   // Read once to validate the selector, then claim the runner before trusting any
   // mutable phase. A concurrent runner may have completed the operation meanwhile.

@@ -4,7 +4,7 @@ import { isAbsolute, join, normalize } from "node:path";
 import { processLiveness } from "../pi/process-signature.ts";
 import { hubHome } from "./project.ts";
 import { REGISTRY_DB_BUSY_TIMEOUT_MS } from "./registry.ts";
-import { RETAINED_SELECTED_RECEIPTS, RETAINED_TERMINAL_RECEIPTS, RUNTIME_PRUNE_INTERVAL_MS } from "./runtime-capture-prune.ts";
+import { RECOVERY_DEFERRAL, RETAINED_SELECTED_RECEIPTS, RETAINED_TERMINAL_RECEIPTS, RUNTIME_PRUNE_INTERVAL_MS } from "./runtime-capture-prune.ts";
 
 export interface RuntimePruneHealthCheck { ok: boolean | undefined; name: string; detail: string }
 const MAX_LEDGER_BYTES = 1024 * 1024, MAX_OUTCOME_BYTES = 16 * 1024;
@@ -64,7 +64,7 @@ function admissionHealth(file: string): LedgerHealth {
       || !Number.isSafeInteger(outcome.removed) || (outcome.removed as number) < 0 || !Array.isArray(outcome.quarantined) || outcome.quarantined.length > MAX_QUARANTINES
       || outcome.quarantined.some(value => typeof value !== "string" || value.length > 4096 || isAbsolute(value) || normalize(value) !== value || value.split(/[\\/]/).some(part => part === ".."))
       || outcome.deferred !== undefined && (typeof outcome.deferred !== "string" || Buffer.byteLength(outcome.deferred) > 512)) throw new Error("invalid completed outcome");
-    if (typeof outcome.deferred === "string" && /recovery coordination is present/.test(outcome.deferred) && !outcome.quarantined.length) {
+    if (typeof outcome.deferred === "string" && RECOVERY_DEFERRAL.test(outcome.deferred) && !outcome.quarantined.length) {
       // #1546: a pass that only found recovery coordination present did nothing and is retried after the lock is released: not a failure.
       return { checks: [issue("maintenance was deferred while recovery coordination was present; it is scheduled again after the recovery lock is released", true)], active: false };
     }

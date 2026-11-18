@@ -62,7 +62,7 @@ function projectLocksExist(file: string): boolean {
     return true;
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
-function projectLocks(home: string, create = false): Database | undefined {
+function projectLocks(home: string, create = false, busyTimeoutMs = RUNNER_DB_BUSY_TIMEOUT_MS): Database | undefined {
   const file = projectLocksPath(home);
   if (!projectLocksExist(file)) {
     if (!create) return undefined;
@@ -84,7 +84,7 @@ function projectLocks(home: string, create = false): Database | undefined {
   let db: Database | undefined;
   try {
     db = new Database(file, create ? { readwrite: true, create: false } : { readonly: true, create: false });
-    db.run(`PRAGMA busy_timeout = ${RUNNER_DB_BUSY_TIMEOUT_MS}`);
+    db.run(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
     if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_locks'").get()) throw projectLockError();
     return db;
   } catch (error) { db?.close(); if (isDatabaseBusy(error)) throw error; throw projectLockError(); }
@@ -283,11 +283,15 @@ export function claimRunner(id: string, home = hubHome()): () => void {
   };
 }
 
-/** True when any machine or project recovery hold exists, or the coordination state cannot be read: unknown is held. */
-export function anyRecoveryHold(home = hubHome()): boolean {
+/**
+ * True when any machine or project recovery hold exists, or the coordination state cannot be read: unknown is held.
+ * `busyTimeoutMs` bounds how long a locked project-locks.db may block the caller: a startup path passes 0 so a busy database is a hold,
+ * never a wait on the event loop (#1546).
+ */
+export function anyRecoveryHold(home = hubHome(), busyTimeoutMs = RUNNER_DB_BUSY_TIMEOUT_MS): boolean {
   try {
     if (legacyRecoveryLock(home)) return true;
-    const db = projectLocks(home);
+    const db = projectLocks(home, false, busyTimeoutMs);
     if (!db) return false;
     try { return !!db.query("SELECT 1 FROM project_locks LIMIT 1").get(); } finally { db.close(); }
   } catch { return true; }
