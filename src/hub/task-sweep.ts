@@ -50,7 +50,7 @@ export function taskSweepConfig(input: unknown): TaskSweepConfig {
 }
 
 /** Pure time/kind ladder; Tasks decides whether the responsible peer is available. */
-export function nextSweep(task: Task, config: TaskSweepConfig, now: number, ready = true): SweepRecord | undefined {
+export function nextSweep(task: Task, config: TaskSweepConfig, now: number, ready = true, questionWait?: { open: boolean; settled?: number }): SweepRecord | undefined {
   if (!config.enabled || !Number.isFinite(now)) return undefined;
   // #1176: a person-run leg waits on the person, so no idle step ever escalates it to an agent.
   if (task.needsPerson) return undefined;
@@ -61,7 +61,10 @@ export function nextSweep(task: Task, config: TaskSweepConfig, now: number, read
   let activity = task.history.length - 1;
   while (activity >= 0 && (task.history[activity]?.sweep || task.history[activity]?.event === "memory reference started")) activity--;
   let at = task.history[activity]?.at ?? task.created;
+  let questionSettled: number | undefined;
   if (kind === "idle-owner") {
+    if (questionWait?.open) return undefined;
+    if (questionWait?.settled !== undefined && questionWait.settled > at) { questionSettled = questionWait.settled; at = questionSettled; }
     // #1454: a pending wait suspends the ladder; once it passes, the ladder restarts from `until`, not from the activity before it.
     const wait = taskWait(task);
     if (wait) {
@@ -71,7 +74,8 @@ export function nextSweep(task: Task, config: TaskSweepConfig, now: number, read
   }
   const threshold = kind === "ready-unassigned" ? config.ready_min ?? 60 : kind === "unaccepted-assignment" ? config.unaccepted_min : kind === "idle-owner" ? config.idle_min : config.review_min;
   if (now - at < threshold * 60_000) return undefined;
-  const previous = task.history.flatMap((h) => h.sweep?.kind === kind && h.sweep.activity === activity ? [h.sweep] : []).at(-1);
+  let previous = task.history.flatMap((h) => h.sweep?.kind === kind && h.sweep.activity === activity ? [h.sweep] : []).at(-1);
+  if (questionSettled !== undefined && previous && previous.at <= questionSettled) previous = undefined;
   if (previous && (previous.step === 3 || now - previous.at < config.ladder_min * 60_000)) return undefined;
   return { kind, activity, step: previous ? (previous.step + 1) as 2 | 3 : 1, at: now };
 }

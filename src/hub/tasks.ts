@@ -167,6 +167,8 @@ export interface AuditView extends AuditSummary {
   notUpdated?: string[];
 }
 export interface TasksDeps {
+  /** Timing-only owner question evidence for the idle-owner ladder. */
+  ownerQuestionWait?: (task: number, peer: PeerId) => { open: boolean; settled?: number } | undefined;
   /** Private host-owned probe ledger and fixture ports. No configuration, wire or model-selected runner. */
   guidanceProbes?: {
     store: GuidanceProbeStore;
@@ -974,7 +976,8 @@ export class Tasks {
       for (const task of this.d.board.list()) {
         if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) break;
         if (!task.owner && this.personUnassigned(task)) continue;
-        const finding = nextSweep(task, config, now, this.waitsFor(task).length === 0 && !plannedStartPending(task, now));
+        const questionWait = task.state === "in_progress" && task.owner ? this.d.ownerQuestionWait?.(task.id, task.owner) : undefined;
+        const finding = nextSweep(task, config, now, this.waitsFor(task).length === 0 && !plannedStartPending(task, now), questionWait);
         if (!finding || this.waitsFor(task).length || this.isChecking(task.id) || this.silentFor(task.id)) continue;
         if (finding.kind === "ready-unassigned") {
           this.d.board.update(task.id, HUB, "idle sweep", {}, undefined, { sweep: finding });
