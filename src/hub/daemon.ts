@@ -3638,6 +3638,7 @@ export async function startDaemon(opts: DaemonOptions) {
     turnFreeNow = undefined;
     scopes = new Map();
     progress.prune();
+    if (t.state === "approved" || t.state === "cancelled") { facts.closeTask(t.id); for (const store of worktreeFacts.values()) store.closeTask(t.id); } // #1556 T1: receipts end with the task
     factsOn(); // a PII task opening or closing switches tracking at once, not at the next boundary (issue #108)
     if (t.state !== "in_progress" || ownerWriteStarts.get(t.id)?.owner !== t.owner) ownerWriteStarts.delete(t.id);
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
