@@ -226,6 +226,7 @@ Live checks that still need a real account or a person are listed in the
 
 Coding agents that work on this repository follow [`AGENTS.md`](AGENTS.md) and
 [`docs/agent-notes/`](docs/agent-notes/).
+The managed agent guidance explains the marker-only no-reply path for a delivery that needs no answer (#1550).
 
 ## Origin
 

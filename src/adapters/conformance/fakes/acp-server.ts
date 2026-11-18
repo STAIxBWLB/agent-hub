@@ -196,7 +196,8 @@ async function prompt(id: number, text: string) {
   await sleep(delay);
   const items = text.split('[agent-hub message from "').length - 1;
   const memo = text.includes("Shared project memory") ? " +memory" : "";
-  for (const part of ["echo: ", text.split("\n").at(-1)! + verdict + (items > 1 ? ` (${items} items)` : "") + memo]) {
+  const parts = text.includes("FINAL_FYI_TEST_ONLY") ? ["[FYI]"] : ["echo: ", text.split("\n").at(-1)! + verdict + (items > 1 ? ` (${items} items)` : "") + memo];
+  for (const part of parts) {
     send({
       jsonrpc: "2.0",
       method: "session/update",

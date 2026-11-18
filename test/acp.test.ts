@@ -38,6 +38,18 @@ test("prompt round trip: chunks are aggregated into one reply that inherits the 
   expect(peer!.state).toBe("idle");
 });
 
+test("#1550 ACP marker-only final sends no message", async () => {
+  const { bus, said } = await setup({ env: { FAKE_ACP_DELAY_MS: "100" } });
+  const forward = peer!.onFinalAnswer!;
+  let final: string | undefined;
+  peer!.onFinalAnswer = (body, opts, complete) => { final = body; return forward(body, opts, complete); };
+  bus.publish(newEnvelope("codex", "FINAL_FYI_TEST_ONLY", { to: ["kimi"] }));
+  await until(() => peer!.state === "busy");
+  await until(() => peer!.state === "idle");
+  expect(final).toBe("[FYI]");
+  expect(said).toEqual([]);
+});
+
 test("correlated ACP delivery reports acceptance before completion and ignores a late cancelled result", async () => {
   class ReceiptPeer extends AcpPeer {
     expireWatchdog(): void { this.onWatchdog(); }

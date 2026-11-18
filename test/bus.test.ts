@@ -49,6 +49,12 @@ class NativeFakePeer extends BasePeer {
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
+test("#1550 the first delivery explains marker-only completion and progress notes", () => {
+  const prompt = renderDigest([newEnvelope("claude", "status")], false);
+  expect(prompt).toContain("end your turn with exactly [FYI]; it sends nothing");
+  expect(prompt).toContain("Start progress notes with [FYI]");
+});
+
 for (const paused of [false, true]) test(`quota metadata preserves poison attempts unless the journal-less peer is paused: ${paused} (#306)`, async () => {
   const bus = new Bus({ batchMs: 0 });
   const peer = new FakePeer("kimi");
