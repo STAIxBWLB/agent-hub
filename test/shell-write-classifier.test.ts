@@ -6,10 +6,14 @@ const k = (c: string) => classifyShellWrite(c).kind;
 test("writes", () => {
   for (const c of ["sed -i 's/a/b/' f.ts", "perl -pi -e 's/a/b/' f", "awk -i inplace '{print}' f", "echo x > f", "echo x >> f", "echo x | tee f", "dd if=a of=f", "cp a f", "mv a f", "patch -p1 f", "git apply x.diff"])
     expect([c, k(c)]).toEqual([c, "write"]);
+  expect(classifyShellWrite("echo hi>f.ts")).toEqual({ kind: "write", targets: ["f.ts"] });
+  expect(classifyShellWrite("sed -i '' 's/a/b/' f.ts")).toEqual({ kind: "write", targets: ["f.ts"] });
+  expect(classifyShellWrite("cat <<EOF > out.ts\na > b\nEOF")).toEqual({ kind: "write", targets: ["out.ts"] });
+  expect(k("sed -i -e 's/a/b/' f.ts")).toBe("unknown");
   expect(k("python3 -c \"open('f','w').write('x')\"")).toBe("unknown");
 });
 test("not writes", () => {
-  for (const c of ["bun test 2>&1", "ls > /dev/null", "grep '>' src/a.ts", "grep -rn \"a > b\" .", "cat <<EOF > /tmp/x\nhi\nEOF", "git diff", "git apply --check x.diff", "sed -n 1,5p f"])
+  for (const c of ["bun test 2>&1", "ls > /dev/null", "grep '>' src/a.ts", "grep -rn \"a > b\" .", "cat <<EOF > /tmp/x\nhi\nEOF", "git diff", "git apply --check x.diff", "cat <<EOF > /tmp/x\na > b\nEOF", "cat <<'EOF'\necho hi>g.ts\nEOF", "sed -n 1,5p f"])
     expect([c, k(c)]).toEqual([c, "read"]);
 });
 test("receipts bounded, evicted on close, not persisted", () => {

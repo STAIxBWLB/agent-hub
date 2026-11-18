@@ -98,11 +98,26 @@ function words(cmd: string): string[] | undefined {
     if (c === "'" || c === '"') { q = c; cur += c; continue; }
     if (/\s/.test(c)) { if (cur) out.push(cur), (cur = ""); continue; }
     if (c === "`" || c === "$") return undefined; // substitution: not guessed
+    if (c === ">" && cur && !/^\d+$/.test(cur) && !/[>&]$/.test(cur)) { out.push(cur); cur = ""; } // `echo hi>f`: the redirection is its own word
     cur += c;
   }
   if (q) return undefined;
   if (cur) out.push(cur);
   return out;
+}
+
+/** Remove heredoc bodies (their lines are data, not commands); the start line stays so its redirection counts. */
+function stripHeredocs(command: string): string {
+  const lines = command.split("\n"), out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    out.push(line);
+    const m = /<<(-?)\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(line);
+    if (!m || /<<</.test(line)) continue;
+    const word = (m[2] ?? m[3] ?? m[4])!;
+    while (++i < lines.length) { const l = lines[i]!; if ((m[1] ? l.replace(/^\t+/, "") : l) === word) break; }
+  }
+  return out.join("\n");
 }
 
 /**
@@ -112,7 +127,7 @@ function words(cmd: string): string[] | undefined {
 export function classifyShellWrite(command: string): ShellWriteClass {
   const targets: string[] = [];
   let unknown = false;
-  for (const part of command.split(/\n|&&|\|\||;|\|(?!\|)/)) {
+  for (const part of stripHeredocs(command).split(/\n|&&|\|\||;|\|(?!\|)/)) {
     const w = words(part);
     if (!w) { unknown = true; continue; }
     if (w.some((x) => x.startsWith("<<"))) { const i = w.findIndex((x) => x.startsWith("<<")); w.splice(i, w[i] === "<<" || w[i] === "<<-" ? 2 : 1); }
@@ -128,7 +143,11 @@ export function classifyShellWrite(command: string): ShellWriteClass {
     const [c, ...rest] = head;
     const files = rest.filter((x) => !x.startsWith("-")).map(unq);
     if (!c) continue;
-    if (c === "sed" && rest.some((x) => /^-[a-zA-Z]*i/.test(x) || x.startsWith("--in-place"))) targets.push(...files.slice(1));
+    if (c === "sed" && rest.some((x) => /^-[a-zA-Z]*i/.test(x) || x.startsWith("--in-place"))) {
+      // -e/-f/--expression make every positional a file; an unusual suffix form is not guessed: unknown, never a wrong target.
+      if (rest.some((x) => /^-[a-zA-Z]*[ef]/.test(x) || x.startsWith("--expression") || x.startsWith("--file"))) unknown = true;
+      else targets.push(...files.filter((x) => x !== "").slice(1));
+    }
     else if (c === "perl" && rest.some((x) => /^-[a-zA-Z]*i/.test(x))) targets.push(...files.slice(1));
     else if (c === "awk" && rest.includes("inplace") && rest.includes("-i")) targets.push(...files.slice(1).filter((x) => x !== "inplace"));
     else if (c === "tee") targets.push(...files);
