@@ -24,8 +24,8 @@ const MAX_ACTIVE_SPANS = 256;
 const MAX_RECENT_SPANS = 512;
 const MAX_LOOP_SPANS = 8;
 const MIN_SYNC_PREFIX_MS = 10;
-/** Microtask turns a span is followed for after its first await: bounds both the cost and the memory of the follow-up probe (#1545). */
-const MAX_PROBE_HOPS = 4096;
+/** Microtask hops one request may spend following its async spans after their first await, shared by all of them: bounds the loop work this telemetry adds (#1545). */
+const MAX_REQUEST_HOPS = 16;
 const MAX_EMITS_PER_MINUTE = 60;
 const RATE_LIMIT_MS = 1_000;
 const RATE_KEYS = ["slow", "loop"] as const;
@@ -53,6 +53,7 @@ interface RequestTrace {
   phaseOrder: ControlWritePhase[];
   settled: boolean;
   privacySuppressed: boolean;
+  hopsLeft: number;
 }
 interface SpanTrace {
   id?: number;
@@ -62,7 +63,8 @@ interface SpanTrace {
   async: boolean;
   finished: boolean;
   prefixRecorded: boolean;
-  overlapRecorded?: boolean;
+  /** Loop turn the span began in (see turn): a span that finishes in the same turn never let the loop go idle. */
+  turn: number;
 }
 interface SpanInterval {
   kind: ControlWriteKind;
@@ -162,6 +164,10 @@ export class ControlWriteTelemetry {
   private timer: ReturnType<typeof setInterval> | undefined;
   private nextSampleAt: number | undefined;
   private lastNow = 0;
+  private hops = 0;
+  /** Counts event-loop turns (one setImmediate marker, only while spans are being traced). */
+  private turn = 0;
+  private turnPending = false;
   private stopped = false;
   private completedRequests = 0;
   private expiredRequests = 0;
@@ -202,7 +208,7 @@ export class ControlWriteTelemetry {
     if (!inputVisible) return fn();
     const request: RequestTrace = {
       telemetry: this, metadata: safeMetadata, privacyCurrent,
-      startedAt: now, phases: new Map(), phaseOrder: [], settled: false, privacySuppressed: false,
+      startedAt: now, phases: new Map(), phaseOrder: [], settled: false, privacySuppressed: false, hopsLeft: MAX_REQUEST_HOPS,
       logPrivacy: () => false,
     };
     request.logPrivacy = () => !request.privacySuppressed && this.privateNow(request.privacyCurrent);
@@ -302,7 +308,8 @@ export class ControlWriteTelemetry {
   }
 
   beginSpan(request: RequestTrace, phase: ControlWritePhase): SpanTrace {
-    const span: SpanTrace = { request, phase, startedAt: this.readNow(), async: false, finished: false, prefixRecorded: false };
+    if (!this.turnPending && !this.stopped) { this.turnPending = true; setImmediate(() => { this.turn++; this.turnPending = false; }).unref?.(); }
+    const span: SpanTrace = { request, phase, startedAt: this.readNow(), async: false, finished: false, prefixRecorded: false, turn: this.turn };
     if (this.spans.size >= this.maxActiveSpans) { this.droppedSpans++; return span; }
     span.id = this.nextSpanId++;
     this.spans.set(span.id, span);
@@ -321,30 +328,9 @@ export class ControlWriteTelemetry {
     if (!request.phaseOrder.includes(span.phase)) request.phaseOrder.push(span.phase);
     request.phases.set(span.phase, prior + durationMs);
     if (!span.async && !span.prefixRecorded) this.rememberSyncInterval(span, endedAt);
-    // A span that settles after the probe was due, with the probe still not run, overlapped the blocked window: keep that overlap for the
-    // delayed probe (it would otherwise be deleted unseen). Overlap is evidence of presence, not proof of cause.
-    else if (span.async && this.nextSampleAt !== undefined && endedAt - this.nextSampleAt >= CONTROL_WRITE_LOOP_DELAY_MS && !span.overlapRecorded) {
-      span.overlapRecorded = true;
-      this.rememberSyncInterval({ ...span, startedAt: Math.max(span.startedAt, this.nextSampleAt) }, endedAt);
-    }
-  }
-
-  /**
-   * Follow an async span for a bounded number of microtask turns after its first await. A gap between two turns is time some
-   * continuation ran synchronously, so it is remembered as a synchronous slice of this span: a block after an await, or in a microtask
-   * chain that settles before the delayed probe. Real I/O waits produce no gap. The chain only reads the clock; it never touches the
-   * measured promise.
-   */
-  followSpan(span: SpanTrace): void {
-    let last = this.readNow(), hopsLeft = MAX_PROBE_HOPS;
-    const hop = (): void => {
-      if (span.finished || span.request.settled || this.stopped || hopsLeft-- <= 0) return;
-      const now = this.readNow();
-      if (now - last >= MIN_SYNC_PREFIX_MS) this.rememberSyncInterval({ ...span, startedAt: last }, now);
-      last = now;
-      queueMicrotask(hop);
-    };
-    queueMicrotask(hop);
+    // An async span that began and settled inside one loop turn never yielded: every ms of it was loop-busy time, so it is a synchronous
+    // slice (microtask chains). A span that yielded is a wait; overlap with a blocked window alone is presence, never cause.
+    else if (span.async && span.turn === this.turn && endedAt - span.startedAt >= MIN_SYNC_PREFIX_MS) this.rememberSyncInterval(span, endedAt);
   }
 
   /** Preserve a long synchronous prelude inside an async function for the delayed loop probe. */
@@ -354,6 +340,29 @@ export class ControlWriteTelemetry {
     if (endedAt - span.startedAt < MIN_SYNC_PREFIX_MS) return;
     span.prefixRecorded = true;
     this.rememberSyncInterval(span, endedAt);
+  }
+
+  /** Hops spent following spans: the measured extra work, bounded per request. */
+  followedHops(): number { return this.hops; }
+
+  /**
+   * After a span's first await, look at the next few microtask turns of its request (a shared budget of MAX_REQUEST_HOPS, so the added
+   * loop work is bounded per request however many spans it has). A gap between two hops is time a continuation ran synchronously and is
+   * remembered as a synchronous slice. A block after a real I/O await is out of reach: the budget is spent by then, and Bun has no
+   * per-continuation hook, so such a slice is only a lower bound.
+   */
+  followSpan(span: SpanTrace): void {
+    let last = this.readNow();
+    const hop = (): void => {
+      const request = span.request;
+      if (span.finished || request.settled || this.stopped || request.hopsLeft <= 0) return;
+      request.hopsLeft--; this.hops++;
+      const now = this.readNow();
+      if (now - last >= MIN_SYNC_PREFIX_MS) this.rememberSyncInterval({ ...span, startedAt: last }, now);
+      last = now;
+      queueMicrotask(hop);
+    };
+    queueMicrotask(hop);
   }
 
   private rememberSyncInterval(span: SpanTrace, endedAt: number): void {
