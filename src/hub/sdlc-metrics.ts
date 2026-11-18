@@ -1,6 +1,6 @@
 // #481 S7: SDLC metrics and deterministic control bands. Pure: board history in, numbers out. No I/O, no clock, no model.
 // A metric that cannot be derived is `unknown` and counted as such, never 0.
-// `first_pass_check` reads the hub's own completion check (`check passed` / `check failed` at hub_task_done), not PR CI: it is unknown where completion checks are off.
+// `first_pass_check` prefers the completion check, then the latest isolated run before the first done at the same head.
 
 export const BAND_METRICS = ["acceptance_to_plan_ms", "acceptance_to_first_review_ms", "first_pass_approval", "rework_rounds", "first_pass_check", "stale_head_re_reviews", "hotfix_rate", "security_open_alerts"] as const;
 export type BandMetric = typeof BAND_METRICS[number];
@@ -111,7 +111,12 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
   // Evidence-only still ends the actual wait for a first review, but says nothing about whether the work passed.
   const substantiveVerdict = history.find(entry => entry.at >= (accepted?.at ?? -Infinity) && VERDICTS.includes(entry.event) && entry.evidenceOnly !== true);
   const dones = history.filter(entry => entry.event === "done");
-  const ci = first(view, ["check passed", "check failed"]);
+  const completionCheck = first(view, ["check passed", "check failed"]);
+  const firstDone = history.findIndex(entry => entry.event === "done");
+  const doneHead = firstDone >= 0 ? history[firstDone]?.requestHead : undefined;
+  const latestRun = doneHead ? history.slice(0, firstDone).findLast(entry => entry.event === "check run passed" || entry.event === "check run failed") : undefined;
+  const isolatedCheck = latestRun?.requestHead === doneHead ? latestRun : undefined;
+  const ci = completionCheck ?? isolatedCheck;
   const approvedAt = history.find(entry => entry.event === "approved")?.at ?? null;
   return {
     id: task.id,
@@ -124,7 +129,7 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
     // Rework grows with every round, so it is a value only once the task is approved: a task still in flight has no final one, and a
     // provisional point would move at each verdict and could start a second breach episode inside one shift.
     rework_rounds: dones.length && approvedAt !== null ? history.filter(entry => entry.event === "changes_requested" && entry.evidenceOnly !== true).length : null,
-    first_pass_check: ci ? (ci.event === "check passed" ? 1 : 0) : null,
+    first_pass_check: ci ? (ci.event === "check passed" || ci.event === "check run passed" ? 1 : 0) : null,
     same_head_ci_reruns: extra.ciReruns === undefined ? null : extra.ciReruns,
     // Counted only for a merged PR whose figures were read: a done before the merge is one review round.
     review_rounds_at_merge: extra.mergedAt !== undefined && Number.isFinite(extra.mergedAt) ? dones.filter(entry => entry.at <= extra.mergedAt!).length : null,

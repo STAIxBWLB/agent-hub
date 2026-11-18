@@ -58,7 +58,7 @@ test("elapsed silence alone is never a trigger: the same records a long time lat
 test("a changed deliverable invalidates the check recorded on that revision", () => {
   const changed: SupervisionFacts = { tasks: [task(14, delivered())], deliverables: [{ task: 14, checked: true, changed: [RECORD.id] }] };
   const observation = evaluateSupervision(changed).observations[0]!;
-  expect(observation).toMatchObject({ rule: "deliverable_invalidated_check", version: 1, task: 14, trigger: `check:${RECORD.id}`, action: "recheck", reason: "stale_check" });
+  expect(observation).toMatchObject({ rule: "deliverable_invalidated_check", version: 2, task: 14, trigger: `check:${RECORD.id}`, action: "recheck", reason: "stale_check" });
   expect(observation.refs).toEqual(["history:4", `deliverable:${RECORD.id}`]);
   expect(kinds({ tasks: [task(14, delivered())], deliverables: [{ task: 14, checked: true, changed: [], missing: [] }] })).toEqual([]);
   // A file the hub measured but that was never delivered on this revision is not a recorded deliverable.
@@ -69,8 +69,8 @@ test("a changed deliverable invalidates the check recorded on that revision", ()
 test("a check whose files were never measured is unknown, not clean and not a trigger", () => {
   const unmeasured: SupervisionFacts = { tasks: [task(15, delivered())] };
   const coverage = [{ rule: "deliverable_invalidated_check", task: 15, revision: "1:none" }, { rule: "repeated_failure", task: 15, revision: "1:none" }] as const;
-  expect(evaluateSupervision(unmeasured)).toEqual({ observations: [], gap: [{ rule: "deliverable_invalidated_check", version: 1, task: 15, revision: "1:none", reason: "no-deliverable-measurement" }], evaluated: [...coverage] });
-  expect(evaluateSupervision({ tasks: [task(15, delivered())], deliverables: [{ task: 15, checked: false, changed: [RECORD.id] }] })).toEqual({ observations: [], gap: [{ rule: "deliverable_invalidated_check", version: 1, task: 15, revision: "1:none", reason: "no-deliverable-measurement" }], evaluated: [...coverage] });
+  expect(evaluateSupervision(unmeasured)).toEqual({ observations: [], gap: [{ rule: "deliverable_invalidated_check", version: 2, task: 15, revision: "1:none", reason: "no-deliverable-measurement" }], evaluated: [...coverage] });
+  expect(evaluateSupervision({ tasks: [task(15, delivered())], deliverables: [{ task: 15, checked: false, changed: [RECORD.id] }] })).toEqual({ observations: [], gap: [{ rule: "deliverable_invalidated_check", version: 2, task: 15, revision: "1:none", reason: "no-deliverable-measurement" }], evaluated: [...coverage] });
   // A task that recorded no check at all has nothing to invalidate: no trigger and no gap.
   expect(evaluateSupervision({ tasks: [task(16, ["proposed", "assigned", "accepted", "done"])] })).toEqual({
     observations: [], gap: [],
@@ -197,7 +197,7 @@ test("the reading is bounded, ordered and identical for the same facts", () => {
   const late: readonly Item[] = ["accepted", ...Array.from({ length: MAX_RECORDS }, () => "done" as const), ["check failed", { checkKey: "implement" }], "done", ["check failed", { checkKey: "implement" }]];
   const beyond = evaluateSupervision({ tasks: [task(43, late)] });
   expect(beyond.observations).toEqual([]);
-  expect(beyond.gap).toEqual([{ rule: "deliverable_invalidated_check", version: 1, task: 43, revision: "1:none", reason: "history-truncated" }, { rule: "repeated_failure", version: 1, task: 43, revision: "1:none", reason: "history-truncated" }]);
+  expect(beyond.gap).toEqual([{ rule: "deliverable_invalidated_check", version: 2, task: 43, revision: "1:none", reason: "history-truncated" }, { rule: "repeated_failure", version: 1, task: 43, revision: "1:none", reason: "history-truncated" }]);
 });
 
 test("AC2: shadow mode keeps counts and bounded ids, with zero worker turns, action writes and notifications", () => {
@@ -248,7 +248,7 @@ test("the snapshot is the exported read: observations, gaps in gapKey order, the
   expect(Object.keys(snapshot).sort()).toEqual(["counts", "evaluated", "gap", "observations"]);
   expect(snapshot.gap).toEqual([
     { rule: "declared_overlap_without_integration", version: 1, task: 72, revision: "0:none", reason: "no-history" },
-    { rule: "deliverable_invalidated_check", version: 1, task: 71, revision: "1:none", reason: "no-deliverable-measurement" },
+    { rule: "deliverable_invalidated_check", version: 2, task: 71, revision: "1:none", reason: "no-deliverable-measurement" },
   ]);
   expect(snapshot.observations).toEqual([]);
   expect(snapshot.counts).toEqual({ evaluations: 1, observations: 0, deduped: 0, suppressed: 0, gap: 2, evaluatedSuppressed: 0, workerTurns: 0, actionWrites: 0, notifications: 0 });
@@ -300,4 +300,11 @@ test("the coverage list is bounded like the rest, and what a bound refused is co
   second.observe(pair);
   expect(second.evaluated().filter((entry) => entry.rule === "declared_overlap_without_integration")).toEqual([{ rule: "declared_overlap_without_integration", task: 410, revision: "1:none" }]);
   expect(second.observations()).toHaveLength(1);
+});
+
+test("#1555 isolated checks contribute invalidation but not the failure streak", () => {
+  const passed: readonly Item[] = ["proposed", "accepted", ["done", { deliverables: [RECORD] }], ["check run passed", { checkKey: "implement" }]];
+  expect(kinds({ tasks: [task(90, passed)], deliverables: [{ task: 90, checked: true, changed: [RECORD.id] }] })).toEqual(["deliverable_invalidated_check"]);
+  const failed: readonly Item[] = ["proposed", "accepted", ["check run failed", { checkKey: "implement" }], ["check run failed", { checkKey: "implement" }]];
+  expect(kinds({ tasks: [task(91, failed)] })).toEqual([]);
 });

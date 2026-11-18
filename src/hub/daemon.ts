@@ -2845,7 +2845,8 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const currentCheck = (receipt: { task: number; owner: string; updated: number | string; generation: number | string; revision?: number }) => {
     const task = board.get(receipt.task);
-    return !!task && task.owner === receipt.owner && task.state === "in_progress" && task.updated === receipt.updated && task.history.length === receipt.revision
+    return !!task && task.owner === receipt.owner && task.state === "in_progress" && Number.isSafeInteger(receipt.revision) && receipt.revision! >= 0 && receipt.revision! <= task.history.length
+      && task.history.slice(receipt.revision).every(entry => entry.event === "check run passed" || entry.event === "check run failed")
       && connectionGeneration(receipt.owner) === receipt.generation && may(receipt.owner, "check_run") && membershipAllowed(receipt.owner) && !tasks.isPii(task)
       && !turns.get(receipt.owner)?.private && !contextPii(receipt.owner);
   };
@@ -2894,6 +2895,7 @@ export async function startDaemon(opts: DaemonOptions) {
       while (checkBindings.size > 200) checkBindings.delete(checkBindings.keys().next().value!);
       if (stopping || !currentCheck(receipt)) { await checkRunner.markStale(receipt.run); return; }
       bus.publish(newEnvelope(HUB, sanitize(JSON.stringify(view)), { to: [receipt.owner], kind: "task", refs: { task: String(receipt.task), boundedCheck: receipt.run } }));
+      if (currentCheck(receipt)) tasks.recordCheckResult(receipt);
       log(`check ${receipt.run}: exit ${receipt.exit ?? "unknown"}, bytes ${receipt.output_bytes}`);
     },
   };

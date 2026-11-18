@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Record isolated check outcomes as text-free task evidence for matching-head metrics and supervision (Refs #1555).
+
 ## 0.43.0
 
 - Release N-1 for 0.43.x is published 0.42.0, with exact agent-mem 0.28.0 and control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.0. The isolated fixture exercises old client and plugin against the new daemon and the new client and plugin against the old daemon. It does not establish live-agent, rollback or shared-home compatibility. The wire and the MCP tool set are unchanged from 0.42.0. The CLI adds `ahub upgrade --all-stopped`, lets `ahub upgrade --to <v>` retarget a stopped project, and makes `memory.sync_interval_min` settable with `ahub settings set`; a 0.42.0 CLI does not offer these. Task history gains an optional `requestHead` on `done` entries, which 0.42.0 ignores. This release pins agent-mem 0.29.0 while 0.42.0 pins 0.28.0; agent-mem 0.29.0 raises no sync/home format floor and builds its derived index as a separate version-5 file while 0.28.0 keeps its version-4 file, so both can share a memory home; file compatibility beyond these fixtures remains subject to the release verification report.

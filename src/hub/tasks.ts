@@ -409,6 +409,8 @@ QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or
 QUIET_EVENTS.add("planner changed"); // Planning authority does not move the execution owner or revoke its handoff.
 QUIET_EVENTS.add("claim verdict"); // #901: a person's bookkeeping on a plan claim moves nothing, so it must not turn a running check into "check finished late".
 QUIET_EVENTS.add("invocation");
+QUIET_EVENTS.add("check run passed"); // Isolated check bookkeeping does not invalidate an in-flight completion check.
+QUIET_EVENTS.add("check run failed");
 QUIET_EVENTS.add("wait recorded"); // #1454: a recorded wait moves nothing; it only suspends the idle-owner ladder, so it must not turn a running check into "check finished late".
 QUIET_EVENTS.add("shell branch bound"); // #880: the hub's host-observed branch binding (#845) is bookkeeping; it neither moves nor settles the task.
 /** The records of the `done (checking)` entry a passed check now completes: what the owner delivered then (#509a). */
@@ -6778,7 +6780,7 @@ export class Tasks {
     }
     const rows = this.d.board.list();
     const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), history: task.history.map(entry => ({ at: entry.at, event: entry.event,
-      ...(entry.event === "done" && (entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head) ? { requestHead: entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
+      ...(["check run passed", "check run failed"].includes(entry.event) && entry.requestHead ? { requestHead: entry.requestHead } : {}), ...(entry.event === "done" && (entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head) ? { requestHead: entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
     const visibleIds = new Set(rows.filter(task => !this.isPii(task)).map(task => task.id));
     const byKind: Record<string, number> = {};
     for (const stall of this.stalled()) if (visibleIds.has(stall.task)) byKind[stall.cause.kind] = (byKind[stall.cause.kind] ?? 0) + 1;
@@ -9045,6 +9047,15 @@ export class Tasks {
       ? `Before task #${task.id} is recorded as done: you are the last of turn-free cohort #${r.cohort.id} to finish. Check your work against the others' below, fix what conflicts, then call hub_task_done again.`
       : `Task #${task.id} is not recorded as done yet (integration request ${r.requests} of ${MAX_REQUESTS}): ${r.why}. Check again, then call hub_task_done again.`;
     return [head, "The done counts once the files did not change between two calls and the others have stopped.", ...lines, facts?.text ?? ""].filter(Boolean).join("\n");
+  }
+
+  /** Record an already-admitted isolated run without retaining its output. */
+  recordCheckResult(receipt: import("./check-runner.ts").RunReceipt): void {
+    const task = this.d.board.get(receipt.task);
+    if (!task || task.state !== "in_progress" || task.owner !== receipt.owner) return;
+    const passed = receipt.exit === 0 && !receipt.timed_out && !receipt.cancelled && !receipt.interrupted;
+    this.d.board.update(task.id, HUB, passed ? "check run passed" : "check run failed", {}, undefined,
+      { checkKey: receipt.check, requestHead: receipt.sha }, task.history.length);
   }
 
   /**
