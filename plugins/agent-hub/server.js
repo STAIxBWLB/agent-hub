@@ -31714,6 +31714,8 @@ QUIET_EVENTS.add("plan observed");
 QUIET_EVENTS.add("planner changed");
 QUIET_EVENTS.add("claim verdict");
 QUIET_EVENTS.add("invocation");
+QUIET_EVENTS.add("check run passed");
+QUIET_EVENTS.add("check run failed");
 QUIET_EVENTS.add("wait recorded");
 QUIET_EVENTS.add("shell branch bound");
 var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
