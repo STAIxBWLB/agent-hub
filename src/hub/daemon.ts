@@ -4350,7 +4350,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const finishRoutineSnapshot = (routine?: RoutineSnapshot) => {
     if (!routine || routine.skipped) return;
     if (routine.exhausted) {
-      if (snapshotCooldown.exhausted(routine.repository, budgetNow(routine.budget))) log("snapshot unavailable: snapshot burst budget exhausted; boundary evidence is unknown; inspect snapshots.enabled");
+      if (snapshotCooldown.exhausted(routine.repository, routine.budget)) log("snapshot unavailable: snapshot burst budget exhausted; boundary evidence is unknown; inspect snapshots.enabled");
     } else snapshotCooldown.reset(routine.repository);
   };
   const snap = (what: string, capture = config.snapshots.enabled, peer?: string, routine = false): { tree?: string; head?: string | null; commit?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo; routine?: RoutineSnapshot } => {

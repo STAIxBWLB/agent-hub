@@ -9,19 +9,35 @@ const cleanup: (() => void)[] = [];
 
 test("#1550 snapshot cooldown is per repository, retries once, and resets after success", () => {
   const cooldown = new SnapshotCooldown();
-  expect(cooldown.exhausted("a", 0)).toBe(false);
-  expect(cooldown.exhausted("a", 1)).toBe(false);
-  expect(cooldown.exhausted("a", 2)).toBe(true);
+  const burst = (now: number) => ({ deadline: now, now: () => now });
+  expect(cooldown.exhausted("a", burst(0))).toBe(false);
+  expect(cooldown.exhausted("a", burst(1))).toBe(false);
+  expect(cooldown.exhausted("a", burst(2))).toBe(true);
   expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS - 1)).toBe(true);
   expect(cooldown.blocked("b", 2)).toBe(false);
   expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
-  expect(cooldown.exhausted("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(true);
+  expect(cooldown.exhausted("a", burst(2 + SNAPSHOT_COOLDOWN_MS))).toBe(true);
   cooldown.reset("a");
-  expect(cooldown.exhausted("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
+  expect(cooldown.exhausted("a", burst(2 + SNAPSHOT_COOLDOWN_MS))).toBe(false);
   expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
   cooldown.reset("a");
-  expect(cooldown.exhausted("a", 3 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
-  expect(cooldown.exhausted("a", 4 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
+  expect(cooldown.exhausted("a", burst(3 + SNAPSHOT_COOLDOWN_MS))).toBe(false);
+  expect(cooldown.exhausted("a", burst(4 + SNAPSHOT_COOLDOWN_MS))).toBe(false);
+});
+test("#1550 repeated boundaries count once per repository and burst", () => {
+  const cooldown = new SnapshotCooldown();
+  const burst = { deadline: 0, now: () => 0 };
+  expect(cooldown.exhausted("a", burst)).toBe(false);
+  expect(cooldown.exhausted("a", burst)).toBe(false);
+  expect(cooldown.exhausted("a", burst)).toBe(false);
+  expect(cooldown.blocked("a", 0)).toBe(false);
+  expect(cooldown.exhausted("b", burst)).toBe(false);
+  expect(cooldown.exhausted("a", { ...burst })).toBe(false);
+  expect(cooldown.exhausted("a", { ...burst })).toBe(true);
+  expect(cooldown.blocked("a", 0)).toBe(true);
+  cooldown.reset("a");
+  expect(cooldown.exhausted("a", burst)).toBe(false);
+  expect(cooldown.blocked("a", 0)).toBe(false);
 });
 afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
