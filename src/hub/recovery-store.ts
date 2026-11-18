@@ -7,6 +7,8 @@ import { isDatabaseBusy } from "./recovery-error.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
 const RUNNER_DB_BUSY_TIMEOUT_MS = 3000;
+/** A startup-path hold check never waits on the event loop: busy counts as held (#1546). */
+const HOLD_CHECK_DB_BUSY_TIMEOUT_MS = 1;
 export const operationIdPattern = /^[a-f0-9-]{36}$/;
 export function operationPath(id: string, home = hubHome()): string {
   if (typeof id !== "string" || id.length !== 36 || !operationIdPattern.test(id)) throw new Error("invalid recovery operation ID");
@@ -62,7 +64,7 @@ function projectLocksExist(file: string): boolean {
     return true;
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
-function projectLocks(home: string, create = false, busyTimeoutMs = RUNNER_DB_BUSY_TIMEOUT_MS): Database | undefined {
+function projectLocks(home: string, create = false): Database | undefined {
   const file = projectLocksPath(home);
   if (!projectLocksExist(file)) {
     if (!create) return undefined;
@@ -84,10 +86,22 @@ function projectLocks(home: string, create = false, busyTimeoutMs = RUNNER_DB_BU
   let db: Database | undefined;
   try {
     db = new Database(file, create ? { readwrite: true, create: false } : { readonly: true, create: false });
-    db.run(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+    db.run(`PRAGMA busy_timeout = ${RUNNER_DB_BUSY_TIMEOUT_MS}`);
     if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_locks'").get()) throw projectLockError();
     return db;
   } catch (error) { db?.close(); if (isDatabaseBusy(error)) throw error; throw projectLockError(); }
+}
+/** Read-only, 1 ms busy wait: for a check on a startup path that must never wait on the event loop (#1546). Unreadable or busy throws. */
+function projectLocksNonBlocking(home: string): Database | undefined {
+  const file = projectLocksPath(home);
+  if (!projectLocksExist(file)) return undefined;
+  let db: Database | undefined;
+  try {
+    db = new Database(file, { readonly: true, create: false });
+    db.run(`PRAGMA busy_timeout = ${HOLD_CHECK_DB_BUSY_TIMEOUT_MS}`);
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_locks'").get()) throw projectLockError();
+    return db;
+  } catch (error) { db?.close(); throw error; }
 }
 function projectLockOn(db: Database, key: string): string | undefined {
   const rows = db.query("SELECT CASE WHEN typeof(operation_id)='text' AND length(operation_id)=36 THEN operation_id END AS id FROM project_locks WHERE project_root=? LIMIT 2").all(key) as { id: string | null }[];
@@ -285,13 +299,13 @@ export function claimRunner(id: string, home = hubHome()): () => void {
 
 /**
  * True when any machine or project recovery hold exists, or the coordination state cannot be read: unknown is held.
- * `busyTimeoutMs` bounds how long a locked project-locks.db may block the caller: a startup path passes 0 so a busy database is a hold,
- * never a wait on the event loop (#1546).
+ * `nonBlocking` bounds how long a locked project-locks.db may block the caller to 1 ms: a startup path passes it so a busy database is a
+ * hold, never a wait on the event loop (#1546). Without it the normal runner timeout applies.
  */
-export function anyRecoveryHold(home = hubHome(), busyTimeoutMs = RUNNER_DB_BUSY_TIMEOUT_MS): boolean {
+export function anyRecoveryHold(home = hubHome(), nonBlocking = false): boolean {
   try {
     if (legacyRecoveryLock(home)) return true;
-    const db = projectLocks(home, false, busyTimeoutMs);
+    const db = nonBlocking ? projectLocksNonBlocking(home) : projectLocks(home);
     if (!db) return false;
     try { return !!db.query("SELECT 1 FROM project_locks LIMIT 1").get(); } finally { db.close(); }
   } catch { return true; }

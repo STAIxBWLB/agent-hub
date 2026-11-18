@@ -504,7 +504,7 @@ export function scheduleRuntimeCapturePrune(home?: string): void {
     try {
       const targetHome = home ?? hubHome({ AGENTHUB_HOME: inheritedHome });
       // Never schedule a pass that is bound to defer: while any recovery hold exists (or it cannot be read) the runner schedules one after its release.
-      if (anyRecoveryHold(targetHome, 0)) return; // busy_timeout 0: a locked project-locks.db is a hold, never a wait on the startup loop
+      if (anyRecoveryHold(targetHome, true)) return; // non-blocking: a locked project-locks.db is a hold, never a wait on the startup loop
       const id = admitSchedule(targetHome); if (!id) return;
       const env = childEnv(process.env);
       for (const key of Object.keys(env)) if (key.startsWith("ORCA_") || ["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "CLAUDECODE", "CODEX_THREAD_ID"].includes(key)) delete env[key];

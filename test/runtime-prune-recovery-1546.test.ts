@@ -61,7 +61,7 @@ test("#1546 a project-locks.db another connection holds a write lock on makes th
   try {
     const { anyRecoveryHold } = await import("../src/hub/recovery-store.ts");
     const started = performance.now();
-    expect(anyRecoveryHold(h, 0)).toBe(true); // busy is a hold
+    expect(anyRecoveryHold(h, true)).toBe(true); // busy is a hold
     expect(performance.now() - started).toBeLessThan(500);
     const before = performance.now();
     scheduleRuntimeCapturePrune(h);
