@@ -608,7 +608,7 @@ export class Facts {
         // #1556 T1: a read receipt per (peer, task, path), memory only. Unknown text (large or unreadable file) records nothing, never a guess.
         const task = this.o.scope(peer)?.task?.id;
         if (task !== undefined && pre.version.text !== undefined) {
-          this.recordRead(peer, task, file, { sha256: createHash("sha256").update(pre.version.text).digest("hex"), scope: input.offset === undefined && input.limit === undefined ? "full" : "partial", turnId: toolUseId ?? "" });
+          this.recordRead(peer, task, file, { sha256: createHash("sha256").update(pre.version.text).digest("hex"), scope: input.offset === undefined && input.limit === undefined && readWhole(pre.version.text) ? "full" : "partial", turnId: toolUseId ?? "" });
         }
         const version = this.observe(file);
         // Only a whole read of an unchanged file says what the peer saw: no offset or limit, and nothing Read cuts.

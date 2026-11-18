@@ -106,18 +106,62 @@ function words(cmd: string): string[] | undefined {
   return out;
 }
 
-/** Remove heredoc bodies (their lines are data, not commands); the start line stays so its redirection counts. */
-function stripHeredocs(command: string): string {
-  const lines = command.split("\n"), out: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    out.push(line);
-    const m = /<<(-?)\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(line);
-    if (!m || /<<</.test(line)) continue;
-    const word = (m[2] ?? m[3] ?? m[4])!;
-    while (++i < lines.length) { const l = lines[i]!; if ((m[1] ? l.replace(/^\t+/, "") : l) === word) break; }
+const CODE_RUNNER = /(?:^|[\s|;&(])(?:sh|bash|zsh|dash|ksh|python[\d.]*|node|bun|deno|ruby|perl|php)(?:\s|$)/;
+
+/**
+ * One quote-aware pass: split only at unquoted newline, `;`, `&&`, `||` and `|`, and find `<<WORD` only outside quotes.
+ * A heredoc body is data and is skipped, unless its start line runs a shell or interpreter (then it is code) or it
+ * never ends: both are unknown. Unbalanced quotes are unknown too.
+ */
+function segment(command: string): { parts: string[]; unknown: boolean } {
+  const parts: string[] = [];
+  let cur = "", q = "", unknown = false, lineStart = 0;
+  const heredocs: { word: string; strip: boolean }[] = [];
+  const push = () => { if (cur.trim()) parts.push(cur); cur = ""; };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (q) {
+      cur += c;
+      if (c === "\\" && q === '"' && i + 1 < command.length) cur += command[++i]!;
+      else if (c === q) q = "";
+      continue;
+    }
+    if (c === "\\" && i + 1 < command.length) { cur += c + command[++i]!; continue; }
+    if (c === "'" || c === '"') { q = c; cur += c; continue; }
+    if (c === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
+      const m = /^<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(command.slice(i));
+      if (m) { heredocs.push({ word: (m[2] ?? m[3] ?? m[4])!, strip: m[1] === "-" }); cur += " "; i += m[0].length - 1; continue; }
+      unknown = true; cur += c; continue;
+    }
+    if (c === "\n") {
+      const line = command.slice(lineStart, i);
+      push();
+      if (heredocs.length) {
+        if (CODE_RUNNER.test(line)) unknown = true;
+        for (const h of heredocs) {
+          let ended = false;
+          while (i + 1 < command.length) {
+            const end = command.indexOf("\n", i + 1);
+            const text = command.slice(i + 1, end < 0 ? command.length : end);
+            i = end < 0 ? command.length : end;
+            if ((h.strip ? text.replace(/^\t+/, "") : text) === h.word) { ended = true; break; }
+          }
+          if (!ended) unknown = true;
+        }
+        heredocs.length = 0;
+      }
+      lineStart = i + 1;
+      continue;
+    }
+    if (c === ";") { push(); continue; }
+    if ((c === "&" || c === "|") && command[i + 1] === c) { push(); i++; continue; }
+    if (c === "|") { push(); continue; }
+    cur += c;
   }
-  return out.join("\n");
+  if (q) unknown = true;
+  if (heredocs.length) { unknown = true; if (CODE_RUNNER.test(command.slice(lineStart))) unknown = true; }
+  push();
+  return { parts, unknown };
 }
 
 /**
@@ -126,11 +170,11 @@ function stripHeredocs(command: string): string {
  */
 export function classifyShellWrite(command: string): ShellWriteClass {
   const targets: string[] = [];
-  let unknown = false;
-  for (const part of stripHeredocs(command).split(/\n|&&|\|\||;|\|(?!\|)/)) {
+  const seg = segment(command);
+  let unknown = seg.unknown;
+  for (const part of seg.parts) {
     const w = words(part);
     if (!w) { unknown = true; continue; }
-    if (w.some((x) => x.startsWith("<<"))) { const i = w.findIndex((x) => x.startsWith("<<")); w.splice(i, w[i] === "<<" || w[i] === "<<-" ? 2 : 1); }
     for (let i = 0; i < w.length; i++) {
       const m = /^(\d*)(>>?|&>>?)(.*)$/.exec(w[i]!);
       if (!m || w[i]!.startsWith("'") || w[i]!.startsWith('"')) continue;
