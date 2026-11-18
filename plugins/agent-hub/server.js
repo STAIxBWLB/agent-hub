@@ -13638,12 +13638,13 @@ var init_db_schema = __esm(() => {
 });
 
 // src/hub/snapshots.ts
-var HEAD_LOG_MAX_APPEND_BYTES;
+var SNAPSHOT_COOLDOWN_MS, HEAD_LOG_MAX_APPEND_BYTES;
 var init_snapshots = __esm(() => {
   init_db_schema();
   init_child_process();
   init_git();
   init_project();
+  SNAPSHOT_COOLDOWN_MS = 10 * 60000;
   HEAD_LOG_MAX_APPEND_BYTES = 128 * 1024;
 });
 

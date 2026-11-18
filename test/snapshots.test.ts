@@ -19,6 +19,9 @@ test("#1550 snapshot cooldown is per repository, retries once, and resets after 
   cooldown.reset("a");
   expect(cooldown.exhausted("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
   expect(cooldown.blocked("a", 2 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
+  cooldown.reset("a");
+  expect(cooldown.exhausted("a", 3 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
+  expect(cooldown.exhausted("a", 4 + SNAPSHOT_COOLDOWN_MS)).toBe(false);
 });
 afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
