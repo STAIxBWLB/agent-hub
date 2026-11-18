@@ -83,3 +83,64 @@ export function taskShellCommand(command: unknown, binding: TaskShellBinding): T
   const file = flags.get("--body-file")!;
   return literalPath(file) ? result("pr-create", "gh", [file]) : undefined;
 }
+
+export interface ShellWriteClass { kind: "write" | "read" | "unknown"; targets: string[] }
+
+const SINK = /^(?:\/dev\/(?:null|stdout|stderr|tty)|&\d+|-)$/;
+const unq = (w: string) => w.replace(/^(['"])(.*)\1$/, "$2");
+
+/** Words of one simple command, quotes kept whole (a quoted `>` is not a redirection). */
+function words(cmd: string): string[] | undefined {
+  const out: string[] = [];
+  let cur = "", q = "";
+  for (const c of cmd) {
+    if (q) { cur += c; if (c === q) q = ""; continue; }
+    if (c === "'" || c === '"') { q = c; cur += c; continue; }
+    if (/\s/.test(c)) { if (cur) out.push(cur), (cur = ""); continue; }
+    if (c === "`" || c === "$") return undefined; // substitution: not guessed
+    cur += c;
+  }
+  if (q) return undefined;
+  if (cur) out.push(cur);
+  return out;
+}
+
+/**
+ * Pure classifier of in-place shell writes (#1556 T1, observation only). A write is named only when certain;
+ * anything it cannot parse is unknown, never a guess. Targets under /tmp or /dev sinks are not worktree writes.
+ */
+export function classifyShellWrite(command: string): ShellWriteClass {
+  const targets: string[] = [];
+  let unknown = false;
+  for (const part of command.split(/\n|&&|\|\||;|\|(?!\|)/)) {
+    const w = words(part);
+    if (!w) { unknown = true; continue; }
+    if (w.some((x) => x.startsWith("<<"))) { const i = w.findIndex((x) => x.startsWith("<<")); w.splice(i, w[i] === "<<" || w[i] === "<<-" ? 2 : 1); }
+    for (let i = 0; i < w.length; i++) {
+      const m = /^(\d*)(>>?|&>>?)(.*)$/.exec(w[i]!);
+      if (!m || w[i]!.startsWith("'") || w[i]!.startsWith('"')) continue;
+      const t = unq(m[3] || w[++i] || "");
+      if (!t || SINK.test(t) || /^>?&\d*$/.test(m[3] ?? "") || /^&/.test(t)) continue;
+      targets.push(t);
+    }
+    const args = w.filter((x) => !/^\d*(>>?|&>>?)/.test(x));
+    const head = args[0] === "sudo" || args[0] === "env" ? args.slice(1) : args;
+    const [c, ...rest] = head;
+    const files = rest.filter((x) => !x.startsWith("-")).map(unq);
+    if (!c) continue;
+    if (c === "sed" && rest.some((x) => /^-[a-zA-Z]*i/.test(x) || x.startsWith("--in-place"))) targets.push(...files.slice(1));
+    else if (c === "perl" && rest.some((x) => /^-[a-zA-Z]*i/.test(x))) targets.push(...files.slice(1));
+    else if (c === "awk" && rest.includes("inplace") && rest.includes("-i")) targets.push(...files.slice(1).filter((x) => x !== "inplace"));
+    else if (c === "tee") targets.push(...files);
+    else if (c === "dd") { for (const x of rest) if (x.startsWith("of=")) targets.push(unq(x.slice(3))); }
+    else if (c === "cp" || c === "mv" || c === "install") { if (files.length) targets.push(files[files.length - 1]!); }
+    else if (c === "patch") targets.push(...files);
+    else if (c === "git" && rest[0] === "apply" && !rest.includes("--check")) targets.push("(git apply)");
+    else if (/^(python3?|node|bun|ruby|perl)$/.test(c) && rest.some((x) => x === "-c" || x === "-e")) {
+      if (/write_text|write\(|writeFile|fs\.write|open\([^)]*['"][wa]|File\.write/.test(part)) unknown = true;
+    }
+  }
+  const real = targets.filter((t) => !/^\/(?:tmp|private\/tmp|var\/folders)\//.test(t));
+  if (real.length) return { kind: "write", targets: real };
+  return { kind: unknown ? "unknown" : "read", targets: [] };
+}

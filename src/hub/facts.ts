@@ -139,6 +139,9 @@ export interface Offered {
   coverage?: boolean;
 }
 
+export const MAX_RECEIPTS_PER_PEER = 256;
+export interface ReadReceipt { sha256: string; scope: "full" | "partial"; at: number; turnId: string }
+
 export class Facts {
   private readonly latest = new Map<string, Version>();
   private readonly transitions = new Map<string, Transition[]>();
@@ -185,6 +188,8 @@ export class Facts {
   private readonly covered = new Set<PeerId>();
   /** Each peer's native session or thread: a new one starts its views over. */
   private readonly sessions = new Map<PeerId, string>();
+  /** Read receipts, memory only (#1556 T1): peer -> "task\0path" -> receipt, insertion order is the LRU order. */
+  private readonly receipts = new Map<PeerId, Map<string, ReadReceipt>>();
   /** When tracking began: work on a task handed over before that is not covered. */
   private epoch = Date.now();
   private readonly root: string;
@@ -294,7 +299,27 @@ export class Facts {
     this.seenDropped.clear();
     this.unfollowed.clear(); // what was seen is forgotten: a notice about it would be stale
     this.writes.clear();
+    this.receipts.clear();
     this.epoch = Date.now();
+  }
+
+  /** Record what `peer` read of `path` for `task`; bounded per peer, oldest evicted. Never persisted. */
+  recordRead(peer: PeerId, task: number, path: string, r: Omit<ReadReceipt, "at"> & { at?: number }): void {
+    let m = this.receipts.get(peer);
+    if (!m) this.receipts.set(peer, (m = new Map()));
+    const key = `${task}\0${path}`;
+    m.delete(key);
+    m.set(key, { ...r, at: r.at ?? Date.now() });
+    while (m.size > MAX_RECEIPTS_PER_PEER) m.delete(m.keys().next().value as string);
+  }
+
+  readReceipt(peer: PeerId, task: number, path: string): ReadReceipt | undefined {
+    return this.receipts.get(peer)?.get(`${task}\0${path}`);
+  }
+
+  /** The task closed: its receipts go. */
+  closeTask(task: number): void {
+    for (const m of this.receipts.values()) for (const k of [...m.keys()]) if (k.startsWith(`${task}\0`)) m.delete(k);
   }
 
   /** A new native session or thread for `peer`: what the old one saw says nothing about the new one. */
