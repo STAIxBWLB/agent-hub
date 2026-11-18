@@ -6780,7 +6780,7 @@ export class Tasks {
     }
     const rows = this.d.board.list();
     const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), history: task.history.map(entry => ({ at: entry.at, event: entry.event,
-      ...(entry.event === "done" && (entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head) ? { requestHead: entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
+      ...(["check run passed", "check run failed"].includes(entry.event) && entry.requestHead ? { requestHead: entry.requestHead } : {}), ...(entry.event === "done" && (entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head) ? { requestHead: entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
     const visibleIds = new Set(rows.filter(task => !this.isPii(task)).map(task => task.id));
     const byKind: Record<string, number> = {};
     for (const stall of this.stalled()) if (visibleIds.has(stall.task)) byKind[stall.cause.kind] = (byKind[stall.cause.kind] ?? 0) + 1;

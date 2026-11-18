@@ -502,3 +502,13 @@ test("#1555 isolated checks apply only at the first done head and defer to compl
   expect(sample([[0, "check run passed", { requestHead: a }], [1, "done", { requestHead: a }], [2, "check failed", {}]]).first_pass_check).toBe(0);
   expect(sample([[0, "done", { requestHead: a }], [1, "check run passed", { requestHead: a }]]).first_pass_check).toBeNull();
 });
+
+test("#1555 the live metrics projection retains isolated run heads", () => {
+  const { board, tasks } = rig(), head = "c".repeat(40);
+  const t = board.propose("claude", { title: "isolated check", class: "implement" });
+  board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
+  board.update(t.id, "hub", "check run passed", {}, undefined, { checkKey: "typecheck", requestHead: head });
+  board.update(t.id, "codex", "done", { state: "in_review" }, undefined, { requestHead: head });
+  board.update(t.id, "claude", "approved", { state: "approved" });
+  expect(tasks.sdlcMetrics("claude").metrics.first_pass_check).toMatchObject({ n: 1, unknown: 0, rate: 1 });
+});
