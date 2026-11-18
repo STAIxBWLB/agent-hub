@@ -195,6 +195,18 @@ test("idle injection uses turn/start with a negative id; only the final answer i
   expect(seen.some((m) => typeof m.id === "number" && m.id < 0)).toBe(false);
 });
 
+test("#1550 Codex marker-only final sends no message", async () => {
+  const { bus, peer, said, tui, seen, fake } = await setup();
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  bus.publish(newEnvelope("claude", "FINAL_FYI_TEST_ONLY", { to: ["codex"] }));
+  await until(() => seen.some(message => message.method === "turn/completed"));
+  expect(said).toEqual([]);
+  const prompt = fake.requests.find(message => message.method === "turn/start" && message.id < 0).params.input[0].text;
+  expect(prompt).toContain("end your turn with exactly [FYI]; it sends nothing");
+  expect(prompt).toContain("Start progress notes with [FYI]");
+});
+
 test("Codex correlates acceptance and silent completion to the native turn id", async () => {
   const { peer, tui } = await setup();
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));

@@ -108,7 +108,7 @@ export function startFakeAppServer(
         const item = (id: string, phase: string, t: string) =>
           note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "agentMessage", id, phase, text: t } });
         item("m1", "commentary", "thinking out loud");
-        item("m2", "final_answer", `echo: ${text}${steered.map((s) => ` +steered: ${s}`).join("")}`);
+        item("m2", "final_answer", text.includes("FINAL_FYI_TEST_ONLY") ? "[FYI]" : `echo: ${text}${steered.map((s) => ` +steered: ${s}`).join("")}`);
         // As Codex 0.156 reports it: the thread's running total and what this update added, 100 tokens per turn.
         threadTotal += 100;
         note("thread/tokenUsage/updated", { threadId, turnId: turn.id, tokenUsage: { total: usage(threadTotal), last: usage(100) } });
