@@ -778,8 +778,6 @@ export interface DaemonOptions {
   /** Host-only snapshot/probe seams; never read from project config or tool arguments. */
   snapshot?: typeof snapshot;
   snapshotBurstMs?: number;
-  /** Host-only test seam; never read from configuration or a request. */
-  snapshotCooldown?: SnapshotCooldown;
   /** Host-only (#661): the clock the shared snapshot Git budget reads (default performance.now). A test holds it fixed so a slow runner cannot spend the 250 ms; production never sets it and no config key or tool reaches it. */
   snapshotClock?: () => number;
   /** Host-only seam (#1057): the shelf's read-only git port; tests hold a slow or failing one. Production leaves it unset, never read from configuration or a request. */
@@ -4324,7 +4322,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Preserve real synchronous native boundaries, but never spend an unbounded sequence of Git waits
   // inside a single callback burst. Failed/slow captures are explicitly unknown, never stale baselines.
   let snapshotBudget: SnapshotBudget | undefined, snapshotBudgetNoticed = false;
-  const snapshotCooldown = opts.snapshotCooldown ?? new SnapshotCooldown();
+  const snapshotCooldown = new SnapshotCooldown();
   type RoutineSnapshot = { repository: string; budget: SnapshotBudget; exhausted: boolean; skipped: boolean };
   const reserveSnapshotBudget = (): SnapshotBudget => {
     if (!snapshotBudget) {
