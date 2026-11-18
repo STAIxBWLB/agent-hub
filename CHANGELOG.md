@@ -4,6 +4,12 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The hub exact-pins `@staix/agent-mem` 0.29.0 (from 0.28.0). A placement sync now yields the event loop between source collection, policy evaluation, journal appends and history work (agent-mem#462), so a hub memory sync no longer holds the daemon for minutes; the package's own 583 MB fixture still saw a 2.58 s maximum gap, and that remaining bound stays open there. Under an active sync placement one sync covers every realm in the activated inventory, as sequential publications of at most two realms. Each memory profile rebuilds its derived index once on first open (index version 5; 0.28.x keeps its own version-4 file), so the first memory call after the upgrade can take longer on a large home. Sync wire, remote refs, journal and work-log formats are unchanged and no format floor is raised. Package, lockfile integrity, the pin sentences in the docs and the plugin bundles move together.
+
+- Cross-project handoff catch-up treats a target whose control descriptor is missing, or whose process is proven gone, as stopped: it no longer connects to it and logs the stopped state once per state change instead of a timed-out probe on every pass (hub task 995, Refs #1550). A target that starts is still caught up at once; unknown liveness is not treated as stopped.
+
+- The idle-owner sweep pauses while the task's current owner has an open `hub_ask` question set on that task, and restarts from the latest settlement once all such sets are answered (hub task 994, Refs #1550).
+
 - Record the requested review commit independently of cost plans and recover it from older bound spec reports for SDLC metrics (Refs #1555).
 
 - The delivery instruction tells peers to end with exactly `[FYI]` when nothing needs their answer, and to start progress notes with `[FYI]` (hub task 997, Refs #1550). Marker-only finals send no message.
