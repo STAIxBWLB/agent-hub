@@ -271,14 +271,15 @@ export function pruneRestartArchives(stateDir: string, keep = RESTART_ARCHIVES_K
 
 /**
  * The bus as written to restart.json: `seen` is stored once (the nested journal's copy is emptied and restored from the
- * top level on read), and completed, discarded and failed deliveries keep identity and state but only a cut body.
+ * top level on read), and completed and discarded deliveries keep identity and state but only a cut body.
  * Pending and in-flight deliveries are untouched. Both fields stay valid for an older hub, which reads an empty nested seen.
  */
 export function compactRestartBus(bus: BusSnapshot): BusSnapshot {
   const journal = bus.journal;
   if (!journal) return bus;
   const cut = (e: Envelope): Envelope => e.body.length > RESTART_TERMINAL_BODY ? { ...e, body: e.body.slice(0, RESTART_TERMINAL_BODY) } : e;
-  const terminal = new Set(["completed", "discarded", "failed"]);
+  // failed is not terminal for retry: a retry child copies originals and out, so a failed delivery keeps its full bodies.
+  const terminal = new Set(["completed", "discarded"]);
   return {
     ...bus,
     journal: {

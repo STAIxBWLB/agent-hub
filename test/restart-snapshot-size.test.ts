@@ -7,7 +7,7 @@ import { compactRestartBus, expandRestartBus, pruneRestartArchives, RESTART_ARCH
 const env = (id: string, body: string) => ({ id, trace: id, hop: 0, from: "a", kind: "chat", priority: "status", body, ts: 1 }) as any;
 const fixture = () => {
   const seen = Array.from({ length: 2048 }, (_, i) => env(`s${i}`, "x".repeat(200)));
-  const deliveries = Array.from({ length: 2048 }, (_, i) => ({ id: `d${i}`, peer: "b", state: i === 0 ? "queued" : "completed", revision: 1, createdAt: 1, updatedAt: 1, originals: [env(`o${i}`, "y".repeat(4000))], out: [env(`r${i}`, "z".repeat(4000))] }));
+  const deliveries = Array.from({ length: 2048 }, (_, i) => ({ id: `d${i}`, peer: "b", state: i === 0 ? "queued" : i === 1 ? "failed" : "completed", revision: 1, createdAt: 1, updatedAt: 1, originals: [env(`o${i}`, "y".repeat(4000))], out: [env(`r${i}`, "z".repeat(4000))] }));
   const inner = { schemaVersion: 1, queues: {}, prefaces: {}, seen, attempts: {}, withdrawn: [] };
   return { ...inner, journal: { schemaVersion: 1, revision: 2, instanceId: "i", bus: inner, deliveries, manualPaused: [] } } as any;
 };
@@ -21,7 +21,9 @@ test("restart bus is compacted, seen stored once, pending untouched, round trip"
   expect(after).toBeLessThan(20 * 1024 * 1024 / 4);
   expect(compact.journal.bus.seen).toEqual([]);
   expect(compact.journal.deliveries[0].originals[0].body.length).toBe(4000);
-  expect(compact.journal.deliveries[1].originals[0].body.length).toBe(256);
+  expect(compact.journal.deliveries[1].originals[0].body.length).toBe(4000); // failed can be retried
+  expect(compact.journal.deliveries[1].out[0].body.length).toBe(4000);
+  expect(compact.journal.deliveries[2].originals[0].body.length).toBe(256);
   expect((expandRestartBus(compact) as any).journal.bus.seen.length).toBe(2048);
 });
 test("archives are bounded, newest kept", () => {
