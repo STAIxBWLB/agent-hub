@@ -474,14 +474,20 @@ function admissionRow(db: Database): Admission | undefined {
     || row.signature !== null && (typeof row.signature !== "string" || !row.signature.trim() || Buffer.byteLength(row.signature) > 1024))) fail("runtime maintenance admission state is invalid");
   return rows[0];
 }
+/** A prune that only found recovery coordination present did nothing: it is not a completed pass (#1546). */
+export const RECOVERY_DEFERRAL = /recovery coordination is present/;
 function admitSchedule(home: string): string | undefined {
   const db = startupAdmissionDatabase(home);
   try {
     return db.transaction(() => {
       const previous = admissionRow(db), now = Date.now();
+      // A pass deferred only by recovery coordination starts no cooldown: the next schedule (after the lock is released) may run at once.
+      const recoveryOnly = previous?.phase === "complete" && (() => {
+        try { const o = db.query("SELECT outcome FROM admission WHERE slot=1").get() as { outcome: string | null } | null; return typeof JSON.parse(o?.outcome ?? "{}").deferred === "string" && RECOVERY_DEFERRAL.test(JSON.parse(o!.outcome!).deferred); } catch { return false; }
+      })();
       const dead = previous?.phase === "running" && previous.pid !== null && previous.signature !== null
         && processLiveness(previous.pid, previous.signature) === "gone";
-      if (previous && (previous.phase === "running" && !dead || !dead && now - previous.admitted_at < RUNTIME_PRUNE_INTERVAL_MS)) return undefined;
+      if (previous && (previous.phase === "running" && !dead || !dead && !recoveryOnly && now - previous.admitted_at < RUNTIME_PRUNE_INTERVAL_MS)) return undefined;
       const id = randomUUID();
       db.query("INSERT OR REPLACE INTO admission(slot,id,admitted_at,phase,pid,outcome,signature) VALUES(1,?,?,'scheduled',NULL,NULL,NULL)").run(id, now);
       return id;
@@ -497,6 +503,8 @@ export function scheduleRuntimeCapturePrune(home?: string): void {
   setImmediate(() => {
     try {
       const targetHome = home ?? hubHome({ AGENTHUB_HOME: inheritedHome });
+      // Never schedule a pass that is bound to defer: while any recovery hold exists (or it cannot be read) the runner schedules one after its release.
+      if (anyRecoveryHold(targetHome, true)) return; // non-blocking: a locked project-locks.db is a hold, never a wait on the startup loop
       const id = admitSchedule(targetHome); if (!id) return;
       const env = childEnv(process.env);
       for (const key of Object.keys(env)) if (key.startsWith("ORCA_") || ["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "CLAUDECODE", "CODEX_THREAD_ID"].includes(key)) delete env[key];

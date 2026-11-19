@@ -322,3 +322,92 @@ describe("control write telemetry", () => {
   });
 });
 
+
+describe("control write telemetry: async span accounting (#1545)", () => {
+  const delay = (lines: string[]) => lines.map(record).find(row => row.type === "control_write_loop_delay");
+
+  test("a synchronous block after an await is attributed to its span, not to an open wait", async () => {
+    let clock = 0;
+    const lines: string[] = [];
+    const telemetry = new ControlWriteTelemetry({ emit: line => lines.push(line), now: () => clock });
+    telemetry.start();
+    try {
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const pending = telemetry.run({ kind: "task_assign", task: 9 }, () => true, () => controlWriteSpan("memory", async () => {
+        await Promise.resolve(); clock += 5000; await gate;
+      }));
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      telemetry.sample();
+      expect(delay(lines)).toMatchObject({ attribution: "sync_overlap_observed" });
+      expect(delay(lines)?.spans).toContainEqual({ kind: "task_assign", task: 9, phase: "memory", durationMs: 5000 });
+      release(); await pending;
+    } finally { telemetry.stop(); }
+  });
+
+  test("a microtask-bound span that settles before the probe still shows in the delayed probe", async () => {
+    let clock = 0;
+    const lines: string[] = [];
+    const telemetry = new ControlWriteTelemetry({ emit: line => lines.push(line), now: () => clock });
+    telemetry.start();
+    try {
+      await telemetry.run({ kind: "task_assign", task: 11 }, () => true, () => controlWriteSpan("memory", async () => {
+        for (let i = 0; i < 1024; i++) { await Promise.resolve(); clock += 16; }
+      }));
+      telemetry.sample();
+      expect(delay(lines)).toMatchObject({ attribution: "sync_overlap_observed" });
+      const row = (delay(lines)?.spans as { phase: string; durationMs: number }[]).find(span => span.phase === "memory");
+      expect(row?.durationMs).toBeGreaterThanOrEqual(1000);
+    } finally { telemetry.stop(); }
+  });
+
+  test("genuine asynchronous waiting with an on-time probe stays a wait and is not blamed", async () => {
+    let clock = 0, resume!: () => void;
+    const lines: string[] = [];
+    const telemetry = new ControlWriteTelemetry({ emit: line => lines.push(line), now: () => clock });
+    telemetry.start();
+    try {
+      const pending = telemetry.run({ kind: "hub_review", task: 14 }, () => true, () => controlWriteSpan("external", () => new Promise<void>(resolve => { resume = resolve; })));
+      // Real I/O waiting leaves no gap between microtask turns: let the follow-up drain on a macrotask, then move the held clock.
+      await new Promise<void>(done => setImmediate(done));
+      for (let i = 0; i < 20; i++) { clock += 100; telemetry.sample(); }
+      expect(delay(lines)).toBeUndefined();
+      resume(); await pending;
+      expect(telemetry.status().recentSpans).toBe(0);
+    } finally { telemetry.stop(); }
+  });
+
+  test("a genuine I/O wait that settles while an overdue probe is pending is not blamed as a synchronous slice", async () => {
+    let clock = 0;
+    const lines: string[] = [];
+    const telemetry = new ControlWriteTelemetry({ emit: line => lines.push(line), now: () => clock });
+    telemetry.start();
+    try {
+      let resume!: () => void;
+      const pending = telemetry.run({ kind: "hub_review", task: 21 }, () => true, () => controlWriteSpan("external", () => new Promise<void>(resolve => { resume = resolve; })));
+      await new Promise<void>(done => setImmediate(done)); // the span yielded to the loop: it is a wait
+      clock += 5000; // an unrelated block, then the I/O completes and the span settles
+      resume(); await pending;
+      telemetry.sample();
+      const row = delay(lines);
+      expect(row === undefined || !(row.spans as { phase: string }[]).some(span => span.phase === "external")).toBe(true);
+    } finally { telemetry.stop(); }
+  });
+
+  test("the follow-up work is bounded per request and measured: real waits and many nested async spans", async () => {
+    let clock = 0;
+    const telemetry = new ControlWriteTelemetry({ emit: () => {}, now: () => clock });
+    telemetry.start();
+    try {
+      await telemetry.run({ kind: "hub_review", task: 1 }, () => true, () => controlWriteSpan("external", () => new Promise<void>(resolve => setTimeout(resolve, 5))));
+      expect(telemetry.followedHops()).toBeLessThanOrEqual(16);
+      const before = telemetry.followedHops();
+      await telemetry.run({ kind: "task_assign", task: 2 }, () => true, async () => {
+        const spans = Array.from({ length: 50 }, (_, i) => controlWriteSpan(i % 2 ? "memory" : "external", () => new Promise<void>(resolve => setTimeout(resolve, 5))));
+        await Promise.all(spans);
+      });
+      expect(telemetry.followedHops() - before).toBeLessThanOrEqual(16);
+      expect(telemetry.status().recentSpans).toBe(0);
+    } finally { telemetry.stop(); }
+  });
+});

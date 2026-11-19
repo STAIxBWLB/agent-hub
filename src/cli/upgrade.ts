@@ -1,3 +1,4 @@
+import { scheduleRuntimeCapturePrune } from "../hub/runtime-capture-prune.ts";
 import { RecoveryLaunchError, type RecoveryLaunchFailure } from "./recovery-launch.ts";
 import { nativeRestoreGroup } from "../adapters/definitions/native-identity-defaults.ts";
 import { definitionOf } from "../adapters/registry.ts";
@@ -659,6 +660,11 @@ export function guardedRecoveryDriver(driver: RecoveryDriver, operation: () => R
   };
 }
 
+/** #1546: a start that ran while this operation held its lock scheduled nothing; schedule runtime maintenance now that the lock is released. */
+function pruneAfterRelease(home: string): void {
+  try { scheduleRuntimeCapturePrune(home); } catch { /* maintenance never changes a recovery outcome */ }
+}
+
 /** Resumable state machine. Driver actions are preceded by receipts and followed by live readback. */
 export async function runRecovery(id: string, driver: RecoveryDriver, home = hubHome(), idleTimeoutMs = 600_000): Promise<RecoveryOperation> {
   // Read once to validate the selector, then claim the runner before trusting any
@@ -920,7 +926,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     if (scope === undefined && op.plan.kind === "upgrade" && !op.globalInstalled) {
       step("install-global"); await driver.installGlobal(op); op.globalInstalled = true; save();
     }
-    releaseRecoveryLock(id, home, scope); op.phase = "completed"; step("completed");
+    releaseRecoveryLock(id, home, scope); pruneAfterRelease(home); op.phase = "completed"; step("completed");
   } catch (error) {
     // #215: every runner error ends with the choices status shows, read from every open source, never only this one.
     const presentationError = error instanceof RecoveryPresentationError ? error
@@ -1081,7 +1087,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
     }
     delete op.error; delete op.failure; delete op.blockedReattachment; delete op.presentationCause;
     op.phase = "cancelled"; op.step = "cancelled"; op.updatedAt = driver.now();
-    writeOperation(id, op, home); releaseRecoveryLock(id, home, scope);
+    writeOperation(id, op, home); releaseRecoveryLock(id, home, scope); pruneAfterRelease(home);
   } catch (error) {
     if (isDatabaseBusy(error)) throw new RecoveryDatabaseBusy();
     throw error;
@@ -1223,7 +1229,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     }
     delete op.error; delete op.failure;
     op.phase = "cancelled"; op.step = "disposed: stop-and-archive (abandoned, not completed)"; op.updatedAt = driver.now();
-    writeOperation(id, op, home); releaseRecoveryLock(id, home, scope);
+    writeOperation(id, op, home); releaseRecoveryLock(id, home, scope); pruneAfterRelease(home);
     return op;
   } finally { releaseRunner(); }
 }

@@ -127,3 +127,14 @@ test("#1541 a receipt-ceiling deferral names the supported command and states th
   expect(text).toContain(`newest ${RETAINED_TERMINAL_RECEIPTS} finished`); expect(text).toContain(`${RETAINED_SELECTED_RECEIPTS} finished ones naming a runtime`);
   expect(text).not.toContain("runtime-prune.db");
 });
+
+test("#1546 a pass deferred only by recovery coordination is not a doctor failure; a real deferral still is", () => {
+  const recovery = fixture();
+  ledger(recovery, { outcome: JSON.stringify({ removed: 0, quarantined: [], deferred: "runtime capture pruning deferred: project recovery coordination is present" }) });
+  const ok = runtimePruneHealth(recovery.home);
+  expect(ok.every(check => check.ok !== false && check.ok !== undefined || ok.length === 0)).toBe(true);
+  expect(detail(ok)).toContain("scheduled again after the recovery lock is released");
+  const real = fixture();
+  ledger(real, { outcome: JSON.stringify({ removed: 0, quarantined: [], deferred: "runtime capture pruning deferred: a live or uncertain legacy daemon has no registry-bound runtime identity" }) });
+  expect(runtimePruneHealth(real.home)).toContainEqual(expect.objectContaining({ ok: false }));
+});
