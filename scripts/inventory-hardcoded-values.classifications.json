@@ -2121,6 +2121,7 @@
   "src/hub/recovery-policy.ts:publicActorBoard:inline:signals.length > 1024=1024#0": "safety floor",
   "src/hub/recovery-policy.ts:readRecoveryTargetFeatures:inline:values.length > 128=128#0": "safety floor",
   "src/hub/recovery-store.ts:<anonymous>:inline:setTimeout=100#0": "operational",
+  "src/hub/recovery-store.ts:HOLD_CHECK_DB_BUSY_TIMEOUT_MS:constant:HOLD_CHECK_DB_BUSY_TIMEOUT_MS=1#0": "safety floor",
   "src/hub/recovery-store.ts:RUNNER_DB_BUSY_TIMEOUT_MS:constant:RUNNER_DB_BUSY_TIMEOUT_MS=3000#0": "operational",
   "src/hub/recovery-store.ts:stopSignedRunner:inline:waitMs=5000#0": "test seam",
   "src/hub/registry.ts:BASE_PORT:constant:BASE_PORT=4600#0": "contract",
