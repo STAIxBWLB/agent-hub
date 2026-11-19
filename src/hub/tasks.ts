@@ -68,7 +68,7 @@ import { folderDetail, MAX_NEW_PER_POLL, scheduleNext, SOURCE_ID, scheduledDetai
 import { INTAKE_MAX_SOURCES, INTAKE_MAX_TEXT, intakeDetail, intakeSystemPrompt, intakeUserMessage, parseIntakeDetail, parseIntakeSplit, plannerRequestBody } from "./intake.ts";
 import { DEFAULT_BAND, EPISODE_LOOKBACK, sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
 import { readSecurityScan } from "./security-baseline.ts";
-import { cleanMergeCost } from "./cost-governance.ts";
+import { cleanMergeCost, mergeCostFrom } from "./cost-governance.ts";
 import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
 import { VERSION } from "../version.ts";
@@ -76,7 +76,7 @@ import { NoWriteTurns } from "./no-writes.ts";
 import { readGitHubImport, readGitHubIssuePages, readGitHubMilestonePages, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
-import { adoptMergeGates, guardedMerge, mergeModeFor, mergeView, readAdoptMergeEvidence, requiredChecksFor, type MergeView } from "./sdlc-merge.ts";
+import { MERGE_READBACK_DEADLINE_MS, adoptMergeGates, guardedMerge, mergeModeFor, mergeView, readAdoptMergeEvidence, requiredChecksFor, type MergeView } from "./sdlc-merge.ts";
 import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
 import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-scope.ts";
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, findingFollowUps, positionalFindingId, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
@@ -126,7 +126,7 @@ import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, taskWait, TASK_WAIT_MAX_MS, TASK_WAIT_REASON_MAX, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
-import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState, localSupersedingTask, storedSpecAcceptance, carriedSpecAcceptance } from "./sdlc.ts";
+import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type ReadbackMergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState, localSupersedingTask, storedSpecAcceptance, carriedSpecAcceptance } from "./sdlc.ts";
 
 /** #1176: refusals for an agent that reaches a person-run card by a path other than the pull gate. */
 const PERSON_RUN_SPLIT = "a person-run card is the person's to split: its children would be unmarked cards an agent could take (the person's own split marks every child person-run)";
@@ -6788,14 +6788,22 @@ export class Tasks {
     // #481 S7: the merge-time readback the guarded merge recorded on each merged task's receipt (host-written, never a tool input), and the two series that are not made of tasks.
     const mergedAt: Record<number, number> = {}, ciReruns: Record<number, number | null> = {}, ciRuns: Record<number, number | null> = {}, reviews: Record<number, number | null> = {};
     for (const task of rows) {
-      const merge = task.sdlc?.merge;
+      const guarded = task.sdlc?.merge;
+      const merge = guarded?.state === "merged" ? guarded : task.sdlc?.mergeReadback;
       if (!visibleIds.has(task.id) || merge?.state !== "merged") continue;
       const cost = cleanMergeCost(merge.cost);
-      const at = cost?.mergedAt ?? (Number.isSafeInteger(merge.at) ? merge.at : null);
+      const at = cost?.mergedAt ?? (merge === guarded && Number.isSafeInteger(merge.at) ? merge.at : null);
       if (at !== null) mergedAt[task.id] = at;
       if (cost) { ciReruns[task.id] = cost.ciReruns; ciRuns[task.id] = cost.ciRuns; reviews[task.id] = cost.reviews; }
     }
-    return sdlcMetrics(tasks, { ...(cutoff !== undefined ? { since: cutoff } : {}), ...(this.d.sdlc?.config().bands ? { bands: this.d.sdlc.config().bands } : {}), stalls, mergedAt, ciReruns, ciRuns, reviews, external: this.externalSeries(), ...(merged ?? {}) });
+    return { ...sdlcMetrics(tasks, { ...(cutoff !== undefined ? { since: cutoff } : {}), ...(this.d.sdlc?.config().bands ? { bands: this.d.sdlc.config().bands } : {}), stalls, mergedAt, ciReruns, ciRuns, reviews, external: this.externalSeries(), ...(merged ?? {}) }), ...(this.securityScanCounts() ? { securityScan: this.securityScanCounts() } : {}) };
+  }
+
+  /** Latest configured scan source counts; no repository or alert text is projected. */
+  securityScanCounts(): Record<string, number | null> | undefined {
+    const scan = this.d.sdlc?.config().securityScan, repo = scan?.repo ?? this.d.repository;
+    if (!scan || typeof repo !== "string" || !this.nameable(repo)) return undefined;
+    return this.d.board.latestSecurityScanCounts(repo, scan.sources.join(","));
   }
 
   /** #481 S7: one point per shipped release (1 for a hotfix, 0 otherwise; a release with no recorded train is skipped, never a 0) and one per recorded security scan whose total is known. */
@@ -7753,12 +7761,19 @@ export class Tasks {
       return result;
     };
     const evidence = await readAdoptMergeEvidence(receipt, run);
-    const now = current();
+    current();
     const gates = adoptMergeGates(evidence, head, requiredChecksFor(config, repo));
     if (gates.length) throw new PreEffectToolRefusal(gates.join("; "));
-    const capacity = this.capacityBefore(now);
+    const costDeadline = performance.now() + MERGE_READBACK_DEADLINE_MS;
+    const cost = evidence?.costSnapshot ? await readPrCostHistory(repo, pr as number, (args, timeout, cwd, cap) => {
+      const remaining = costDeadline - performance.now();
+      return remaining > 0 ? run(args, Math.min(timeout ?? remaining, remaining), cwd, cap) : Promise.resolve({ code: 1, stdout: "" });
+    }, evidence.costSnapshot, head).then(pr => pr?.complete ? mergeCostFrom(pr) : undefined, () => undefined) : undefined;
+    const latest = current();
+    const merge: ReadbackMergeRecord = { repo, pr: pr as number, head, at: Date.now(), state: "merged", ...(evidence?.mergeCommit ? { mergeCommit: evidence.mergeCommit } : {}), ...(cost ? { cost } : {}) };
+    const capacity = this.capacityBefore(latest);
     current(); // No await between the last authority/privacy/flow check and the sole approval write.
-    const next = this.d.board.adoptMerge(now.id, by, receipt, head, now.history.length, HOST_MERGE_ADOPTION);
+    const next = this.d.board.adoptMerge(latest.id, by, { ...receipt, mergeReadback: merge }, head, latest.history.length, HOST_MERGE_ADOPTION);
     this.cohorts.closed(next.id);
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id);
     this.writePlannerNotices(next, capacity, true);
@@ -7840,6 +7855,61 @@ export class Tasks {
     if(!current.history.some(h=>h.by===HUB && h.event==="merge refused" && h.note===note))
       this.d.board.update(id,HUB,"merge refused",{},note,{...(this.isPii(current)||this.d.privateTurn?.(by)?{withheld:true}:{})});
   }
+  /** Observe one eligible externally merged approved PR without mutating GitHub. */
+  async captureExternalMerge(id: number): Promise<"merged" | "closed" | "retry" | "skip"> {
+    const task = this.d.board.get(id), config = this.d.sdlc?.config(), receipt = task?.sdlc;
+    const repo = receipt?.repo, pr = receipt?.pr, head = task && this.reviewHead(task);
+    if (!task || task.state !== "approved" || this.isPii(task) || (task.owner && this.d.privateTurn?.(task.owner)) || !config || !repo || !pr || !head || !/^[a-f0-9]{40}$/.test(head)
+      || this.repositories.scope(task.refs).key !== this.repositories.scope({ repo }).key || mergeModeFor(config, repo) !== "off" || (receipt?.merge?.state === "merged" || receipt?.mergeReadback?.state === "merged") || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return "skip";
+    const identity = JSON.stringify([task.history.length, task.updated, task.owner, receipt, config]);
+    const current = () => {
+      const now = this.d.board.get(id), policy = this.d.sdlc?.config();
+      return !!now && !this.isPii(now) && !(now.owner && this.d.privateTurn?.(now.owner)) && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError
+        && JSON.stringify([now.history.length, now.updated, now.owner, now.sdlc, policy]) === identity;
+    };
+    const deadline = performance.now() + MERGE_READBACK_DEADLINE_MS;
+    const run: SdlcGh = (args, timeout, cwd, cap) => {
+      const remaining = deadline - performance.now();
+      return current() && remaining > 0 ? (this.d.sdlc?.gh ?? sdlcGh)(args, Math.min(timeout ?? remaining, remaining), cwd, cap) : Promise.resolve({ code: 1, stdout: "" });
+    };
+    const evidence = await readSdlcPr(receipt!, run).catch(() => undefined);
+    if (!current()) return "skip";
+    if (evidence?.state === "CLOSED") return "closed";
+    if (evidence?.state !== "MERGED" || evidence.head !== head) return "retry";
+    const cost = await readPrCostHistory(repo, pr, run, undefined, head).then(value => value?.complete ? mergeCostFrom(value) : undefined, () => undefined);
+    if (!current()) return "skip";
+    const now = this.d.board.get(id)!;
+    const merge: ReadbackMergeRecord = { repo, pr, head, at: Date.now(), state: "merged", ...(evidence.mergeCommit ? { mergeCommit: evidence.mergeCommit } : {}), ...(cost ? { cost } : {}) };
+    this.d.board.update(id, HUB, "merge observed", { sdlc: { ...now.sdlc!, mergeReadback: merge } }, undefined, {}, now.history.length);
+    return "merged";
+  }
+
+  // ponytail: this in-memory schedule is lost on restart; only approvals still within 24 hours are retried.
+  private readonly mergeReadbackSchedule = new Map<number, { approval: number; next: number; closed: boolean }>();
+  private mergeReadbackRunning = false;
+  async settleMergeReadbacks(now = Date.now()): Promise<void> {
+    if (this.mergeReadbackRunning || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return;
+    this.mergeReadbackRunning = true;
+    try {
+      let reads = 0;
+      // Unseen work goes first, then the least recently scheduled read, so a busy backlog cannot starve later tasks.
+      const candidates = this.d.board.list().sort((a, b) => (this.mergeReadbackSchedule.get(a.id)?.next ?? -Infinity) - (this.mergeReadbackSchedule.get(b.id)?.next ?? -Infinity) || a.id - b.id);
+      for (const task of candidates) {
+        if (reads >= 3 || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) break;
+        if (task.state !== "approved" || this.isPii(task) || !task.sdlc?.repo || !task.sdlc.pr || task.sdlc.merge || task.sdlc.mergeReadback) { this.mergeReadbackSchedule.delete(task.id); continue; }
+        const approval = task.history.findLastIndex(entry => entry.event === "approved" || entry.event === "done" && entry.by === task.owner);
+        const at = task.history[approval]?.at;
+        if (approval < 0 || at === undefined || now < at || now - at >= 24 * 60 * 60_000) { this.mergeReadbackSchedule.delete(task.id); continue; }
+        const previous = this.mergeReadbackSchedule.get(task.id);
+        if (previous?.approval === approval && (previous.closed || now < previous.next)) continue;
+        this.mergeReadbackSchedule.set(task.id, { approval, next: now + 10 * 60_000, closed: false });
+        reads++;
+        const outcome = await this.captureExternalMerge(task.id).catch(() => "retry" as const);
+        if (outcome === "closed") this.mergeReadbackSchedule.set(task.id, { approval, next: now + 10 * 60_000, closed: true });
+      }
+    } finally { this.mergeReadbackRunning = false; }
+  }
+
   private mergeRecordCurrent(id:number,by:PeerId,record:MergeRecord,artifactCurrent:()=>boolean):Task|undefined {
     const now=this.d.board.get(id);
     return artifactCurrent() && now && now.sdlc?.repo===record.repo && now.sdlc.pr===record.pr && now.sdlc.reviewedHead===record.head
@@ -8807,6 +8877,7 @@ export class Tasks {
     if (sdlc.reviewedHead !== refresh.commit) delete sdlc.reviewedHead;
     if (sdlc.localHead !== refresh.commit) { delete sdlc.localHead; delete sdlc.localResult; }
     delete sdlc.merge;
+    delete sdlc.mergeReadback;
     return { ...task, sdlc };
   }
 

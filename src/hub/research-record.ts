@@ -141,10 +141,11 @@ export function evidenceEntry(raw: unknown): EvidenceEntry | undefined {
 /** A board task (live `Task` or a parsed row) as closed evidence. The title, detail, plan, refs and every note stay behind. */
 export function evidenceTask(raw: { id: number; history?: unknown; sdlc?: unknown }, handoffs?: { in: number; out: number }): EvidenceTask {
   const history = (Array.isArray(raw.history) ? raw.history : []).flatMap(entry => { const e = evidenceEntry(entry); return e ? [e] : []; }).sort((a, b) => a.at - b.at);
-  const merge = text(text(raw.sdlc)?.merge);
+  const receipt = text(raw.sdlc), guarded = text(receipt?.merge);
+  const merge = guarded?.state === "merged" ? guarded : text(receipt?.mergeReadback);
   let mergeEvidence: EvidenceMerge | undefined;
   if (merge?.state === "merged") {
-    const cost = cleanMergeCost(merge.cost), at = cost?.mergedAt ?? (typeof merge.at === "number" && Number.isSafeInteger(merge.at) ? merge.at : null);
+    const cost = cleanMergeCost(merge.cost), at = cost?.mergedAt ?? (merge === guarded && typeof merge.at === "number" && Number.isSafeInteger(merge.at) ? merge.at : null);
     mergeEvidence = { mergedAt: at, ciRuns: cost?.ciRuns ?? null, ciReruns: cost?.ciReruns ?? null, reviews: cost?.reviews ?? null };
   }
   return { id: raw.id, history, ...(mergeEvidence ? { merge: mergeEvidence } : {}), ...(handoffs ? { handoffs } : {}) };

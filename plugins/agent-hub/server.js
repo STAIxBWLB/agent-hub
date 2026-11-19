@@ -31648,6 +31648,7 @@ init_sdlc();
 init_review_findings();
 init_eval_gate();
 init_sdlc();
+var MERGE_READBACK_INTERVAL_MS = 5 * 60000;
 
 // src/hub/sdlc-mirror.ts
 init_envelope();

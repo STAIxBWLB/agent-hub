@@ -2591,6 +2591,18 @@ export class Board {
     const rows = this.db.query(`SELECT id, at, total FROM security_scans WHERE repo=? AND sources=?${knownOnly ? " AND total IS NOT NULL" : ""} ORDER BY id DESC LIMIT ?`).all(repo.toLowerCase(), sources, Math.max(1, Math.min(1000, limit))) as { id: number; at: number; total: number | null }[];
     return rows.reverse();
   }
+  /** The latest recorded per-source scan counts, with unreadable values kept unknown. */
+  latestSecurityScanCounts(repo: string, sources: string): Record<string, number | null> | undefined {
+    const row = this.db.query("SELECT counts FROM security_scans WHERE repo=? AND sources=? ORDER BY id DESC LIMIT 1").get(repo.toLowerCase(), sources) as { counts: string } | null;
+    if (!row) return undefined;
+    let counts: unknown;
+    try { counts = JSON.parse(row.counts); } catch { counts = undefined; }
+    const raw = counts && typeof counts === "object" && !Array.isArray(counts) ? counts as Record<string, unknown> : {};
+    return Object.fromEntries(sources.split(",").filter(source => ["dependabot", "secret_scanning", "code_scanning"].includes(source)).map(source => {
+      const value = raw[source];
+      return [source, typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null];
+    }));
+  }
   recordSecurityScan(row: { repo: string; sources: string; counts: Record<string, number | null>; total: number | null }): number {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(row.repo) || !/^[a-z_,]{1,80}$/.test(row.sources) || (row.total !== null && (!Number.isSafeInteger(row.total) || row.total < 0))) throw new Error("invalid security scan row");
     return Number(this.db.query("INSERT INTO security_scans(at, repo, sources, counts, total) VALUES(?,?,?,?,?)").run(Date.now(), row.repo.toLowerCase(), row.sources, JSON.stringify(row.counts), row.total).lastInsertRowid);

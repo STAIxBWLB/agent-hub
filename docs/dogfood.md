@@ -10,6 +10,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 
 | Feature | State here | Measured by |
 | --- | --- | --- |
+| External merge cost and scan diagnostics (#1555 AC2) | source and fixture coverage; available here after release and restart | compare observed merged PR cost coverage and per-source unknown scan counts in `ahub sdlc metrics` and `ahub sdlc status` |
 | Quota event sampling (#1555 AC4) | source and fixture coverage; active here after release and restart | compare recorded quota row rate and research-quality gap duration across the upgrade |
 | Routine snapshot cooldown (#1550 AC3) | source and fixture coverage; active here after release and restart | count cooldown-start diagnostics and turn-end events with unknown file evidence; compare boundary latency and verify a retry after ten minutes |
 | Marker-only no-reply guidance (#1550 AC4) | source and fake-agent coverage; available here after release and upgrade | compare status reply hops and queues after upgrade; fake ACP and Codex tests pin marker-only completion |

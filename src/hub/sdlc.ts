@@ -65,8 +65,14 @@ export interface MergeRecord {
   /** #481 S7: the merged PR's review and CI figures, read once at merge by the host. Absent when the PR could not be read; fields inside are null when unknown. */
   cost?: import("./cost-governance.ts").MergeCost;
 }
+/** A merge observed by readback, with no locally executed merge or cleanup. */
+export interface ReadbackMergeRecord {
+  repo: string; pr: number; head: string; at: number; state: "merged";
+  mergeCommit?: string; cost?: import("./cost-governance.ts").MergeCost;
+}
 export interface SdlcReceipt {
   merge?: MergeRecord;
+  mergeReadback?: ReadbackMergeRecord;
   stage: SdlcStage;
   planReview?: PlanReviewReceipt;
   criteria?: CriteriaReceipt;
@@ -284,7 +290,7 @@ export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = 
 
 function receiptIdentity(next: SdlcReceipt, previous: SdlcReceipt, raw: Record<string, unknown>): SdlcReceipt {
   const checklist = raw.criteria ?? raw.phase;
-  if (next.repo !== previous.repo || next.pr !== previous.pr || next.head !== previous.head || next.reviewedHead !== previous.reviewedHead || next.localHead !== previous.localHead) delete next.merge;
+  if (next.repo !== previous.repo || next.pr !== previous.pr || next.head !== previous.head || next.reviewedHead !== previous.reviewedHead || next.localHead !== previous.localHead) { delete next.merge; delete next.mergeReadback; }
   // A test receipt never carries across a different linked issue or artifact.
   if (raw.redFirst === undefined && (next.repo !== previous.repo || next.issue !== previous.issue || next.pr !== previous.pr)) delete next.redFirst;
   // An acceptance names one spec issue; relinking the receipt to another drops it (#481 S1).
@@ -739,15 +745,21 @@ async function identicalTreeGate(repository: string, tree: string, run: SdlcGh, 
 }
 
 /** PR cost evidence excludes titles, bodies and comment text; unknown/truncated coverage never becomes zero. */
-export async function readPrCostHistory(repository: string, number: number, run: SdlcGh = sdlcGh): Promise<import("./cost-governance.ts").CostPr | undefined> {
+export async function readPrCostHistory(repository: string, number: number, run: SdlcGh = sdlcGh, snapshot?: unknown, expectedHead?: string): Promise<import("./cost-governance.ts").CostPr | undefined> {
   if (!repo(repository) || !id(number)) return;
   const [owner, name] = repository.split("/");
   try {
     const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number state headRefOid mergedAt commits(first:100){nodes{commit{oid}} pageInfo{hasNextPage}} reviews(first:100){nodes{databaseId commit{oid}} pageInfo{hasNextPage}}}}}";
-    const reply = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], 10_000, undefined, 128 * 1024);
-    if (reply.code !== 0) return;
-    const parsed = JSON.parse(reply.stdout), pr = parsed.data?.repository?.pullRequest;
-    if (parsed.errors || pr?.number !== number || !["OPEN", "CLOSED", "MERGED"].includes(pr.state)) return;
+    let pr: any;
+    if (snapshot !== undefined) pr = snapshot;
+    else {
+      const reply = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], 10_000, undefined, 128 * 1024);
+      if (reply.code !== 0) return;
+      const parsed = JSON.parse(reply.stdout);
+      if (parsed.errors) return;
+      pr = parsed.data?.repository?.pullRequest;
+    }
+    if (pr?.number !== number || !["OPEN", "CLOSED", "MERGED"].includes(pr.state) || (expectedHead !== undefined && pr.headRefOid !== expectedHead)) return;
     const result: import("./cost-governance.ts").CostPr = { repo: repository, pr: number, state: pr.state, complete: false,
       ...(typeof pr.mergedAt === "string" && Number.isFinite(Date.parse(pr.mergedAt)) ? { mergedAt: Date.parse(pr.mergedAt) } : {}) };
     if (pr.state !== "MERGED") return result; // Cost metrics count merged PRs, not an active work queue.

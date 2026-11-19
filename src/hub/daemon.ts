@@ -53,6 +53,7 @@ import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
 import { NativeHookLaunches, type NativeHookLaunch } from "./native-hook-launch.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
+import { MERGE_READBACK_INTERVAL_MS } from "./sdlc-merge.ts";
 import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunnerState, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
 import { isDenied, sbplString } from "../local/deny.ts";
@@ -768,6 +769,8 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 export interface DaemonOptions {
   /** Host-only fixture override; production reads the active memory home's and execution repository's public Record policy. */
   effectiveRecordPolicy?: (cwd: string) => { enabled: boolean; version: string } | undefined;
+  /** Host-only test trigger; production schedules its own unreferenced settlement interval. */
+  mergeReadbackTrigger?: (tick: () => void) => () => void;
   /** Host-only numeric startup reader observation; never read from config or control input. Observer failure changes no replay state. */
   startupSeedObserved?: (observation: { readPasses: number; readBytes: number }) => void;
   /** Host-only test/embedding port; never read from project configuration or a tool. */
@@ -4843,6 +4846,20 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch { log(`accepted delivery timeout notice publication unconfirmed; inspect ahub queue list --peer ${sanitize(conductor)} and ahub queue show ${sanitize(row.id)}`); }
     }
   };
+  let mergeReadbackPass: Promise<void> | undefined;
+  const mergeReadbackTick = () => {
+    if (!mergeReadbackPass) mergeReadbackPass = tasks.settleMergeReadbacks(Date.now()).catch(() => {}).finally(() => { mergeReadbackPass = undefined; });
+  };
+  const stopMergeReadbacks = opts.mergeReadbackTrigger?.(mergeReadbackTick);
+  const mergeReadbackTimer = stopMergeReadbacks ? undefined : setInterval(mergeReadbackTick, MERGE_READBACK_INTERVAL_MS);
+  mergeReadbackTimer?.unref();
+  let mergeReadbackStopped = false;
+  const stopMergeReadbackSchedule = () => {
+    if (mergeReadbackStopped) return;
+    mergeReadbackStopped = true; stopMergeReadbacks?.();
+    if (mergeReadbackTimer) clearInterval(mergeReadbackTimer);
+  };
+  startupCleanup.push(async () => { stopMergeReadbackSchedule(); await mergeReadbackPass; });
   const intervals = [
     setInterval(() => {
       try { sweepInvocations(); } catch { log("invocation deadline sweep failed; the rows keep their state"); }
@@ -6980,6 +6997,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].filter(peer => !peer.id.includes("@")).some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
     if (tasks.guidanceProbesPending() !== 0) return false; // Active and uncertain fixture work retains its project lane.
     if (checkPending.size !== 0) return false;
+    if (mergeReadbackPass) return false; // A host readback awaiting GitHub must settle before recovery commits.
     if (tasks.autoPullsPending() !== 0) return false; // #785 P1c: an automatic backlog pull mid-admission would write after the commit's digest; its own line keeps the line above exact for scripts/seeds.json
     if (tasks.queuePressureRechecksPending() !== 0) return false;
     if (tasks.schedulesPending() !== 0) return false; // #512a: a scheduled run mid-admission (its PII screen is awaited) would write after the commit's digest; the hold fence refuses its write, and this waits for it to end
@@ -10929,6 +10947,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
       ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
       ...(tasks.guidanceProbesPending() !== 0 ? ["guidance probe work in flight"] : []),
+      ...(mergeReadbackPass ? ["an external merge readback in flight"] : []),
       ...(tasks.autoPullsPending() !== 0 ? ["an automatic backlog pull in flight"] : []),
       ...(tasks.queuePressureRechecksPending() !== 0 ? ["a queue-pressure assignment recheck in flight"] : []),
       ...(tasks.schedulesPending() !== 0 ? ["a scheduled task proposal in flight"] : []),
@@ -12689,7 +12708,7 @@ export async function startDaemon(opts: DaemonOptions) {
             const current = board.get(task.id) ?? task;
             rows.push({ id: task.id, title: tasks.publicTitle(current), ...(tasks.isPii(current) ? {} : { receipt: tasks.publicView(current).sdlc }), ...status });
           }
-          reply({ ok: true, mode: lifecycleConfig.mode, rows, truncated: selected.length > 100 });
+          reply({ ok: true, mode: lifecycleConfig.mode, rows, ...(tasks.securityScanCounts() ? { securityScan: tasks.securityScanCounts() } : {}), truncated: selected.length > 100 });
         })().catch(() => reply({ ok: false, error: "lifecycle readback unavailable" }));
         return;
       }
@@ -13366,6 +13385,7 @@ export async function startDaemon(opts: DaemonOptions) {
     writeStatus();
     dashboard?.stop();
     stopConfigWatch();
+    stopMergeReadbackSchedule();
     clearInterval(sweepTimer);
     clearMemorySyncTimers();
     clearInterval(schedulesTimer);
@@ -13399,6 +13419,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.
       for (const exit of exits) if (exit.status === "rejected") log(`peer stop failed during shutdown: ${(exit.reason as Error)?.message ?? exit.reason}`);
       await runnerStopped;
+      await mergeReadbackPass;
       await Promise.all([...modelRelays.values()].map(relay => relay.close()));
       await egress?.close();
       await webEgress?.close();
