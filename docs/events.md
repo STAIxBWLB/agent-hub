@@ -203,3 +203,5 @@ per-model-step tool observations, and Claude contributes tool inputs from turn-f
 a native turn id. Missing peers or intervals therefore mean unobserved, not zero activity. Escalation uses only known
 native turn ids; observations without one still contribute progress dimensions but cannot establish separate attempts
 or the eight-turn spinning threshold.
+
+Quota rows record the first reading, material changes and a 15-minute heartbeat; pending last readings are flushed before a long silence or clean shutdown. `ahub report` counts recorded quota rows and hard rows, not provider polls. JSON retains `quota.readings` and `quota.hard`.

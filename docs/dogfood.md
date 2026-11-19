@@ -10,6 +10,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 
 | Feature | State here | Measured by |
 | --- | --- | --- |
+| Quota event sampling (#1555 AC4) | source and fixture coverage; active here after release and restart | compare recorded quota row rate and research-quality gap duration across the upgrade |
 | Marker-only no-reply guidance (#1550 AC4) | source and fake-agent coverage; available here after release and upgrade | compare status reply hops and queues after upgrade; fake ACP and Codex tests pin marker-only completion |
 | Roadmap milestones (#1479 R1) | source and isolated fixture coverage; not enabled in the installed hub until release/restart | computed public approved/total and cached issue/spec/train counts; unknown evidence stays unknown; private membership is count-only; real control/CLI, CAS, inheritance, privacy and conditional recovery tests |
 | Roadmap bottom-up placement (#1481 R3) | source and fake-`gh`/fake-model coverage; not enabled in the installed hub until release/restart; `import-github` is dry-run by default and is never run with `--apply` against this repository's GitHub in a test | `ahub roadmap unplaced` row counts with `partial`/`unavailable` shown; the share of triage suggestions accepted rather than rejected or dropped as unsupported; a second `import-github --apply` that changes nothing; private tasks only ever counted |
