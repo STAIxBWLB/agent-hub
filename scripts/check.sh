@@ -154,8 +154,9 @@ test_pid=$!
 # by line): the quiet bound (AHUB_CHECK_QUIET_S, 300 s without a result line or file header) is the hang detector and AHUB_CHECK_HANG_S the backstop.
 # #1086: the backstop is sized from measured runs, not guessed. The full suite on the dgx02 Linux host takes 1487 s of test time (1519 s wall, two runs 1483 s and 1487 s
 # at current main) and a `--changed` run that selects most of it 925 to 958 s, so the old 960 s default cut both while they were still passing tests (exit 143, quiet_for 1s).
-# 2250 s is 1.5 times the longest full run. A hung run is still stopped by the quiet bound within AHUB_CHECK_QUIET_S, long before this one; hosted CI sets its own value per shard.
-scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-2250}" "$progress" "${AHUB_CHECK_QUIET_S:-300}" &
+# 2250 s was 1.5 times the longest full run, then healthy full runs on the remote host passed it and were ended at exit 143 while still printing passing results; the owner raised it to 2700 s (45 min) on 2026-11-19 (#1564).
+# A hung run is still stopped by the quiet bound within AHUB_CHECK_QUIET_S, long before this one; hosted CI sets its own value per shard.
+scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-2700}" "$progress" "${AHUB_CHECK_QUIET_S:-300}" &
 watch_pid=$!
 wait "$test_pid" || tests=$?
 test_pid=""

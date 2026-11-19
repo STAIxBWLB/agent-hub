@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Raise the default total backstop AHUB_CHECK_HANG_S of scripts/check.sh from 2250 s to 2700 s; AHUB_CHECK_QUIET_S stays 300 and is still what catches a hang (Refs #1564, hub task 1022).
 - Record observed merge costs, carried-spec timing and per-source security scan availability (Refs #1555).
 - Record quota rows on meaningful changes and a 15-minute heartbeat while preserving measured silence gaps (Refs #1555).
 - Control-write telemetry now attributes synchronous slices after an await and microtask-bound spans that settle before the loop probe, while genuine async waits stay waits (Refs #1545, hub task 1015).
