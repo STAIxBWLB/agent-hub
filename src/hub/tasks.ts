@@ -893,11 +893,14 @@ export class Tasks {
     });
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
     // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
+    d.bus.onPeerAdded = peer => {
+      this.autoPullAttached.delete(peer);
+      if (d.bus.stateOf(peer) === "idle") this.autoPullForAttachment(peer);
+    };
     d.bus.tap((e) => {
       if (e.t === "state" && e.state === "offline") this.autoPullAttached.delete(e.peer);
       if (e.t === "state" && e.state === "idle" && !this.autoPullAttached.has(e.peer) && this.d.autoPull?.() === true) {
-        this.autoPullAttached.add(e.peer);
-        if (this.topReservedReady(e.peer, undefined, true)) this.queueAutoPulls(new Set([e.peer]), "peer available");
+        this.autoPullForAttachment(e.peer);
       }
       if (e.t === "overflow" && e.env.from === HUB && e.env.kind === "task" && Array.isArray(e.env.refs?.backlog)) {
         const ids = e.env.refs.backlog;
@@ -914,6 +917,12 @@ export class Tasks {
         // the task is gone: nothing to attach the answer to
       }
     });
+  }
+
+  private autoPullForAttachment(peer: PeerId): void {
+    if (this.autoPullAttached.has(peer) || this.d.autoPull?.() !== true) return;
+    this.autoPullAttached.add(peer);
+    if (this.topReservedReady(peer, undefined, true)) this.queueAutoPulls(new Set([peer]), "peer available");
   }
 
   isPii = (task: Pick<Task, "signals">) => task.signals.includes("pii_path") || (task.signals.includes("pii") && this.d.routing().constraints.pii === "local_only");

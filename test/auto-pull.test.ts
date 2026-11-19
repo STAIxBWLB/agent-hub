@@ -94,6 +94,21 @@ test("an attaching peer pulls an existing ready reservation", async () => {
   expect(r.board.get(task.id)?.owner).toBe("codex");
 });
 
+test("a peer started before bus registration pulls its existing reservation once", async () => {
+  const r = await rig(true), task = r.card({ reserved: "codex" });
+  const peer = new Quiet("codex");
+  await peer.start();
+  const stateEvents: string[] = [];
+  r.bus.tap(event => { if (event.t === "state" && event.peer === "codex") stateEvents.push(event.state); });
+  r.bus.add(peer);
+  r.bus.add(peer); // registering the same adapter again is not a second attachment
+  expect(stateEvents).toEqual([]); // registration is not a peer state transition
+  expect(r.tasks.autoPullsPending()).toBe(1);
+  expect(await until(() => pulled(r.board.get(task.id)))).toBe(true);
+  expect(r.board.get(task.id)?.owner).toBe("codex");
+  expect(r.board.get(task.id)?.history.filter(entry => entry.event === "backlog pulled")).toHaveLength(1);
+});
+
 test("approval makes a reserved dependent ready even when its peer released no capacity", async () => {
   const r = await rig(true);
   let prerequisite = r.card();
