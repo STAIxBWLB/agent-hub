@@ -5,6 +5,24 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Record quota rows on meaningful changes and a 15-minute heartbeat while preserving measured silence gaps (Refs #1555).
+- Control-write telemetry now attributes synchronous slices after an await and microtask-bound spans that settle before the loop probe, while genuine async waits stay waits (Refs #1545, hub task 1015).
+- Shrink restart.json (store bus.seen once, cut completed delivery bodies to 256 characters) and keep only the 5 newest restart.released and restart.abandoned copies (Refs #1546, hub task 1010). An older hub importing the new restart.json into a fresh journal sees an empty nested seen, so its dedupe history starts empty.
+- Add in-memory read receipts and an observation-only in-place shell write classifier (Refs #1556, hub task 1005).
+- After five consecutive exhausted snapshot bursts, routine boundaries skip capture for ten minutes and record unknown evidence; the next boundary retries (hub task 996, Refs #1550).
+- A failed agent CLI task command no longer records a second "refused" audit unless the daemon says authority refused it (Refs #1547, hub task 1012).
+- Record isolated check outcomes as text-free task evidence for matching-head metrics and supervision (Refs #1555).
+- A start under recovery coordination no longer schedules a runtime prune that is bound to defer, the recovery runner schedules one after it releases its lock, a recovery-only deferral starts no one-hour cooldown, and doctor no longer fails runtime pruning for it (Refs #1546, hub task 1011).
+
+## 0.43.0
+
+- Release N-1 for 0.43.x is published 0.42.0, with exact agent-mem 0.28.0 and control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.0. The isolated fixture exercises old client and plugin against the new daemon and the new client and plugin against the old daemon. It does not establish live-agent, rollback or shared-home compatibility. The wire and the MCP tool set are unchanged from 0.42.0. The CLI adds `ahub upgrade --all-stopped`, lets `ahub upgrade --to <v>` retarget a stopped project, and makes `memory.sync_interval_min` settable with `ahub settings set`; a 0.42.0 CLI does not offer these. Task history gains an optional `requestHead` on `done` entries, which 0.42.0 ignores. This release pins agent-mem 0.29.0 while 0.42.0 pins 0.28.0; agent-mem 0.29.0 raises no sync/home format floor and builds its derived index as a separate version-5 file while 0.28.0 keeps its version-4 file, so both can share a memory home; file compatibility beyond these fixtures remains subject to the release verification report.
+- The hub exact-pins `@staix/agent-mem` 0.29.0 (from 0.28.0). A placement sync now yields the event loop between source collection, policy evaluation, journal appends and history work (agent-mem#462), so a hub memory sync no longer holds the daemon for minutes; the package's own 583 MB fixture still saw a 2.58 s maximum gap, and that remaining bound stays open there. Under an active sync placement one sync covers every realm in the activated inventory, as sequential publications of at most two realms. Each memory profile rebuilds its derived index once on first open (index version 5; 0.28.x keeps its own version-4 file), so the first memory call after the upgrade can take longer on a large home. Sync wire, remote refs, journal and work-log formats are unchanged and no format floor is raised. Package, lockfile integrity, the pin sentences in the docs and the plugin bundles move together.
+
+- Cross-project handoff catch-up treats a target whose control descriptor is missing, or whose process is proven gone, as stopped: it no longer connects to it and logs the stopped state once per state change instead of a timed-out probe on every pass (hub task 995, Refs #1550). A target that starts is still caught up at once; unknown liveness is not treated as stopped.
+
+- The idle-owner sweep pauses while the task's current owner has an open `hub_ask` question set on that task, and restarts from the latest settlement once all such sets are answered (hub task 994, Refs #1550).
+
+- Record the requested review commit independently of cost plans and recover it from older bound spec reports for SDLC metrics (Refs #1555).
 
 - The delivery instruction tells peers to end with exactly `[FYI]` when nothing needs their answer, and to start progress notes with `[FYI]` (hub task 997, Refs #1550). Marker-only finals send no message.
 

@@ -247,8 +247,8 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, openCrashNotices, readSessions, removeSessions, writeSessions, type CrashNotice, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { soleWorktree, branchHeads, changedPaths, dirtySubmodules, submodulePaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
-import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
+import { soleWorktree, branchHeads, changedPaths, dirtySubmodules, submodulePaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, SnapshotCooldown, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
+import { archiveRestartSnapshot, compactRestartBus, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate, launcherOf } from "../cli/terminal-recovery.ts";
 import { TerminalLaunches, terminalOwnerReads } from "./terminal-launch.ts";
@@ -2846,7 +2846,8 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const currentCheck = (receipt: { task: number; owner: string; updated: number | string; generation: number | string; revision?: number }) => {
     const task = board.get(receipt.task);
-    return !!task && task.owner === receipt.owner && task.state === "in_progress" && task.updated === receipt.updated && task.history.length === receipt.revision
+    return !!task && task.owner === receipt.owner && task.state === "in_progress" && Number.isSafeInteger(receipt.revision) && receipt.revision! >= 0 && receipt.revision! <= task.history.length
+      && task.history.slice(receipt.revision).every(entry => entry.event === "check run passed" || entry.event === "check run failed")
       && connectionGeneration(receipt.owner) === receipt.generation && may(receipt.owner, "check_run") && membershipAllowed(receipt.owner) && !tasks.isPii(task)
       && !turns.get(receipt.owner)?.private && !contextPii(receipt.owner);
   };
@@ -2895,6 +2896,7 @@ export async function startDaemon(opts: DaemonOptions) {
       while (checkBindings.size > 200) checkBindings.delete(checkBindings.keys().next().value!);
       if (stopping || !currentCheck(receipt)) { await checkRunner.markStale(receipt.run); return; }
       bus.publish(newEnvelope(HUB, sanitize(JSON.stringify(view)), { to: [receipt.owner], kind: "task", refs: { task: String(receipt.task), boundedCheck: receipt.run } }));
+      if (currentCheck(receipt)) tasks.recordCheckResult(receipt);
       log(`check ${receipt.run}: exit ${receipt.exit ?? "unknown"}, bytes ${receipt.output_bytes}`);
     },
   };
@@ -3637,6 +3639,7 @@ export async function startDaemon(opts: DaemonOptions) {
     turnFreeNow = undefined;
     scopes = new Map();
     progress.prune();
+    if (t.state === "approved" || t.state === "cancelled") { facts.closeTask(t.id); for (const store of worktreeFacts.values()) store.closeTask(t.id); } // #1556 T1: receipts end with the task
     factsOn(); // a PII task opening or closing switches tracking at once, not at the next boundary (issue #108)
     if (t.state !== "in_progress" || ownerWriteStarts.get(t.id)?.owner !== t.owner) ownerWriteStarts.delete(t.id);
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
@@ -4322,13 +4325,16 @@ export async function startDaemon(opts: DaemonOptions) {
   // Preserve real synchronous native boundaries, but never spend an unbounded sequence of Git waits
   // inside a single callback burst. Failed/slow captures are explicitly unknown, never stale baselines.
   let snapshotBudget: SnapshotBudget | undefined, snapshotBudgetNoticed = false;
+  const snapshotCooldown = new SnapshotCooldown();
+  type RoutineSnapshot = { repository: string; budget: SnapshotBudget; exhausted: boolean; skipped: boolean };
   const reserveSnapshotBudget = (): SnapshotBudget => {
     if (!snapshotBudget) {
       const requested = opts.snapshotBurstMs ?? 250;
       const ms = Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
       const now = opts.snapshotClock;
       snapshotBudget = { deadline: (now ? now() : performance.now()) + ms, ...(now ? { now } : {}) };
-      setImmediate(() => { snapshotBudget = undefined; snapshotBudgetNoticed = false; });
+      const burst = snapshotBudget;
+      setImmediate(() => { snapshotCooldown.finish(burst); snapshotBudget = undefined; snapshotBudgetNoticed = false; });
     }
     return snapshotBudget;
   };
@@ -4340,16 +4346,25 @@ export async function startDaemon(opts: DaemonOptions) {
       return turnModelFields(bus.peers.get(peer)?.observedModel?.() ?? (hooked ? { model: hooked, evidence: "session" } : undefined));
     } catch { return {}; }
   };
-  const snapshotFailure = (what: string, error: unknown) => {
+  const snapshotFailure = (what: string, error: unknown, routine?: RoutineSnapshot) => {
     if (error instanceof SnapshotBudgetExceeded) {
+      if (routine) { routine.exhausted = true; return; }
       if (!snapshotBudgetNoticed) log(`snapshot unavailable: ${error.message}`);
       snapshotBudgetNoticed = true;
     } else log(`snapshot failed at ${what}: ${(error as Error).message}`);
   };
-  const snap = (what: string, capture = config.snapshots.enabled, peer?: string): { tree?: string; head?: string | null; commit?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo } => {
+  const finishRoutineSnapshot = (routine?: RoutineSnapshot) => {
+    if (!routine || routine.skipped) return;
+    if (routine.exhausted) {
+      if (snapshotCooldown.exhausted(routine.repository, routine.budget)) log("snapshot unavailable: snapshot burst budget exhausted; boundary evidence is unknown; inspect snapshots.enabled");
+    } else snapshotCooldown.success(routine.repository, routine.budget);
+  };
+  const snap = (what: string, capture = config.snapshots.enabled, peer?: string, routine = false): { tree?: string; head?: string | null; commit?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo; routine?: RoutineSnapshot } => {
     if (!capture) return { ms: 0 };
     const captureSnapshot = () => {
       const t0 = performance.now(), budget = reserveSnapshotBudget();
+      const boundary: RoutineSnapshot | undefined = routine ? { repository: peer ? executionRoot(peer) : opts.cwd, budget, exhausted: false, skipped: false } : undefined;
+      if (boundary && snapshotCooldown.blocked(boundary.repository, budgetNow(budget))) { boundary.skipped = true; return { ms: 0, routine: boundary }; }
       let tree: string | undefined, head: string | null | undefined, commit: string | null | undefined, repo: Repo | undefined, reflog: HeadMoveCursor | undefined;
       try {
         repo = peer ? repoFor(peer, budget) : factsRepo;
@@ -4362,9 +4377,9 @@ export async function startDaemon(opts: DaemonOptions) {
         if (repo && !tree) log(`snapshot failed at ${what}`);
       } catch (error) {
         tree = undefined; head = undefined; commit = undefined; reflog = undefined;
-        snapshotFailure(what, error);
+        snapshotFailure(what, error, boundary);
       }
-      return { tree, head, commit, reflog, budget, repo, ms: Math.round(performance.now() - t0) };
+      return { tree, head, commit, reflog, budget, repo, ms: Math.round(performance.now() - t0), ...(boundary ? { routine: boundary } : {}) };
     };
     return controlWriteTelemetry ? controlWriteTelemetry.observe("snapshot", controlWritePrivacyGuard(true, true, peer as PeerId | undefined), captureSnapshot) : captureSnapshot();
   };
@@ -7871,14 +7886,15 @@ export async function startDaemon(opts: DaemonOptions) {
         for (const id of turnTasks.keys()) if (!turnLog?.get(id)) turnTasks.delete(id);
         turnTasks.set(id, board.list().filter((t) => t.owner === e.peer && ["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state)).map((t) => t.id));
         const capture = config.snapshots.enabled && !!turnLog;
-        const start = capture && !pii ? snap(`the start of ${id}`, config.snapshots.enabled, e.peer) : undefined; // before the peer is handed anything: the tap runs inside setState
+        const start = capture && !pii ? snap(`the start of ${id}`, config.snapshots.enabled, e.peer, true) : undefined; // before the peer is handed anything: the tap runs inside setState
         try { if (capture) turnLog?.begin(id, e.peer, start?.tree, declarations[e.peer] ? executionRoot(e.peer) : undefined); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
         const writeTasks = tasks.ownerTurnTasks(e.peer);
         let branches: string | undefined, writeScope: boolean | undefined;
         if (writeTasks.length && start?.repo) try {
           branches = branchHeads(start.repo, start.budget);
           writeScope = ownerWriteRoot(e.peer) === opts.cwd ? canonicalWriteScope(start.repo, start.budget) : true;
-        } catch (error) { snapshotFailure(`the write scope of ${id}`, error); }
+        } catch (error) { snapshotFailure(`the write scope of ${id}`, error, start?.routine); }
+        finishRoutineSnapshot(start?.routine);
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
         turns.set(e.peer, { id, capture, start: startedAt, tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         const modelBoundary = modelBoundaries.get(e.peer);
@@ -7929,7 +7945,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (open.capture && turnLog && (open.private || holdsPii(e.peer))) {
           try { turnLog.end(open.id, undefined, [], Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
         } else if (open.capture && turnLog) {
-          const end = snap(`the end of ${open.id}`, true, e.peer);
+          const end = snap(`the end of ${open.id}`, true, e.peer, true);
           let changed: string[] = [];
           if (open.tree && end.tree) {
             const turnRepo = end.repo!;
@@ -7969,7 +7985,7 @@ export async function startDaemon(opts: DaemonOptions) {
               }
             } catch (error) {
               end.tree = undefined; end.head = undefined; changed = [];
-              snapshotFailure(`the diff of ${open.id}`, error);
+              snapshotFailure(`the diff of ${open.id}`, error, end.routine);
             }
           }
           if (open.tree && end.tree) files = changed.length; // unknown, not zero, when a snapshot failed
@@ -7985,14 +8001,15 @@ export async function startDaemon(opts: DaemonOptions) {
                     if (scope === true) writeProgress = false;
                   }
                 }
-              } catch (error) { snapshotFailure(`the branch refs of ${open.id}`, error); }
+              } catch (error) { snapshotFailure(`the branch refs of ${open.id}`, error, end.routine); }
             }
           }
           snapshotMs = (snapshotMs ?? 0) + end.ms;
           // #798 D2: a submodule's own edits never move the superproject's gitlink, so the diff above cannot see them. Name the dirty ones as unobserved (never as changed:
           // undo would try to restore them). Only for a turn whose trees are known; a read git cannot answer, or the budget cut short, records nothing, which stays unknown.
           let unobserved: string[] | undefined;
-          if (open.tree && end.tree && end.repo) try { unobserved = dirtySubmodules(end.repo, end.budget); } catch (error) { snapshotFailure(`the submodules of ${open.id}`, error); }
+          if (open.tree && end.tree && end.repo) try { unobserved = dirtySubmodules(end.repo, end.budget); } catch (error) { snapshotFailure(`the submodules of ${open.id}`, error, end.routine); }
+          finishRoutineSnapshot(end.routine);
           try { turnLog.end(open.id, end.tree, changed, Math.max(1, Number(config.snapshots.keep) || 20), unobserved); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
           // After the turn_end event: a notice delivered at once starts the peer's next turn, which must come after it.
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
@@ -11197,7 +11214,7 @@ export async function startDaemon(opts: DaemonOptions) {
         sourceInstanceId: instanceId,
         operationId: op,
         committedAt: Date.now(),
-        bus: bus.snapshot(),
+        bus: compactRestartBus(bus.snapshot()),
         manualPaused: [...manualPaused],
         peers,
         integrity: integrity(),

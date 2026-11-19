@@ -227,3 +227,25 @@ test("first-pass approval ignores evidence-only verdicts without changing the ac
   expect(rejected.first_pass_approval).toBe(0);
   expect(rejected.rework_rounds).toBe(1);
 });
+
+test("#1555 isolated check failures do not affect split outcomes or the review check brief", async () => {
+  const f = rig("full");
+  f.board.update(f.task.id, "hub", "check run failed", {}, undefined, { checkKey: "typecheck", requestHead: head });
+  const body = await f.body();
+  expect(f.tasks.splitObservations("implement", "codex")).toEqual([]);
+  expect(body).toContain("No check ran for this class");
+  expect(body).not.toContain("Check result:");
+  await f.tasks.review("codex-review", f.task.id, "approved", "ok");
+  expect(f.tasks.splitObservations("implement", "codex").map(row => row.outcome)).toEqual(["approved"]);
+});
+
+test("#1555 isolated failure is not the console completion-check failure", async () => {
+  const { cells, initialConsoleState } = await import("../src/cli/console-state.ts");
+  const state = initialConsoleState(false); state.panel = 3;
+  const row = { id: 1, state: "in_progress", title: "task", history: [{ at: 1, event: "check run failed" }] };
+  const isolated = cells(state, row, false, 10)[1]!;
+  const completion = cells(state, { ...row, history: [{ at: 1, event: "check failed" }] }, false, 10)[1]!;
+  expect(isolated.tone).not.toBe("failure");
+  expect(isolated.text).not.toContain("check run failed");
+  expect(completion.tone).toBe("failure");
+});

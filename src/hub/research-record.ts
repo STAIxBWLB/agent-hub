@@ -115,7 +115,8 @@ export function evidenceEntry(raw: unknown): EvidenceEntry | undefined {
   const family = closedId(e.reviewerFamily);
   if (family) out.reviewerFamily = family;
   const cost = text(e.reviewCost), findings = text(e.reviewFindings);
-  if (typeof cost?.head === "string" && /^[0-9a-f]{40}$/.test(cost.head)) out.requestHead = cost.head;
+  const requestedHead = e.event === "done" ? e.requestHead ?? cost?.head ?? text(e.specReport)?.head : undefined;
+  if (typeof requestedHead === "string" && /^[0-9a-f]{40}$/.test(requestedHead)) out.requestHead = requestedHead;
   const planned = member(PLANNED_SCOPES, text(cost?.review)?.scope);
   if (planned) out.plannedScope = planned;
   if (typeof findings?.head === "string" && /^[0-9a-f]{40}$/.test(findings.head)) out.verdictHead = findings.head;

@@ -4,13 +4,13 @@
   "workspaces": {
     "": {
       "dependencies": {
-        "@staix/agent-hub": "0.41.0",
+        "@staix/agent-hub": "0.42.0",
       },
     },
   },
   "packages": {
-    "@staix/agent-hub": ["@staix/agent-hub@0.41.0", "", { "dependencies": { "@staix/agent-mem": "0.27.1" }, "bin": { "ahub": "src/cli/main.js", "agent-hub": "src/cli/main.js" } }, "sha512-+OSUHHwC87Ov/TTznGYuntPrO6MM4Jpxx43jB5XWHpsFt9fSkwPFUAlNFhJVB+zd9hgICoZ73JwxHhoPqMmReQ=="],
+    "@staix/agent-hub": ["@staix/agent-hub@0.42.0", "", { "dependencies": { "@staix/agent-mem": "0.28.0" }, "bin": { "ahub": "src/cli/main.js", "agent-hub": "src/cli/main.js" } }, "sha512-1zap0AWa3a/7+Pm/JoXEnN6RD9EziTgXfIzW6OD64f0NPm1SYp6nYC0i2d4alNIFUkLq0Gs8n8gYE2gzzXfb2A=="],
 
-    "@staix/agent-mem": ["@staix/agent-mem@0.27.1", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-d1haA1z16keKU9e4Ple3ngNsKTCkLb5H32lXIo6//yhheqWh/2lZ3C/fDK4nAzv5O/L3bzyh6H5wwKWGRQzqsw=="],
+    "@staix/agent-mem": ["@staix/agent-mem@0.28.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-gUhZLn3xQ8y8Kw1aRYaAeIpkIKz0tEehja2VtDNdeUeQWkYbuq+Df/i8t706GeHvPPrk012adl3ApSKs5gBdPw=="],
   }
 }

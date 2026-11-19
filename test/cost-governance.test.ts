@@ -721,3 +721,11 @@ test("F4 reviewer unassign during delayed lifecycle read cannot approve past cha
   expect(current.history.some(entry => entry.event === "done")).toBe(false);
   expect(r.notices.join("\n")).toContain("not approved yet");
 });
+
+test("#1555 done records a submitted head without a cost plan", async () => {
+  const r = scopeRig("advise");
+  const task = scopeTask(r);
+  const done = await r.tasks.done("codex", task.id, "ready", { commit: head });
+  expect(done.history.findLast(entry => entry.event === "done")).toMatchObject({ requestHead: head });
+  expect(done.history.findLast(entry => entry.event === "done")?.reviewCost).toBeUndefined();
+});

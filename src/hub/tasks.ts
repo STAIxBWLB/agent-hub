@@ -409,6 +409,8 @@ QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or
 QUIET_EVENTS.add("planner changed"); // Planning authority does not move the execution owner or revoke its handoff.
 QUIET_EVENTS.add("claim verdict"); // #901: a person's bookkeeping on a plan claim moves nothing, so it must not turn a running check into "check finished late".
 QUIET_EVENTS.add("invocation");
+QUIET_EVENTS.add("check run passed"); // Isolated check bookkeeping does not invalidate an in-flight completion check.
+QUIET_EVENTS.add("check run failed");
 QUIET_EVENTS.add("wait recorded"); // #1454: a recorded wait moves nothing; it only suspends the idle-owner ladder, so it must not turn a running check into "check finished late".
 QUIET_EVENTS.add("shell branch bound"); // #880: the hub's host-observed branch binding (#845) is bookkeeping; it neither moves nor settles the task.
 /** The records of the `done (checking)` entry a passed check now completes: what the owner delivered then (#509a). */
@@ -6778,7 +6780,7 @@ export class Tasks {
     }
     const rows = this.d.board.list();
     const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), history: task.history.map(entry => ({ at: entry.at, event: entry.event,
-      ...(entry.reviewCost?.head ? { requestHead: entry.reviewCost.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
+      ...(["check run passed", "check run failed"].includes(entry.event) && entry.requestHead ? { requestHead: entry.requestHead } : {}), ...(entry.event === "done" && (entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head) ? { requestHead: entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
     const visibleIds = new Set(rows.filter(task => !this.isPii(task)).map(task => task.id));
     const byKind: Record<string, number> = {};
     for (const stall of this.stalled()) if (visibleIds.has(stall.task)) byKind[stall.cause.kind] = (byKind[stall.cause.kind] ?? 0) + 1;
@@ -9047,6 +9049,15 @@ export class Tasks {
     return [head, "The done counts once the files did not change between two calls and the others have stopped.", ...lines, facts?.text ?? ""].filter(Boolean).join("\n");
   }
 
+  /** Record an already-admitted isolated run without retaining its output. */
+  recordCheckResult(receipt: import("./check-runner.ts").RunReceipt): void {
+    const task = this.d.board.get(receipt.task);
+    if (!task || task.state !== "in_progress" || task.owner !== receipt.owner) return;
+    const passed = receipt.exit === 0 && !receipt.timed_out && !receipt.cancelled && !receipt.interrupted;
+    this.d.board.update(task.id, HUB, passed ? "check run passed" : "check run failed", {}, undefined,
+      { checkKey: receipt.check, requestHead: receipt.sha }, task.history.length);
+  }
+
   /**
    * #901: which check key produced this result, and how many citation keys the example citation check said were unresolved. The key is the hub's own selection (`Deps.checkKey`, the lookup
    * `Deps.check` makes), never read from output; without that dependency it is not recorded. The count is read only from the example check's own last line (`citations: N declared keys, M missing`, scripts/check-citations.ts);
@@ -9141,6 +9152,8 @@ export class Tasks {
     if (specInspection?.report?.head && !completedRefs.commit) completedRefs.commit = specInspection.report.head;
     if (specInspection?.report && specInspection.repo && !completedRefs.repo) completedRefs.repo = specInspection.repo;
     const storedRefs = { ...task.refs, ...completedRefs };
+    const requestedHead = completedRefs.commit ?? admission?.head ?? specInspection?.report?.head;
+    const requestHead = requestedHead && /^[a-f0-9]{40}$/.test(requestedHead) ? requestedHead : undefined;
     if (specInspection) {
       if (asyncCheckCompletion) {
         if (this.refreshAsyncSpecInspection(specInspection, { ...task, refs: storedRefs }, by)) { this.requestSpecRefile(task); return task; }
@@ -9151,7 +9164,7 @@ export class Tasks {
     const capacity = this.capacityBefore(task);
     reviewObserverExcluded ||= this.reviewObserverTurn(by, task.id);
     const quotaWaiting = selection?.reviewSelection?.quotaWait !== undefined;
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: quotaWaiting ? null : reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, state: "in_review", refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: quotaWaiting ? null : reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, state: "in_review", refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(requestHead ? { requestHead } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
