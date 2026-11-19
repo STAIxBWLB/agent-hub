@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Default sandboxed Bun and npm caches to each command's writable temporary directory, while retaining caller overrides (Refs #1549, hub task 1017).
+- Exact-pin the first-party agent-mem dependency to 0.30.0 (hub task 1029).
 - Yield while screening task intent briefs and recheck host state in bounded batches to keep assignment responsive (Refs #1545, hub task 1014).
 - Pull ready reserved backlog work when planning or a peer attachment makes it eligible, and name planner authority in backlog guidance (Refs #1547, hub task 1013).
 - Raise the default total backstop AHUB_CHECK_HANG_S of scripts/check.sh from 2250 s to 2700 s; AHUB_CHECK_QUIET_S stays 300 and is still what catches a hang (Refs #1564, hub task 1022).
