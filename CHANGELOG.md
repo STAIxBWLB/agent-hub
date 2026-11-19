@@ -7,6 +7,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Control-write telemetry now attributes synchronous slices after an await and microtask-bound spans that settle before the loop probe, while genuine async waits stay waits (Refs #1545, hub task 1015).
 - Shrink restart.json (store bus.seen once, cut completed delivery bodies to 256 characters) and keep only the 5 newest restart.released and restart.abandoned copies (Refs #1546, hub task 1010). An older hub importing the new restart.json into a fresh journal sees an empty nested seen, so its dedupe history starts empty.
 - Add in-memory read receipts and an observation-only in-place shell write classifier (Refs #1556, hub task 1005).
+- After five consecutive exhausted snapshot bursts, routine boundaries skip capture for ten minutes and record unknown evidence; the next boundary retries (hub task 996, Refs #1550).
 - A failed agent CLI task command no longer records a second "refused" audit unless the daemon says authority refused it (Refs #1547, hub task 1012).
 - Record isolated check outcomes as text-free task evidence for matching-head metrics and supervision (Refs #1555).
 - A start under recovery coordination no longer schedules a runtime prune that is bound to defer, the recovery runner schedules one after it releases its lock, a recovery-only deferral starts no one-hour cooldown, and doctor no longer fails runtime pruning for it (Refs #1546, hub task 1011).
