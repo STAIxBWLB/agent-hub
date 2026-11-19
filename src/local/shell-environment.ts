@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface HostShellEnvironment extends Record<string, string> { PATH: string; HOME: string; LANG: string; TERM: string }
 
@@ -7,4 +8,9 @@ export interface HostShellEnvironment extends Record<string, string> { PATH: str
  * extraction must preserve the runtime environment parity test and explicitly revise that source's byte guard. */
 export function hostShellEnvironment(extra: Readonly<Record<string, string>> = {}): HostShellEnvironment {
   return { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...extra };
+}
+
+/** Per-command cache defaults are confined to the same owned temp directory as TMPDIR. */
+export function sandboxCommandEnvironment(base: Readonly<Record<string, string>>, own: string): Record<string, string> {
+  return { BUN_INSTALL_CACHE_DIR: join(own, "bun-cache"), NPM_CONFIG_CACHE: join(own, "npm-cache"), ...base, TMPDIR: `${own}/` };
 }
