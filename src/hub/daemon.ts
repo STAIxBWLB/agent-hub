@@ -1,3 +1,4 @@
+import { QuotaEventFilter } from "./quota-events.ts";
 import { piFailureText } from "./pi-failure.ts";
 import { nativeReviewerQuota } from "../adapters/definitions/native-quota.ts";
 import { parseGuidanceCreateInput, parseGuidanceIdQuery } from "./guidance-variants.ts";
@@ -52,6 +53,7 @@ import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
 import { NativeHookLaunches, type NativeHookLaunch } from "./native-hook-launch.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
+import { MERGE_READBACK_INTERVAL_MS } from "./sdlc-merge.ts";
 import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunnerState, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
 import { isDenied, sbplString } from "../local/deny.ts";
@@ -246,7 +248,7 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, openCrashNotices, readSessions, removeSessions, writeSessions, type CrashNotice, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { soleWorktree, branchHeads, changedPaths, dirtySubmodules, submodulePaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
+import { soleWorktree, branchHeads, changedPaths, dirtySubmodules, submodulePaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, SnapshotCooldown, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, compactRestartBus, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate, launcherOf } from "../cli/terminal-recovery.ts";
@@ -767,6 +769,8 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 export interface DaemonOptions {
   /** Host-only fixture override; production reads the active memory home's and execution repository's public Record policy. */
   effectiveRecordPolicy?: (cwd: string) => { enabled: boolean; version: string } | undefined;
+  /** Host-only test trigger; production schedules its own unreferenced settlement interval. */
+  mergeReadbackTrigger?: (tick: () => void) => () => void;
   /** Host-only numeric startup reader observation; never read from config or control input. Observer failure changes no replay state. */
   startupSeedObserved?: (observation: { readPasses: number; readBytes: number }) => void;
   /** Host-only test/embedding port; never read from project configuration or a tool. */
@@ -4029,6 +4033,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   };
   const unsettledReviewerQuota = new Map<string, { account: string; peer: string }>();
+  const quotaEvents = new QuotaEventFilter(event);
   const budget = new Budget(join(opts.stateDir, "hub.db"), config.budget, instanceBudgetHooks({
     definitionOf,
     pause: (peer) => bus.pause(peer),
@@ -4049,7 +4054,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // A reading that arrived through a file carries the file's time; a stale one must not look fresh in the export.
     // #683 U1: pauses, resumes and derived resets go to the event log, ids and numbers only.
     ledger: entry => event(entry),
-    reading: (peer, windows, hard, at) => { queueMicrotask(() => tasks.refreshReviewerQuotaWaits()); return event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, ...(Math.abs(Date.now() - at) > 1000 ? { measuredAt: new Date(at).toISOString() } : {}) }) },
+    reading: (peer, windows, hard, at) => { queueMicrotask(() => tasks.refreshReviewerQuotaWaits()); quotaEvents.record(peer, windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, at); },
     handoff: (peer, context, urgentOnly) => tasks.reassignForPause(peer, context, urgentOnly),
     resumed: (record) => {
       // Coalesce unread notices without forgetting the public moves they carried.
@@ -4323,13 +4328,16 @@ export async function startDaemon(opts: DaemonOptions) {
   // Preserve real synchronous native boundaries, but never spend an unbounded sequence of Git waits
   // inside a single callback burst. Failed/slow captures are explicitly unknown, never stale baselines.
   let snapshotBudget: SnapshotBudget | undefined, snapshotBudgetNoticed = false;
+  const snapshotCooldown = new SnapshotCooldown();
+  type RoutineSnapshot = { repository: string; budget: SnapshotBudget; exhausted: boolean; skipped: boolean };
   const reserveSnapshotBudget = (): SnapshotBudget => {
     if (!snapshotBudget) {
       const requested = opts.snapshotBurstMs ?? 250;
       const ms = Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
       const now = opts.snapshotClock;
       snapshotBudget = { deadline: (now ? now() : performance.now()) + ms, ...(now ? { now } : {}) };
-      setImmediate(() => { snapshotBudget = undefined; snapshotBudgetNoticed = false; });
+      const burst = snapshotBudget;
+      setImmediate(() => { snapshotCooldown.finish(burst); snapshotBudget = undefined; snapshotBudgetNoticed = false; });
     }
     return snapshotBudget;
   };
@@ -4341,16 +4349,25 @@ export async function startDaemon(opts: DaemonOptions) {
       return turnModelFields(bus.peers.get(peer)?.observedModel?.() ?? (hooked ? { model: hooked, evidence: "session" } : undefined));
     } catch { return {}; }
   };
-  const snapshotFailure = (what: string, error: unknown) => {
+  const snapshotFailure = (what: string, error: unknown, routine?: RoutineSnapshot) => {
     if (error instanceof SnapshotBudgetExceeded) {
+      if (routine) { routine.exhausted = true; return; }
       if (!snapshotBudgetNoticed) log(`snapshot unavailable: ${error.message}`);
       snapshotBudgetNoticed = true;
     } else log(`snapshot failed at ${what}: ${(error as Error).message}`);
   };
-  const snap = (what: string, capture = config.snapshots.enabled, peer?: string): { tree?: string; head?: string | null; commit?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo } => {
+  const finishRoutineSnapshot = (routine?: RoutineSnapshot) => {
+    if (!routine || routine.skipped) return;
+    if (routine.exhausted) {
+      if (snapshotCooldown.exhausted(routine.repository, routine.budget)) log("snapshot unavailable: snapshot burst budget exhausted; boundary evidence is unknown; inspect snapshots.enabled");
+    } else snapshotCooldown.success(routine.repository, routine.budget);
+  };
+  const snap = (what: string, capture = config.snapshots.enabled, peer?: string, routine = false): { tree?: string; head?: string | null; commit?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo; routine?: RoutineSnapshot } => {
     if (!capture) return { ms: 0 };
     const captureSnapshot = () => {
       const t0 = performance.now(), budget = reserveSnapshotBudget();
+      const boundary: RoutineSnapshot | undefined = routine ? { repository: peer ? executionRoot(peer) : opts.cwd, budget, exhausted: false, skipped: false } : undefined;
+      if (boundary && snapshotCooldown.blocked(boundary.repository, budgetNow(budget))) { boundary.skipped = true; return { ms: 0, routine: boundary }; }
       let tree: string | undefined, head: string | null | undefined, commit: string | null | undefined, repo: Repo | undefined, reflog: HeadMoveCursor | undefined;
       try {
         repo = peer ? repoFor(peer, budget) : factsRepo;
@@ -4363,9 +4380,9 @@ export async function startDaemon(opts: DaemonOptions) {
         if (repo && !tree) log(`snapshot failed at ${what}`);
       } catch (error) {
         tree = undefined; head = undefined; commit = undefined; reflog = undefined;
-        snapshotFailure(what, error);
+        snapshotFailure(what, error, boundary);
       }
-      return { tree, head, commit, reflog, budget, repo, ms: Math.round(performance.now() - t0) };
+      return { tree, head, commit, reflog, budget, repo, ms: Math.round(performance.now() - t0), ...(boundary ? { routine: boundary } : {}) };
     };
     return controlWriteTelemetry ? controlWriteTelemetry.observe("snapshot", controlWritePrivacyGuard(true, true, peer as PeerId | undefined), captureSnapshot) : captureSnapshot();
   };
@@ -4829,6 +4846,20 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch { log(`accepted delivery timeout notice publication unconfirmed; inspect ahub queue list --peer ${sanitize(conductor)} and ahub queue show ${sanitize(row.id)}`); }
     }
   };
+  let mergeReadbackPass: Promise<void> | undefined;
+  const mergeReadbackTick = () => {
+    if (!mergeReadbackPass) mergeReadbackPass = tasks.settleMergeReadbacks(Date.now()).catch(() => {}).finally(() => { mergeReadbackPass = undefined; });
+  };
+  const stopMergeReadbacks = opts.mergeReadbackTrigger?.(mergeReadbackTick);
+  const mergeReadbackTimer = stopMergeReadbacks ? undefined : setInterval(mergeReadbackTick, MERGE_READBACK_INTERVAL_MS);
+  mergeReadbackTimer?.unref();
+  let mergeReadbackStopped = false;
+  const stopMergeReadbackSchedule = () => {
+    if (mergeReadbackStopped) return;
+    mergeReadbackStopped = true; stopMergeReadbacks?.();
+    if (mergeReadbackTimer) clearInterval(mergeReadbackTimer);
+  };
+  startupCleanup.push(async () => { stopMergeReadbackSchedule(); await mergeReadbackPass; });
   const intervals = [
     setInterval(() => {
       try { sweepInvocations(); } catch { log("invocation deadline sweep failed; the rows keep their state"); }
@@ -6966,6 +6997,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].filter(peer => !peer.id.includes("@")).some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
     if (tasks.guidanceProbesPending() !== 0) return false; // Active and uncertain fixture work retains its project lane.
     if (checkPending.size !== 0) return false;
+    if (mergeReadbackPass) return false; // A host readback awaiting GitHub must settle before recovery commits.
     if (tasks.autoPullsPending() !== 0) return false; // #785 P1c: an automatic backlog pull mid-admission would write after the commit's digest; its own line keeps the line above exact for scripts/seeds.json
     if (tasks.queuePressureRechecksPending() !== 0) return false;
     if (tasks.schedulesPending() !== 0) return false; // #512a: a scheduled run mid-admission (its PII screen is awaited) would write after the commit's digest; the hold fence refuses its write, and this waits for it to end
@@ -7872,14 +7904,15 @@ export async function startDaemon(opts: DaemonOptions) {
         for (const id of turnTasks.keys()) if (!turnLog?.get(id)) turnTasks.delete(id);
         turnTasks.set(id, board.list().filter((t) => t.owner === e.peer && ["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state)).map((t) => t.id));
         const capture = config.snapshots.enabled && !!turnLog;
-        const start = capture && !pii ? snap(`the start of ${id}`, config.snapshots.enabled, e.peer) : undefined; // before the peer is handed anything: the tap runs inside setState
+        const start = capture && !pii ? snap(`the start of ${id}`, config.snapshots.enabled, e.peer, true) : undefined; // before the peer is handed anything: the tap runs inside setState
         try { if (capture) turnLog?.begin(id, e.peer, start?.tree, declarations[e.peer] ? executionRoot(e.peer) : undefined); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
         const writeTasks = tasks.ownerTurnTasks(e.peer);
         let branches: string | undefined, writeScope: boolean | undefined;
         if (writeTasks.length && start?.repo) try {
           branches = branchHeads(start.repo, start.budget);
           writeScope = ownerWriteRoot(e.peer) === opts.cwd ? canonicalWriteScope(start.repo, start.budget) : true;
-        } catch (error) { snapshotFailure(`the write scope of ${id}`, error); }
+        } catch (error) { snapshotFailure(`the write scope of ${id}`, error, start?.routine); }
+        finishRoutineSnapshot(start?.routine);
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
         turns.set(e.peer, { id, capture, start: startedAt, tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         const modelBoundary = modelBoundaries.get(e.peer);
@@ -7930,7 +7963,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (open.capture && turnLog && (open.private || holdsPii(e.peer))) {
           try { turnLog.end(open.id, undefined, [], Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
         } else if (open.capture && turnLog) {
-          const end = snap(`the end of ${open.id}`, true, e.peer);
+          const end = snap(`the end of ${open.id}`, true, e.peer, true);
           let changed: string[] = [];
           if (open.tree && end.tree) {
             const turnRepo = end.repo!;
@@ -7970,7 +8003,7 @@ export async function startDaemon(opts: DaemonOptions) {
               }
             } catch (error) {
               end.tree = undefined; end.head = undefined; changed = [];
-              snapshotFailure(`the diff of ${open.id}`, error);
+              snapshotFailure(`the diff of ${open.id}`, error, end.routine);
             }
           }
           if (open.tree && end.tree) files = changed.length; // unknown, not zero, when a snapshot failed
@@ -7986,14 +8019,15 @@ export async function startDaemon(opts: DaemonOptions) {
                     if (scope === true) writeProgress = false;
                   }
                 }
-              } catch (error) { snapshotFailure(`the branch refs of ${open.id}`, error); }
+              } catch (error) { snapshotFailure(`the branch refs of ${open.id}`, error, end.routine); }
             }
           }
           snapshotMs = (snapshotMs ?? 0) + end.ms;
           // #798 D2: a submodule's own edits never move the superproject's gitlink, so the diff above cannot see them. Name the dirty ones as unobserved (never as changed:
           // undo would try to restore them). Only for a turn whose trees are known; a read git cannot answer, or the budget cut short, records nothing, which stays unknown.
           let unobserved: string[] | undefined;
-          if (open.tree && end.tree && end.repo) try { unobserved = dirtySubmodules(end.repo, end.budget); } catch (error) { snapshotFailure(`the submodules of ${open.id}`, error); }
+          if (open.tree && end.tree && end.repo) try { unobserved = dirtySubmodules(end.repo, end.budget); } catch (error) { snapshotFailure(`the submodules of ${open.id}`, error, end.routine); }
+          finishRoutineSnapshot(end.routine);
           try { turnLog.end(open.id, end.tree, changed, Math.max(1, Number(config.snapshots.keep) || 20), unobserved); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
           // After the turn_end event: a notice delivered at once starts the peer's next turn, which must come after it.
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
@@ -10913,6 +10947,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
       ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
       ...(tasks.guidanceProbesPending() !== 0 ? ["guidance probe work in flight"] : []),
+      ...(mergeReadbackPass ? ["an external merge readback in flight"] : []),
       ...(tasks.autoPullsPending() !== 0 ? ["an automatic backlog pull in flight"] : []),
       ...(tasks.queuePressureRechecksPending() !== 0 ? ["a queue-pressure assignment recheck in flight"] : []),
       ...(tasks.schedulesPending() !== 0 ? ["a scheduled task proposal in flight"] : []),
@@ -12673,7 +12708,7 @@ export async function startDaemon(opts: DaemonOptions) {
             const current = board.get(task.id) ?? task;
             rows.push({ id: task.id, title: tasks.publicTitle(current), ...(tasks.isPii(current) ? {} : { receipt: tasks.publicView(current).sdlc }), ...status });
           }
-          reply({ ok: true, mode: lifecycleConfig.mode, rows, truncated: selected.length > 100 });
+          reply({ ok: true, mode: lifecycleConfig.mode, rows, ...(tasks.securityScanCounts() ? { securityScan: tasks.securityScanCounts() } : {}), truncated: selected.length > 100 });
         })().catch(() => reply({ ok: false, error: "lifecycle readback unavailable" }));
         return;
       }
@@ -13350,6 +13385,7 @@ export async function startDaemon(opts: DaemonOptions) {
     writeStatus();
     dashboard?.stop();
     stopConfigWatch();
+    stopMergeReadbackSchedule();
     clearInterval(sweepTimer);
     clearMemorySyncTimers();
     clearInterval(schedulesTimer);
@@ -13383,11 +13419,13 @@ export async function startDaemon(opts: DaemonOptions) {
       // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.
       for (const exit of exits) if (exit.status === "rejected") log(`peer stop failed during shutdown: ${(exit.reason as Error)?.message ?? exit.reason}`);
       await runnerStopped;
+      await mergeReadbackPass;
       await Promise.all([...modelRelays.values()].map(relay => relay.close()));
       await egress?.close();
       await webEgress?.close();
       await Promise.all([...piReceiptLedgers.values()].map(ledger => ledger.close()));
       collectClaudeUsage();
+      quotaEvents.flush();
       for (const id of [...researchPending.keys()]) writeResearch(id); // the peers have stopped, so their turns have ended
       budget.close();
       schedulesStore.close();

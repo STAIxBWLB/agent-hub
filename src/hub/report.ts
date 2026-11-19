@@ -243,7 +243,7 @@ export function formatReport(r: Report): string[] {
   lines.push(`overlap warnings: ${r.overlaps.warnings}, task pairs: ${r.overlaps.pairs}; edit conflicts: ${r.conflicts}`);
   const tasks = Object.entries(r.tasks).sort().map(([k, n]) => `${k} ${n}`).join(", ");
   lines.push(`task events: ${tasks || "none"}`);
-  lines.push(`quota readings: ${r.quota.readings} (${r.quota.hard} hard limits)`);
+  lines.push(`quota rows: ${r.quota.readings} (${r.quota.hard} hard rows)`);
   for (const [key, s] of Object.entries(r.routes).sort(([a], [b]) => a.localeCompare(b))) {
     const sessions = s.stateless ? `sessions unknown (${s.stateless} decision${s.stateless === 1 ? "" : "s"} without a session key)`
       : s.sessions ? `${s.sessions} session${s.sessions === 1 ? "" : "s"}, ${(s.switches / s.sessions).toFixed(1)} model changes per session` : "sessions unknown (stay_switch off)";

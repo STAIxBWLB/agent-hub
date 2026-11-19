@@ -176,7 +176,9 @@ state transition table is unchanged.
 
 The state becomes `approved` through Tasks, with the actual actor and the
 `merged outside the hub` history event. Ordinary dependent release runs after
-the saved approval. Adoption creates no reviewer verdict, review metric,
+the saved approval. The host stores external merged-PR evidence as `mergeReadback`, separate from `merge` records produced by a guarded merge. A readback has no command exit, cleanup or owner-notice fields; unreadable cost stays absent. Artifact relinks discard both kinds of host evidence. A host-owned five-minute settlement pass reads at most three eligible public approved tasks sequentially, at most once per task every ten minutes and only for 24 hours after approval. Closed PRs stop the schedule; open or unreadable PRs retry within that window. The in-memory schedule is lost on restart.
+
+Adoption creates no reviewer verdict, review metric,
 reviewed-head receipt, guarded-merge result, GitHub mutation or branch cleanup.
 A prior withdrawn reviewer approval remains historical and cannot become a
 current reviewer binding through adoption. Historical completion time is the first approval or adoption

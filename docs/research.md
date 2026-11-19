@@ -186,3 +186,5 @@ association, not cause. Controlled arms are `ahub bench run --addon <name>=on|of
 taken from both are in `docs/addons/`.
 
 Agents may read the measures and export (ids and counts only), `--dataset` included; `backfill` is the person's or the configured conductor's (#933), and an agent labels only its own task.
+
+Quota rows are windowed by reading time (`measuredAt` when available, otherwise event time). Quota quality `readings` and `stalenessP95Ms` describe recorded rows. Gaps and gap duration preserve the unfiltered stream; intervals between recorded rows are either original silences of at least 15 minutes or shorter than 30 minutes for in-order readings.

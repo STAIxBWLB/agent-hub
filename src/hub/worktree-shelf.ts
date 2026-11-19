@@ -113,7 +113,8 @@ export function boundTask(tasks: readonly Pick<Task, "id" | "state" | "refs" | "
  * action, which reads GitHub, may learn `closed` or `open` (a later change).
  */
 export function prFromTask(task: Pick<Task, "state" | "sdlc" | "history"> | undefined, observed?: PrObserver): WorktreeFact["pr"] {
-  const merge = task?.sdlc?.merge;
+  const guarded = task?.sdlc?.merge;
+  const merge = guarded?.state === "merged" ? guarded : task?.sdlc?.mergeReadback;
   if (merge && merge.state === "merged" && Number.isFinite(merge.at)) return { state: "merged", changedAt: merge.at };
   // A PR state the person asked the hub to read (the explicit refresh action) is a stored fact, never fetched here: this module has no GitHub access (AC5).
   const repo = task?.sdlc?.repo, pr = task?.sdlc?.pr;
