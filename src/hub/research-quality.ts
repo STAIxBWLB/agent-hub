@@ -74,7 +74,11 @@ export function buildResearchQuality(records: readonly ResearchRecord[], events:
       note(name, value);
     }
   }
-  const windowEvents = events.filter(e => { const t = Date.parse(e.at); return Number.isFinite(t) && t >= from && t <= to; });
+  const windowEvents = events.filter(e => {
+    const measured = e.type === "quota" && typeof e.measuredAt === "string" ? Date.parse(e.measuredAt) : NaN;
+    const t = Number.isFinite(measured) ? measured : Date.parse(e.at);
+    return Number.isFinite(t) && t >= from && t <= to;
+  });
   const present: Record<string, number> = {};
   const quota: Record<string, { times: number[]; measured: number; event: number }> = {};
   const budget: QualityReport["budget"] = { pauses: 0, resumes: 0, handoffs: null, byFamily: {} };

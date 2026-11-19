@@ -812,13 +812,13 @@ export function renderReport(report: Report | TaskReport, columns?: number, now 
       [span("messages"), span(r.messages.total, "number")], [span("overflow"), span(r.messages.overflow, "number")],
       [span("undeliverable"), span(r.messages.undeliverable, "number")], [span("messages per task"), span(r.messages.perTask, "number")],
       [span("overlap warnings"), span(r.overlaps.warnings, "number")], [span("task pairs"), span(r.overlaps.pairs, "number")],
-      [span("edit conflicts"), span(r.conflicts, "number")], [span("quota readings"), span(r.quota.readings, "number")], [span("hard limits"), span(r.quota.hard, "number")],
+      [span("edit conflicts"), span(r.conflicts, "number")], [span("quota rows"), span(r.quota.readings, "number")], [span("hard rows"), span(r.quota.hard, "number")],
     ], columns));
   }
   let previous = "";
   const section = (line: string) => byTask
     ? line.startsWith("task #") ? "Tasks" : line.startsWith("class ") ? "Classes" : line.startsWith("unattributed:") ? "Unattributed" : line.startsWith("before attribution:") ? "Before attribution" : previous
-    : line.startsWith("peer ") ? "Peers" : line.startsWith("usage ") ? "Usage" : line.startsWith("supervision ") ? "Supervision" : line.startsWith("conductor ") ? "Conductor" : line.startsWith("messages:") ? "Messages" : line.startsWith("overlap warnings:") ? "Coordination" : line.startsWith("task events:") ? "Tasks" : line.startsWith("quota readings:") ? "Quota" : line.startsWith("route ") ? "Routes" : "Report";
+    : line.startsWith("peer ") ? "Peers" : line.startsWith("usage ") ? "Usage" : line.startsWith("supervision ") ? "Supervision" : line.startsWith("conductor ") ? "Conductor" : line.startsWith("messages:") ? "Messages" : line.startsWith("overlap warnings:") ? "Coordination" : line.startsWith("task events:") ? "Tasks" : line.startsWith("quota rows:") ? "Quota" : line.startsWith("route ") ? "Routes" : "Report";
   for (const sentence of formatted.slice(1)) {
     const name = section(sentence);
     if (name !== previous) {

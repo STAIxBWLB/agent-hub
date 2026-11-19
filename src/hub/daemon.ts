@@ -1,3 +1,4 @@
+import { QuotaEventFilter } from "./quota-events.ts";
 import { piFailureText } from "./pi-failure.ts";
 import { nativeReviewerQuota } from "../adapters/definitions/native-quota.ts";
 import { parseGuidanceCreateInput, parseGuidanceIdQuery } from "./guidance-variants.ts";
@@ -4029,6 +4030,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   };
   const unsettledReviewerQuota = new Map<string, { account: string; peer: string }>();
+  const quotaEvents = new QuotaEventFilter(event);
   const budget = new Budget(join(opts.stateDir, "hub.db"), config.budget, instanceBudgetHooks({
     definitionOf,
     pause: (peer) => bus.pause(peer),
@@ -4049,7 +4051,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // A reading that arrived through a file carries the file's time; a stale one must not look fresh in the export.
     // #683 U1: pauses, resumes and derived resets go to the event log, ids and numbers only.
     ledger: entry => event(entry),
-    reading: (peer, windows, hard, at) => { queueMicrotask(() => tasks.refreshReviewerQuotaWaits()); return event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, ...(Math.abs(Date.now() - at) > 1000 ? { measuredAt: new Date(at).toISOString() } : {}) }) },
+    reading: (peer, windows, hard, at) => { queueMicrotask(() => tasks.refreshReviewerQuotaWaits()); quotaEvents.record(peer, windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, at); },
     handoff: (peer, context, urgentOnly) => tasks.reassignForPause(peer, context, urgentOnly),
     resumed: (record) => {
       // Coalesce unread notices without forgetting the public moves they carried.
@@ -13402,6 +13404,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await webEgress?.close();
       await Promise.all([...piReceiptLedgers.values()].map(ledger => ledger.close()));
       collectClaudeUsage();
+      quotaEvents.flush();
       for (const id of [...researchPending.keys()]) writeResearch(id); // the peers have stopped, so their turns have ended
       budget.close();
       schedulesStore.close();

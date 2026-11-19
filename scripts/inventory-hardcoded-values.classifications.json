@@ -2090,6 +2090,8 @@
   "src/hub/questions.ts:result:inline:this.db.query(UPDATE questions SET state = answered, settled = ?, surface = ?, person = ?, answers = ?, envelope = ?, instructed = ?, instruction = ? WHERE set_id = ? AND state = open) .run=1#1": "contract",
   "src/hub/queue-backpressure.ts:max_oldest_s:inline:max_oldest_s=0#0": "operational",
   "src/hub/queue-backpressure.ts:max_oldest_s:inline:max_oldest_s=604_800#0": "operational",
+  "src/hub/quota-events.ts:QUOTA_HEARTBEAT_MS:constant:QUOTA_HEARTBEAT_MS=15 * 60000#0": "contract",
+  "src/hub/quota-events.ts:QUOTA_USED_DELTA:constant:QUOTA_USED_DELTA=0.005#0": "contract",
   "src/hub/read-only-shell-proof.ts:firstProgram:inline:dirs.length>128=128#0": "safety floor",
   "src/hub/read-only-shell-proof.ts:firstProgram:inline:path.length>16384=16384#0": "safety floor",
   "src/hub/read-only-shell-proof.ts:timeout:inline:timeout=1000#0": "operational",

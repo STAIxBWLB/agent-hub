@@ -155,3 +155,9 @@ test("#1281 a retry after a partial event write does not duplicate tokens or usa
   expect(written[0]).toMatchObject({ type: "tokens", source: "kimi_wire", id: row.id, n: 10, task: 1281 });
   expect(written[1]).toMatchObject({ type: "usage", source: "kimi_wire", id: row.id, totalTokens: 110, task: 1281 });
 });
+
+test("#1555 report names quota row counts", () => {
+  const r = summarize([ev(1, { type: "quota", peer: "codex", windows: [{ id: "5h", used: 0.2 }], hard: true })]);
+  expect(r.quota).toEqual({ readings: 1, hard: 1 });
+  expect(formatReport(r).join("\n")).toContain("quota rows: 1 (1 hard rows)");
+});

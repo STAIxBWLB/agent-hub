@@ -913,3 +913,11 @@ test("queue show prints a resolve hint for a failed row, and says nothing is lef
   expect(flat(renderQueueShow({ id: "d-held", state: "needs_review" }, 200, now))).toContain(`ahub queue resolve d-held --action retry --reason "settled by the person" (retry sends it again; use --action completed instead if the peer already handled it, or discard if it is stale)`); // #1399
   expect(flat(renderQueueShow({ id: "d-done", state: "completed" }, 200, now))).not.toContain("ahub queue resolve");
 });
+
+test("#1555 report renders quota and hard row labels", () => {
+  const report = summarize([{ type: "quota", peer: "codex", windows: [{ id: "5h", used: 0.2 }], hard: true, v: 1, at: new Date(now).toISOString() }]);
+  const output = text(renderReport(report, 120, now));
+  expect(output).toContain("quota rows");
+  expect(output).toContain("hard rows");
+  expect(output).toContain("Quota");
+});
