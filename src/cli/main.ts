@@ -600,7 +600,7 @@ async function taskOp(op: string, a: Record<string, unknown>, throwOnError = fal
     if (!res.ok) {
       if (throwOnError) throw new Error(res.error);
       if(res.refusalAudited===true)operationalRefusalRecorded=true;
-      if(!operationalAuditReady || res.authorityRefused!==false)audit("refused");
+      if(operationalAuditReady ? res.authorityRefused!==false : res.authorityRefused===true)audit("refused"); // a domain error is not a refusal (#1547)
       // #711: an agent shell refused something only the person may do is told why it counts as an agent. The refusal and the authority stay as they were.
       const cause = agentShellCause(identity, String(res.error));
       if (cause) console.error(`ahub: ${res.error}\n${cause}`), process.exit(1);
