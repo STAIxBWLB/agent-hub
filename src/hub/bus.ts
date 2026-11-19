@@ -209,6 +209,8 @@ export class Bus {
    * and is never corrected once the queue empties (measured: status.json kept `queued 4` on an empty queue).
    */
   onQueues?: () => void;
+  /** Host-only registration observation; never changes delivery or peer state. */
+  onPeerAdded?: (peer: PeerId) => void;
   /**
    * #445 C2: a peer's answer to a delivery, offered BEFORE anything is built from it. The host returns true when the answer belongs to an invocation it
    * took over: the bus then publishes nothing, stores nothing, emits no event and lets no tap, queue, digest or memory path see it. `answers` is what the
@@ -303,6 +305,7 @@ export class Bus {
   }
 
   add(peer: PeerAdapter): void {
+    const newAttachment = this.peers.get(peer.id) !== peer;
     if (peer.remoteRoom !== undefined && (!parseRemotePeerId(peer.id) || typeof peer.remoteRoom !== "string" || !peer.remoteRoom || peer.remoteRoom.length > 256 || !remoteFingerprint(peer.remoteMember))) throw new Error("invalid remote peer binding");
     const pendingRemote = peer.remoteRoom !== undefined && this.hasRemoteWork(peer.id);
     if (peer.remoteRoom !== undefined && pendingRemote) {
@@ -458,6 +461,7 @@ export class Bus {
       this.emit({ t: "state", peer: peer.id, state: this.stateOf(peer.id) });
       void this.drain(peer.id);
     };
+    if (newAttachment) try { this.onPeerAdded?.(peer.id); } catch { /* observers cannot undo a registered peer */ }
   }
 
   private persist(): void {

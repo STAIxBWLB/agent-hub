@@ -7,6 +7,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { type Envelope, USER } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
+import { TASK_TOOLS } from "../src/hub/hub-tools.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 
 // #785 P1c: opt-in `tasks.auto_pull`. A freed planner slot pulls the one top backlog card explicitly reserved for that peer, through pullPlanned.
@@ -56,6 +57,77 @@ async function rig(autoPull: boolean | (() => boolean) = true) {
 }
 const pulled = (task: Task | undefined) => !!task && task.state !== "backlog";
 const pullEntry = (task: Task) => task.history.find(entry => entry.event === "backlog pulled");
+
+test("planning a ready reservation pulls without a capacity release", async () => {
+  const r = await rig(true), task = r.card();
+  await r.tasks.planBacklog("claude", { id: task.id, revision: 0, fields: { reserved: "codex" }, reason: "ready for codex" });
+  expect(await until(() => pulled(r.board.get(task.id)))).toBe(true);
+  expect(r.board.get(task.id)?.owner).toBe("codex");
+});
+
+test("unpinning a reserved card pulls it when capacity is available", async () => {
+  const r = await rig(true), task = r.card({ reserved: "codex", pinned: true });
+  await r.tasks.planBacklog(USER, { id: task.id, revision: task.planningRevision ?? 0, fields: { pinned: false }, reason: "ready now" });
+  expect(await until(() => pulled(r.board.get(task.id)))).toBe(true);
+});
+
+test("planning a reservation keeps a card in backlog at the WIP cap", async () => {
+  const r = await rig(true), task = r.card();
+  r.inReview();
+  await r.tasks.planBacklog("claude", { id: task.id, revision: 0, fields: { reserved: "codex" }, reason: "reserve for later" });
+  expect(await until(() => r.tasks.autoPullsPending() === 0)).toBe(true);
+  expect(r.board.get(task.id)?.state).toBe("backlog");
+});
+
+test("planning a reservation leaves it staged when auto-pull is off", async () => {
+  const r = await rig(false), task = r.card();
+  await r.tasks.planBacklog("claude", { id: task.id, revision: 0, fields: { reserved: "codex" }, reason: "reserve for later" });
+  expect(r.tasks.autoPullsPending()).toBe(0);
+  expect(r.board.get(task.id)?.state).toBe("backlog");
+});
+
+test("an attaching peer pulls an existing ready reservation", async () => {
+  const r = await rig(true), task = r.card({ reserved: "codex" });
+  await r.peers.get("codex")!.stop();
+  await r.peers.get("codex")!.start();
+  expect(await until(() => pulled(r.board.get(task.id)))).toBe(true);
+  expect(r.board.get(task.id)?.owner).toBe("codex");
+});
+
+test("a peer started before bus registration pulls its existing reservation once", async () => {
+  const r = await rig(true), task = r.card({ reserved: "codex" });
+  const peer = new Quiet("codex");
+  await peer.start();
+  const stateEvents: string[] = [];
+  r.bus.tap(event => { if (event.t === "state" && event.peer === "codex") stateEvents.push(event.state); });
+  r.bus.add(peer);
+  r.bus.add(peer); // registering the same adapter again is not a second attachment
+  expect(stateEvents).toEqual([]); // registration is not a peer state transition
+  expect(r.tasks.autoPullsPending()).toBe(1);
+  expect(await until(() => pulled(r.board.get(task.id)))).toBe(true);
+  expect(r.board.get(task.id)?.owner).toBe("codex");
+  expect(r.board.get(task.id)?.history.filter(entry => entry.event === "backlog pulled")).toHaveLength(1);
+});
+
+test("approval makes a reserved dependent ready even when its peer released no capacity", async () => {
+  const r = await rig(true);
+  let prerequisite = r.card();
+  prerequisite = r.board.update(prerequisite.id, USER, "backlog pulled", { state: "proposed", owner: "kimi", reviewer: USER });
+  prerequisite = r.board.update(prerequisite.id, "kimi", "accepted", { state: "in_progress" });
+  prerequisite = r.board.update(prerequisite.id, "kimi", "done", { state: "in_review" });
+  const dependent = r.card({ reserved: "codex", deps: [prerequisite.id] });
+  await r.tasks.review(USER, prerequisite.id, "approved");
+  expect(await until(() => pulled(r.board.get(dependent.id)))).toBe(true);
+  expect(r.board.get(dependent.id)?.owner).toBe("codex");
+});
+
+test("backlog tool descriptions and accept refusal name planner authority", async () => {
+  for (const name of ["hub_backlog_list", "hub_backlog_pull"]) {
+    expect(TASK_TOOLS.find(tool => tool.name === name)?.description).toContain("planners only");
+  }
+  const r = await rig(false), task = r.card();
+  expect(() => r.tasks.accept("codex", task.id)).toThrow("a planner or person must pull it into To Do first");
+});
 
 test("on: a freed slot pulls the top card reserved for that peer, as the hub for the planner of record, with the reason recorded", async () => {
   const r = await rig(true);

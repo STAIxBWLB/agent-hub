@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Pull ready reserved backlog work when planning or a peer attachment makes it eligible, and name planner authority in backlog guidance (Refs #1547, hub task 1013).
 - Raise the default total backstop AHUB_CHECK_HANG_S of scripts/check.sh from 2250 s to 2700 s; AHUB_CHECK_QUIET_S stays 300 and is still what catches a hang (Refs #1564, hub task 1022).
 - Record observed merge costs, carried-spec timing and per-source security scan availability (Refs #1555).
 - Record quota rows on meaningful changes and a 15-minute heartbeat while preserving measured silence gaps (Refs #1555).
