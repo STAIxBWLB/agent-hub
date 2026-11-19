@@ -1883,6 +1883,8 @@ PRs through `gh`, and the feature table in `docs/dogfood.md`. It covers the last
 document as `--json` with `unknown` in place of null; missing or truncated evidence is unknown, never 0. It exports ids, timestamps and counts
 only and runs no model. Its bounds and the weekly routine are in [dogfood](dogfood.md#weekly-scorecard).
 
+`ahub report` labels quota counts as `quota rows` and `hard rows`: they count recorded events, not provider polls. Its JSON retains `quota.readings` and `quota.hard` with the same recorded-row meaning.
+
 Per peer and model route, `ahub report` also counts model changes between consecutive
 decisions, how many of them landed inside tool loops and, with `stay_switch` on, sessions
 and the planner's switches (#197). With `stay_switch = "off"` session boundaries are not
