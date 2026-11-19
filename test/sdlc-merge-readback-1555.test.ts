@@ -17,14 +17,14 @@ function rig(mode: "ok" | "cost-unreadable" | "state-unreadable" = "ok") {
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); });
   const config = sdlcConfig({ mode: "advise", required_checks: ["gate"], auto_merge: "off", security_scan: { sources: ["dependabot", "secret_scanning"] } });
   const mergedAt = Date.now() + 1_000;
-  const world = { state: "MERGED", reads: 0 };
+  const world = { state: "MERGED", reads: 0, costHead: HEAD };
   const gh: SdlcGh = async args => {
     if (mode === "state-unreadable") return { code: 1, stdout: "" };
     if (args[0] === "pr") { world.reads++; return { code: 0, stdout: JSON.stringify({ headRefOid: HEAD, state: world.state, mergeCommit: { oid: MERGED }, reviewDecision: "APPROVED", reviewRequests: [], files: [], changedFiles: 0, statusCheckRollup: [] }) }; }
     if (args[1] !== "graphql") return mode === "cost-unreadable" ? { code: 1, stdout: "" } : { code: 0, stdout: JSON.stringify({ total_count: 1, workflow_runs: [{ id: 1, run_attempt: 2, head_sha: HEAD, pull_requests: [7] }] }) };
     const query = args.find(x => x.startsWith("query=")) ?? "";
     if (query.includes("reviewThreads") && !query.includes("costCommits")) return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: HEAD, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
-    const cost = { number: 7, headRefOid: HEAD, state: "MERGED", mergedAt: new Date(mergedAt).toISOString(), reviews: { nodes: [{ databaseId: 3, commit: { oid: HEAD } }], pageInfo: { hasNextPage: false } }, costCommits: { nodes: [{ commit: { oid: HEAD } }], pageInfo: { hasNextPage: false } } };
+    const cost = { number: 7, headRefOid: world.costHead, state: "MERGED", mergedAt: new Date(mergedAt).toISOString(), reviews: { nodes: [{ databaseId: 3, commit: { oid: HEAD } }], pageInfo: { hasNextPage: false } }, costCommits: { nodes: [{ commit: { oid: HEAD } }], pageInfo: { hasNextPage: false } } };
     const pr = query.includes("costCommits") ? { ...cost, reviewDecision: "APPROVED", mergeCommit: { oid: MERGED }, reviewRequests: { nodes: [], pageInfo: { hasNextPage: false } }, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } }, commits: { nodes: [{ commit: { oid: HEAD, statusCheckRollup: { contexts: { nodes: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }], pageInfo: { hasNextPage: false } } } } }] } } : { ...cost, commits: cost.costCommits };
     return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: pr } } }) };
   };
@@ -76,6 +76,17 @@ test("#1555 an unreadable external merge state leaves no readback", async () => 
   r.board.update(r.id, "user", "approved", { state: "approved" });
   await r.tasks.captureExternalMerge(r.id);
   expect(r.board.get(r.id)?.sdlc?.mergeReadback).toBeUndefined();
+});
+
+test("#1555 changed cost snapshot head cannot supply another head's metrics", async () => {
+  const r = rig();
+  r.board.update(r.id, "codex", "done", { state: "in_review" });
+  r.board.update(r.id, "user", "approved", { state: "approved" });
+  r.world.costHead = MERGED;
+  await r.tasks.captureExternalMerge(r.id);
+  const observed = r.board.get(r.id)?.sdlc?.mergeReadback;
+  expect(observed).toMatchObject({ state: "merged", head: HEAD });
+  expect(observed?.cost).toBeUndefined();
 });
 
 test("#1555 readback is not carried across an artifact relink", () => {

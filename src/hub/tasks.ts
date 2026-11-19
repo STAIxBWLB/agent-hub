@@ -7768,7 +7768,7 @@ export class Tasks {
     const cost = evidence?.costSnapshot ? await readPrCostHistory(repo, pr as number, (args, timeout, cwd, cap) => {
       const remaining = costDeadline - performance.now();
       return remaining > 0 ? run(args, Math.min(timeout ?? remaining, remaining), cwd, cap) : Promise.resolve({ code: 1, stdout: "" });
-    }, evidence.costSnapshot).then(pr => pr?.complete ? mergeCostFrom(pr) : undefined, () => undefined) : undefined;
+    }, evidence.costSnapshot, head).then(pr => pr?.complete ? mergeCostFrom(pr) : undefined, () => undefined) : undefined;
     const latest = current();
     const merge: ReadbackMergeRecord = { repo, pr: pr as number, head, at: Date.now(), state: "merged", ...(evidence?.mergeCommit ? { mergeCommit: evidence.mergeCommit } : {}), ...(cost ? { cost } : {}) };
     const capacity = this.capacityBefore(latest);
@@ -7876,7 +7876,7 @@ export class Tasks {
     if (!current()) return "skip";
     if (evidence?.state === "CLOSED") return "closed";
     if (evidence?.state !== "MERGED" || evidence.head !== head) return "retry";
-    const cost = await readPrCostHistory(repo, pr, run).then(value => value?.complete ? mergeCostFrom(value) : undefined, () => undefined);
+    const cost = await readPrCostHistory(repo, pr, run, undefined, head).then(value => value?.complete ? mergeCostFrom(value) : undefined, () => undefined);
     if (!current()) return "skip";
     const now = this.d.board.get(id)!;
     const merge: ReadbackMergeRecord = { repo, pr, head, at: Date.now(), state: "merged", ...(evidence.mergeCommit ? { mergeCommit: evidence.mergeCommit } : {}), ...(cost ? { cost } : {}) };

@@ -745,7 +745,7 @@ async function identicalTreeGate(repository: string, tree: string, run: SdlcGh, 
 }
 
 /** PR cost evidence excludes titles, bodies and comment text; unknown/truncated coverage never becomes zero. */
-export async function readPrCostHistory(repository: string, number: number, run: SdlcGh = sdlcGh, snapshot?: unknown): Promise<import("./cost-governance.ts").CostPr | undefined> {
+export async function readPrCostHistory(repository: string, number: number, run: SdlcGh = sdlcGh, snapshot?: unknown, expectedHead?: string): Promise<import("./cost-governance.ts").CostPr | undefined> {
   if (!repo(repository) || !id(number)) return;
   const [owner, name] = repository.split("/");
   try {
@@ -759,7 +759,7 @@ export async function readPrCostHistory(repository: string, number: number, run:
       if (parsed.errors) return;
       pr = parsed.data?.repository?.pullRequest;
     }
-    if (pr?.number !== number || !["OPEN", "CLOSED", "MERGED"].includes(pr.state)) return;
+    if (pr?.number !== number || !["OPEN", "CLOSED", "MERGED"].includes(pr.state) || (expectedHead !== undefined && pr.headRefOid !== expectedHead)) return;
     const result: import("./cost-governance.ts").CostPr = { repo: repository, pr: number, state: pr.state, complete: false,
       ...(typeof pr.mergedAt === "string" && Number.isFinite(Date.parse(pr.mergedAt)) ? { mergedAt: Date.parse(pr.mergedAt) } : {}) };
     if (pr.state !== "MERGED") return result; // Cost metrics count merged PRs, not an active work queue.
