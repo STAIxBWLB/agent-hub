@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
@@ -26,7 +26,7 @@ test("#1555 suppressed quota rows still update live budget and flush at clean st
     now += 60_000;
     expect((await client.request({ t: "budget", set: { peer: "codex", used: 0.202, window: "5h", resetsInMs: 3_540_000 } })).ok).toBe(true);
     expect((await client.request({ t: "budget" })).budget.codex.windows[0].used).toBe(0.202);
-    expect(JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).budget.codex.windows[0].used).toBe(0.202);
+    expect((await client.request({ t: "ui_snapshot", after: 0 })).budget.codex.windows[0].used).toBe(0.202);
     expect(readEvents(join(stateDir, "events.jsonl")).filter(e => e.type === "quota" && e.peer === "codex")).toHaveLength(1);
     client.close(); client = undefined;
     await daemon.stop(); daemon = undefined;

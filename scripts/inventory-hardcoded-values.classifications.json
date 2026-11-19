@@ -2113,6 +2113,8 @@
   "src/hub/read-tools.ts:validateMemoryRead:inline:limit=20#0": "contract",
   "src/hub/read-tools.ts:validateMemoryRead:inline:string=0#0": "contract",
   "src/hub/read-tools.ts:validateMemoryRead:inline:string=200#0": "contract",
+  "src/hub/quota-events.ts:QUOTA_HEARTBEAT_MS:constant:QUOTA_HEARTBEAT_MS=15 * 60000#0": "contract",
+  "src/hub/quota-events.ts:QUOTA_USED_DELTA:constant:QUOTA_USED_DELTA=0.005#0": "contract",
   "src/hub/recovery-authority.ts:binding:inline:value.length > 4096=4096#0": "safety floor",
   "src/hub/recovery-continuity.ts:MAX_BOOKMARK_BYTES:constant:MAX_BOOKMARK_BYTES=16 * 1024#0": "safety floor",
   "src/hub/recovery-continuity.ts:RECOVERY_CONTINUITY_BUSY_TIMEOUT_MS:constant:RECOVERY_CONTINUITY_BUSY_TIMEOUT_MS=3000#0": "operational",
