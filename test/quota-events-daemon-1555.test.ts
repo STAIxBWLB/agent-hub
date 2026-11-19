@@ -5,6 +5,13 @@ import { tmpdir } from "node:os";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { readEvents } from "../src/hub/events.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+
+class FakePeer extends BasePeer {
+  async start() {}
+  async stop() {}
+  async deliver() {}
+}
 
 test("#1555 suppressed quota rows still update live budget and flush at clean stop", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-quota-rows-")), stateDir = join(root, "state"), originalNow = Date.now;
@@ -13,6 +20,7 @@ test("#1555 suppressed quota rows still update live budget and flush at clean st
     Date.now = () => now;
     daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
       config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+    daemon.bus.add(new FakePeer("codex"));
     client = await ControlClient.connect(stateDir, { role: "console" });
     expect((await client.request({ t: "budget", set: { peer: "codex", used: 0.2, window: "5h", resetsInMs: 3_600_000 } })).ok).toBe(true);
     now += 60_000;
