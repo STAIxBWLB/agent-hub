@@ -2112,20 +2112,22 @@ export async function startDaemon(opts: DaemonOptions) {
   async function taskIntentBrief(task: import("../memory/brief.ts").BriefTask): Promise<import("../memory/brief.ts").IntentBriefContext> {
     checkMemory();
     const initial = task.id === undefined ? undefined : board.get(task.id), revision = configRevision;
-    const allowed = () => {
+    let taskCurrent = false, contextPrivate = true;
+    const refreshTask = () => {
       const current = task.id === undefined ? undefined : board.get(task.id);
-      return !stopping && configRevision === revision && !!initial && !!current && current.created === task.created && current.updated === initial.updated
-        && current.history.length === initial.history.length && current.owner === initial.owner && !tasks.isPii(current)
-        && !turns.get(current.owner ?? "")?.private && !contextPii(current.owner ?? "");
+      taskCurrent = !!initial && !!current && current.created === task.created && current.updated === initial.updated
+        && current.history.length === initial.history.length && current.owner === initial.owner && !tasks.isPii(current);
+      contextPrivate = contextPii(initial?.owner ?? "");
     };
-    const assertCurrent = () => { checkMemory(); if (!allowed()) throw Error("memory brief context changed"); };
+    const allowed = () => taskCurrent && !contextPrivate && !stopping && configRevision === revision && !turns.get(initial?.owner ?? "")?.private;
+    const assertCurrent = () => { checkMemory(); refreshTask(); if (!allowed()) throw Error("memory brief context changed"); };
     assertCurrent();
     // Derived code neighbours are additional read-time selectors, never persisted memory or authority.
     const starts = taskNodes(task).filter(node => node.startsWith("symbol:"));
     let extra: string[] = [];
     if (starts.length && tasks.memoryCodeEligible(initial!)) {
       try {
-        const prepared = await memoryCode(starts, allowed);
+        const prepared = await memoryCode(starts, () => { refreshTask(); return allowed(); });
         assertCurrent();
         extra = currentMemoryCode(prepared).nodes.map(node => node.id).filter(node => node.startsWith("symbol:")).map(node => node.slice(7));
       } catch { /* Optional code evidence never removes direct intent memory. */ }
@@ -2133,7 +2135,6 @@ export async function startDaemon(opts: DaemonOptions) {
     assertCurrent();
     const stale = staleness();
     const policy = createStandalonePolicy({ denyPaths: config.local.deny, host: { screen: async value => {
-      assertCurrent();
       if (value && typeof value === "object" && "id" in value) {
         const row = value as MemoryView;
         return screenMemory([row]).length === 1 && tasks.publicMetadataText(JSON.stringify(row));

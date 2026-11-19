@@ -67,6 +67,7 @@ export interface RecordBriefPort {
   maxBytes?: number | (() => number);
 }
 const RECORD_ROWS = 32, RECORD_BYTES = 2048;
+const INTENT_SCREEN_BATCH = 32;
 const LEGACY_KNOWLEDGE_HEADER = "Knowledge brief (advice, not a block):";
 const LEGACY_NATIVE_HEADER = "Memory brief (hub memory first, fails first: ahub memory show <mem id>; amem by mem:id):";
 const LEGACY_CURATED_HEADER = "Memory brief (amem curated notes; fetch details by mem:id):";
@@ -220,7 +221,15 @@ export class Briefs {
           if (!current()) return undefined;
           const seen = this.seen.get(peer) ?? new Set<string>();
           const revision = context.options.policyVersion();
-          const result = await buildIntentBrief(context.source, context.options);
+          const policy = context.options.policy(); let screened = 0;
+          const result = await buildIntentBrief(context.source, { ...context.options, policy: () => ({ ...policy, screen: async value => {
+            const accepted = await policy.screen(value);
+            if (++screened % INTENT_SCREEN_BATCH === 0) {
+              await new Promise<void>(resolve => setImmediate(resolve));
+              context.options.assertCurrent?.();
+            }
+            return accepted;
+          } }) });
           if (!current()) return undefined;
           if (result.state === "unknown" || context.options.allowed?.() === false || context.options.policyVersion() !== revision) return undefined;
           context.options.assertCurrent?.();

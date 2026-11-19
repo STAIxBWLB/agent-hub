@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { buildIntentBrief, createIntentBriefSource, createStandalonePolicy, looksSecret, MemoryStore, type View } from "@staix/agent-mem";
+import { buildIntentBrief, createIntentBriefSource, createStandalonePolicy, INTENT_BRIEF_SCAN_LIMIT, looksSecret, MemoryStore, type View } from "@staix/agent-mem";
 import { Briefs, type BriefTask, type IntentBriefHost } from "../src/memory/brief.ts";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
@@ -159,4 +160,58 @@ test("hub library delivery preserves library order and repeats a selected plan f
   const repeated = await briefs.forTask("codex", f.task, priority);
   expect(repeated).toContain(`mem:${failure}`); expect(repeated).not.toContain(`mem:${decision}`);
   expect(repeated?.split("\n")).toHaveLength(2);
+});
+
+test("a scan-limit intent brief yields and bounds host state checks", async () => {
+  const f = fixture(), seed = f.note("writer bounded scan"), row = f.store.get(seed)!;
+  const rows = Array.from({ length: INTENT_BRIEF_SCAN_LIMIT + 1 }, (_, index) => ({ ...row, id: createHash("sha256").update(String(index)).digest("hex").slice(0, 32), text: index % 73 === 0 ? `writer private/records ${index}` : `writer bounded scan ${index}` }));
+  const baseline = await f.host(f.task);
+  const expected = await buildIntentBrief({ ...baseline.source, notes: () => { baseline.source.notes(); return rows; } }, baseline.options);
+  expect(expected.state).toBe("known");
+  let reads = 0, contexts = 0, ticks = 0, maxGap = 0, last = performance.now();
+  const get = f.board.get.bind(f.board);
+  f.board.get = id => { reads++; return get(id); };
+  const checkContext = f.ports.contextPii;
+  f.ports.contextPii = () => { contexts++; return checkContext(); };
+  const host: IntentBriefHost = async task => {
+    const context = await f.host(task), policy = context.options.policy();
+    return { ...context, source: { ...context.source, notes: () => { context.source.notes(); return rows; } }, options: { ...context.options, policy: () => ({ ...policy, screen: async value => {
+      if (value && typeof value === "object" && "id" in value) { const until = performance.now() + 0.05; while (performance.now() < until) {} }
+      return policy.screen(value);
+    } }) } };
+  };
+  const timer = setInterval(() => { const now = performance.now(); maxGap = Math.max(maxGap, now - last); last = now; ticks++; }, 1);
+  const started = performance.now();
+  let text: string | undefined;
+  try { text = await new Briefs(undefined, "fixture", 8, undefined, undefined, undefined, host).forTask("codex", f.task); }
+  finally { maxGap = Math.max(maxGap, performance.now() - last); clearInterval(timer); }
+  const elapsed = performance.now() - started;
+  console.log(`intent scan: rows=${INTENT_BRIEF_SCAN_LIMIT}, elapsedMs=${elapsed.toFixed(1)}, maxGapMs=${maxGap.toFixed(1)}, timerTicks=${ticks}, boardReads=${reads}, contextChecks=${contexts}`);
+  expect(text).toContain("writer bounded scan");
+  expect(text).toBe(expected.text.split("\n").slice(0, 9).join("\n"));
+  expect(text).not.toContain("private/records");
+  expect(ticks).toBeGreaterThan(1);
+  expect(maxGap).toBeLessThan(elapsed * 0.8);
+  expect(reads).toBeLessThan(INTENT_BRIEF_SCAN_LIMIT / 4);
+  expect(contexts).toBeLessThan(INTENT_BRIEF_SCAN_LIMIT / 4);
+}, 20_000);
+
+test("a privacy, owner or binding change during a batch yield withholds the complete brief", async () => {
+  for (const change of ["private", "task", "owner", "binding", "policy"] as const) {
+    const f = fixture(), seed = f.note("writer batch fence"), row = f.store.get(seed)!;
+    const rows = Array.from({ length: 65 }, (_, index) => ({ ...row, id: createHash("sha256").update(String(index)).digest("hex").slice(0, 32) }));
+    const host: IntentBriefHost = async task => {
+      const context = await f.host(task);
+      return { ...context, source: { ...context.source, notes: () => { context.source.notes(); return rows; } } };
+    };
+    const pending = new Briefs(undefined, "fixture", 8, undefined, undefined, undefined, host).forTask("codex", f.task);
+    setImmediate(() => {
+      if (change === "private") f.private(true);
+      if (change === "task") f.board.update(f.task.id, USER, "private", { signals: ["pii"] });
+      if (change === "owner") f.board.update(f.task.id, USER, "assigned", { owner: "kimi" });
+      if (change === "binding") f.ports.checkMemory = () => { throw Error("binding changed"); };
+      if (change === "policy") f.ports.configRevision++;
+    });
+    expect(await pending).toBeUndefined();
+  }
 });
