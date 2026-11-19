@@ -119,3 +119,15 @@ A role on the task is not the authority to run what the proposal names. Acceptin
 ## Deliberately outside this contract
 
 Automatic pause, retry, cancel, reroute, approval or rollback, any automatic acceptance, any import of an external supervision runtime, and any resident worker or recurring timer. The queue proposes an existing action and runs it only when a present role says so. agent-research#63 builds on the reading and bounds above, not on an acceptance path here.
+
+## Observed limits (pilot)
+
+The first pilot (2026-11-11 to 2026-11-18 KST, `shadow`, one task, receipt `docs/verification/2026-11-11-supervision-pilot-1221.md`) measured limits that belong to the reading and not to one deployment:
+
+- The read page applies before the role filter. On a queue past 50 rows a caller's own rows can be missing from an unfiltered read, and narrowing by task is what recovers them, so a role-scoped total is a lower bound and not a queue count.
+- The refusal counter belongs to a daemon lifetime and names no task, rule or bound. The pilot read 97 refusals in 7 h 24 m on a daemon started that morning and could attribute none of them; a total cannot be summed across restarts either, so a wave-wide figure is unknown rather than the sum of its lifetimes.
+- The overlap rule is asked only while both sides' latest episode is an accepted one. Silence under a partner that is approved, filed, reassigned or closed is unknown coverage, never a clean non-trigger, and the pilot's last four days produced no row for that reason rather than because nothing overlapped.
+- A pair leaves supervision before its integration can be recorded. Nine of the pilot's 18 rows closed within five seconds of a partner's review request (0.56 to 4.9 s), one at this task's idle-sweep reassignment, one when the revision moved, and the rest on the queue's own schedule, and no row named the merge that followed; an integration that lands with the merge is outside this reading.
+- A declared overlap is usually file-level. Every pilot row named a pair that edited something other than the anchor row: one partner inserted 70 to 133 rows above it, another rewrote an existing row 13 to 40 rows away, one changed a different new file in the same directory, and one never touched `docs/dogfood.md` at all. A notice to request integration was therefore true of the plan and not of the work, and a later pilot should expect that rate rather than treat it as a defect.
+- A reassignment closes and re-arms rows. An idle sweep closed three rows in one second and the re-accept wrote three more 338 ms later, so a row's lifetime can track task ownership rather than the condition it names.
+- A rule version bump splits a pilot. `deliverable_invalidated_check` moved to version 2 on 2026-11-19 and every stored row names the version it was made under, so readings taken across a bump are not one measurement.
