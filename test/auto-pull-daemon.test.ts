@@ -20,7 +20,7 @@ class Attached extends BasePeer {
   async deliver() {}
 }
 
-async function fixture(local: unknown = undefined, committed: Record<string, unknown> = {}, attach?: string) {
+async function fixture(local: unknown = undefined, committed: Record<string, unknown> = {}, attach?: string, free = false) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-auto-pull-daemon-"))), state = join(dir, ".agenthub/state");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
@@ -40,6 +40,7 @@ async function fixture(local: unknown = undefined, committed: Record<string, unk
   busy = board.update(busy.id, "user", "backlog pulled", { state: "proposed", owner: "codex", reviewer: "claude" });
   busy = board.update(busy.id, "codex", "accepted", { state: "in_progress" });
   busy = board.update(busy.id, "codex", "done", { state: "in_review" });
+  if (free) busy = board.update(busy.id, "claude", "approved", { state: "approved" });
   const reserved = board.propose("user", { title: "reserved ready card", class: "implement", backlog: true, planner: "claude", reserved: "codex" });
   board.close();
   const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, notifier: () => {}, researchGraceMs: 1 });
@@ -54,6 +55,15 @@ async function fixture(local: unknown = undefined, committed: Record<string, unk
   const log = () => existsSync(join(state, "hub.log")) ? readFileSync(join(state, "hub.log"), "utf8") : "";
   return { dir, state, daemon, console_, planner, row, card, approve, busy, reserved, log };
 }
+
+test("startup pulls an existing reservation when its peer attaches with free WIP", async () => {
+  const f = await fixture({ tasks: { auto_pull: true } }, {}, "codex", true);
+  const deadline = Date.now() + 3000;
+  let card = await f.card();
+  while (card.state === "backlog" && Date.now() < deadline) { await new Promise(resolve => setTimeout(resolve, 20)); card = await f.card(); }
+  expect(card.state).toBe("proposed");
+  expect(card.owner).toBe("codex");
+}, 20_000);
 
 test("a real daemon: auto_pull is off by default (an approval pulls nothing), and a person turns it on live over the control socket into the machine-local file only", async () => {
   const f = await fixture();

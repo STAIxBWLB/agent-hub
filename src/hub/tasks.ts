@@ -245,7 +245,7 @@ export interface TasksDeps {
   auditSource?: AuditSource;
   /** #785 P1b: the per-head CI watcher's bounds; tests shorten them, the defaults are `CI_WATCH_*` in `ci-watch.ts`. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
-  /** #785 P1c: `tasks.auto_pull`, read at each capacity release so a reload applies to the next one; absent or false pulls nothing. */
+  /** #785 P1c: `tasks.auto_pull`, read for every automatic pull trigger; absent or false pulls nothing. */
   autoPull?: () => boolean;
   briefs?: Briefs;
   /** Screened live fail notes directly intersecting the task plan or refs; read-only advice. */
@@ -862,6 +862,7 @@ export class Tasks {
   /** #785 P1b: one bounded CI watcher per exact PR head, and the reviews the hub held as premature, by task id. */
   private readonly ciWatchers: CiWatchers;
   private readonly heldReviews = new Map<number, { head: string; reviewer: PeerId; revision: number }>();
+  private readonly autoPullAttached = new Set<PeerId>();
 
   constructor(private readonly d: TasksDeps) {
     this.ciWatchers = new CiWatchers({
@@ -893,6 +894,11 @@ export class Tasks {
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
     // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
     d.bus.tap((e) => {
+      if (e.t === "state" && e.state === "offline") this.autoPullAttached.delete(e.peer);
+      if (e.t === "state" && e.state === "idle" && !this.autoPullAttached.has(e.peer) && this.d.autoPull?.() === true) {
+        this.autoPullAttached.add(e.peer);
+        if (this.topReservedReady(e.peer, undefined, true)) this.queueAutoPulls(new Set([e.peer]), "peer available");
+      }
       if (e.t === "overflow" && e.env.from === HUB && e.env.kind === "task" && Array.isArray(e.env.refs?.backlog)) {
         const ids = e.env.refs.backlog;
         if (ids.length <= 64 && ids.every(id => Number.isSafeInteger(id) && id > 0)) this.addPlannerBacklog(e.peer, ids);
@@ -3075,9 +3081,13 @@ export class Tasks {
         changes.set(planner, change);
       };
       const released = new Set<PeerId>();
+      const readied = new Set<PeerId>();
       for (const [peer, used] of before) if (this.wip(peer) < used) { released.add(peer); for (const planner of this.taskPlanner(task)) add(planner, peer); }
       if (approved) for (const card of this.d.board.list("backlog")) {
-        if (card.deps?.includes(task.id) && !this.waitsFor(card).length && !plannedStartPending(card, now)) for (const planner of this.taskPlanner(card)) add(planner, undefined, card.id);
+        if (card.deps?.includes(task.id) && !this.waitsFor(card).length && !plannedStartPending(card, now)) {
+          for (const planner of this.taskPlanner(card)) add(planner, undefined, card.id);
+          if (card.reserved) readied.add(card.reserved);
+        }
       }
       for (const [planner, change] of changes) this.releaseNotice(`could not notify planner ${planner} about ready work`, () => {
         const pending = this.d.bus.pendingEnvelopes(planner).filter(env => env.from === HUB && env.kind === "task" && env.body.startsWith("Planner work ready:"));
@@ -3102,8 +3112,9 @@ export class Tasks {
         const env = newEnvelope(HUB, sanitize(`Planner work ready:\n${lines.join("\n")}\nRead the current board before planning or pulling work.`), { to: [planner], kind: "task" });
         if (!this.d.bus.publish(env).includes(planner)) throw new Error("the notice was not queued");
       });
-      // #785 P1c: only this write's own release, never a merged earlier one, and only when the person turned it on.
+      // Only this write's own release or newly ready dependency, never a merged earlier notice.
       if (this.d.autoPull?.() === true) this.queueAutoPulls(released);
+      if (this.d.autoPull?.() === true) this.queueAutoPulls(new Set([...readied].filter(peer => !released.has(peer))), "backlog ready");
     });
   }
 
@@ -3116,32 +3127,32 @@ export class Tasks {
   }
 
   /**
-   * #785 P1c: `tasks.auto_pull`. A slot freed for a peer pulls the one top backlog card explicitly reserved for it, through `pullPlanned` as the hub acting for that card's planner of
+   * #785 P1c: `tasks.auto_pull`. A trigger pulls the one top backlog card explicitly reserved for a peer, through `pullPlanned` as the hub acting for that card's planner of
    * record: revision, dependency, reservation, pinned, frozen-release, P0 order and WIP checks all run there unchanged. One card per release. Never an unreserved card, never PII.
-   * Serialized on one chain, so two releases cannot pick the same card; each job re-reads the board, so a card that moved meanwhile is skipped.
+   * Serialized on one chain, so concurrent triggers cannot pick the same card; each job re-reads the board, so a card that moved meanwhile is skipped.
    */
   private autoPulls: Promise<void> = Promise.resolve();
   private autoPullsOpen = 0;
   /** Queued or running auto pulls, so a recovery commit waits for them the way it waits for `checksPending` (#785 P1c): one that is mid-admission would otherwise write after the commit's digest. */
   autoPullsPending = (): number => this.autoPullsOpen;
-  private queueAutoPulls(released: ReadonlySet<PeerId>): void {
+  private queueAutoPulls(released: ReadonlySet<PeerId>, cause = "capacity released"): void {
     for (const peer of released) {
       this.autoPullsOpen++;
-      this.autoPulls = this.autoPulls.then(() => this.autoPull(peer)).catch(() => { /* autoPull reports its own refusals */ }).finally(() => { this.autoPullsOpen--; });
+      this.autoPulls = this.autoPulls.then(() => this.autoPull(peer, cause)).catch(() => { /* autoPull reports its own refusals */ }).finally(() => { this.autoPullsOpen--; });
     }
   }
   /** Whether the hub may still start work on its own: the setting is on, and no recovery, shutdown or storage hold is active. Read at entry and again right before the assignment write. */
   private autoPullAdmitted(): boolean {
     return this.d.autoPull?.() === true && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError;
   }
-  private async autoPull(peer: PeerId): Promise<void> {
+  private async autoPull(peer: PeerId, cause: string): Promise<void> {
     if (!this.autoPullAdmitted()) return;
     const card = this.topReservedReady(peer, undefined, true);
     if (!card) return;
     // The planner of record is the card's own: its bound planner, else the first current holder, and it must be rostered. A private card never gets here (topReservedReady skips it).
     const planner = this.taskPlanner(card)[0];
     if (!planner || !this.d.bus.isRostered(planner)) return;
-    const reason = `auto_pull: capacity released for ${peer}; hub acted for planner ${planner}`;
+    const reason = `auto_pull: ${cause} for ${peer}; hub acted for planner ${planner}`;
     try {
       await this.pullPlanned(HUB, { id: card.id, revision: card.planningRevision ?? 0, reason }, { onBehalfOf: planner, guard: () => {
         if (!this.autoPullAdmitted()) throw new PreEffectToolRefusal("auto pull is no longer admitted: tasks.auto_pull was turned off or a recovery, shutdown or storage hold began");
@@ -3806,6 +3817,8 @@ export class Tasks {
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     const updated = this.d.board.plan(task.id, by, patch, input.revision, input.reason.trim(), withheld, receipt);
     this.planningRecorded({ by, task: task.id, fields: Object.keys(patch), revision: updated.planningRevision! });
+    if (updated.state === "backlog" && updated.reserved && ["reserved", "pinned", "deps", "plannedStart", "release", "needsPerson"].some(key => Object.hasOwn(patch, key)) && this.d.autoPull?.() === true)
+      this.queueAutoPulls(new Set([updated.reserved]), "backlog planned");
     return updated; // persistence/readback failures must never claim no effect
   }
 
@@ -8397,7 +8410,7 @@ export class Tasks {
     if (!Number.isInteger(n)) throw new (preEffect ? PreEffectToolRefusal : Error)(`id must be a task number, not ${(typeof id === "number" ? String(id) : JSON.stringify(id ?? null)).slice(0, 60)}`);
     const task = this.d.board.get(n);
     if (!task) throw new (preEffect ? PreEffectToolRefusal : Error)(`no task #${n}`);
-    if (task.state === "backlog" && !allowBacklog) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${n} is backlog: pull it into To Do first`);
+    if (task.state === "backlog" && !allowBacklog) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${n} is in backlog: a planner or person must pull it into To Do first (hub_backlog_pull)`);
     // Handing a task to someone else only makes sense while there is work left on it.
     if (open && !OPEN.includes(task.state)) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: it can no longer change hands`);
     return task;
