@@ -17,10 +17,10 @@ function rig(mode: "ok" | "cost-unreadable" | "state-unreadable" = "ok") {
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); });
   const config = sdlcConfig({ mode: "advise", required_checks: ["gate"], auto_merge: "off", security_scan: { sources: ["dependabot", "secret_scanning"] } });
   const mergedAt = Date.now() + 1_000;
-  const world = { state: "MERGED", reads: 0, costHead: HEAD };
+  const world = { state: "MERGED", reads: 0, costHead: HEAD, seen: [] as number[] };
   const gh: SdlcGh = async args => {
     if (mode === "state-unreadable") return { code: 1, stdout: "" };
-    if (args[0] === "pr") { world.reads++; return { code: 0, stdout: JSON.stringify({ headRefOid: HEAD, state: world.state, mergeCommit: { oid: MERGED }, reviewDecision: "APPROVED", reviewRequests: [], files: [], changedFiles: 0, statusCheckRollup: [] }) }; }
+    if (args[0] === "pr") { world.reads++; world.seen.push(Number(args[2])); return { code: 0, stdout: JSON.stringify({ headRefOid: HEAD, state: world.state, mergeCommit: { oid: MERGED }, reviewDecision: "APPROVED", reviewRequests: [], files: [], changedFiles: 0, statusCheckRollup: [] }) }; }
     if (args[1] !== "graphql") return mode === "cost-unreadable" ? { code: 1, stdout: "" } : { code: 0, stdout: JSON.stringify({ total_count: 1, workflow_runs: [{ id: 1, run_attempt: 2, head_sha: HEAD, pull_requests: [7] }] }) };
     const query = args.find(x => x.startsWith("query=")) ?? "";
     if (query.includes("reviewThreads") && !query.includes("costCommits")) return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: HEAD, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
@@ -125,6 +125,21 @@ test("#1555 settlement stops at closed or expired tasks and bounds each pass", a
   make(true); for (let i = 0; i < 4; i++) make(); r.world.state = "OPEN";
   const before = r.world.reads; await r.tasks.settleMergeReadbacks(start + 12 * 60_000); expect(r.world.reads - before).toBe(3);
   const next = r.world.reads; await r.tasks.settleMergeReadbacks(start + 25 * 60 * 60_000); expect(r.world.reads).toBe(next);
+});
+
+test("#1555 settlement gives unread tasks a turn before retrying open PRs", async () => {
+  const r = rig(), start = Date.now(); r.world.state = "OPEN";
+  r.board.update(r.id, "codex", "done", { state: "in_review" }); r.board.update(r.id, "user", "approved", { state: "approved" });
+  for (let pr = 8; pr <= 13; pr++) {
+    const task = r.board.propose("user", { title: "next", class: "implement" });
+    r.board.update(task.id, "user", "accepted", { owner: "codex", state: "in_progress", refs: { commit: HEAD }, sdlc: { repo: "owner/repo", pr, stage: "build" } });
+    r.board.update(task.id, "codex", "done", { state: "in_review" }); r.board.update(task.id, "user", "approved", { state: "approved" });
+  }
+  await r.tasks.settleMergeReadbacks(start + 1_000);
+  await r.tasks.settleMergeReadbacks(start + 5 * 60_000);
+  expect(r.world.seen).toEqual([7, 8, 9, 10, 11, 12]);
+  await r.tasks.settleMergeReadbacks(start + 10 * 60_000 + 1_000);
+  expect(r.world.seen[6]).toBe(13);
 });
 
 test("#1555 a private approved task is never sent to merge readback", async () => {

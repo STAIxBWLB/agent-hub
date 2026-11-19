@@ -7761,7 +7761,7 @@ export class Tasks {
       return result;
     };
     const evidence = await readAdoptMergeEvidence(receipt, run);
-    const now = current();
+    current();
     const gates = adoptMergeGates(evidence, head, requiredChecksFor(config, repo));
     if (gates.length) throw new PreEffectToolRefusal(gates.join("; "));
     const costDeadline = performance.now() + MERGE_READBACK_DEADLINE_MS;
@@ -7892,7 +7892,9 @@ export class Tasks {
     this.mergeReadbackRunning = true;
     try {
       let reads = 0;
-      for (const task of this.d.board.list()) {
+      // Unseen work goes first, then the least recently scheduled read, so a busy backlog cannot starve later tasks.
+      const candidates = this.d.board.list().sort((a, b) => (this.mergeReadbackSchedule.get(a.id)?.next ?? -Infinity) - (this.mergeReadbackSchedule.get(b.id)?.next ?? -Infinity) || a.id - b.id);
+      for (const task of candidates) {
         if (reads >= 3 || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) break;
         if (task.state !== "approved" || this.isPii(task) || !task.sdlc?.repo || !task.sdlc.pr || task.sdlc.merge || task.sdlc.mergeReadback) { this.mergeReadbackSchedule.delete(task.id); continue; }
         const approval = task.history.findLastIndex(entry => entry.event === "approved" || entry.event === "done" && entry.by === task.owner);
