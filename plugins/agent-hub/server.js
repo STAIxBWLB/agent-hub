@@ -13631,7 +13631,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.4"
     },
     dependencies: {
-      "@staix/agent-mem": "0.29.0"
+      "@staix/agent-mem": "0.30.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -13912,13 +13912,14 @@ var init_sync_placement_plan = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-journal-format.ts
-var PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_ROOT_MAX_BYTES;
+var PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_ROOT_MAX_BYTES, PLACEMENT_CHECKPOINT_COMMAND = "amem migrate --sync-placement --checkpoint", PLACEMENT_CHECKPOINT_PENDING_MESSAGE;
 var init_sync_placement_journal_format = __esm(() => {
   init_generation();
   init_policy();
   init_sync_placement_format();
   PLACEMENT_JOURNAL_CHUNK_MAX_BYTES = 64 * 1024;
   PLACEMENT_JOURNAL_ROOT_MAX_BYTES = 256 * 1024;
+  PLACEMENT_CHECKPOINT_PENDING_MESSAGE = `A placement checkpoint is pending; placement effects are paused until it finishes. Run ${PLACEMENT_CHECKPOINT_COMMAND} --resume to complete its recorded bytes, or ${PLACEMENT_CHECKPOINT_COMMAND} --abandon if its commit line has not started.`;
 });
 
 // node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
@@ -13954,7 +13955,6 @@ var init_mutation = __esm(() => {
   init_platform();
   mutations = new WeakMap;
 });
-
 // node_modules/@staix/agent-mem/src/memory/sync-placement-bound.ts
 var PLACEMENT_SOURCE_MAX_BYTES;
 var init_sync_placement_bound = __esm(() => {
@@ -13991,9 +13991,35 @@ var init_sync_placement_writer_revision_format = __esm(() => {
   init_generation();
   init_sync_placement_writers();
   init_sync_placement_format();
+  init_sync_placement_journal_format();
   WRITER_REVISION_MAX_BYTES = 512 * 1024;
   WRITER_COMMIT_MAX_BYTES = 64 * 1024;
   WRITER_RENEWAL_INTENT_MAX_BYTES = 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-checkpoint-format.ts
+var PLACEMENT_CHECKPOINT_LIMIT = 256, PLACEMENT_CHECKPOINT_PAGE_MAX_BYTES, PLACEMENT_CHECKPOINT_MANIFEST_MAX_BYTES, PLACEMENT_CHECKPOINT_COMMITS_MAX_BYTES, PLACEMENT_CHECKPOINT_INTENT_MAX_BYTES, PLACEMENT_CHECKPOINT_ARCHIVE_MAX_BYTES;
+var init_sync_placement_checkpoint_format = __esm(() => {
+  init_generation();
+  init_sync_placement_journal_format();
+  init_sync_placement_writer_revision_format();
+  PLACEMENT_CHECKPOINT_PAGE_MAX_BYTES = 64 * 1024;
+  PLACEMENT_CHECKPOINT_MANIFEST_MAX_BYTES = 256 * 1024;
+  PLACEMENT_CHECKPOINT_COMMITS_MAX_BYTES = PLACEMENT_CHECKPOINT_LIMIT * 1024;
+  PLACEMENT_CHECKPOINT_INTENT_MAX_BYTES = 1024 * 1024;
+  PLACEMENT_CHECKPOINT_ARCHIVE_MAX_BYTES = 8 * 1024 ** 3;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-checkpoint-storage.ts
+var MEMBER_MAX_BYTES;
+var init_sync_placement_checkpoint_storage = __esm(() => {
+  init_generation();
+  init_platform();
+  init_sync_placement_journal_format();
+  init_sync_placement_checkpoint_format();
+  init_sync_placement_writer_revision_format();
+  init_sync_placement_journal_format();
+  MEMBER_MAX_BYTES = 1024 * 1024;
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-writer-history.ts
@@ -14001,6 +14027,9 @@ var init_sync_placement_writer_history = __esm(() => {
   init_generation();
   init_home_identity();
   init_platform();
+  init_sync_placement_checkpoint_storage();
+  init_sync_placement_checkpoint_format();
+  init_sync_placement_journal_format();
   init_mutation();
   init_sync_placement_writer_revision_format();
 });
@@ -14044,6 +14073,8 @@ var init_sync_placement_journal_storage = __esm(() => {
   init_sync_placement_writer_history();
   init_sync_placement_batch_intent();
   init_formats();
+  init_sync_placement_checkpoint_storage();
+  init_sync_placement_checkpoint_format();
   inflight = new WeakSet;
   publicationDurability = new WeakMap;
 });
@@ -14619,11 +14650,16 @@ var init_catalog = __esm(() => {
   init_capture();
   init_store();
   init_lifecycle();
+  init_sync_placement_guard();
 });
+
+// node_modules/@staix/agent-mem/src/hook-resources.ts
+var init_hook_resources = () => {};
 
 // node_modules/@staix/agent-mem/src/memory/metrics.ts
 var METRICS_MAX_BYTES;
 var init_metrics = __esm(() => {
+  init_hook_resources();
   METRICS_MAX_BYTES = 64 * 1024;
 });
 
@@ -14976,6 +15012,7 @@ var init_mcp_memory = __esm(() => {
   init_capture();
   init_generation();
   init_home();
+  init_metrics();
   init_platform();
   init_policy();
   init_config();
@@ -15003,9 +15040,6 @@ var MAX_BYTES6;
 var init_record_instruction = __esm(() => {
   MAX_BYTES6 = 64 * 1024;
 });
-
-// node_modules/@staix/agent-mem/src/hook-resources.ts
-var init_hook_resources = () => {};
 
 // node_modules/@staix/agent-mem/src/hook-git.ts
 var init_hook_git = __esm(() => {
@@ -15306,7 +15340,9 @@ var init_sync_placement_effective_writers = __esm(() => {
   init_sync_placement_writer_revision_format();
   init_sync_placement_writer_roots();
   init_sync_placement_prerequisites();
+  init_sync_placement_checkpoint_storage();
 });
+
 // node_modules/@staix/agent-mem/src/memory/sync-placement-capture.ts
 var init_sync_placement_capture = __esm(() => {
   init_sync_placement_journal_format();
