@@ -151,7 +151,7 @@ test("a second unstable proof fails closed without a third approval or process",
 
 test("Seatbelt file and existing guardPath body remain byte-identical to the accepted base",()=>{
   const hash=(text:string)=>createHash("sha256").update(text).digest("hex");
-  expect(hash(readFileSync(new URL("../src/local/sandbox.ts",import.meta.url),"utf8"))).toBe("e017e9d0495eb8a8a5ba32b187d74e9fb470a9b741e0c0cfd41ae914b60235c6"); // #518, #520 and #864 moved this pin on purpose: moduleGitDirs, the modules trees and the object store rules changed (the #816 read-only shell slice itself left the file as a81626da...). #1226 T2 moved this pin for the probe-only probeCommand entry and ExecResult quiescent/stop fields; the ordinary path is unchanged.
+  expect(hash(readFileSync(new URL("../src/local/sandbox.ts",import.meta.url),"utf8"))).toBe("30e818f822fd801850c9e188881da0b9147770828ff116840b306541c770c1ab"); // #518, #520 and #864 moved this pin on purpose: moduleGitDirs, the modules trees and the object store rules changed (the #816 read-only shell slice itself left the file as a81626da...). #1226 T2 moved this pin for the probe-only probeCommand entry and ExecResult quiescent/stop fields; the ordinary path is unchanged. #1549 T3 moved this pin for the package-manager cache env defaults; profile() and every deny rule are unchanged.
   const tools=readFileSync(new URL("../src/local/tools.ts",import.meta.url),"utf8"),spans=findSymbol(parseSource("tools.ts",tools),"guardPath");
   expect(spans).toHaveLength(1);
   const span=spans[0]!;expect(tools[span.end]).toBe("\n");

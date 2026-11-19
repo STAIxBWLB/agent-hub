@@ -6,6 +6,7 @@ import { realPath } from "../hub/project.ts";
 import { hubGitSync } from "../hub/git.ts";
 import { denyRegexes, hubWriteRegexes, objectStoreRules, sbplString } from "./deny.ts";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
+import { sandboxCommandEnvironment } from "./shell-environment.ts";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 export const OUTPUT_CAP = 20_000;
@@ -216,7 +217,7 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
     const own = realPath(mkdtempSync(join(tmpdir(), "ahub-cmd-")));
     const sandbox = `${opts.profile}\n(allow file-read* ${opts.readOnlyData ? "" : "file-write* "}process-exec (subpath ${q(own)}))`;
     // A path-only deny cannot contain hardlink aliases; data mode allows reads/stdout, never filesystem writes.
-    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
+    const env = sandboxCommandEnvironment({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env }, own);
     // Own process group: a timeout has to take the grandchildren too, or they keep the pipes open and the project writable.
     const child = spawn(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let output = "";

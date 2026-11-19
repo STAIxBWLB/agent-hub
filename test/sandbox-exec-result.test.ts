@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { realPath } from "../src/hub/project.ts";
 import { sbplString } from "../src/local/deny.ts";
+import { sandboxCommandEnvironment } from "../src/local/shell-environment.ts";
 import type { sandboxedExec } from "../src/local/sandbox.ts";
 
 function execution() {
@@ -23,7 +24,7 @@ function execution() {
     kill(signal: string) { killed.push({ pid: this.pid, signal }); return true; },
   });
   const run = runInNewContext(`${code}\nsandboxedExec`, {
-    Buffer, join, homedir, tmpdir, realPath, q: sbplString, rmSync,
+    Buffer, join, homedir, tmpdir, realPath, q: sbplString, rmSync, sandboxCommandEnvironment,
     existsSync: (file: string) => file === "/usr/bin/sandbox-exec",
     mkdtempSync: (prefix: string) => { const dir = mkdtempSync(prefix); dirs.push(dir); return dir; },
     process: { platform: "darwin", env: {}, kill: (pid: number, signal: string) => { killed.push({ pid, signal }); } },

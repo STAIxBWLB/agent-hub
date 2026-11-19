@@ -276,9 +276,24 @@ test.skipIf(!sandboxAvailable())("wrapper target environment equals the existing
   const parse = (value: string) => Object.fromEntries(value.trimEnd().split("\n").map(line => { const at = line.indexOf("="); expect(at).toBeGreaterThan(0); return [line.slice(0, at), line.slice(at + 1)]; }));
   const wanted = parse(reference.output), observed = parse(actual.stdout.toString());
   expect(wanted.TMPDIR).toBeDefined(); expect(observed.TMPDIR).toBeDefined();
+  for (const [key, directory] of [["BUN_INSTALL_CACHE_DIR", "bun-cache"], ["NPM_CONFIG_CACHE", "npm-cache"]] as const) {
+    expect(wanted[key]).toBe(join(wanted.TMPDIR!, directory));
+    expect(observed[key]).toBe(join(observed.TMPDIR!, directory));
+    delete wanted[key]; delete observed[key];
+  }
   expect(existsSync(wanted.TMPDIR!)).toBe(false); expect(existsSync(observed.TMPDIR!)).toBe(false);
   delete wanted.TMPDIR; delete observed.TMPDIR;
   expect(observed).toEqual(wanted);
+}, 20_000);
+
+test.skipIf(!sandboxAvailable())("sandboxed wrapper retains explicitly supplied package cache paths", async () => {
+  const f = await fixture(), kernel = profile(f.root, false, [], [], []), bun = join(f.root, "chosen-bun"), npm = join(f.root, "chosen-npm");
+  const env = hostShellEnvironment({ BUN_INSTALL_CACHE_DIR: bun, NPM_CONFIG_CACHE: npm });
+  const issued = f.wrapper.issue(f.grant("", { executable: "/usr/bin/env", argv: [], env, sandbox: { profile: kernel, readOnlyData: false } }))!;
+  const result = await collect(invoke(issued.command));
+  expect(result.code).toBe(0);
+  expect(result.stdout.toString()).toContain(`BUN_INSTALL_CACHE_DIR=${bun}\n`);
+  expect(result.stdout.toString()).toContain(`NPM_CONFIG_CACHE=${npm}\n`);
 }, 20_000);
 
 test("only matched ticket refusals notify the original host observer with no payload", async () => {

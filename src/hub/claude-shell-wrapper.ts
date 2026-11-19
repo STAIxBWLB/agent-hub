@@ -11,6 +11,7 @@ import { shellQuote } from "../cli/shell-quote.ts";
 import { readProcessTable, stopOwnedProcess, trackGroup } from "./child-process.ts";
 import { realPath } from "./project.ts";
 import { sbplString } from "../local/deny.ts";
+import { sandboxCommandEnvironment } from "../local/shell-environment.ts";
 
 export interface ShellGrant {
   peer: string; task: number; generation: string; root: string; branch: string;
@@ -233,7 +234,7 @@ export class HostShellWrapper {
     try {
       if (!unchanged(ticket) || !this.stable(ticket.root.path) || !this.sandboxStable(grant, ticket.root.path) || !same(grant.root, ticket.root, true) || !same(grant.executable, ticket.executable)) throw fail();
       const temp = mkdtempSync(join(this.directory.path, "r-")); chmodSync(temp, 0o700); temporary = execution.temporary = stamp(temp, true);
-      const env = { ...grant.env, TMPDIR: `${temporary.path}/` };
+      const env = grant.sandbox ? sandboxCommandEnvironment(grant.env, temporary.path) : { ...grant.env, TMPDIR: `${temporary.path}/` };
       // Identical own-temp allow suffix and data.readonly broad-write guard to sandboxedExec.
       if (grant.sandbox?.readOnlyData && /\(allow file-write\* \(subpath /.test(grant.sandbox.profile)) throw fail();
       const sandbox = grant.sandbox && `${grant.sandbox.profile}\n(allow file-read* ${grant.sandbox.readOnlyData ? "" : "file-write* "}process-exec (subpath ${sbplString(temporary.path)}))`;
