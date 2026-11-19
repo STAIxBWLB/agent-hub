@@ -177,6 +177,7 @@ read and present in a `task`-narrowed one.
 | 15 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 to 14 (`etime` 17 h 14 m) | 2026-11-14 05:14 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 15 | 15 | 39 since this daemon start, 11 of them in the 1 h 19 m after reading 14 (unknown which bound, task or rule) | 15 |
 | 16 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 to 15 (`etime` 22 h 12 m) | 2026-11-14 10:12 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 15 | 15 | 45 since this daemon start, 6 of them in the 4 h 58 m after reading 15 (unknown which bound, task or rule) | 15 |
 | 17 | role-scoped (task 866), hub 0.38.0, pid 45122, same lifetime as readings 10 to 16 (`etime` 25 h 06 m); main reads 0.39.0 at this head, so the measured daemon runs one release behind the repository | 2026-11-14 13:06 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 15 | 15 | 52 since this daemon start, 7 of them in the 2 h 54 m after reading 16 (unknown which bound, task or rule) | 15 |
+| close | role-scoped (task 866), hub 0.43.0, pid 66795 (start 2026-11-19 05:06:21 KST); taken after the 2026-11-18 KST cap | 2026-11-19 12:30 KST | unknown (not stored; no replay run) | 0 on my tasks | 0 on my tasks | 18 in-window | 18 in-window + 1 written after the cap | 97 since this daemon start (unknown before it) | 18 in-window |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -629,6 +630,62 @@ the queue are byte-identical from the seal `16b8251657a2` to `2126d2b1c` (`super
 eighteen changed lines in the committed bundle name no supervision symbol, so the frozen case set
 still describes the code under measurement.
 
+## Wave close (2026-11-19)
+
+The sealed stopping rule closes this wave at 2026-11-18 (KST) whatever its coverage, and the last
+reading taken is 17 (2026-11-14 13:06 KST). Readings 18 onward were not taken: a person-side hold
+announced on 2026-11-15 froze pushes, merges and filings, and the task was reassigned while its
+owner was offline. The cadence from 2026-11-14 13:06 to the cap is therefore recorded here as a
+gap and is not back-filled, per the reading rule fixed at the wave start. The cap and nothing else
+ends the wave: this close adds no reading to the ones above.
+
+The close read was taken on 2026-11-19 at 12:30 KST, after the cap, so it reads the durable rows
+and not the exact state the queue held at the cap's last second: `hub_supervision_list
+{ task: 866 }` on hub 0.43.0 (pid 66795, started 2026-11-19 05:06:21 KST, `mode shadow`, `refused
+97`) returned 19 rows, 18 written inside the wave and 1 after it.
+
+The 18 in-window rows are the 15 in the ledger below plus three at revision `24:10`, each
+`declared_overlap_without_integration` version 1, written on 2026-11-15 and 2026-11-16 and read
+here for the first time:
+
+| proposal | partner | written (KST) | expired (KST) | after the partner's review request |
+| --- | --- | --- | --- | --- |
+| `sup-6d33fffb2cd5` | #962 | 2026-11-15 23:36:36 | 2026-11-16 00:06:15.943 | 4.877 s (`reviewAt` 00:06:11.066) |
+| `sup-cec8ced36601` | #963 | 2026-11-16 00:18:04 | 2026-11-16 02:40:24.118 | 1.780 s (`reviewAt` 02:40:22.338) |
+| `sup-e5fe5b653f5b` | #978 | 2026-11-16 07:04:22 | 2026-11-16 08:03:00.692 | 1.921 s (`reviewAt` 08:02:58.771) |
+
+Their partners settled out of band and the settlement is file-level in all three: #962's merged
+commit `b26375ccb` touches only `src/ui/index.html` and `test/ui.test.ts` and carries no
+`docs/dogfood.md` hunk at all, although its plan named that file; #963's PR #1520 inserts
+`Roadmap bottom-up placement (#1481 R3)` at `@@ -13,0 +14 @@`, 133 rows above this task's anchor,
+and #978's PR #1528 inserts `Compat producer gaps (#1248 hub task 978)` at `@@ -76,0 +77 @@`, 70
+rows above it. All three PRs merged (`b26375ccb` at 00:58 KST, `29236e89b` at 03:09 and
+`8104fb863` at 08:54) with no integration record and no row naming a merge, which is the limit
+readings 1 to 3 measured and reading 15 confirmed on the other boundary.
+
+No row on this task was pending at the cap. The last in-window row expired at 08:03:00 KST on
+2026-11-16, so the close has nothing waiting on it for a class, and an expiry is the queue's own
+disposition rather than a classification. The 18 in-window rows therefore count as `unknown` and
+never as `helpful`, `false` or a clean non-trigger. The three closes above widen the measured
+follow behind `hub_task_done`: 0.56 and 0.63 s at readings 13 and 14, 0.717 s at reading 15, and
+now 1.780, 1.921 and 4.877 s, so the observed range is under five seconds and not under one.
+
+`sup-67523d21c875` (#951) is the one row written after the cap: 2026-11-19 12:28:00 KST, 72 s after
+the hub's idle-owner sweep reassigned this task (`2026-11-19 12:26:47.918`, `idle sweep:
+idle-owner; from codex`) and at this task's re-accept, revision `26:10`. It lies outside the sealed
+window, so it is named here and excluded from every total below. Its partner #951 has no branch
+and no commit of its own (its worktree head `3a09b3bde` is an ancestor of main), so the row is
+plan-level, the overlap is file-level only, and the roadmap row it plans to add has no written
+position yet.
+
+Measured source drift since reading 5's pin `0af9fb5a1`: `supervision-proposals.ts` and
+`settled-roles.ts` are byte-identical to this close, and `supervision-rules.ts` moved once, at
+`9f29385a9` (#1558) on 2026-11-19, which bumps `deliverable_invalidated_check` to version 2 and
+also reads an isolated `check run passed` as its clearing evidence. Every stored row on this task
+names version 1, and that family stored nothing on this task, so the frozen case set still
+describes the rows measured; behavior under version 2 is outside this wave and would be a
+different pilot.
+
 ## Proposal ledger
 
 | proposal | rule | task | revision | trigger | action | outcome | evidence |
@@ -648,6 +705,9 @@ still describes the code under measurement.
 | `sup-d55cbd37434e` | `declared_overlap_without_integration` | 866 | `22:9` | `overlap:866:897` | `request_integration` | written at 01:50:20.009 KST, 338 ms after this task's re-accept (01:50:19.669); pending at readings 13 and 14, then **expired at 05:12:59.535 KST**, 0.717 s after #897's review request (`reviewAt` 05:12:58.818, PR #1465, still `in_review` with no approval). This corrects reading 14's forecast that the row would stay pending until the wave closed, which assumed no partner would finish first | same file-level settlement as `sup-0aeb441a4c3f`; the row is the pair's second incarnation after the revision moved, which is what a revision-keyed proposal looks like when the same condition holds again |
 | `sup-4e799e1e9952` | `declared_overlap_without_integration` | 866 | `22:9` | `overlap:866:916` | `request_integration` | written at the same 01:50:20.009 KST, **pending at reading 13** and **expired at 03:06:27.826 KST**, 0.63 s after #916's review request (`reviewAt` 03:06:27.197, PR #1463, still `in_review` with no approval) | same file-level settlement as `sup-e16589b19f9d` |
 | `sup-913163059a34` | `declared_overlap_without_integration` | 866 | `22:9` | `overlap:866:921` | `request_integration` | written at 01:50:20.009 KST; expired at 03:01:15.994 KST, 0.56 s after #921's review request was recorded (`reviewAt` 03:01:15.436), so the pair left supervision at `hub_task_done` and not at a verdict: #921 reads `in_review` with no approval | same directory-level settlement as `sup-2167e4441732`; #921's PR #1462 was already open at the row's write, so the write and the close bracket the review request rather than a filing |
+| `sup-6d33fffb2cd5` | `declared_overlap_without_integration` | 866 | `24:10` | `overlap:866:962` | `request_integration` | written at 2026-11-15 23:36:36 KST; expired at 00:06:15.943 KST, 4.877 s after #962's review request (`reviewAt` 00:06:11.066, PR #1518), which was approved and merged as `b26375ccb` at 00:58 KST; unknown from stored records | #962's merged commit carries no `docs/dogfood.md` hunk at all (only `src/ui/index.html` and `test/ui.test.ts`), although its plan named that file, so the overlap was file-level only and no integration was owed |
+| `sup-cec8ced36601` | `declared_overlap_without_integration` | 866 | `24:10` | `overlap:866:963` | `request_integration` | written at 2026-11-16 00:18:04 KST; expired at 02:40:24.118 KST, 1.780 s after #963's review request (`reviewAt` 02:40:22.338, PR #1520), approved at `29236e89b` and merged at 03:09 KST; unknown from stored records | #963's PR #1520 inserts one row, `Roadmap bottom-up placement (#1481 R3)`, at `@@ -13,0 +14 @@`, 133 rows above this task's anchor; file-level only |
+| `sup-e5fe5b653f5b` | `declared_overlap_without_integration` | 866 | `24:10` | `overlap:866:978` | `request_integration` | written at 2026-11-16 07:04:22 KST; expired at 08:03:00.692 KST, 1.921 s after #978's review request (`reviewAt` 08:02:58.771, PR #1528), approved at `8104fb863` and merged at 08:54 KST; unknown from stored records | #978's PR #1528 inserts one row, `Compat producer gaps (#1248 hub task 978)`, at `@@ -76,0 +77 @@`, 70 rows above this task's anchor; file-level only |
 
 A pending proposal stays pending until the wave closes: classifying one while later revisions are
 already in view would let its outcome be chosen to fit them. No row on this task was pending at
@@ -670,16 +730,55 @@ holding, and it counts neither as a helpful or false intervention nor as a clean
 | --- | --- |
 | model calls | 0 (no inference path in the rules or the queue) |
 | memory writes | 0 |
-| daemon evaluations | pending (replayed from board revisions) |
-| rows written | 7 at the first conductor read, 3 of them on this task; the task-narrowed read shows 9 at reading 12: the same three, two written and expired before reading 10, three more written between readings 10 and 11 (two expired, one still pending at that read), and one at `15:6` written at 18:49:46 KST as that pending row closed. All nine are expired at reading 12. Fifteen at reading 13, six more: three at `19:8` written 149 to 177 ms after their partner's own accept and all closed in one second by the idle sweep's reassignment at 01:50:04 KST, and three at `22:9` written 338 ms after this task's re-accept, one expired 0.56 s after #921's review request and two still pending. The write latency is measured rather than inferred: `observe()` runs on the accept path, not on a scan. Reading 14 wrote none of its own and closed the #916 row, so the ledger held at fifteen while the refusal counter rose. Reading 15 wrote none of its own and closed the #897 row, so the ledger held at fifteen a second time and every row the wave stored on this task is expired. Reading 16 wrote none and closed none, so the ledger held at fifteen across 8 h 22 m in which main merged five PRs. Reading 17 wrote none and closed none, so the ledger held at fifteen across 11 h 16 m in which main merged the 0.39.0 release, and every row the wave stored on this task is still expired. Written by the daemon on a task change and not by this task |
-| wall time | wave open 2026-11-11, cap 2026-11-18 |
+| daemon evaluations | unknown: the replay over board revisions was not run, and `evaluated` coverage is never stored |
+| rows written | 7 at the first conductor read, 3 of them on this task; the task-narrowed read shows 9 at reading 12: the same three, two written and expired before reading 10, three more written between readings 10 and 11 (two expired, one still pending at that read), and one at `15:6` written at 18:49:46 KST as that pending row closed. All nine are expired at reading 12. Fifteen at reading 13, six more: three at `19:8` written 149 to 177 ms after their partner's own accept and all closed in one second by the idle sweep's reassignment at 01:50:04 KST, and three at `22:9` written 338 ms after this task's re-accept, one expired 0.56 s after #921's review request and two still pending. The write latency is measured rather than inferred: `observe()` runs on the accept path, not on a scan. Reading 14 wrote none of its own and closed the #916 row, so the ledger held at fifteen while the refusal counter rose. Reading 15 wrote none of its own and closed the #897 row, so the ledger held at fifteen a second time and every row the wave stored on this task is expired. Reading 16 wrote none and closed none, so the ledger held at fifteen across 8 h 22 m in which main merged five PRs. Reading 17 wrote none and closed none, so the ledger held at fifteen across 11 h 16 m in which main merged the 0.39.0 release, and every row the wave stored on this task is still expired. At the close the same narrowed read returns eighteen in-window rows: the fifteen above plus three written at revision `24:10` between 2026-11-15 23:36 and 2026-11-16 07:04 KST, all expired by 08:03 KST. One further row was written after the cap (2026-11-19 12:28:00 KST) and is excluded from the wave. Written by the daemon on a task change and not by this task |
+| wall time | wave open 2026-11-11, cap 2026-11-18 KST, close read 2026-11-19 12:30 KST |
 
 ## Person burden
 
 Shadow mode shows nothing by construction: no inbox row, no notice, no message. Person burden
 in this wave is therefore 0 proposals shown, 0 accepted, 0 dismissed, and it stays 0 for as long
-as the mode stays `shadow`. The advisory burden is measured after the person switches the mode,
-and is not part of this wave.
+as the mode stays `shadow`. The mode was still `shadow` at the close, so the advisory step was
+never run and its burden is unknown rather than 0. Against the current workflow (no supervision,
+0 proposals, 0 person decisions) the wave adds no person cost and no model or memory cost; what it
+adds is daemon work per task change and the rows below.
+
+## Wave totals and recommendation
+
+| item | value | source |
+| --- | --- | --- |
+| proposals stored on this task, inside the wave | 18 | durable rows, close read |
+| by rule | `declared_overlap_without_integration` 18; `repeated_failure` 0 on my tasks; `deliverable_invalidated_check` 0 on my tasks | role-scoped reads |
+| by state at the cap | expired 18, pending 0 | close read |
+| outcome classes | helpful 0, false 0, missed unknown, unknown 18 | outcome classes above; an expiry is not a classification |
+| coverage | 7 distinct `(task, revision)` pairs (`8:3`, `11:4`, `14:5`, `15:6`, `19:8`, `22:9`, `24:10`); 1 of 3 families evidenced | readings 1 to 17 and the close |
+| refusals | 97 in the current lifetime (7 h 24 m); at least 52 in the last lifetime measured before it; unknown earlier | per-lifetime counter |
+| model calls / memory writes | 0 / 0 | module imports; no inference path |
+| person burden | 0 shown, 0 accepted, 0 dismissed | `shadow` |
+| accept to row latency | 149 to 338 ms on four measured rows | readings 13 and 15 |
+
+The stopping rule is not met, and the report says so in its own terms: the wave needs each family
+read twice over 10 or more task revisions, and it ends with 7 distinct `(task, revision)` pairs,
+one family carrying every row and the other two carrying no evidenced reading at all. Silence
+under a closed partner is unknown coverage and never a clean non-trigger, so the two quiet families
+are reported as insufficient evidence rather than as correct non-triggers. The one family that did
+fire produced 18 proposals in 7 days on a single task, every one of them a file-level or
+directory-level overlap, every one expired, and none of them classified (an expiry records that the
+reading stopped holding).
+
+The E1 thresholds cannot be evaluated from this sample. The wave adds no compute, model or person
+cost, so the "no increase in total cost/person decisions" leg holds trivially against the current
+workflow; the accepted-outcome and recovery-time legs need a proposal whose action ran and whose
+result a later review could price, and no such proposal exists in this wave. A pilot that proposes
+nothing runnable cannot show benefit, and this receipt does not claim one.
+
+Recommendation: retain `shadow`, or return to `off`, and keep the default off. Do not adopt
+`advisory` on this evidence. The measured proposal rate is about 2.6 a day on one task, all of one
+rule whose action is a notice about an overlap that the owners had already settled out of band, so
+an advisory step would add person burden without a measured benefit; the queue is also at its
+storage bounds (97 refusals in 7 h 24 m on a daemon started that morning), so a second pilot needs
+a queue that is not shedding observations before it can measure anything but this rule. The person
+decides the mode separately (AC5); this report only recommends.
 
 ## What stayed unknown
 
@@ -747,4 +846,16 @@ and is not part of this wave.
   re-accept, so one of them derived it and the read cannot say which. Revision `22:9` is not in
   this list: the sweep, the decline, the reassignment back and my accept all sit in the same minute,
   and the three rows were written 338 ms after the accept that ended that minute;
+- the cadence from 2026-11-14 13:06 KST to the 2026-11-18 cap, in which no reading was taken. The
+  four rows written in that window are read from the durable ledger, which dates them but cannot
+  say what else the rules saw; the `evaluated` coverage of revision `24:10` is unknown, not empty;
+- the queue-wide total at the close. The raw-count method takes a role-scoped read plus a
+  conductor-scope count; the count was requested by `hub_send` at this close and did not arrive,
+  so every total above is task-scoped and a lower bound on the queue;
+- the daemon lifetime between reading 17 and this close. The rows at `24:10` were written by a
+  process whose start time and refusal counter were never read, and the 97 refusals of the current
+  lifetime say nothing about the lifetimes before it;
+- whether the post-cap row (`#951`) would have been helpful: its partner had a plan and no commit
+  when the row was written, so the overlap is file-level by plan and has no written position to
+  compare, and the row lies outside the wave by construction;
 - every threshold that needs a live sample larger than this pilot can produce.
