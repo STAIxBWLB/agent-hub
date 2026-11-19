@@ -3706,7 +3706,7 @@ approval that leaves a backlog card with no unresolved dependency adds
 per planner, ids only; a newer one merges and replaces the unsettled copy, which
 survives a restart. By default nothing is pulled automatically: the planner reads the
 board and decides. With `tasks.auto_pull` on (opt-in, see below) the hub itself pulls
-the top card explicitly reserved for the peer whose slot just freed.
+the top eligible card explicitly reserved for a peer when an auto-pull trigger fires.
 
 When `hub_task_done` leaves a review whose exact-head CI is not yet green (the
 lifecycle must be on, the task linked to a PR and not private), the hub starts one watcher
@@ -3730,14 +3730,17 @@ once more after a fresh readiness read. A deadline tells the console only. No pe
 CI, and nothing is polled outside a watcher.
 
 `tasks.auto_pull` (default off, machine-local, live) lets the hub act on that
-wake-up (#785). When a write frees a peer's planner slot, the hub pulls the one top
-backlog card explicitly reserved for that peer, through the same planner pull a
+wake-up (#785, #1547). A slot release, an eligibility-changing backlog plan, a
+dependency approval that readies a reserved card, or the peer's first idle
+attachment queues a pull for that peer. The hub pulls the one top backlog card
+explicitly reserved for that peer, through the same planner pull a
 planner makes: revision, dependency, reservation, pinned, frozen-release, P0 order
 and WIP checks all apply unchanged, and a refusal becomes a console notice naming
 why. Unreserved cards, cards reserved for another peer and private (PII) cards are
-never pulled. One card per release, as the hub for the card's own planner of record:
-the history entry reads `by: hub` with that planner and the reason
-`auto_pull: capacity released for <peer>; hub acted for planner <planner>`. A hub that
+never pulled. One card per trigger, as the hub for the card's own planner of record:
+the history entry reads `by: hub` with that planner and a reason of the form
+`auto_pull: <cause> for <peer>; hub acted for planner <planner>`. The cause is
+`capacity released`, `backlog planned`, `backlog ready` or `peer available`. A hub that
 is paused for recovery pulls nothing, also when the setting is turned off or recovery begins while a pull is already waiting on its screening: that pull writes nothing, and a recovery waits for pulls in flight. A committed `config.json` cannot turn it on: like
 the other machine-local policies it is ignored there with a log line.
 
