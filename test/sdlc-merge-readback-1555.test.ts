@@ -8,7 +8,7 @@ import { Tasks } from "../src/hub/tasks.ts";
 import { sdlcConfig, sdlcReceipt, type SdlcGh } from "../src/hub/sdlc.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { evidenceTask } from "../src/hub/research-record.ts";
-import { renderSdlcStatus } from "../src/cli/sdlc-output.ts";
+import { renderSdlcMetrics, renderSdlcStatus } from "../src/cli/sdlc-output.ts";
 
 const cleanups: (() => void)[] = [], HEAD = "a".repeat(40), MERGED = "b".repeat(40);
 afterEach(() => { for (const close of cleanups.splice(0).reverse()) close(); });
@@ -55,6 +55,8 @@ test("#1555 status reports unreadable security sources as unknown", () => {
   expect(r.tasks.sdlcMetrics("user").securityScan).toEqual({ dependabot: null, secret_scanning: 0 });
   const lines = renderSdlcStatus({ mode: "advise", rows: [], securityScan: r.tasks.securityScanCounts() }, 120).flat().map(span => span.text).join(" ");
   expect(lines).toContain("dependabot: unknown"); expect(lines).toContain("secret_scanning: 0");
+  const metrics = renderSdlcMetrics(r.tasks.sdlcMetrics("user"), 120).flat().map(span => span.text).join(" ");
+  expect(metrics).toContain("dependabot: unknown"); expect(metrics).toContain("secret_scanning: 0");
 });
 
 test("#1555 approved external merge is recorded only after current successful readback", async () => {

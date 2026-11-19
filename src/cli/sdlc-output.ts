@@ -277,6 +277,9 @@ export function renderSdlcMetrics(result: unknown, columns?: number, now = Date.
   const out: Line[] = [...heading("SDLC metrics", columns)];
   out.push(...pair("window", m?.since === null || m?.since === undefined ? "all recorded history" : `since ${moment(m.since, now)}`, columns, 10),
     ...pair("tasks", `${m?.tasks ?? 0} counted${m?.withheldPrivate ? `, ${m.withheldPrivate} private withheld` : ""}`, columns, 10));
+  if (m?.securityScan && typeof m.securityScan === "object") {
+    out.push(...pair("security scan", Object.entries(m.securityScan).map(([source, value]) => `${source}: ${value === null ? "unknown" : value}`).join(", "), columns, 14));
+  }
   const metrics = m?.metrics ?? {};
   const value = (n: unknown, time: boolean) => time ? span(n) : count(n);
   out.push(blank, ...grid(["METRIC", "N", "UNKNOWN", "MEAN", "MEDIAN", "P90", "MAX"], SUMMARY_ROWS.map(([key, label, time]) => {
