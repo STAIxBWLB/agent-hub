@@ -766,11 +766,14 @@ fire produced 18 proposals in 7 days on a single task, every one of them a file-
 directory-level overlap, every one expired, and none of them classified (an expiry records that the
 reading stopped holding).
 
-The E1 thresholds cannot be evaluated from this sample. The wave adds no compute, model or person
-cost, so the "no increase in total cost/person decisions" leg holds trivially against the current
-workflow; the accepted-outcome and recovery-time legs need a proposal whose action ran and whose
-result a later review could price, and no such proposal exists in this wave. A pilot that proposes
-nothing runnable cannot show benefit, and this receipt does not claim one.
+The E1 thresholds cannot be evaluated from this sample, and no leg is declared met. Two of its
+terms are measured and two are not: model calls are 0 and person decisions are 0, while the total
+cost is unknown, because this wave's daemon evaluation and storage overhead was not measured (the
+replay was not run, the 18 stored rows are counted but not priced, and the 97 refusals are
+unattributed), so "no increase in total cost/person decisions" stays unknown rather than passing
+on the two measured terms. The accepted-outcome and recovery-time legs need a proposal whose
+action ran and whose result a later review could price, and no such proposal exists in this wave.
+A pilot that proposes nothing runnable cannot show benefit, and this receipt does not claim one.
 
 Recommendation: retain `shadow`, or return to `off`, and keep the default off. Do not adopt
 `advisory` on this evidence. The measured proposal rate is about 2.6 a day on one task, all of one
