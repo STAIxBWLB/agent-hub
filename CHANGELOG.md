@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Exact-pin the first-party agent-mem dependency to 0.32.0, from 0.30.0 (hub task 1042). The 0.31.0 additions stay outside the paths this hub reads (the `held` placement realm outcome and the classified agent-marked CLI read causes), and its sync result shape and `SYNC_FAILURE_CAUSES` are unchanged. The 0.32.0 CLI changes also reach nothing here: the hub's one `amem` call previews `amem setup <tool> --json` and parses the answer with `JSON.parse`, so 2-space `--json` indentation and usage errors exiting 2 read the same, and it writes no capture hook or `amem ingest` call of its own, so piped ingest printing human text and the `amem_work_state_read` per-call policy snapshot change nothing it runs. `amem list`, `show` and `graph` keep byte parity and storage is unchanged.
 - Check roadmap drift, preview an opt-in GitHub milestone mirror, and export validated public roadmap files (Refs #1482, hub task 951).
 
 - Report Pi prompt context occupancy and session model in headless and TUI modes, and bind verified TUI sessions to Record capture (Refs #1549).

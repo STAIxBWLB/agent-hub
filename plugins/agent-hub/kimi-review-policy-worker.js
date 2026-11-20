@@ -4,11 +4,11 @@ import { isMainThread, parentPort, workerData, Worker } from "worker_threads";
 
 // src/adapters/kimi-review-policy.ts
 import { createHash } from "crypto";
-import { lstatSync, readFileSync } from "fs";
+import { lstatSync as lstatSync2, readFileSync } from "fs";
 import { dirname as dirname2, join as join2, resolve as resolve2 } from "path";
 
 // node_modules/@staix/agent-mem/src/memory/platform.ts
-import { realpathSync } from "fs";
+import { lstatSync, realpathSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
 import { createRequire } from "module";
 var require2 = createRequire(import.meta.url);
@@ -39,7 +39,7 @@ var CREDENTIAL_KEYS = new Set(["credential.helper=", "core.askpass="]);
 // src/adapters/kimi-review-policy.ts
 var kimiReviewFingerprint = (text) => createHash("sha256").update(text).digest("hex");
 function readKimiReviewFile(file, limit = 262144) {
-  const stat = lstatSync(file);
+  const stat = lstatSync2(file);
   if (!stat.isFile() || stat.size > limit)
     throw new Error("unsupported reviewer file");
   return readFileSync(file, "utf8");
@@ -52,7 +52,7 @@ function assertCleanCwdAncestors(...candidates) {
       if (!seen.has(ancestor)) {
         seen.add(ancestor);
         for (const marker of [".git", ".kimi-code", "AGENTS.md"]) {
-          if (lstatSync(join2(ancestor, marker), { throwIfNoEntry: false }) !== undefined) {
+          if (lstatSync2(join2(ancestor, marker), { throwIfNoEntry: false }) !== undefined) {
             throw new Error("private cwd ancestor contains ambient configuration");
           }
         }
@@ -88,7 +88,7 @@ function projectKimiReviewPolicyBinding(binding) {
 function checkKimiReviewPolicy(binding) {
   try {
     assertCleanCwdAncestors(binding.lexicalCwd, binding.physicalCwd);
-    const now = lstatSync(binding.executable), expected = binding.executableStat;
+    const now = lstatSync2(binding.executable), expected = binding.executableStat;
     return realPath(binding.sourcePath) === binding.source && now.dev === expected.dev && now.ino === expected.ino && now.size === expected.size && now.mtimeMs === expected.mtimeMs && now.ctimeMs === expected.ctimeMs && kimiReviewFingerprint(readKimiReviewFile(binding.sourceConfig)) === binding.sourceConfigHash && binding.privateFiles.length === 3 && binding.privateFiles.every((file) => kimiReviewFingerprint(readKimiReviewFile(file.path, 2097152)) === file.hash) && binding.authTargets.length === 3 && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join2(binding.source, name)) === binding.authTargets[index] && realPath(join2(binding.tool, name)) === binding.authTargets[index]);
   } catch {
     return false;
