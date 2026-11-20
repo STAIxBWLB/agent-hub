@@ -9,6 +9,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Verify Claude Code 2.1.328 and 2.1.329 as headless implementers with isolated model-free transport and wrapper receipts (Refs #888, hub task 1023).
 - Read only the slice of `events.jsonl` a closing task needs when the live research writer builds its record, with the same row as `ahub research backfill` (Refs #1555, hub task 1003).
 - Cache the memory sync policy version on the profile fence's stat tuple and stop asking the store for `bridgeStatus` there, so an unchanged home costs a stat per fence check instead of a full shard re-read (Refs #1545, hub task 1028).
+- Allow a hub-managed worktree to be committed and checked before task handoff (Refs #1549, hub task 1018).
 
 ## 0.44.0
 

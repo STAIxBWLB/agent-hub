@@ -16,6 +16,7 @@ import { hubGitSync } from "../src/hub/git.ts";
 import { DEFAULT_CONFIG, startDaemon, type DaemonOptions } from "../src/hub/daemon.ts";
 import { PI_CEILING_KIND, PI_CEILING_UNIT } from "../src/pi/ceiling.ts";
 import { piFailureText } from "../src/hub/pi-failure.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
 // Emulated native peers probe no real account; isolated runner availability remains real and disabled.
 const fakeSpecTools = () => ({
@@ -1692,3 +1693,55 @@ test("#1447 known preflight limit: host-busy Pi refuses cancelled-task tools bef
     await h.event({ type: "agent_settled", generation: 1 });
   } finally { release(); options.selectModel = selectModel; h.pi["sendRpc"] = sendRpc; }
 }, 20_000);
+
+test("Pi check commits its managed worktree and runs the exact recorded head (#1549)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-check-worktree-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const requests: CheckRequest[] = []; let busy = false;
+  const boundedTools: NonNullable<DaemonOptions["boundedTools"]> = {
+    ...fakeSpecTools(), runner: () => ({
+      available: async () => ({ available: true }), sweep: async () => [], stopAll: async () => {},
+      start: request => {
+        if (busy) throw new PreEffectToolRefusal("busy");
+        requests.push(request);
+        return { run: randomUUID(), done: new Promise<RunReceipt>(() => {}) };
+      },
+      result: async () => undefined, markStale: async () => {}, consumeOutput: async () => {}, cancel: async () => {},
+    }),
+  };
+  const { stateDir, daemon, console_ } = await hub(config, false, { commit: true, boundedTools });
+  expect(hubGitSync(["-C", stateDir, "config", "core.excludesFile", "/dev/null"], { encoding: "utf8" }).status).toBe(0);
+  const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
+  const task = board.propose("user", { title: "Edit fixture", class: "implement" });
+  board.update(task.id, "user", "assigned", { owner: "pi" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  expect((await piToolCall(peer, "hub_task_accept", { id: task.id }, "check-accept")).failed).not.toBe(true);
+  const worktree = join(stateDir, ".worktrees", `pi-${task.id}`);
+  writeFileSync(join(worktree, ".env"), "fixture secret\n");
+  const refused = await piToolCall(peer, "hub_check_start", { id: task.id, check: "typecheck" }, "managed-refused");
+  expect(refused.failed).toBe(true);
+  expect(refused.text).toContain("will not commit");
+  expect(refused.text).toContain("hub_check_start");
+  expect(requests).toHaveLength(0);
+  rmSync(join(worktree, ".env"));
+  writeFileSync(join(worktree, "fixture.txt"), "first change\n");
+  const result = await piToolCall(peer, "hub_check_start", { id: task.id, check: "typecheck" }, "managed-check");
+  expect(result.failed).not.toBe(true);
+  const saved = board.get(task.id)!;
+  expect(saved.refs.commit).toMatch(/^[0-9a-f]{40}$/);
+  expect(saved.refs.branch).toBe(`task/${task.id}-pi`);
+  expect(requests[0]).toMatchObject({ task: task.id, owner: "pi", ref: saved.refs.commit, revision: saved.history.length });
+  busy = true;
+  writeFileSync(join(worktree, "fixture.txt"), "second change\n");
+  const rejected = await piToolCall(peer, "hub_check_start", { id: task.id, check: "typecheck" }, "managed-busy");
+  expect(rejected.failed).toBe(true);
+  expect(rejected.text).toContain("outcome is uncertain");
+  const updated = board.get(task.id)!;
+  expect(updated.refs.commit).toMatch(/^[0-9a-f]{40}$/);
+  expect(updated.refs.commit).not.toBe(saved.refs.commit);
+  const db = new Database(join(stateDir, "hub.db"));
+  try { expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id='managed-busy'").get()).toEqual({ state: "pending", result: null }); }
+  finally { db.close(); }
+});

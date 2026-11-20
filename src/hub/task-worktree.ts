@@ -13,7 +13,7 @@ import type { DependencyPreparation } from "../pi/task-dependencies.ts";
 /**
  * #1115: a hub-sandboxed peer (Pi, the local worker) cannot run `git worktree add` or commit, because its profile refuses `.git` writes that
  * matter (#270). The hub makes the task worktree for it at the fixed root `.worktrees/<peer>-<task>`, the peer edits files there, and the hub
- * stages, commits and pushes at `hub_task_done`. The sandbox profile is NOT changed. It already lets a sandboxed command write
+ * stages, commits and pushes at `hub_task_done` or before an isolated check. The sandbox profile is NOT changed. It already lets a sandboxed command write
  * `.git/worktrees/<name>/{HEAD,index}` and `.git/refs/heads` (#864 only closes config, hooks, commondir and packs), so this module never trusts
  * what the peer could have written there: the base commit is recorded at creation, and a hub commit needs the worktree still registered at
  * its path, HEAD still the task branch, and the branch tip still the recorded base (or the hub's own previous commit).
@@ -31,7 +31,7 @@ export const taskWorktreeBranch = (peer: PeerId, task: number): string => `task/
 export interface TaskWorktreeEntry { peer: string; task: number; path: string; branch: string; base: string; /** The hub's own last commit on the branch, once it made one. */ head?: string }
 export type TaskWorktreeAvailability = { ok: true } | { ok: false; reason: string; next: string };
 export type TaskWorktreeResult = { ok: true; path: string; branch: string; base: string; created: boolean } | { ok: false; reason: string };
-export type TaskWorktreeCommit = { ok: true; commit: string; branch: string; pushed: boolean; note?: string } | { ok: false; reason: string; commit?: string };
+export type TaskWorktreeCommit = { ok: true; commit: string; branch: string; pushed: boolean; note?: string } | { ok: false; reason: string; commit?: string; uncertain?: true };
 export interface TaskWorktreeRemoval { removed: boolean; branchDeleted: boolean; kept?: string }
 
 export interface TaskWorktreePort {
@@ -43,7 +43,7 @@ export interface TaskWorktreePort {
   prepareDependencies?(input: { peer: PeerId; task: number; current: () => boolean }): Promise<void>;
   preparesDependencies?(peer: PeerId): boolean;
   dependencyState?(peer: PeerId, task: number): DependencyPreparation | undefined;
-  commitAndPush(input: { peer: PeerId; task: number; title: string }): Promise<TaskWorktreeCommit>;
+  commitAndPush(input: { peer: PeerId; task: number; title: string; current?: () => boolean }): Promise<TaskWorktreeCommit>;
   remove(input: { peer: PeerId; task: number }): TaskWorktreeRemoval;
 }
 
@@ -255,16 +255,19 @@ export class TaskWorktrees implements TaskWorktreePort {
     return { ok: true, path, branch, base, created: true };
   }
 
-  /** One hub commit at a time per worktree: a repeated or parallel `hub_task_done` queues behind the first. */
-  commitAndPush(input: { peer: PeerId; task: number; title: string }): Promise<TaskWorktreeCommit> {
+  /** One hub commit at a time per worktree: a repeated or parallel check or `hub_task_done` queues behind the first. */
+  commitAndPush(input: { peer: PeerId; task: number; title: string; current?: () => boolean }): Promise<TaskWorktreeCommit> {
     const next = this.chain.then(() => this.commit(input), () => this.commit(input));
     this.chain = next.catch(() => undefined);
     return next;
   }
 
-  private async commit(input: { peer: PeerId; task: number; title: string }): Promise<TaskWorktreeCommit> {
+  private async commit(input: { peer: PeerId; task: number; title: string; current?: () => boolean }): Promise<TaskWorktreeCommit> {
     const { peer, task } = input;
-    const fail = (reason: string, commit?: string): TaskWorktreeCommit => ({ ok: false, reason, ...(commit ? { commit } : {}) });
+    const current = () => !input.current || input.current();
+    let uncertain = false;
+    const fail = (reason: string, commit?: string): TaskWorktreeCommit => ({ ok: false, reason, ...(commit ? { commit } : {}), ...(uncertain ? { uncertain: true as const } : {}) });
+    if (!current()) return fail("task authority changed before the worktree commit");
     let records: Record<string, TaskWorktreeEntry>;
     try { records = this.readRecords(); } catch (error) { return fail((error as Error).message); }
     const entry = records[this.key(peer, task)];
@@ -296,8 +299,9 @@ export class TaskWorktrees implements TaskWorktreePort {
       if (raw.status !== 0) return fail("the staged change could not be listed");
       const parts = raw.stdout.split("\0").filter(Boolean), changed: { mode: string; path: string }[] = [];
       for (let i = 0; i + 1 < parts.length; i += 2) { const meta = /^:(\d{6}) (\d{6}) /.exec(parts[i]!); if (!meta) return fail("the staged change has an unreadable entry"); changed.push({ mode: meta[2]!, path: parts[i + 1]! }); }
+      if (!current()) return fail("task authority changed before the worktree commit");
       // Nothing new since the hub's own commit: this is a retry after a failed push, so push the commit it already made.
-      if (!changed.length && entry.head) return this.push(path, branch, entry.head, peer);
+      if (!changed.length && entry.head) return this.push(path, branch, entry.head, peer, current);
       if (!changed.length) return fail(`no changes under ${path}: edit files there, then call hub_task_done again`);
       if (changed.length > MAX_PATHS) return fail(`${changed.length} paths changed, more than the ${MAX_PATHS} the hub commits for a sandboxed peer; split the work into smaller tasks`);
       // 3. The same path policy a person's grant uses: the denylist, the agent and hub write names, and (when the policy is on) the instruction files.
@@ -305,8 +309,10 @@ export class TaskWorktrees implements TaskWorktreePort {
       const refused = changed.filter(c => c.mode === "160000" || isDenied(c.path, deny) || !grantablePath(path, join(path, c.path), c.path, protect));
       if (refused.length) return fail(`the hub will not commit ${refused.length} changed path${refused.length === 1 ? "" : "s"} (${refused.slice(0, 3).map(c => shown(c.path, 60)).join(", ")}): a secret, a git or hub or agent configuration name, a protected instruction file or a submodule. Revert ${refused.length === 1 ? "it" : "them"} in the worktree and call hub_task_done again`);
       this.o.beforeCommit?.();
+      if (!current()) return fail("task authority changed before the worktree commit");
       // 4. The commit object is made from the validated tree by the hub (no hook, no signing, no index read), and the branch moves to it only if it still sits at the recorded tip.
       const title = shown(input.title, 200) || `task ${task}`;
+      uncertain = true; // Git may have written an object or moved the branch even if a later step fails.
       const made = this.git(["-c", `user.name=${peer}`, "-c", `user.email=${peer}@agent-hub.invalid`, "-c", "commit.gpgSign=false", "commit-tree", tree, "-p", expectedTip, "-m", title, "-m", `Task #${task} by ${peer}. Committed by the hub for a sandboxed peer.`], path), commit = made.stdout.trim();
       if (made.status !== 0 || !SHA.test(commit)) return fail(`git commit-tree failed: ${shown(made.stderr)}`);
       if (this.git(["update-ref", `refs/heads/${branch}`, commit, expectedTip], path).status !== 0) return fail(`${branch} moved while the hub was committing; nothing was kept. Decline the task so the hub clears it`);
@@ -315,13 +321,14 @@ export class TaskWorktrees implements TaskWorktreePort {
       // there is clean and `remove` can tell finished work from uncommitted work. Nothing is ever committed from it.
       this.git(["read-tree", commit], path); this.git(["update-index", "-q", "--refresh"], path);
       try { this.mutate(current => { current[this.key(peer, task)] = { ...(current[this.key(peer, task)] ?? entry), head: commit }; }); } catch { return fail("the commit was made but the hub could not record it; call hub_task_done again", commit); }
-      return this.push(path, branch, commit, peer);
+      return this.push(path, branch, commit, peer, current);
     } finally { rmSync(index, { force: true }); }
   }
 
   /** 5. One explicit refspec for this branch, only to an origin that is this project's repository. */
-  private async push(path: string, branch: string, commit: string, _peer: PeerId): Promise<TaskWorktreeCommit> {
-    const fail = (reason: string, sha?: string): TaskWorktreeCommit => ({ ok: false, reason, ...(sha ? { commit: sha } : {}) });
+  private async push(path: string, branch: string, commit: string, _peer: PeerId, current: () => boolean): Promise<TaskWorktreeCommit> {
+    const fail = (reason: string, sha?: string): TaskWorktreeCommit => ({ ok: false, reason, ...(sha ? { commit: sha } : {}), uncertain: true });
+    if (!current()) return fail("task authority changed after the worktree commit; the commit was kept", commit);
     if (this.tip(branch) !== commit) return fail(`${branch} no longer points at the hub's commit ${commit.slice(0, 12)}; the hub will not push it. Decline the task so the hub clears it`);
     const urls = [...this.git(["remote", "get-url", "--push", "--all", "origin"], path).stdout.trim().split("\n"), ...this.git(["remote", "get-url", "--all", "origin"], path).stdout.trim().split("\n")].filter(Boolean);
     const verdict = this.o.pushAllowed?.(urls);

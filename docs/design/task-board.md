@@ -82,6 +82,15 @@ Inputs are the recorded reviewed Git base, never mutable task files; changed
 inputs or unsupported install settings/layouts remain unprepared. No new public
 task schema or local-worker preparation is added.
 
+A current public owner with a hub-managed worktree may start an isolated check
+before task completion (#1549 T1). After runner and request admission, the hub
+commits and pushes using the same private index, path policy and recorded-tip
+fence as the completion handoff. The task board records the resulting branch and
+exact commit before the runner starts on that commit; an unchanged hub-committed
+head is reused. Owner, session, capability, privacy and recovery authority are
+rechecked across the awaited work, and a lost authority never starts a check.
+Peers without a hub-managed worktree retain their existing check path.
+
 Pressure checkpoints remain peer/session operations, including for taskless peers.
 A host waiter additionally captures its owned-work task ids, creation identities
 and actual owner-history epochs (#1447 T4). Move, unassign, cancellation or a

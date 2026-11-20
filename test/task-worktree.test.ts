@@ -173,6 +173,7 @@ test("an origin that is not this project's repository blocks the push, the commi
   f.setPushable(false);
   const first = await f.worktrees.commitAndPush({ peer: "pi", task: 7, title: "t" });
   if (first.ok) throw new Error("unreachable");
+  expect(first.uncertain).toBe(true); // A committed branch must never be reported as a pre-effect refusal.
   const firstCommit = first.commit!, firstReason = first.reason;
   expect(firstCommit).toMatch(/^[0-9a-f]{40}$/); expect(firstReason).toContain("origin is not this project's repository");
   expect(f.git(f.bare, "for-each-ref", "--format=%(refname)")).toBe("refs/heads/main");
@@ -374,4 +375,17 @@ test("a repository with no GitHub origin: the hub commits, reports it was not pu
   expect(done.ok).toBe(true); if (!done.ok) throw new Error(done.reason);
   expect(done.pushed).toBe(false); expect(done.note).toContain("committed but not pushed");
   expect(f.git(f.root, "rev-parse", "refs/heads/task/7-pi")).toBe(done.commit);
+});
+
+
+test("managed check rechecks authority immediately before committing (#1549)", async () => {
+  const f = fixture(); let allowed = true;
+  const guarded = new TaskWorktrees({ root: f.root, stateFile: join(f.state, "guarded.json"), applies: () => true,
+    deny: () => [], protectInstructions: () => false, pushAllowed: () => true, beforeCommit: () => { allowed = false; } });
+  const made = guarded.create({ peer: "pi", task: 9 }); if (!made.ok) throw new Error(made.reason);
+  writeFileSync(join(made.path, "a.txt"), "edited\n");
+  const result = await guarded.commitAndPush({ peer: "pi", task: 9, title: "test", current: () => allowed });
+  expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("authority changed") });
+  expect(f.git(f.root, "rev-parse", "task/9-pi")).toBe(f.base);
+  expect(f.git(f.bare, "for-each-ref", "refs/heads/task/9-pi")).toBe("");
 });
