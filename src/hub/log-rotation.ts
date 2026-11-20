@@ -60,8 +60,10 @@ export interface RotateOptions {
   mode: "rename" | "copytruncate";
   /** Why the oldest segment must stay (it holds something still needed), or undefined when it may go. Asked only when the oldest segment would be dropped. */
   keepOldest?: (oldest: Segment) => string | undefined;
+  /** Called right after a segment's file is removed, so a holder of state derived from it (the reviewer-accounting journal) can drop it too even when a later step throws. */
+  onDrop?: (segment: Segment) => void;
 }
-export interface RotateResult { rotated: boolean; dropped?: Segment; kept?: { segment: Segment; reason: string } }
+export interface RotateResult { rotated: boolean; dropped: Segment[]; kept?: { segment: Segment; reason: string } }
 
 /**
  * Move the live file to `<file>.<start>`, and drop the oldest segment when `keep` segments already exist and `keepOldest` allows it. A segment that is kept makes the log grow past `keep` until its reason
@@ -70,29 +72,29 @@ export interface RotateResult { rotated: boolean; dropped?: Segment; kept?: { se
 export function rotateSegments(file: string, options: RotateOptions): RotateResult {
   if (!Number.isSafeInteger(options.keep) || options.keep < 1) throw new Error("rotation must keep at least one segment; pass keep >= 1");
   const all = segmentsOf(file), live = all[all.length - 1];
-  if (!live?.live || live.size === 0) return { rotated: false };
+  if (!live?.live || live.size === 0) return { rotated: false, dropped: [] };
   const rotated = all.filter(segment => !segment.live);
-  const result: RotateResult = { rotated: false };
+  const result: RotateResult = { rotated: false, dropped: [] };
   if (options.mode === "rename" && endsMidLine(file)) { appendFileSync(file, "\n"); live.size += 1; }
   const target = `${file}.${live.start}`;
   if (existsSync(target)) throw new Error(`rotation target ${basename(target)} already exists; remove or rename it, then rotate again`);
-  if (rotated.length >= options.keep) {
+  // Drop the oldest segments the hold allows until the bound holds again, and stop at the first one that must stay: after a hold ends, one rotation brings the count back to `keep`.
+  while (rotated.length >= options.keep) {
     const oldest = rotated[0]!, reason = options.keepOldest?.(oldest);
-    if (reason === undefined) { rmSync(oldest.path, { force: true }); result.dropped = oldest; }
-    else result.kept = { segment: oldest, reason };
+    if (reason !== undefined) { result.kept = { segment: oldest, reason }; break; }
+    rmSync(oldest.path, { force: true }); result.dropped.push(oldest); rotated.shift(); options.onDrop?.(oldest);
   }
   if (options.mode === "rename") renameSync(file, target);
-  else { copyFileSync(file, target); truncateSync(file, live.size >= 0 ? 0 : 0); }
+  else { copyFileSync(file, target); truncateSync(file, 0); }
   result.rotated = true;
   return result;
 }
 
 /** The event log: rotate when the live file reached `maxBytes`. */
-export function rotateEventsIfLarge(file: string, options: { maxBytes?: number; keep?: number; keepOldest?: RotateOptions["keepOldest"] } = {}): RotateResult {
-  try {
-    if (!existsSync(file) || statSync(file).size < (options.maxBytes ?? EVENTS_SEGMENT_BYTES)) return { rotated: false };
-    return rotateSegments(file, { keep: options.keep ?? EVENTS_SEGMENTS_KEPT, mode: "rename", ...(options.keepOldest ? { keepOldest: options.keepOldest } : {}) });
-  } catch { return { rotated: false }; }
+export function rotateEventsIfLarge(file: string, options: { maxBytes?: number; keep?: number; keepOldest?: RotateOptions["keepOldest"]; onDrop?: RotateOptions["onDrop"] } = {}): RotateResult {
+  // A stuck rotation (an existing target name, EACCES) throws to the caller, which logs it: the size bound must never stop holding silently.
+  if (!existsSync(file) || statSync(file).size < (options.maxBytes ?? EVENTS_SEGMENT_BYTES)) return { rotated: false, dropped: [] };
+  return rotateSegments(file, { keep: options.keep ?? EVENTS_SEGMENTS_KEPT, mode: "rename", ...(options.keepOldest ? { keepOldest: options.keepOldest } : {}), ...(options.onDrop ? { onDrop: options.onDrop } : {}) });
 }
 
 /** The hub.log writer's size check: one `stat` every `every` calls. The daemon's own stderr also appends to the file, so a running count alone would drift. */
@@ -100,19 +102,15 @@ export function textLogRotator(file: string, maxBytes = HUB_LOG_SEGMENT_BYTES, k
   let calls = 0;
   return () => {
     if (++calls % every !== 0) return undefined;
-    try {
-      if (statSync(file).size < maxBytes) return undefined;
-      return rotateSegments(file, { keep, mode: "copytruncate" });
-    } catch { return undefined; }
+    if (statSync(file).size < maxBytes) return undefined;
+    return rotateSegments(file, { keep, mode: "copytruncate" });
   };
 }
 
-/** Before a daemon starts, an oversized hub.log is moved away: no process holds it open yet. */
+/** Before a daemon starts, an oversized hub.log is moved away: no process holds it open yet. A failure throws to the caller, which reports it. */
 export function rotateTextLogAtStart(file: string, maxBytes = HUB_LOG_SEGMENT_BYTES, keep = HUB_LOG_SEGMENTS_KEPT): boolean {
-  try {
-    if (!existsSync(file) || statSync(file).size < maxBytes) return false;
-    return rotateSegments(file, { keep, mode: "rename" }).rotated;
-  } catch { return false; }
+  if (!existsSync(file) || statSync(file).size < maxBytes) return false;
+  return rotateSegments(file, { keep, mode: "rename" }).rotated;
 }
 
 /** The `at` of the last parseable line of `path`, read from its tail; undefined when none can be read (the caller keeps the segment then). */

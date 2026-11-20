@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StampedEvent } from "../src/hub/events.ts";
@@ -8,6 +8,7 @@ import { readStartupEventSeeds } from "../src/hub/startup-event-seeds.ts";
 import { ResearchTail, taskRecords } from "../src/hub/research.ts";
 import { UsageRollup } from "../src/hub/usage-rollup.ts";
 import { dogfoodLines } from "../src/hub/dogfood-read.ts";
+import { reviewerAccountingIntegrity, reviewerAccountingRelevant } from "../src/hub/review-budget.ts";
 import { lastEventTime, rotateEventsIfLarge, rotateSegments, rotateTextLogAtStart, segmentsOf, streamEnd, textLogRotator } from "../src/hub/log-rotation.ts";
 
 // #1546: events.jsonl and hub.log rotate by size, and every reader sees the same stream as before: the rotated segments oldest first, then the live file.
@@ -57,7 +58,7 @@ test("a rotation drops the oldest segment past the bound, and an offset below th
   appendFileSync(file, text(second)); rotateSegments(file, { keep: 2, mode: "rename" });
   appendFileSync(file, text(third));
   const result = rotateSegments(file, { keep: 2, mode: "rename" });
-  expect(result.dropped?.start).toBe(0);
+  expect(result.dropped.map(x => x.start)).toEqual([0]);
   expect(segmentsOf(file).filter(segment => !segment.live)).toHaveLength(2);
   expect(readEvents(file)).toEqual([...second, ...third]);
   const lines: string[] = []; scanEventLines(file, 0, l => lines.push(l));
@@ -72,12 +73,12 @@ test("the oldest segment is kept while it holds an open task's events, and dropp
   const openSince = Date.parse(old[0]!.at);
   const keepWhileOpen = (segment: { path: string }) => { const last = lastEventTime(segment.path); return last === undefined || last >= openSince ? "an open task's events are in it" : undefined; };
   const kept = rotateSegments(file, { keep: 1, mode: "rename", keepOldest: keepWhileOpen });
-  expect(kept.kept?.reason).toContain("open task"); expect(kept.dropped).toBeUndefined();
+  expect(kept.kept?.reason).toContain("open task"); expect(kept.dropped).toEqual([]);
   expect(segmentsOf(file).filter(segment => !segment.live)).toHaveLength(2); // grew past the bound rather than dropping
   expect(readEvents(file)).toEqual([...old, ...mid]);
   appendFileSync(file, text(fresh));
   const later = rotateSegments(file, { keep: 1, mode: "rename", keepOldest: segment => lastEventTime(segment.path)! >= Date.now() + 1e12 ? "x" : undefined });
-  expect(later.dropped).toBeDefined();
+  expect(later.dropped).toHaveLength(2); // every segment past the bound, not one
 });
 
 test("rotateEventsIfLarge leaves a small log alone, ends a crash-cut last line before moving it, and refuses to overwrite a segment", () => {
@@ -188,4 +189,39 @@ test("research backfill gives the same task records for a log rotated mid-task, 
   const whole2 = tail.events(2);
   expect(whole2.start).toBeUndefined();
   expect(whole2.events.length).toBeGreaterThan(0);
+});
+
+test("one rotation brings the count back to the keep limit after a hold ends, and onDrop sees each dropped segment", () => {
+  const d = dir(), file = join(d, "events.jsonl");
+  let hold = true; const dropped: number[] = [];
+  const options = { keep: 3, mode: "rename" as const, keepOldest: () => hold ? "held" : undefined, onDrop: (s: { start: number }) => { dropped.push(s.start); } };
+  for (let i = 0; i < 7; i++) { appendFileSync(file, text([turn("worker", 1)])); rotateSegments(file, options); }
+  expect(segmentsOf(file).filter(segment => !segment.live)).toHaveLength(7);
+  hold = false; appendFileSync(file, text([turn("worker", 1)]));
+  const result = rotateSegments(file, options);
+  expect(result.dropped).toHaveLength(5); expect(dropped).toHaveLength(5);
+  expect(segmentsOf(file).filter(segment => !segment.live)).toHaveLength(3 + 0); // keep-1 older ones plus the one just rotated
+});
+
+test("a rotation failure reaches the caller", () => {
+  const d = dir(), file = join(d, "events.jsonl");
+  writeFileSync(file, text([turn("worker", 1)]));
+  chmodSync(d, 0o500); // the rename cannot create the segment name
+  try { expect(() => rotateEventsIfLarge(file, { maxBytes: 1 })).toThrow(); } finally { chmodSync(d, 0o700); }
+});
+
+test("dropping a segment with accounting rows from the in-memory journal keeps the restart commitment equal to the replay of the kept segments", () => {
+  const d = dir(), file = join(d, "events.jsonl");
+  const acct = (attempt: string, outcome: string) => ({ v: 1, at: "2026-11-14T00:00:00.000Z", type: "reviewer_accounting", peer: "kimi", attempt: attempt.repeat(32), outcome }) as unknown as StampedEvent;
+  const batches = [[acct("a", "started"), acct("a", "complete")], [acct("b", "started")], [acct("c", "started"), acct("c", "unknown")]];
+  const journal: unknown[] = [];
+  const accountingRows = new Map<string, number>();
+  const options = { keep: 2, mode: "rename" as const,
+    keepOldest: (segment: { path: string }) => { accountingRows.set(segment.path, readStartupEventSeeds(segment.path).events.filter(row => reviewerAccountingRelevant(row)).length); return undefined; },
+    onDrop: (segment: { path: string }) => { journal.splice(0, accountingRows.get(segment.path) ?? 0); } };
+  for (const batch of batches) { appendFileSync(file, text(batch)); journal.push(...batch); rotateSegments(file, options); }
+  appendFileSync(file, text([acct("d", "started")])); journal.push(acct("d", "started"));
+  const replay = readStartupEventSeeds(file).events.filter(row => reviewerAccountingRelevant(row));
+  expect(journal.length).toBe(replay.length);
+  expect(reviewerAccountingIntegrity(journal, true)).toEqual(reviewerAccountingIntegrity(replay, true));
 });

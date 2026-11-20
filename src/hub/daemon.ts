@@ -1236,7 +1236,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
   const rotateHubLog = textLogRotator(logFile); // #1546: copy-truncate, because the daemon's own stderr also appends to this file
-  const log = (line: string) => { const text=`${new Date().toISOString()} ${line}`;try { appendFileSync(logFile, `${text}\n`); rotateHubLog(); } catch { /* the state dir is gone; the watchdog is stopping the hub */ }
+  let hubLogRotationFailed = false;
+  const log = (line: string) => { const text=`${new Date().toISOString()} ${line}`;try { appendFileSync(logFile, `${text}\n`); try { rotateHubLog(); } catch (error) { if (!hubLogRotationFailed) { hubLogRotationFailed = true; appendFileSync(logFile, `${new Date().toISOString()} hub.log rotation failed: ${(error as Error).message.slice(0, 160)}; the log keeps growing until it is fixed\n`); } } } catch { /* the state dir is gone; the watchdog is stopping the hub */ }
     let publicLine:string|undefined,view:ReturnType<typeof operationalView>|undefined;
     for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");view??=publicOperationalView();publicLine??=view.line(text);sock.send(JSON.stringify({t:"operational_log",line:publicLine,complete:view.complete,...(!view.complete?{incompleteReason:view.incompleteReason}:{})}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
   };
@@ -4151,18 +4152,28 @@ export async function startDaemon(opts: DaemonOptions) {
   const usageRollup = new UsageRollup(join(opts.stateDir, "hub.db"), join(opts.stateDir, "events.jsonl"));
   startupCleanup.push(() => usageRollup.close());
   /**
-   * #1546: the event log rotates by size. The oldest segment is kept while it holds an event at or after an open task's creation (its research record would lose input), so an open task's events are never
-   * dropped and the log grows past its bound until that task closes. The daemon is the only appender, and `renameSync` runs between two synchronous appends.
+   * #1546: the event log rotates by size. The oldest segment is kept while something still needs its events, so the log grows past its bound until that ends: (1) a task that has started and is open
+   * (a card still in backlog or proposed has only its proposal in the log), (2) a task that closed but still waits for its research record (`researchPending`), (3) a segment with a line that does not parse (the
+   * reviewer-accounting integrity below could not be recomputed). A dropped segment also leaves the in-memory reviewer-accounting journal, so the integrity a controlled restart saves equals what its replay
+   * of the kept segments yields (`reviewerAccountingIntegrity` binds the row counts). The daemon is the only appender, and `renameSync` runs between two synchronous appends.
    */
+  const accountingRowsOf = new Map<string, number>();
   const rotateEventLog = () => {
     try {
-      const open = board.list().filter(task => !isClosedTaskState(task.state));
-      const earliest = open.length ? Math.min(...open.map(task => task.created)) : Infinity;
-      const result = rotateEventsIfLarge(join(opts.stateDir, "events.jsonl"), { keepOldest: oldest => {
-        const last = lastEventTime(oldest.path);
-        return last === undefined || last >= earliest ? "an open task's events are in it" : undefined;
-      } });
-      if (result.rotated) log(`events.jsonl rotated${result.dropped ? `; dropped ${basename(result.dropped.path)}` : ""}${result.kept ? `; kept ${basename(result.kept.segment.path)} (${result.kept.reason})` : ""}`);
+      const needed = board.list().filter(task => (!isClosedTaskState(task.state) && (task.state !== "backlog" && task.state !== "proposed" || taskHasStarted(task))) || researchPending.has(task.id));
+      const earliest = needed.length ? Math.min(...needed.map(task => task.created)) : Infinity;
+      const result = rotateEventsIfLarge(join(opts.stateDir, "events.jsonl"), {
+        keepOldest: oldest => {
+          const last = lastEventTime(oldest.path);
+          if (last === undefined || last >= earliest) return "an open task's events are in it";
+          const seeds = readStartupEventSeeds(oldest.path);
+          if (!seeds.complete) return "a line in it did not parse, so its reviewer accounting cannot be recomputed";
+          accountingRowsOf.set(oldest.path, seeds.events.filter(row => reviewerAccountingRelevant(row)).length);
+          return undefined;
+        },
+        onDrop: segment => { const rows = accountingRowsOf.get(segment.path) ?? 0; accountingRowsOf.delete(segment.path); reviewerJournalRows.splice(0, rows); },
+      });
+      if (result.rotated) log(`events.jsonl rotated${result.dropped.length ? `; dropped ${result.dropped.map(segment => basename(segment.path)).join(", ")}` : ""}${result.kept ? `; kept ${basename(result.kept.segment.path)} (${result.kept.reason})` : ""}`);
     } catch (error) { log(`events.jsonl rotation failed: ${sanitize((error as Error).message).slice(0, 160)}`); }
   };
   rotateEventLog();
