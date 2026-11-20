@@ -4537,6 +4537,14 @@ function jcodeContextValue(value, sessionId, measuredAt) {
   const tokens = okay ? raw.used : null, window = okay ? raw.size : null;
   return { source: "jcode_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
 }
+function piContext(value, sessionId, measuredAt) {
+  const raw = object4(value), parts = [raw.input, raw.cacheRead, raw.cacheWrite];
+  const valid = parts.every((n) => Number.isSafeInteger(n) && n >= 0);
+  const sum = valid ? parts.reduce((a, n) => a + n, 0) : null;
+  const tokens = Number.isSafeInteger(sum) ? sum : null;
+  const window = Number.isSafeInteger(raw.contextWindow) && raw.contextWindow > 0 ? raw.contextWindow : null;
+  return { source: "pi_usage", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
+}
 var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, positive = (n) => nonnegative(n) && n > 0, record2 = (v) => v !== null && typeof v === "object" && !Array.isArray(v), object4 = (v) => record2(v) ? v : {};
 
 // src/hub/context-window.ts
@@ -10554,6 +10562,7 @@ var init_pi = __esm(() => {
   PiPeer = class PiPeer extends BasePeer {
     opts;
     preflight;
+    sessionModel;
     hubNative = true;
     hubOwned = true;
     proc;
@@ -10779,6 +10788,9 @@ var init_pi = __esm(() => {
       const session = this.recoveryMetadata().sessionId;
       return typeof session === "string" ? session : undefined;
     }
+    get verifiedRecordSession() {
+      return this.verifiedOwner() ? this.nativeSession : undefined;
+    }
     async captureResume() {
       if (this.state === "offline") {
         if (this.canReuseVerifiedEmptyResume())
@@ -10796,6 +10808,10 @@ var init_pi = __esm(() => {
       const snapshot = this.opts.mode === "headless" ? (await this.waitRpc("get_state", 15000)).data : await this.sendTui({ type: "get_session_state" });
       if (this.state !== "idle" || this.activeTools || snapshot?.sessionId !== this.sessionId || snapshot?.sessionFile !== this.sessionFile)
         throw new Error("Pi source session changed during capture");
+      if (this.opts.mode === "tui" && this.verifiedOwner() && this.sessionId) {
+        this.sessionModel = stateModelId(snapshot);
+        this.opts.onContext?.(snapshot.context, this.sessionId);
+      }
       if (!this.observeSnapshotTitle(snapshot, titleRevisionBefore, titleEpochBefore))
         throw new Error("Pi source session title changed during capture; retry with a fresh native session snapshot");
       const empty = this.opts.mode === "headless" ? snapshot.messageCount === 0 && snapshot.pendingMessageCount === 0 && snapshot.isStreaming === false && snapshot.isCompacting !== true && !snapshot.sessionName : snapshot.empty === true && snapshot.idle === true;
@@ -11278,6 +11294,10 @@ var init_pi = __esm(() => {
         throw new Error("Pi roster return could not verify the current native session");
       if (lifecycle !== this.rosterLifecycleRevision)
         throw new Error("Pi native activity changed during roster return; retry with a fresh session snapshot");
+      if (session) {
+        this.sessionModel = stateModelId(snapshot);
+        this.opts.onContext?.(snapshot.context, session);
+      }
       this.observeSnapshotTitle(snapshot, titleRevisionBefore, titleEpochBefore);
       this.rosterDetached = false;
       this.hubPromptId = undefined;
@@ -11448,7 +11468,7 @@ var init_pi = __esm(() => {
         attempted = true;
         if (deliveryId)
           this.activeDeliveryIds.add(deliveryId);
-        const recordPrompt = this.opts.mode === "tui" ? "" : this.turnRecordPrompt("");
+        const recordPrompt = this.turnRecordPrompt("");
         const message = [recordPrompt, envs.some((env) => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join(`
 `);
         if (this.opts.mode === "tui") {
@@ -11558,6 +11578,11 @@ var init_pi = __esm(() => {
             return;
           }
         } catch {}
+      } else {
+        if (this.verifiedOwner() && this.sessionModel) {
+          this.turnModel = { model: this.sessionModel, evidence: "session" };
+          return;
+        }
       }
       if (requested)
         this.turnModel = { model: requested, evidence: "configured" };
@@ -11583,9 +11608,10 @@ var init_pi = __esm(() => {
       const slash = model.indexOf("/");
       const provider = "agent-hub-local";
       const modelId = model;
-      if (this.opts.mode === "tui")
+      if (this.opts.mode === "tui") {
+        this.sessionModel = undefined;
         await this.sendTui({ type: "set_model", provider, modelId });
-      else
+      } else
         await this.sendRpc({ type: "set_model", provider, modelId });
       this.requestedModel = model;
     }
@@ -11668,6 +11694,7 @@ var init_pi = __esm(() => {
           this.opts.log?.(`[${this.id}] Pi session identity mismatch`);
           return;
         }
+        this.sessionModel = stateModelId(event);
         this.titleRevision = -1;
         this.titleEpoch++;
         this.nativeTitleEpoch = typeof event.titleEpoch === "string" && event.titleEpoch ? event.titleEpoch : undefined;
@@ -11744,6 +11771,14 @@ var init_pi = __esm(() => {
       }
       if (event.type === "activity" && this.state === "busy")
         this.touch();
+      if (event.type === "pi_model" && event.sessionId === this.sessionId && this.verifiedOwner() && this.sessionId) {
+        this.sessionModel = stateModelId(event);
+        this.opts.onContext?.(undefined, this.sessionId);
+      }
+      if (event.type === "pi_usage" && this.agentRunning && this.state === "busy" && event.sessionId === this.sessionId && event.generation === this.budgetGeneration && this.verifiedOwner() && this.sessionId) {
+        this.sessionModel = stateModelId(event);
+        this.opts.onContext?.(event.context, this.sessionId);
+      }
       if (event.type === "tokens" && this.state === "busy" && typeof event.id === "string" && event.id.length <= 100 && Number.isSafeInteger(event.tokens) && event.tokens >= 0 && !this.usageSeen.has(event.id)) {
         this.usageSeen.add(event.id);
         if (this.usageSeen.size > 1000)
@@ -22957,7 +22992,7 @@ var init_builtin_metadata = __esm(() => {
       session: { idField: "sessionId", currentId: sessionId("sessionId"), restoreOnStart: true, launchKind: "pi", launchRecord: true, ...PI_RECOVERY_SESSION, crashPlan: piCrashPlan, unrecordedTerminal: "tui", continuityBookmark: piRecoveryContinuity, continuity: { key: "pi", parse: parsePiContinuity } },
       turnEnd: "adapter",
       settle: { signal: "agent-settled" },
-      budget: { account: "pi", instrumented: true, noQuotaReason: "on-prem backends have no provider quota" },
+      budget: { account: "pi", instrumented: true, noQuotaReason: "on-prem backends have no provider quota", context: { source: "pi_usage", read: piContext } },
       reporting: { tokensNotReported: true },
       configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
       routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },

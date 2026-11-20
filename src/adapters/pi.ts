@@ -56,6 +56,8 @@ export interface PiOptions {
   admitBudget?: (envs: Envelope[], unit: ExecutionUnit) => Promise<ExecutionBudgetDecision[]>;
   /** Reported message usage as increments, before agent_settled releases the turn. */
   onTokens?: (added: number) => void;
+  /** Current-session prompt occupancy; unknown observations invalidate stale readings. */
+  onContext?: (value: unknown, sessionId: string) => void;
   /** `ceiling` is the validated, session/turn-bound tool-step ceiling signal (#179), present only when the trusted extension emitted one for this turn. */
   onTurnFailure?: (envs: Envelope[], reason: string, ceiling?: PiToolStepCeiling, settledCeiling?: boolean) => Promise<void>;
   /** Observation only: cancelled/stopped logical turns never request failure handoff. */
@@ -113,6 +115,7 @@ function ownerStillAlive(pid: number, signature: string | undefined): boolean { 
 
 
 export class PiPeer extends BasePeer {
+  private sessionModel: string | undefined;
   readonly hubNative = true;
   readonly hubOwned: boolean = true;
   private proc?: ChildProcessWithoutNullStreams;
@@ -295,6 +298,7 @@ export class PiPeer extends BasePeer {
     const session = this.recoveryMetadata().sessionId;
     return typeof session === "string" ? session : undefined;
   }
+  get verifiedRecordSession(): string | undefined { return this.verifiedOwner() ? this.nativeSession : undefined; }
 
   /** Verify the live source before choosing ID-only restoration. Never infer emptiness from a missing file. */
   async captureResume(): Promise<Record<string, unknown>> {
@@ -311,6 +315,7 @@ export class PiPeer extends BasePeer {
       ? (await this.waitRpc("get_state", 15_000)).data
       : await this.sendTui({ type: "get_session_state" });
     if (this.state !== "idle" || this.activeTools || snapshot?.sessionId !== this.sessionId || snapshot?.sessionFile !== this.sessionFile) throw new Error("Pi source session changed during capture");
+    if (this.opts.mode === "tui" && this.verifiedOwner() && this.sessionId) { this.sessionModel = stateModelId(snapshot); this.opts.onContext?.(snapshot.context, this.sessionId); }
     if (!this.observeSnapshotTitle(snapshot, titleRevisionBefore, titleEpochBefore)) throw new Error("Pi source session title changed during capture; retry with a fresh native session snapshot");
     const empty = this.opts.mode === "headless"
       ? snapshot.messageCount === 0 && snapshot.pendingMessageCount === 0 && snapshot.isStreaming === false && snapshot.isCompacting !== true && !snapshot.sessionName
@@ -690,6 +695,7 @@ export class PiPeer extends BasePeer {
     const snapshot = await this.sendTui({ type: "get_session_state" });
     if (epoch !== this.rosterEpoch || this.stopping || !this.verifiedOwner() || this.activeTools || snapshot?.sessionId !== session || snapshot?.sessionFile !== file || typeof snapshot?.idle !== "boolean") throw new Error("Pi roster return could not verify the current native session");
     if (lifecycle !== this.rosterLifecycleRevision) throw new Error("Pi native activity changed during roster return; retry with a fresh session snapshot");
+    if (session) { this.sessionModel = stateModelId(snapshot); this.opts.onContext?.(snapshot.context, session); }
     this.observeSnapshotTitle(snapshot, titleRevisionBefore, titleEpochBefore);
     this.rosterDetached = false;
     this.hubPromptId = undefined; this.hubPromptGeneration = undefined;
@@ -811,7 +817,7 @@ export class PiPeer extends BasePeer {
       this.noteActivity();
       attempted = true;
       if (deliveryId) this.activeDeliveryIds.add(deliveryId);
-      const recordPrompt = this.opts.mode === "tui" ? "" : this.turnRecordPrompt("");
+      const recordPrompt = this.turnRecordPrompt("");
       const message = [recordPrompt, envs.some(env => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join("\n");
       if (this.opts.mode === "tui") { const pending = this.sendTui({ type: "prompt", message }); promptId = this.pendingPromptId; await pending; }
       else await this.sendRpc({ type: "prompt", message });
@@ -884,8 +890,7 @@ export class PiPeer extends BasePeer {
   }
 
   /**
-   * #1402 T4: a headless Pi reports its current model in `get_state`; that is `session` evidence. The TUI snapshot (`get_session_state`) carries no model, and a failed or placeholder read leaves the model the hub
-   * itself set through `set_model` (Pi acknowledged it), which is only `configured`. A read that fails never fails the delivery.
+   * Pi's current native session model is session evidence; a failed or placeholder read leaves the acknowledged configured model.
    */
   private async captureTurnModel(requested: string | undefined): Promise<void> {
     this.turnModel = undefined;
@@ -895,6 +900,8 @@ export class PiPeer extends BasePeer {
         const id = state.success === true ? stateModelId(state.data) : undefined;
         if (id) { this.turnModel = { model: id, evidence: "session" }; return; }
       } catch { /* optional metadata: the turn goes on without it */ }
+    } else {
+      if (this.verifiedOwner() && this.sessionModel) { this.turnModel = { model: this.sessionModel, evidence: "session" }; return; }
     }
     if (requested) this.turnModel = { model: requested, evidence: "configured" };
   }
@@ -910,7 +917,7 @@ export class PiPeer extends BasePeer {
     const slash = model.indexOf("/");
     const provider = "agent-hub-local";
     const modelId = model;
-    if (this.opts.mode === "tui") await this.sendTui({ type: "set_model", provider, modelId }); else await this.sendRpc({ type: "set_model", provider, modelId });
+    if (this.opts.mode === "tui") { this.sessionModel = undefined; await this.sendTui({ type: "set_model", provider, modelId }); } else await this.sendRpc({ type: "set_model", provider, modelId });
     this.requestedModel = model;
   }
 
@@ -969,6 +976,7 @@ export class PiPeer extends BasePeer {
       this.sessionId = String(event.sessionId ?? ""); this.sessionFile = String(event.sessionFile ?? "");
       this.ownerPid = Number.isInteger(event.pid) ? event.pid : undefined; this.ownerSignature = typeof event.signature === "string" ? event.signature : undefined;
       if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) { this.opts.log?.(`[${this.id}] Pi session identity mismatch`); return; }
+      this.sessionModel = stateModelId(event);
       this.titleRevision = -1; this.titleEpoch++;
       this.nativeTitleEpoch = typeof event.titleEpoch === "string" && event.titleEpoch ? event.titleEpoch : undefined;
       this.observeTitle(event.sessionName, event.titleRevision, event.titleEpoch);
@@ -1018,6 +1026,8 @@ export class PiPeer extends BasePeer {
       }
     }
     if (event.type === "activity" && this.state === "busy") this.touch();
+    if (event.type === "pi_model" && event.sessionId === this.sessionId && this.verifiedOwner() && this.sessionId) { this.sessionModel = stateModelId(event); this.opts.onContext?.(undefined, this.sessionId); }
+    if (event.type === "pi_usage" && this.agentRunning && this.state === "busy" && event.sessionId === this.sessionId && event.generation === this.budgetGeneration && this.verifiedOwner() && this.sessionId) { this.sessionModel = stateModelId(event); this.opts.onContext?.(event.context, this.sessionId); }
     if (event.type === "tokens" && this.state === "busy" && typeof event.id === "string" && event.id.length <= 100 && Number.isSafeInteger(event.tokens) && event.tokens >= 0 && !this.usageSeen.has(event.id)) {
       this.usageSeen.add(event.id);
       if (this.usageSeen.size > 1000) this.usageSeen.delete(this.usageSeen.values().next().value!);

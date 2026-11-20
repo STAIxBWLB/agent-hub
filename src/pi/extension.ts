@@ -33,6 +33,11 @@ let shutdown: (() => void) | undefined;
 let runtimeCtx: any;
 let modelRegistry: any;
 
+function contextObservation(message: any, ctx: any): Record<string, unknown> {
+  const usage = message?.role === "assistant" && typeof message.model === "string" && message.model === ctx?.model?.id ? message.usage : undefined;
+  return { input: usage?.input, cacheRead: usage?.cacheRead, cacheWrite: usage?.cacheWrite, contextWindow: ctx?.model?.contextWindow };
+}
+
 async function post(path: string, body: unknown): Promise<any> {
   if (!bridgeUrl || !bridgeToken) throw new Error("Pi bridge is not configured");
   const response = await fetch(`${bridgeUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${bridgeToken}` }, body: JSON.stringify(body) });
@@ -127,6 +132,8 @@ async function poll(pi: ExtensionAPI): Promise<void> {
             ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleEpoch, titleRevision } : {}),
             idle: runtimeCtx.isIdle() === true,
             empty: entries.every((entry: any) => ["model_change", "thinking_level_change"].includes(entry.type)),
+            model: runtimeCtx?.model ? { id: runtimeCtx.model.id } : undefined,
+            context: contextObservation(entries.slice().reverse().find((entry: any) => entry.type === "message" && entry.message?.role === "assistant")?.message, runtimeCtx),
           } });
           continue;
         } else if (command.type === "set_model") {
@@ -178,7 +185,7 @@ export default function(pi: ExtensionAPI): void {
     sessionId = String(state?.id ?? "");
     titleRevision = 0; titleEpoch = crypto.randomUUID();
     try {
-      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleEpoch, titleRevision } : {}), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile(), approvalTurnAbort: typeof ctx.abort === "function", fencedPrompt: true });
+      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleEpoch, titleRevision } : {}), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile(), model: ctx.model ? { id: ctx.model.id } : undefined, approvalTurnAbort: typeof ctx.abort === "function", fencedPrompt: true });
       if (claimed?.ok === false) { ctx.shutdown?.(); return; }
     } catch (error) { ctx.shutdown?.(); throw error; }
     if (!pollStarted) { pollStarted = true; void poll(pi); }
@@ -190,7 +197,12 @@ export default function(pi: ExtensionAPI): void {
     const cancelled = !forcedFailure && message?.stopReason === "aborted";
     await post("/event", { type: "agent_end", generation: turnGeneration, ...(activePromptId ? { promptId: activePromptId } : {}), text: text ?? "", failed, cancelled, ...(failed ? { error: forcedFailure || message?.errorMessage || message?.stopReason } : {}) });
   });
-  pi.on("message_end", async (event: any) => {
+  pi.on("message_end", async (event: any, ctx: any) => {
+    if (ctx) runtimeCtx = ctx;
+    if (event.message?.role === "assistant") {
+      try { await post("/event", { type: "pi_usage", sessionId, generation: turnGeneration, model: (ctx ?? runtimeCtx)?.model ? { id: (ctx ?? runtimeCtx).model.id } : undefined, context: contextObservation(event.message, ctx ?? runtimeCtx) }); }
+      catch { /* telemetry must not break a native turn */ }
+    }
     const tokens = assistantTokens(event.message);
     if (tokens === undefined) return;
     // Message-end is the sole usage source: agent_end carries those same messages again.
@@ -210,7 +222,7 @@ export default function(pi: ExtensionAPI): void {
   });
   // Native retries/continuations emit more starts before the one logical agent_settled.
   pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; turnGeneration++; activePromptId = pendingPromptId ?? activePromptId; pendingPromptId = undefined; await post("/event", { type: "agent_start", sessionId, ...(typeof pi.getSessionName === "function" ? { sessionName: pi.getSessionName() ?? "", titleEpoch, titleRevision } : {}), generation: turnGeneration, ...(activePromptId ? { promptId: activePromptId } : {}) }); });
-  pi.on("model_select", async (_event: any, ctx: any) => { if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") ctx.shutdown?.(); });
+  pi.on("model_select", async (_event: any, ctx: any) => { runtimeCtx = ctx; if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") ctx.shutdown?.(); else try { await post("/event", { type: "pi_model", sessionId, model: ctx.model ? { id: ctx.model.id } : undefined }); } catch { /* optional telemetry */ } });
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") { ctx.abort?.(); return { systemPrompt: event.systemPrompt }; }
     return undefined;

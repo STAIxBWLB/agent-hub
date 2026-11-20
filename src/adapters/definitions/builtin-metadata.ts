@@ -22,7 +22,7 @@ import { createCodex, createKimi, createJcode, createPi, createLocal, createClau
 import { CLAUDE_DISPLAY, CODEX_DISPLAY, KIMI_DISPLAY, PI_DISPLAY, LOCAL_DISPLAY, JCODE_DISPLAY } from "./native-display.ts";
 import { CLAUDE_RECOVERY_SESSION, CODEX_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, PI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION } from "./native-recovery.ts";
 import { claudeWindows, codexWindows } from "./native-quota.ts";
-import { claudeContext, codexContext, acpContextValue, jcodeContextValue } from "./native-context.ts";
+import { claudeContext, codexContext, acpContextValue, jcodeContextValue, piContext } from "./native-context.ts";
 import { KIMI_TUI_FACTS_HOOK } from "../kimi-tui-facts.ts";
 import type { AdapterDefinition } from "../registry-types.ts";
 import type { PeerAdapter } from "../../hub/peers.ts";
@@ -132,7 +132,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     // Approval enforcement belongs to the verified native transport and host permission gate.
     permission: { grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), restoreOnStart: true, launchKind: "pi", launchRecord: true, ...PI_RECOVERY_SESSION, crashPlan: piCrashPlan, unrecordedTerminal: "tui", continuityBookmark: piRecoveryContinuity, continuity: { key: "pi", parse: parsePiContinuity } },
-    turnEnd: "adapter", settle: { signal: "agent-settled" }, budget: { account: "pi", instrumented: true, noQuotaReason: "on-prem backends have no provider quota" }, reporting: { tokensNotReported: true }, configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
+    turnEnd: "adapter", settle: { signal: "agent-settled" }, budget: { account: "pi", instrumented: true, noQuotaReason: "on-prem backends have no provider quota", context: { source: "pi_usage", read: piContext } }, reporting: { tokensNotReported: true }, configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
     routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
     cli: { command: "pi", entry: { lifecycleAdmission: false, execute: runPiEntry }, preview: previewPi, usage: [["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id>] [--session-file <path>] [--replace-session]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how", "start Pi in a terminal, or headless"]], launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: form => ["pi", "--mode", form] }, display: PI_DISPLAY,
   },
