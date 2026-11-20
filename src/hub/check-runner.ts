@@ -40,6 +40,8 @@ export interface RunnerOptions {
   projectDir: string; stateDir: string; storageDir: string; projectKey: string;
   enabled: boolean | (() => boolean); isDenied: (path: string) => boolean;
   onResult?: (receipt: RunReceipt) => void | Promise<void>;
+  /** #1555 AC6: whether the task is approved or cancelled, so a run that settles after its task closed is compacted when it leaves the queue. */
+  taskClosed?: (task: number) => boolean;
   /** Daemon authority fence, re-evaluated across every asynchronous stage. */
   isCurrent?: (request: CheckRequest) => boolean;
   /** Test seams; never supplied from a tool request or config. */
@@ -262,7 +264,10 @@ export class ContainerRunner {
     const entry = this.queue.shift(); if (!entry) return;
     this.active = entry;
     try { await this.execute(entry); }
-    finally { this.active = undefined; this.entries.delete(entry.receipt.run); entry.resolve({ ...entry.receipt }); void this.drain(); }
+    finally { this.active = undefined; this.entries.delete(entry.receipt.run); entry.resolve({ ...entry.receipt }); void this.compactIfClosed(entry.receipt.task); void this.drain(); }
+  }
+  private async compactIfClosed(task: number): Promise<void> {
+    try { if (this.options.taskClosed?.(task)) await this.compactTask(task); } catch { /* retention only: the files stay */ }
   }
   private async heavy(entry: Entry): Promise<() => Promise<void>> {
     const lock = join(this.common, "ahub-heavy.lock");

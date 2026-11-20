@@ -9,6 +9,7 @@ import { Turns } from "../src/hub/snapshots.ts";
 import { conflictsOf } from "../src/hub/conflicts.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { ContainerRunner, type CheckRequest, type ContainerCommand, type RunReceipt } from "../src/hub/check-runner.ts";
+import { toolResultFailed } from "../src/local/tools.ts";
 import { PI_CLOSED_RESULT_CAP, PiToolReceipts, compactPiResult, packPiShellResult } from "../src/pi/tool-receipts.ts";
 import { sdlcMetrics, type MetricTask } from "../src/hub/sdlc-metrics.ts";
 import { costMetrics } from "../src/hub/cost-governance.ts";
@@ -132,6 +133,41 @@ test("compactPiResult keeps short text and a shell result's trusted exit code", 
   expect(compactPiResult("short")).toBe("short");
   expect(JSON.parse(compactPiResult(packPiShellResult("z".repeat(10_000), null)))).toMatchObject({ kind: "user-bash-result", exitCode: null });
   expect(compactPiResult("q".repeat(5000)).length).toBeLessThanOrEqual(PI_CLOSED_RESULT_CAP + 100);
+});
+
+test("a compacted plain bash result keeps its exit line, so a replayed failure still reads as a failure", () => {
+  const failed = `${"o".repeat(50_000)}\n(exit 2)`, passed = `${"o".repeat(50_000)}\n(exit 0)`;
+  expect(toolResultFailed("bash", failed)).toBe(true);
+  const compactedFailed = compactPiResult(failed), compactedPassed = compactPiResult(passed);
+  expect(compactedFailed.length).toBeLessThanOrEqual(PI_CLOSED_RESULT_CAP + 100);
+  expect(compactedFailed.endsWith("\n(exit 2)")).toBe(true);
+  expect(toolResultFailed("bash", compactedFailed)).toBe(true);
+  expect(toolResultFailed("bash", compactedPassed)).toBe(false);
+  expect(toolResultFailed("git", compactPiResult(`${"g".repeat(9_000)}\n(exit 128)`))).toBe(true);
+});
+
+test("a task that closes while its check is held has the run compacted when it settles", async () => {
+  const f = await runnerFixture();
+  let closed = false, release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  const root = await mkdtemp(join(tmpdir(), "ahub-compact-late-")); dirs.push(root);
+  const held = new ContainerRunner({ projectDir: join(f.root, "project"), stateDir: join(root, "state"), storageDir: join(root, "storage"), projectKey: "fixture", enabled: true, isDenied: () => false, signature: () => "fixture-signature",
+    taskClosed: () => closed,
+    command: async (args, opts) => {
+      if (args[0] === "--version") return { code: 0, stdout: "1.5.0" };
+      if (args[0] === "network" && args[1] === "inspect") return { code: 0, stdout: JSON.stringify([{ id: "agenthub-check", configuration: { name: "agenthub-check", mode: "hostOnly" } }]) };
+      if (args[0] === "list") return { code: 0, stdout: "[]" };
+      if (args[0] === "exec") { opts?.output?.(Buffer.from("late output\n")); await gate; return { code: 0, stdout: "" }; }
+      return { code: 0, stdout: "" };
+    } });
+  closers.push(() => { release(); return held.stopAll(); });
+  const handle = held.start(f.request(7));
+  for (let i = 0; i < 400 && held.activeRun !== handle.run; i++) await Bun.sleep(10);
+  closed = true; expect(await held.compactTask(7)).toBe(0); // the task closed (cancelled) while the run is active: nothing to compact yet
+  release(); await handle.done;
+  const output = join(root, "storage/fixture", handle.run, "output.log");
+  for (let i = 0; i < 400 && ((await held.result(handle.run))?.tail !== "" || await Bun.file(output).exists()); i++) await Bun.sleep(10);
+  expect((await held.result(handle.run))!.tail).toBe("");
+  expect(await Bun.file(output).exists()).toBe(false);
 });
 
 test("sdlcMetrics, costMetrics and the usage roll-up give identical results before and after compaction", async () => {

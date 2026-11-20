@@ -2891,6 +2891,7 @@ export async function startDaemon(opts: DaemonOptions) {
     projectDir: opts.cwd, stateDir: opts.stateDir, storageDir: join(hubHome(), "checks"),
     projectKey: createHash("sha256").update(realPath(opts.cwd)).digest("hex").slice(0, 24),
     enabled: () => config.checks.runner === "container" || config.checks.runner === "remote",
+    taskClosed: task => { const row = board.get(task); return !!row && isClosedTaskState(row.state); },
     ...(config.checks.runner === "remote" ? { remote: config.checks.remote } : {}),
     isDenied: path => isDenied(path, config.local.deny) || matchesPolicy(opts.cwd, path, config.pii?.paths ?? [], true),
     isCurrent: currentCheck,
@@ -3636,6 +3637,12 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   /** What quiescence was judged on, for the log when an integration waits on it. */
   const stopEvidence = (peer: PeerId) => `${peer}: turn end ${turnEnded.has(peer) ? new Date(turnEnded.get(peer)!).toISOString() : "none"}, last tool call ${activeAt.has(peer) ? new Date(activeAt.get(peer)!).toISOString() : "none"}, ${bus.peers.get(peer)?.state ?? "offline"}`;
+  /** #1555 AC6: ephemeral per-task state of a task that reached approved or cancelled. Retention only: a failure keeps the rows and the files, and no board row, rollup row or history field is read or written. */
+  const compactClosedTask = (task: number) => {
+    try { turnLog?.pruneTouches([task]); } catch { log("touches retention pass failed; the table keeps its rows"); }
+    void checkRunner.compactTask?.(task).catch(() => { log("check output retention pass failed; the files stay"); });
+  };
+  const compactedTasks = new Set<number>();
   board.onChange = (t, h) => {
     tasks.reviewQuotaTaskChanged(t);
     if (!isClosedTaskState(t.state) && t.state !== "backlog") {
@@ -3646,7 +3653,8 @@ export async function startDaemon(opts: DaemonOptions) {
     scopes = new Map();
     progress.prune();
     if (t.state === "approved" || t.state === "cancelled") { facts.closeTask(t.id); for (const store of worktreeFacts.values()) store.closeTask(t.id); } // #1556 T1: receipts end with the task
-    if (t.state === "approved" || t.state === "cancelled") compactClosedTask(t.id); // #1555 AC6: touches rows and check output tails end with the task
+    // #1555 AC6: touches rows and check output tails end with the task, once per close (a reopened task can close again), not on every later note.
+    if (t.state === "approved" || t.state === "cancelled") { if (!compactedTasks.has(t.id)) { compactedTasks.add(t.id); compactClosedTask(t.id); } } else compactedTasks.delete(t.id);
     factsOn(); // a PII task opening or closing switches tracking at once, not at the next boundary (issue #108)
     if (t.state !== "in_progress" || ownerWriteStarts.get(t.id)?.owner !== t.owner) ownerWriteStarts.delete(t.id);
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
@@ -4310,11 +4318,6 @@ export async function startDaemon(opts: DaemonOptions) {
   const repo = factsRepo;
   let turnLog = config.snapshots.enabled && repo ? new Turns(join(opts.stateDir, "hub.db")) : undefined;
   startupCleanup.push(() => turnLog?.close());
-  /** #1555 AC6: ephemeral per-task state of a task that reached approved or cancelled. Retention only: a failure keeps the rows and the files, and no board row, rollup row or history field is read or written. */
-  const compactClosedTask = (task: number) => {
-    try { turnLog?.pruneTouches([task]); } catch { log("touches retention pass failed; the table keeps its rows"); }
-    void checkRunner.compactTask?.(task).catch(() => { log("check output retention pass failed; the files stay"); });
-  };
   try { turnLog?.pruneClosedTouches(id => { const row = board.get(id); return !!row && isClosedTaskState(row.state); }); } catch { log("touches retention pass failed; the table keeps its rows"); }
   /** Whether a peer has a PII task open in any state: assigned and not yet accepted counts. */
   const holdsPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some((t) => t.owner === peer && !isClosedTaskState(t.state) && t.state !== "in_review" && tasks.isPii(t));

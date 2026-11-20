@@ -14,7 +14,9 @@ export function compactPiResult(result: string, cap = PI_CLOSED_RESULT_CAP): str
     const parsed = JSON.parse(result) as { kind?: unknown; text?: unknown; exitCode?: unknown };
     if (parsed && parsed.kind === "user-bash-result" && typeof parsed.text === "string") return JSON.stringify({ kind: parsed.kind, text: parsed.text.slice(0, Math.max(0, cap - 200)) + COMPACTED, exitCode: parsed.exitCode });
   } catch { /* plain text result */ }
-  return result.slice(0, cap) + COMPACTED;
+  // bash and git results end with "(exit N)", which toolResultFailed reads to tell a failure from a success on a replay: keep that line.
+  const exit = result.match(/\n\(exit [^\n)]+\)$/u)?.[0] ?? "";
+  return result.slice(0, Math.max(0, cap - exit.length)) + COMPACTED + exit;
 }
 /** Bound encoded text before wrapping it so escaping never cuts off trusted exit metadata. */
 export function packPiShellResult(text: string, exitCode: number | null): string {
