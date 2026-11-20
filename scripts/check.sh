@@ -193,7 +193,10 @@ node scripts/check-owned-processes.mjs "$check_tmp" "$ledger" || leaks=$?
 if [ "$tests" -ne 0 ]; then
   # #1577 entry 3: one line that says which step ended the shard and what was running, whether or not a `(fail)` line exists. A run cut by
   # the watchdog or a signal exits 128+N; a runner or preload crash exits with no failing test at all.
-  fails=$(grep -c '^F ' "$summary" 2>/dev/null || true)
+  # Bun prints every failing test a second time in its `N tests failed:` recap after the last file, and that repeat is the same
+  # line byte for byte (the recorded duration included), so this counts distinct rows. The recap carries no file header, so the
+  # last `H` row is still the file that was running when the run ended.
+  fails=$(grep '^F ' "$summary" 2>/dev/null | sort -u | wc -l | tr -d '[:space:]' || true)
   last_file=$(grep '^H ' "$summary" 2>/dev/null | tail -1 | cut -c3- || true)
   first_fail=$(grep '^F ' "$summary" 2>/dev/null | head -1 | cut -c3- | cut -c1-160 || true)
   if [ "${fails:-0}" -gt 0 ]; then cause="$fails failing test(s), first: ${first_fail}"

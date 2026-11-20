@@ -34,8 +34,10 @@ test("a once-only step that fails is named, with its own exit status", () => {
   } finally { rmSync(f.repo, { recursive: true, force: true }); }
 });
 
-test("a runner that fails with a (fail) line names the step, the count, the first failure and the last file started", () => {
-  const f = scratch(`echo "test/a.test.ts:" >&2; echo "(pass) one [1ms]" >&2; echo "test/b.test.ts:" >&2; echo "(fail) second breaks [5ms]" >&2; echo "(fail) third breaks [5ms]" >&2; exit 1`);
+// Bun repeats every failing test in a `N tests failed:` recap after the last file, byte for byte (the recorded duration included),
+// and that recap carries no file header. This body copies that shape, measured on Bun 1.4.4 with two failing files.
+test("a runner that fails with (fail) lines counts each test once although bun repeats them in its recap, and names the first failure and the last file", () => {
+  const f = scratch(`echo "test/a.test.ts:" >&2; echo "(pass) one [1ms]" >&2; echo "test/b.test.ts:" >&2; echo "(fail) second breaks [5ms]" >&2; echo "(fail) third breaks [5ms]" >&2; echo "" >&2; echo "2 tests failed:" >&2; echo "(fail) second breaks [5ms]" >&2; echo "(fail) third breaks [5ms]" >&2; exit 1`);
   try {
     const r = f.run();
     expect(r.code).toBe(1);
