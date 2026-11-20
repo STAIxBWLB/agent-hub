@@ -91,11 +91,13 @@ export async function readBranchCi(repo: string, number: number, firstHead: stri
     const firstOrderAmbiguous = new Set(firstHeadTimes).size !== firstHeadTimes.length;
     for (const check of ordered) {
       let atMerge: { id: number; attempt: number; conclusion: string } | undefined;
+      let previousCreated = -Infinity;
       for (let attempt = 1; attempt <= check.run_attempt; attempt++) {
         const attemptReply = await run(["api", `repos/${repo}/actions/runs/${check.id}/attempts/${attempt}`, "--jq", "{id,run_attempt,status,conclusion,created_at,updated_at}"], TIMEOUT, undefined, CAP);
         if (attemptReply.code !== 0) return;
         const observed = JSON.parse(attemptReply.stdout), created = timestamp(observed.created_at), updated = timestamp(observed.updated_at);
-        if (observed.id !== check.id || observed.run_attempt !== attempt || !Number.isFinite(created) || !Number.isFinite(updated) || created === end || updated === end) return;
+        if (observed.id !== check.id || observed.run_attempt !== attempt || !Number.isFinite(created) || !Number.isFinite(updated) || created < previousCreated || updated < created || created === end || updated === end) return;
+        previousCreated = created;
         if (created > end) continue;
         if (observed.status !== "completed" || typeof observed.conclusion !== "string" || updated > end) return;
         atMerge = { id: check.id, attempt, conclusion: observed.conclusion };

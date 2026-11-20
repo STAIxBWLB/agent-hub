@@ -11,7 +11,7 @@ import { taskSample } from "../src/hub/sdlc-metrics.ts";
 
 const HEAD = "a".repeat(40), MERGED = "b".repeat(40), cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
-type Mode = "pass" | "fail-rerun" | "post-merge-rerun" | "straddling" | "same-second" | "nohead" | "cancelled" | "no-runner" | "draft" | "missing" | "overlap" | "truncated" | "timeline-error" | "job-error";
+type Mode = "pass" | "fail-rerun" | "post-merge-rerun" | "straddling" | "invalid-time" | "same-second" | "nohead" | "cancelled" | "no-runner" | "draft" | "missing" | "overlap" | "truncated" | "timeline-error" | "job-error";
 function rig(mode: Mode) {
   const root = mkdtempSync(join(tmpdir(), "ahub-branch-cost-")), board = new Board(join(root, "hub.db")), bus = new Bus({ batchMs: 0 });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); });
@@ -36,7 +36,7 @@ function rig(mode: Mode) {
     if (attemptNumber) {
       const n = Number(attemptNumber), after = mode === "post-merge-rerun" && n === 2;
       const at = after ? new Date(Date.parse(mergedAt) + 2_000).toISOString() : runAt;
-      return reply({ id: 11, run_attempt: n, status: "completed", created_at: at, updated_at: mode === "straddling" ? new Date(Date.parse(mergedAt) + 2_000).toISOString() : at, conclusion: mode === "fail-rerun" && n === 1 ? "failure" : conclusion });
+      return reply({ id: 11, run_attempt: n, status: "completed", created_at: at, updated_at: mode === "straddling" ? new Date(Date.parse(mergedAt) + 2_000).toISOString() : mode === "invalid-time" ? start : at, conclusion: mode === "fail-rerun" && n === 1 ? "failure" : conclusion });
     }
     return { code: 1, stdout: "" };
   };
@@ -54,12 +54,12 @@ test("#1579 an unmatched hub check keeps its unknown result instead of a GitHub 
   expect(taskSample({ id: 1, history }, { firstPass: 1 }).first_pass_check).toBeNull();
 });
 
-for (const mode of ["pass", "fail-rerun", "post-merge-rerun", "straddling", "same-second", "nohead", "cancelled", "no-runner", "draft", "missing", "overlap", "truncated", "timeline-error", "job-error"] as const) {
+for (const mode of ["pass", "fail-rerun", "post-merge-rerun", "straddling", "invalid-time", "same-second", "nohead", "cancelled", "no-runner", "draft", "missing", "overlap", "truncated", "timeline-error", "job-error"] as const) {
   test(`#1579 reviewer merge branch evidence: ${mode}`, async () => {
     const f = rig(mode);
     expect(await f.tasks.captureExternalMerge(f.id)).toBe("merged");
     const metrics = f.tasks.sdlcMetrics("user").metrics;
-    if (["missing", "overlap", "truncated", "timeline-error", "job-error", "straddling", "same-second"].includes(mode)) {
+    if (["missing", "overlap", "truncated", "timeline-error", "job-error", "straddling", "invalid-time", "same-second"].includes(mode)) {
       expect(metrics.ci_runs_at_merge.n).toBe(0);
       expect(metrics.first_pass_check.n).toBe(0);
       expect(metrics.acceptance_to_merge_ms.n).toBe(0);
