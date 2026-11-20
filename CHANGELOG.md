@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Read merged PR CI costs from complete branch-scoped evidence when GitHub omits run-to-PR links, including first-pass status and full-gate and macOS shard counts (Refs #1579, Refs #1555, hub task 1032).
 - Retire a finished recovery receipt's runner db only while this process's own live claim still refuses a new owner, so two maintenance passes can no longer race a release against an unlink and crash a pass on the moved database (Refs #1260, Refs #1541, hub task 1040).
 - Keep the staged-project-isolation test's two real daemons but run every await under a 45 s body deadline with 6 s cleanup waits under its own 90 s timeout, so a slow macOS shard fails the step it waited on instead of being cut by Bun's 20 s while a synchronous `ps` read is on the stack (Refs #1577, Refs #1260, hub task 1038).
 - Split `post_ready` on the startup timings line into one boundary per step (`post_ready_handoff`, `_queue`, `_watch`, `_reconcile`, `_goals`, `_leases`, `_crash`, `_pi`, `_drift`), so the next live start names which step holds the 17 s that blocks control replies. Measurement only; no behavior changes (Refs #1445).

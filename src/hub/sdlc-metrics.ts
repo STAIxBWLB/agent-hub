@@ -38,6 +38,12 @@ export interface TaskSample {
   review_rounds_at_merge: number | null;
   ci_runs_at_merge: number | null;
   github_reviews_at_merge: number | null;
+  full_gate_runs: number | null;
+  successful_gate_runs: number | null;
+  failed_gate_runs: number | null;
+  cancelled_gate_runs: number | null;
+  other_gate_runs: number | null;
+  macos_shard_runs: number | null;
 }
 
 export interface Summary { n: number; unknown: number; mean: number | null; median: number | null; p90: number | null; max: number | null }
@@ -102,7 +108,7 @@ function staleHeadRounds(history: MetricTask["history"]): number | null {
 }
 
 /** One task's values from its own history. A private task never reaches here. */
-export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciReruns?: number | null; ciRuns?: number | null; reviews?: number | null } = {}): TaskSample {
+export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciReruns?: number | null; ciRuns?: number | null; reviews?: number | null; firstPass?: 0 | 1 | null; fullGateRuns?: number | null; successfulGateRuns?: number | null; failedGateRuns?: number | null; cancelledGateRuns?: number | null; otherGateRuns?: number | null; macosShardRuns?: number | null } = {}): TaskSample {
   const history = [...task.history].filter(entry => Number.isFinite(entry.at) && entry.at >= 0).sort((a, b) => a.at - b.at);
   const view: MetricTask = { id: task.id, history };
   const accepted = first(view, ["accepted"]);
@@ -119,6 +125,7 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
   const latestRun = doneHead ? history.slice(0, firstDone).findLast(entry => entry.event === "check run passed" || entry.event === "check run failed") : undefined;
   const isolatedCheck = latestRun?.requestHead === doneHead ? latestRun : undefined;
   const ci = completionCheck ?? isolatedCheck;
+  const hasHubCheck = history.some(entry => ["check passed", "check failed", "check run passed", "check run failed"].includes(entry.event));
   const approvedAt = history.find(entry => entry.event === "approved")?.at ?? null;
   return {
     id: task.id,
@@ -132,11 +139,17 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
     // Rework grows with every round, so it is a value only once the task is approved: a task still in flight has no final one, and a
     // provisional point would move at each verdict and could start a second breach episode inside one shift.
     rework_rounds: dones.length && approvedAt !== null ? history.filter(entry => entry.event === "changes_requested" && entry.evidenceOnly !== true).length : null,
-    first_pass_check: ci ? (ci.event === "check passed" || ci.event === "check run passed" ? 1 : 0) : null,
+    first_pass_check: ci ? (ci.event === "check passed" || ci.event === "check run passed" ? 1 : 0) : hasHubCheck ? null : extra.firstPass ?? null,
     same_head_ci_reruns: extra.ciReruns === undefined ? null : extra.ciReruns,
     // Counted only for a merged PR whose figures were read: a done before the merge is one review round.
     review_rounds_at_merge: extra.mergedAt !== undefined && Number.isFinite(extra.mergedAt) ? dones.filter(entry => entry.at <= extra.mergedAt!).length : null,
     ci_runs_at_merge: extra.ciRuns === undefined ? null : extra.ciRuns,
+    full_gate_runs: extra.fullGateRuns ?? null,
+    successful_gate_runs: extra.successfulGateRuns ?? null,
+    failed_gate_runs: extra.failedGateRuns ?? null,
+    cancelled_gate_runs: extra.cancelledGateRuns ?? null,
+    other_gate_runs: extra.otherGateRuns ?? null,
+    macos_shard_runs: extra.macosShardRuns ?? null,
     github_reviews_at_merge: extra.reviews === undefined ? null : extra.reviews,
     stale_head_re_reviews: approvedAt !== null ? staleHeadRounds(history) : null,
   };
@@ -218,7 +231,7 @@ export interface MetricsReport {
     first_pass_check: { n: number; unknown: number; rate: number | null };
     same_head_ci_reruns: Summary;
     stale_head_re_reviews: Summary;
-    review_rounds_at_merge: Summary; ci_runs_at_merge: Summary; github_reviews_at_merge: Summary;
+    review_rounds_at_merge: Summary; ci_runs_at_merge: Summary; github_reviews_at_merge: Summary; full_gate_runs: Summary; successful_gate_runs: Summary; failed_gate_runs: Summary; cancelled_gate_runs: Summary; other_gate_runs: Summary; macos_shard_runs: Summary;
   };
   /** Merged PRs whose review and CI figures were read at merge, and how many of the counted tasks have none (unknown, never 0). */
   merged: { read: number; unknown: number };
@@ -235,9 +248,9 @@ const rate = (values: readonly (number | null)[]) => {
  * The whole report from board tasks. `since` keeps samples that count at or after it; `mergedAt` and `ciReruns` come from bounded
  * PR readbacks keyed by task id and are optional. Private tasks are counted as withheld and read for nothing else.
  */
-export function sdlcMetrics(tasks: readonly MetricTask[], opts: { since?: number; bands?: BandsConfig; stalls?: StallCounts; mergedAt?: Readonly<Record<number, number>>; ciReruns?: Readonly<Record<number, number | null>>; ciRuns?: Readonly<Record<number, number | null>>; reviews?: Readonly<Record<number, number | null>>; external?: Partial<Record<BandMetric, readonly SeriesPoint[]>> } = {}): MetricsReport {
+export function sdlcMetrics(tasks: readonly MetricTask[], opts: { since?: number; bands?: BandsConfig; stalls?: StallCounts; mergedAt?: Readonly<Record<number, number>>; ciReruns?: Readonly<Record<number, number | null>>; ciRuns?: Readonly<Record<number, number | null>>; reviews?: Readonly<Record<number, number | null>>; firstPass?: Readonly<Record<number, 0 | 1 | null>>; fullGateRuns?: Readonly<Record<number, number | null>>; successfulGateRuns?: Readonly<Record<number, number | null>>; failedGateRuns?: Readonly<Record<number, number | null>>; cancelledGateRuns?: Readonly<Record<number, number | null>>; otherGateRuns?: Readonly<Record<number, number | null>>; macosShardRuns?: Readonly<Record<number, number | null>>; external?: Partial<Record<BandMetric, readonly SeriesPoint[]>> } = {}): MetricsReport {
   const visible = tasks.filter(task => !task.private);
-  const all = visible.map(task => taskSample(task, { mergedAt: opts.mergedAt?.[task.id], ciReruns: opts.ciReruns?.[task.id], ciRuns: opts.ciRuns?.[task.id], reviews: opts.reviews?.[task.id] }));
+  const all = visible.map(task => taskSample(task, { mergedAt: opts.mergedAt?.[task.id], ciReruns: opts.ciReruns?.[task.id], ciRuns: opts.ciRuns?.[task.id], reviews: opts.reviews?.[task.id], firstPass: opts.firstPass?.[task.id], fullGateRuns: opts.fullGateRuns?.[task.id], successfulGateRuns: opts.successfulGateRuns?.[task.id], failedGateRuns: opts.failedGateRuns?.[task.id], cancelledGateRuns: opts.cancelledGateRuns?.[task.id], otherGateRuns: opts.otherGateRuns?.[task.id], macosShardRuns: opts.macosShardRuns?.[task.id] }));
   const samples = opts.since === undefined ? all : all.filter(sample => sample.at >= opts.since!);
   const bands: BandResult[] | "off" = opts.bands && Object.keys(opts.bands).length
     ? BAND_METRICS.flatMap(metric => opts.bands![metric] ? [controlEpisode(EXTERNAL_METRICS.includes(metric) ? [...(opts.external?.[metric] ?? [])] : series(samples, metric as TaskMetric), metric, opts.bands![metric]!)] : [])
@@ -252,6 +265,7 @@ export function sdlcMetrics(tasks: readonly MetricTask[], opts: { since?: number
       stale_head_re_reviews: summarize(samples.map(s => s.stale_head_re_reviews)),
       review_rounds_at_merge: summarize(samples.map(s => s.review_rounds_at_merge)), ci_runs_at_merge: summarize(samples.map(s => s.ci_runs_at_merge)),
       github_reviews_at_merge: summarize(samples.map(s => s.github_reviews_at_merge)),
+      full_gate_runs: summarize(samples.map(s => s.full_gate_runs)), successful_gate_runs: summarize(samples.map(s => s.successful_gate_runs)), failed_gate_runs: summarize(samples.map(s => s.failed_gate_runs)), cancelled_gate_runs: summarize(samples.map(s => s.cancelled_gate_runs)), other_gate_runs: summarize(samples.map(s => s.other_gate_runs)), macos_shard_runs: summarize(samples.map(s => s.macos_shard_runs)),
     },
     merged: { read: samples.filter(s => s.ci_runs_at_merge !== null || s.github_reviews_at_merge !== null).length, unknown: samples.filter(s => s.ci_runs_at_merge === null && s.github_reviews_at_merge === null).length },
     stalls: opts.stalls ?? { open: 0, byKind: {}, doneWithoutWrites: 0 }, bands,

@@ -725,7 +725,6 @@
   "src/hub/sdlc-merge.ts:<anonymous>:inline:timeout ?? 10_000=10_000#0",
   "src/hub/sdlc-merge.ts:bounded:inline:cap ?? 65536=65536#0",
   "src/hub/sdlc-merge.ts:bounded:inline:timeout ?? 2000=2000#0",
-  "src/hub/sdlc-merge.ts:costDeadline:inline:costDeadline=8000#0",
   "src/hub/sdlc-merge.ts:deadline:inline:deadline=6000#0",
   "src/hub/sdlc-merge.ts:decideMerge:inline:row.head.slice=8#0",
   "src/hub/sdlc-merge.ts:evidenceGates:inline:approved.slice=8#0",
