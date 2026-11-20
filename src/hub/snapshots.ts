@@ -708,7 +708,7 @@ export class Turns {
     // Opened by a starting hub: a turn still open was cut short when the last run stopped. It has no end snapshot, and
     // it may have run until now, so its window ends now (other turns that overlapped it stay unknowable).
     this.db.query("UPDATE turns SET ended = ? WHERE ended IS NULL").run(Date.now());
-    // ponytail: rows of finished tasks stay (a few per file per task); prune by task state if hub.db ever grows.
+    // Rows of a task that reached approved or cancelled are pruned by the daemon (#1555 AC6, `pruneTouches`).
     this.db.run("CREATE TABLE IF NOT EXISTS touches (task INTEGER NOT NULL, peer TEXT NOT NULL, path TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (task, peer, path))");
     this.db.run("CREATE INDEX IF NOT EXISTS touches_path ON touches (path)"); // the PreToolUse hook looks up one path
     this.db.run("CREATE TABLE IF NOT EXISTS turn_workspaces (turn TEXT PRIMARY KEY, root TEXT NOT NULL, start_tree TEXT, end_tree TEXT, changed TEXT NOT NULL DEFAULT '[]')");
@@ -835,6 +835,18 @@ export class Turns {
   touchesFor(tasks: number[]): Touch[] {
     if (!tasks.length) return [];
     return this.db.query(`SELECT * FROM touches WHERE task IN (${tasks.map(() => "?").join(",")})`).all(...tasks) as Touch[];
+  }
+  /** #1555 AC6: a closed task's rows go. Every reader (conflicts, check-path, owner-write evidence) looks at open tasks only, and the counts the metrics read are frozen in history. */
+  pruneTouches(tasks: number[]): number {
+    if (!tasks.length) return 0;
+    let removed = 0;
+    this.db.transaction(() => { for (const id of tasks) removed += this.db.query("DELETE FROM touches WHERE task = ?").run(id).changes; })();
+    return removed;
+  }
+  /** Rows of tasks that closed while no hub ran, or before this pass existed: the ids with a row are asked about, and `closed` says which are terminal. */
+  pruneClosedTouches(closed: (task: number) => boolean): number {
+    const ids = (this.db.query("SELECT DISTINCT task FROM touches").all() as { task: number }[]).map(row => row.task).filter(closed);
+    return this.pruneTouches(ids);
   }
   /** Other peers with a turn that was open at some point since `since`: their changes may be in this turn's diff. */
   busySince(peer: string, since: number): string[] {

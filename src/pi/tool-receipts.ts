@@ -5,6 +5,17 @@ import { createHash } from "node:crypto";
 import { PreEffectToolRefusal } from "../hub/tool-refusal.ts";
 
 export const PI_TOOL_RESULT_CAP = 100_000;
+/** #1555 AC6: what a settled receipt of a closed session keeps. A replay inside that session never needs more than the outcome and, for a shell, its exit code. */
+export const PI_CLOSED_RESULT_CAP = 2_000;
+const COMPACTED = "\n[result compacted after the session closed]";
+export function compactPiResult(result: string, cap = PI_CLOSED_RESULT_CAP): string {
+  if (result.length <= cap) return result;
+  try {
+    const parsed = JSON.parse(result) as { kind?: unknown; text?: unknown; exitCode?: unknown };
+    if (parsed && parsed.kind === "user-bash-result" && typeof parsed.text === "string") return JSON.stringify({ kind: parsed.kind, text: parsed.text.slice(0, Math.max(0, cap - 200)) + COMPACTED, exitCode: parsed.exitCode });
+  } catch { /* plain text result */ }
+  return result.slice(0, cap) + COMPACTED;
+}
 /** Bound encoded text before wrapping it so escaping never cuts off trusted exit metadata. */
 export function packPiShellResult(text: string, exitCode: number | null): string {
   const pack = (value: string) => JSON.stringify({ kind: "user-bash-result", text: value, exitCode });
@@ -26,6 +37,7 @@ export class PiToolReceipts {
   private closing = false;
   private closed = false;
   private readonly pending = new Map<string, Promise<string>>();
+  private currentSession: string | undefined;
   constructor(file: string) {
     this.db = openHubDatabase(file, { create: true });
     chmodSync(file, 0o600);
@@ -37,6 +49,7 @@ export class PiToolReceipts {
   async execute(session: string, callId: string, name: string, args: unknown, run: () => Promise<string>): Promise<string> {
     if (this.closing) return "error: Pi tool ledger is shutting down; no new operation was executed";
     if (!session || !callId || session.length > 512 || callId.length > 512) return "error: invalid Pi session/tool call identity";
+    this.closeOthers(session);
     const fingerprint = createHash("sha256").update(JSON.stringify({ name, args })).digest("hex");
     const key = JSON.stringify([session, callId]);
     const row = this.db.query("SELECT fingerprint,state,result FROM pi_tool_receipts WHERE session=? AND call_id=?").get(session, callId) as { fingerprint: string; state: string; result: string | null } | null;
@@ -61,6 +74,17 @@ export class PiToolReceipts {
       .finally(() => this.pending.delete(key));
     this.pending.set(key, work);
     return work;
+  }
+
+  /** A call from a new session closes the previous one: its settled results shrink, while the active session's receipts are never touched. */
+  private closeOthers(session: string): void {
+    if (this.currentSession === session) return;
+    this.currentSession = session;
+    try {
+      const rows = this.db.query("SELECT session,call_id,result FROM pi_tool_receipts WHERE state='done' AND session != ? AND length(result) > ?").all(session, PI_CLOSED_RESULT_CAP) as { session: string; call_id: string; result: string }[];
+      const update = this.db.query("UPDATE pi_tool_receipts SET result=? WHERE session=? AND call_id=? AND state='done'");
+      this.db.transaction(() => { for (const row of rows) update.run(compactPiResult(row.result), row.session, row.call_id); })();
+    } catch { /* retention only: a failed pass leaves every receipt as it was */ }
   }
 
   get unsettled(): boolean { return this.pending.size > 0 || !!this.db.query("SELECT 1 FROM pi_tool_receipts WHERE state != 'done' LIMIT 1").get(); }
