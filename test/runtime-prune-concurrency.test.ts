@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { stageCurrentRuntime, verifyPackage } from "../src/cli/recovery-package.
 import { realPath } from "../src/hub/project.ts";
 import { recordProjectRuntime } from "../src/hub/project-runtime.ts";
 import { readProjectRuntime } from "../src/hub/project-runtime-state.ts";
+import { retireOperation } from "../src/hub/recovery-store.ts";
 import { Registry, REGISTRY_DB_BUSY_TIMEOUT_MS } from "../src/hub/registry.ts";
 
 const VERSION = "0.99.0";
@@ -217,4 +218,77 @@ try { writeFileSync(${JSON.stringify(out)}, JSON.stringify({ retired: retireTerm
     await Promise.all(children.map(child => child.exited));
     f.registry.close(); rmSync(f.root, { recursive: true, force: true });
   }
+}, 20_000);
+
+/** #1541 / AGENTS.md "Lock files and stale holders": a pass never unlinks a runner db another pass holds. */
+test("#1541 a second pass that reaches the freed slot during a retire is refused, so no release writes to a moved runner db", async () => {
+  const f = fixture(), children: Child[] = [];
+  try {
+    const id = randomUUID(), recovery = join(f.home, "recovery"), db = join(recovery, `${id}.json.runner.db`);
+    mkdirSync(recovery, { recursive: true });
+    writeFileSync(join(recovery, `${id}.json`), JSON.stringify({ schema: 1, id, phase: "completed", createdAt: 1, updatedAt: 1, step: "fixture" }), { mode: 0o600 });
+    const created = new Database(db, { create: true });
+    created.run("CREATE TABLE runner (slot INTEGER PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL, signature TEXT)");
+    created.close();
+    const seam = join(f.root, "a-at-seam"), verdict = join(f.root, "b-verdict.json"), outcome = join(f.root, "a-outcome.json");
+    const store = fileURLToPath(new URL("../src/hub/recovery-store.ts", import.meta.url));
+    // A retires the receipt and stops where its runner db is about to leave. B claims from that instant, which is exactly the
+    // window the previous order opened between releasing the claim and unlinking the file.
+    const pass = join(f.root, "a.ts");
+    writeFileSync(pass, `import { existsSync, writeFileSync } from "node:fs";
+import { retireOperation } from ${JSON.stringify(store)};
+const settled = retireOperation(${JSON.stringify(id)}, ${JSON.stringify(f.home)}, () => true, { beforeRunnerRemoval: () => {
+  writeFileSync(${JSON.stringify(seam)}, "at the seam\\n");
+  const deadline = Date.now() + 15000;
+  while (!existsSync(${JSON.stringify(verdict)}) && Date.now() < deadline) Bun.sleepSync(5);
+} });
+writeFileSync(${JSON.stringify(outcome)}, JSON.stringify({ outcome: settled }));
+`);
+    const second = join(f.root, "b.ts");
+    writeFileSync(second, `import { existsSync, writeFileSync } from "node:fs";
+import { claimRunner } from ${JSON.stringify(store)};
+const waitFor = (condition: () => boolean) => { const deadline = Date.now() + 15000; while (!condition() && Date.now() < deadline) Bun.sleepSync(5); if (!condition()) throw new Error("fixture barrier was missed"); };
+waitFor(() => existsSync(${JSON.stringify(seam)}));
+let release: (() => void) | undefined;
+try { release = claimRunner(${JSON.stringify(id)}, ${JSON.stringify(f.home)}); }
+catch (error) { writeFileSync(${JSON.stringify(verdict)}, JSON.stringify({ decision: "refused", message: (error as Error).message })); process.exit(0); }
+writeFileSync(${JSON.stringify(verdict)}, JSON.stringify({ decision: "claimed" }));
+// The pass that removed the receipt unlinks this db; a release after that would write to a moved file.
+waitFor(() => !existsSync(${JSON.stringify(db)}));
+try { release(); writeFileSync(${JSON.stringify(verdict)}, JSON.stringify({ decision: "claimed", released: true })); }
+catch (error) { writeFileSync(${JSON.stringify(verdict)}, JSON.stringify({ decision: "claimed", released: false, message: (error as Error).message })); process.exitCode = 1; }
+`);
+    const retiring = Bun.spawn([process.execPath, pass], { env: f.env, stdin: "ignore", stdout: "ignore", stderr: "pipe" }); children.push(retiring);
+    await marker(seam, retiring);
+    const claimant = Bun.spawn([process.execPath, second], { env: f.env, stdin: "ignore", stdout: "ignore", stderr: "pipe" }); children.push(claimant);
+    expect(await claimant.exited, await new Response(claimant.stderr).text()).toBe(0);
+    expect(await retiring.exited, await new Response(retiring.stderr).text()).toBe(0);
+    expect(JSON.parse(readFileSync(outcome, "utf8"))).toEqual({ outcome: "retired" });
+    const claimed = JSON.parse(readFileSync(verdict, "utf8")) as { decision: string; message?: string };
+    expect(claimed.decision).toBe("refused");
+    expect(claimed.message).toMatch(/^recovery runner \d+ (is still alive|cannot be identified)/);
+    expect(existsSync(db)).toBe(false);
+  } finally {
+    for (const child of children) if (child.exitCode === null) child.kill("SIGTERM");
+    await Promise.all(children.map(child => child.exited));
+    f.registry.close(); rmSync(f.root, { recursive: true, force: true });
+  }
+}, 20_000);
+
+/** #329: a runner db another pass moved away settles as `kept`; giving the claim back never throws out of the retire. */
+test("#1541 a retire whose runner db another pass moved answers kept and leaves the receipt", async () => {
+  const f = fixture();
+  try {
+    const id = randomUUID(), recovery = join(f.home, "recovery"), db = join(recovery, `${id}.json.runner.db`), moved = join(f.root, "moved.runner.db");
+    mkdirSync(recovery, { recursive: true });
+    writeFileSync(join(recovery, `${id}.json`), JSON.stringify({ schema: 1, id, phase: "completed", createdAt: 1, updatedAt: 1, step: "fixture" }), { mode: 0o600 });
+    const created = new Database(db, { create: true });
+    created.run("CREATE TABLE runner (slot INTEGER PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL, signature TEXT)");
+    created.close();
+    // Another pass takes the db out from under this claim between the read and the release, which the previous order reached
+    // through a `finally` whose DELETE threw SQLITE_READONLY_DBMOVED out of the whole maintenance pass.
+    const outcome = retireOperation(id, f.home, () => { renameSync(db, moved); return false; });
+    expect(outcome).toBe("kept");
+    expect(existsSync(join(recovery, `${id}.json`))).toBe(true);
+  } finally { f.registry.close(); rmSync(f.root, { recursive: true, force: true }); }
 }, 20_000);
