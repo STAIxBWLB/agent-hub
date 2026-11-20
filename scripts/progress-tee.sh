@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Usage: scripts/progress-tee.sh FILE   (reads stdin, writes the same lines to stdout)
+# Usage: scripts/progress-tee.sh FILE [SUMMARY]   (reads stdin, writes the same lines to stdout)
+# SUMMARY (#1577 entry 3), when given, collects `H <test file header>` and `F <(fail) line>` rows, so the gate can name the last file started and the first failing test.
 # The test gate's output filter (#516). Every line goes through to stdout unchanged and flushed at once, and for each line that shows the
 # suite moving, one byte is appended to FILE: a `bun test` result line ((pass), (fail), (skip) or (todo)) or a test file header (a line ending
 # in `.ts:`). scripts/hang-watch.sh polls the size of FILE, so a long log is never rescanned and a run that only logs is not progress. The last
@@ -10,9 +11,13 @@ set -u
 line_reads=
 awk -W version </dev/null 2>/dev/null | grep -q '^mawk' && line_reads="-W interactive"
 # $line_reads is unquoted on purpose: empty, or the two words -W and interactive.
-PROGRESS_FILE=$1 exec awk $line_reads '
-BEGIN { file = ENVIRON["PROGRESS_FILE"] }
+PROGRESS_FILE=$1 SUMMARY_FILE=${2:-} exec awk $line_reads '
+BEGIN { file = ENVIRON["PROGRESS_FILE"]; summary = ENVIRON["SUMMARY_FILE"] }
 {
   print; fflush()
+  if (summary != "") {
+    if ($0 ~ /\.ts:$/) { print "H " $0 >> summary; close(summary) }
+    else if ($0 ~ /^\(fail\) /) { print "F " $0 >> summary; close(summary) }
+  }
   if ($0 ~ /^\((pass|fail|skip|todo)\) / || $0 ~ /\.ts:$/) { printf "x" >> file; close(file) }
 }'
