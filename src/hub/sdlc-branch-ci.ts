@@ -91,20 +91,20 @@ export async function readBranchCi(repo: string, number: number, firstHead: stri
     const firstOrderAmbiguous = new Set(firstHeadTimes).size !== firstHeadTimes.length;
     for (const check of ordered) {
       let atMerge: { id: number; attempt: number; conclusion: string } | undefined;
-      let previousCreated = -Infinity;
+      let previousStarted = -Infinity;
       for (let attempt = 1; attempt <= check.run_attempt; attempt++) {
-        const attemptReply = await run(["api", `repos/${repo}/actions/runs/${check.id}/attempts/${attempt}`, "--jq", "{id,run_attempt,status,conclusion,created_at,updated_at}"], TIMEOUT, undefined, CAP);
+        const attemptReply = await run(["api", `repos/${repo}/actions/runs/${check.id}/attempts/${attempt}`, "--jq", "{id,run_attempt,status,conclusion,run_started_at,updated_at}"], TIMEOUT, undefined, CAP);
         if (attemptReply.code !== 0) return;
-        const observed = JSON.parse(attemptReply.stdout), created = timestamp(observed.created_at), updated = timestamp(observed.updated_at);
-        if (observed.id !== check.id || observed.run_attempt !== attempt || !Number.isFinite(created) || !Number.isFinite(updated) || created < previousCreated || updated < created || created === end || updated === end) return;
-        previousCreated = created;
-        if (created > end) continue;
+        const observed = JSON.parse(attemptReply.stdout), started = timestamp(observed.run_started_at), updated = timestamp(observed.updated_at);
+        if (observed.id !== check.id || observed.run_attempt !== attempt || !Number.isFinite(started) || !Number.isFinite(updated) || started < previousStarted || updated < started || started === end || updated === end) return;
+        previousStarted = started;
+        if (started > end) continue;
         if (observed.status !== "completed" || typeof observed.conclusion !== "string" || updated > end) return;
         atMerge = { id: check.id, attempt, conclusion: observed.conclusion };
         const jobs = await pages(run, `repos/${repo}/actions/runs/${check.id}/attempts/${attempt}/jobs`, [], "{total_count,jobs:[.jobs[]|{name,status,conclusion,runner_id}]}", "jobs");
         if (!jobs || jobs.some(job => typeof job.name !== "string")) return;
         const shards = jobs.filter(job => /^check \(macos-latest\) shard [1-4]\/4$/.test(job.name));
-        if (shards.some(job => job.status !== "completed" || typeof job.conclusion !== "string" || !(job.runner_id === null || integer(job.runner_id)) || job.runner_id === null && job.conclusion !== "skipped" && job.conclusion !== "cancelled")) return;
+        if (shards.some(job => job.status !== "completed" || typeof job.conclusion !== "string" || !(job.runner_id === null || job.runner_id === 0 || integer(job.runner_id)) || (job.runner_id === null || job.runner_id === 0) && job.conclusion !== "skipped" && job.conclusion !== "cancelled")) return;
         const ran = shards.filter(job => job.conclusion !== "skipped" && integer(job.runner_id));
         macosShardRuns += ran.length;
         if (attempt !== 1 || firstDecided || !firstHead || check.head_sha !== firstHead) continue;
