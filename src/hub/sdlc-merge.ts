@@ -27,6 +27,7 @@ export interface MergeInput {
   tasks: DeliveryTask[];
   run: SdlcGh;
   readableMetadata?: (path: string) => boolean;
+  firstSubmittedHead?: string;
   /** Final synchronous authority and queue-input fence, after fresh gates and immediately before the gh call. */
   beforeMerge?: (queue: MergeQueue | undefined) => string | undefined;
   /** Post-run host fence and durable progress record. False or a throw withholds cleanup. No remote text is supplied. */
@@ -51,7 +52,8 @@ export interface MergeOutcome {
 }
 
 export const MERGE_READBACK_INTERVAL_MS = 5 * 60_000;
-export const MERGE_READBACK_DEADLINE_MS = 8_000;
+// ponytail: 60 s bounds paged branch and job readbacks; lower it once a single bounded provider read supplies the same evidence.
+export const MERGE_READBACK_DEADLINE_MS = 60_000;
 const SHA = /^[0-9a-f]{40}$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 /**
@@ -305,11 +307,11 @@ export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }):
   if (input.recordMerge) {
     // #481 S7: the merged PR's review and CI figures, read once now that the merge is observed. After the merge there is nothing left to race, so this await is fine;
     // its own bound keeps a slow GitHub from holding the record, and a failed read records no cost (unknown), never a zero.
-    const costDeadline = performance.now() + 8000;
+    const costDeadline = performance.now() + MERGE_READBACK_DEADLINE_MS;
     const cost = result.state === "merged" ? await readPrCostHistory(decision.repo, decision.pr, (args, timeout, cwd, cap) => {
       const left = costDeadline - performance.now();
       return left > 0 ? input.run(args, Math.min(timeout ?? 10_000, left), cwd, cap) : Promise.resolve({ code: 1, stdout: "" });
-    }).then(mergeCostFrom, () => undefined) : undefined;
+    }, undefined, undefined, input.firstSubmittedHead).then(mergeCostFrom, () => undefined) : undefined;
     let record: MergeRecord={repo:decision.repo,pr:decision.pr,head:decision.head,at:Date.now(),...result,...(cost?{cost}:{}),cleanup:"not_started",ownerNotice:"not_started"};
     const save = () => {try {return input.recordMerge!({...record});}catch{return false;}};
     if (!save()) {record={...record,cleanup:"skipped",reason:"authority_changed"};save();}

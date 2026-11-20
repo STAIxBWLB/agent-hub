@@ -6808,7 +6808,7 @@ export class Tasks {
     for (const stall of this.stalled()) if (visibleIds.has(stall.task)) byKind[stall.cause.kind] = (byKind[stall.cause.kind] ?? 0) + 1;
     const stalls = { open: Object.values(byKind).reduce((sum, n) => sum + n, 0), byKind, doneWithoutWrites: rows.filter(task => visibleIds.has(task.id) && task.history.findLast(entry => entry.event === "done")?.noWrites).length };
     // #481 S7: the merge-time readback the guarded merge recorded on each merged task's receipt (host-written, never a tool input), and the two series that are not made of tasks.
-    const mergedAt: Record<number, number> = {}, ciReruns: Record<number, number | null> = {}, ciRuns: Record<number, number | null> = {}, reviews: Record<number, number | null> = {};
+    const mergedAt: Record<number, number> = {}, ciReruns: Record<number, number | null> = {}, ciRuns: Record<number, number | null> = {}, reviews: Record<number, number | null> = {}, firstPass: Record<number, 0 | 1 | null> = {}, fullGateRuns: Record<number, number | null> = {}, successfulGateRuns: Record<number, number | null> = {}, failedGateRuns: Record<number, number | null> = {}, cancelledGateRuns: Record<number, number | null> = {}, otherGateRuns: Record<number, number | null> = {}, macosShardRuns: Record<number, number | null> = {};
     for (const task of rows) {
       const guarded = task.sdlc?.merge;
       const merge = guarded?.state === "merged" ? guarded : task.sdlc?.mergeReadback;
@@ -6816,9 +6816,9 @@ export class Tasks {
       const cost = cleanMergeCost(merge.cost);
       const at = cost?.mergedAt ?? (merge === guarded && Number.isSafeInteger(merge.at) ? merge.at : null);
       if (at !== null) mergedAt[task.id] = at;
-      if (cost) { ciReruns[task.id] = cost.ciReruns; ciRuns[task.id] = cost.ciRuns; reviews[task.id] = cost.reviews; }
+      if (cost) { ciReruns[task.id] = cost.ciReruns; ciRuns[task.id] = cost.ciRuns; reviews[task.id] = cost.reviews; firstPass[task.id] = cost.firstPass ?? null; fullGateRuns[task.id] = cost.fullGateRuns ?? null; successfulGateRuns[task.id] = cost.successfulGateRuns ?? null; failedGateRuns[task.id] = cost.failedGateRuns ?? null; cancelledGateRuns[task.id] = cost.cancelledGateRuns ?? null; otherGateRuns[task.id] = cost.otherGateRuns ?? null; macosShardRuns[task.id] = cost.macosShardRuns ?? null; }
     }
-    return { ...sdlcMetrics(tasks, { ...(cutoff !== undefined ? { since: cutoff } : {}), ...(this.d.sdlc?.config().bands ? { bands: this.d.sdlc.config().bands } : {}), stalls, mergedAt, ciReruns, ciRuns, reviews, external: this.externalSeries(), ...(merged ?? {}) }), ...(this.securityScanCounts() ? { securityScan: this.securityScanCounts() } : {}) };
+    return { ...sdlcMetrics(tasks, { ...(cutoff !== undefined ? { since: cutoff } : {}), ...(this.d.sdlc?.config().bands ? { bands: this.d.sdlc.config().bands } : {}), stalls, mergedAt, ciReruns, ciRuns, reviews, firstPass, fullGateRuns, successfulGateRuns, failedGateRuns, cancelledGateRuns, otherGateRuns, macosShardRuns, external: this.externalSeries(), ...(merged ?? {}) }), ...(this.securityScanCounts() ? { securityScan: this.securityScanCounts() } : {}) };
   }
 
   /** Latest configured scan source counts; no repository or alert text is projected. */
@@ -7789,8 +7789,9 @@ export class Tasks {
     const costDeadline = performance.now() + MERGE_READBACK_DEADLINE_MS;
     const cost = evidence?.costSnapshot ? await readPrCostHistory(repo, pr as number, (args, timeout, cwd, cap) => {
       const remaining = costDeadline - performance.now();
-      return remaining > 0 ? run(args, Math.min(timeout ?? remaining, remaining), cwd, cap) : Promise.resolve({ code: 1, stdout: "" });
-    }, evidence.costSnapshot, head).then(pr => pr?.complete ? mergeCostFrom(pr) : undefined, () => undefined) : undefined;
+      current();
+      return remaining > 0 ? (this.d.sdlc?.gh ?? sdlcGh)(args, Math.min(timeout ?? remaining, remaining), cwd, cap).then(result => { current(); return result; }) : Promise.resolve({ code: 1, stdout: "" });
+    }, evidence.costSnapshot, head, task.history.find(entry => entry.event === "done")?.requestHead).then(pr => pr?.complete ? mergeCostFrom(pr) : undefined, () => undefined) : undefined;
     const latest = current();
     const merge: ReadbackMergeRecord = { repo, pr: pr as number, head, at: Date.now(), state: "merged", ...(evidence?.mergeCommit ? { mergeCommit: evidence.mergeCommit } : {}), ...(cost ? { cost } : {}) };
     const capacity = this.capacityBefore(latest);
@@ -7840,7 +7841,7 @@ export class Tasks {
     this.mergesInFlight.add(task.id);
     try {
       const links = this.deliveryLinks(config), subject = links.find(link => link.id === task.id)!;
-      const outcome = await guardedMerge({ mode, subject, state: task.state, taskState: n => this.d.board.get(n)?.state, config, tasks: links, run: this.d.sdlc?.gh ?? sdlcGh, readableMetadata: this.publicMetadataText,
+      const outcome = await guardedMerge({ mode, subject, state: task.state, taskState: n => this.d.board.get(n)?.state, config, tasks: links, run: this.d.sdlc?.gh ?? sdlcGh, readableMetadata: this.publicMetadataText, firstSubmittedHead: task.history.find(entry => entry.event === "done")?.requestHead,
         recordMerge: record=>this.recordMergeResult(task.id,by,record,artifactCurrent),
         beforeMerge: queue => {
           if (!this.mergeAuthority(by)) return "merge authority changed during the merge check: nothing was run";
@@ -7898,7 +7899,7 @@ export class Tasks {
     if (!current()) return "skip";
     if (evidence?.state === "CLOSED") return "closed";
     if (evidence?.state !== "MERGED" || evidence.head !== head) return "retry";
-    const cost = await readPrCostHistory(repo, pr, run, undefined, head).then(value => value?.complete ? mergeCostFrom(value) : undefined, () => undefined);
+    const cost = await readPrCostHistory(repo, pr, run, undefined, head, task.history.find(entry => entry.event === "done")?.requestHead).then(value => value?.complete ? mergeCostFrom(value) : undefined, () => undefined);
     if (!current()) return "skip";
     const now = this.d.board.get(id)!;
     const merge: ReadbackMergeRecord = { repo, pr, head, at: Date.now(), state: "merged", ...(evidence.mergeCommit ? { mergeCommit: evidence.mergeCommit } : {}), ...(cost ? { cost } : {}) };
