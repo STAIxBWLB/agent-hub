@@ -75,7 +75,7 @@ test("conductor CLI detached restart completes through a real target process wit
     if (target.pid === process.pid || processLiveness(target.pid, target.signature) !== "live") throw new Error("target cleanup ownership unavailable");
     const person = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: root, projectId: project.id, instanceId: target.instanceId });
     try { expect((await person.request({ t: "kill", instanceId: target.instanceId })).ok).toBe(true); } finally { person.close(); }
-    await until(() => processLiveness(target!.pid, target!.signature) === "gone", "owned target process ended");
+    await until(() => processLiveness(target!.pid, target!.signature) === "gone", "owned target process ended", 150);
   };
   try {
     source = await startDaemon({ cwd: root, stateDir: project.stateDir, projectId: project.id, instanceId: sourceInstance,
@@ -95,9 +95,9 @@ test("conductor CLI detached restart completes through a real target process wit
     cli = producer;
     // #1577: the producer announces the operation and exits when it has spawned the detached runner; a real restart takes about 7 s idle and 15 to 20 s on a loaded CI runner (the flake ledger's failures came at
     // 24 to 25 s, the receipt still at an intermediate step), so the old fixed 10 s and 15 s budgets ended runs that were still progressing. The waits are on the conditions that settle the test: the producer exiting,
-    // then a terminal receipt, or the detached runner gone without one (a crashed runner can never finish: that fails at once and names the step). One shared deadline well under the 60 s test timeout is a cleanup
+    // then a terminal receipt, or the detached runner gone without one (a crashed runner can never finish: that fails at once and names the step). One shared 30 s deadline (body 30 s + post-receipt waits 2 x 6 s + cleanup waits 2 x 3 s + process stops stays under the 60 s test timeout, so the timeout never fires inside a spawnSync, tests.md) is a cleanup
     // bound only, never a guess at restart time: when it passes the producer is killed and the test throws, so the finally block (runner and target cleanup) always runs instead of the test timeout abandoning it.
-    const deadline = Date.now() + 45_000;
+    const deadline = Date.now() + 30_000;
     const expired = () => Date.now() >= deadline;
     const watchdog = setTimeout(() => producer.kill("SIGTERM"), Math.max(0, deadline - Date.now()));
     let code: number, stdout: string, stderr: string;
@@ -149,7 +149,7 @@ test("conductor CLI detached restart completes through a real target process wit
     await safely(async () => { if (operationId && recoveryRunner(operationId, home) !== undefined) expect(await stopSignedRunner(operationId, home)).toBe(true); });
     await safely(stopTarget);
     await safely(async () => { await source?.stop(); await sourceRelease; });
-    await safely(async () => { if (runner) await until(() => processLiveness(runner!.pid, runner!.signature) === "gone", "no owned runner survives cleanup"); });
+    await safely(async () => { if (runner) await until(() => processLiveness(runner!.pid, runner!.signature) === "gone", "no owned runner survives cleanup", 150); });
     registry.close();
     for (const [key, value] of Object.entries(old)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     if (!failures.length) rmSync(temporary, { recursive: true, force: true });
