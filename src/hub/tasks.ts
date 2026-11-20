@@ -1,6 +1,10 @@
 import { requireConductor } from "./conductor.ts";
 import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind } from "./roadmap.ts";
 import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
+import { readMirrorSnapshot, planRoadmapMirror, recoverMirrorBinding } from "./roadmap-sync.ts";
+import { roadmapExport } from "./roadmap-export.ts";
+import { checkRoadmap, type DriftMilestone, type RoadmapDrift } from "./roadmap-check.ts";
+import type { RoadmapConfig } from "./roadmap.ts";
 import { computeUnplaced, withTree, type ReadyToClose, type TreeRollup, type UnplacedResult } from "./roadmap-unplaced.ts";
 import { buildTriagePrompt, parseTriage, TRIAGE_BATCH, type TriageItem } from "./roadmap-triage.ts";
 import { pathCandidates } from "@staix/agent-mem";
@@ -115,7 +119,7 @@ import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCa
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
-import { TaskRepositories } from "./task-repository.ts";
+import { TaskRepositories, githubOriginRepository } from "./task-repository.ts";
 import { mainCheckoutWarning } from "./main-checkout.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import type { TaskWorktreePort } from "./task-worktree.ts";
@@ -237,6 +241,9 @@ export interface TasksDeps {
   roadmapModel?: (system: string, user: string, allowed: () => boolean) => Promise<string | undefined>;
   /** R3 (#1481): host-only `gh` runner for the roadmap's read-only issue and milestone reads (tests); production uses `sdlc.gh`. */
   roadmapGh?: SdlcGh;
+  /** Host-only origin proof for tests; production reads the project-local Git origin. */
+  roadmapOrigin?: () => string | undefined;
+  roadmapConfig?: () => RoadmapConfig;
   /** Host-verified existing symbols at this task's admitted completion head; never plan guesses. */
   memorySymbolNodes?: (task: Task) => MemorySymbolNodes | undefined;
   /** Host-only release report selector; derives its answer from committed policy and the in-memory authorization ledger. */
@@ -3554,6 +3561,227 @@ export class Tasks {
     const row = this.milestoneList(by).find(row => row.id === id);
     if (!row) throw new PreEffectToolRefusal("roadmap milestone does not exist; use ahub roadmap list");
     return row;
+  }
+
+  /** Host-sampled GitHub authority is never supplied by a tool argument. */
+  private roadmapRepository(): string {
+    const repo = this.roadmapParsed(() => githubRepo(this.d.repository));
+    let origin: string | undefined;
+    try { origin = this.d.roadmapOrigin ? this.d.roadmapOrigin() : githubOriginRepository(this.d.cwd); } catch { /* unknown is not a trusted origin */ }
+    if (!origin || origin.toLowerCase() !== repo) throw new PreEffectToolRefusal("roadmap GitHub origin is unavailable or does not match this project; inspect the local origin before retrying");
+    return repo;
+  }
+  private roadmapApplyAuthority(by: PeerId): void {
+    this.roadmapReadAuthority(by);
+    if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) throw new PreEffectToolRefusal("roadmap writes are held; retry after recovery");
+    if (by !== USER && (!(this.d.roadmapConfig?.().github_write === "conductor") || !this.configuredManualConductor(by) || !this.d.bus.isRostered(by)))
+      throw new PreEffectToolRefusal("GitHub roadmap writes require the person or the configured conductor with roadmap.github_write enabled");
+  }
+
+  /** Render only screened views. Issue writes require an exact preview and fresh authority. */
+  async roadmapExport(by: PeerId, input: { issue?: number; apply?: boolean; confirm?: string } = {}): Promise<{ json: string; markdown: string; fingerprint: string; call?: string[]; applied: boolean }> {
+    const check = this.requestCheck(by, () => this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError ? "roadmap is held by recovery or storage" : undefined);
+    check(); this.roadmapReadAuthority(by);
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["issue", "apply", "confirm"].includes(key)) || input.apply !== undefined && typeof input.apply !== "boolean" || input.confirm !== undefined && (typeof input.confirm !== "string" || !/^[a-f0-9]{64}$/.test(input.confirm))) throw new PreEffectToolRefusal("invalid roadmap export options; preview before applying");
+    if (input.issue !== undefined) this.roadmapParsed(() => milestoneId(input.issue));
+    if (input.apply && input.issue === undefined) throw new PreEffectToolRefusal("roadmap export --apply needs an issue; preview with --issue first");
+    if (input.apply) this.roadmapApplyAuthority(by);
+    const rendered = roadmapExport(this.milestoneList(by));
+    const repo = input.issue === undefined ? undefined : this.roadmapRepository();
+    const call = repo === undefined ? undefined : ["api", `repos/${repo}/issues/${input.issue}`, "--hostname", "github.com", "--method", "PATCH", "-f", `body=${rendered.markdown}`];
+    const fingerprint = createHash("sha256").update(JSON.stringify({ repo: repo ?? null, issue: input.issue ?? null, markdown: rendered.markdown })).digest("hex");
+    if (!input.apply) return { ...rendered, fingerprint, ...(call ? { call } : {}), applied: false };
+    if (input.confirm !== fingerprint) throw new PreEffectToolRefusal(`roadmap export preview changed; run ahub roadmap export --issue ${input.issue} and retry with --confirm ${fingerprint}`);
+    check(); this.roadmapApplyAuthority(by); if (this.roadmapRepository() !== repo) throw new PreEffectToolRefusal("roadmap GitHub origin changed; preview again");
+    let result: Awaited<ReturnType<SdlcGh>>;
+    try { result = await this.roadmapGh()(call!, 10_000, undefined, 64 * 1024); }
+    catch { throw new Error("roadmap issue update outcome is unknown; inspect the issue before retrying"); }
+    if (result.code !== 0) throw new Error("roadmap issue update was not confirmed; inspect the issue before retrying");
+    try { check(); this.roadmapApplyAuthority(by); if (this.roadmapRepository() !== repo || roadmapExport(this.milestoneList(by)).markdown !== rendered.markdown) throw new Error("changed"); }
+    catch { throw new Error("roadmap or authority changed after issue update; inspect the issue and preview again"); }
+    return { ...rendered, fingerprint, call, applied: true };
+  }
+
+  /** Build drift only from the same screened views and host-owned evidence as roadmap reads. */
+  async roadmapCheck(by: PeerId, include?: (finding: RoadmapDrift) => boolean): Promise<ReturnType<typeof checkRoadmap>> {
+    const check = this.requestCheck(by); check(); this.roadmapReadAuthority(by);
+    const views = this.milestoneList(by), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const }, privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
+    const snapshot = (rows: typeof views) => JSON.stringify([rows, rows.flatMap(view => view.tasks.map(member => this.d.board.get(member.id)))]);
+    const evidence = snapshot(views);
+    const current = () => { check(); this.roadmapReadAuthority(by); if (snapshot(this.milestoneList(by)) !== evidence || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
+    const rendered = roadmapExport(views), exportStates: (boolean | undefined)[] = [];
+    for (const [path, expected] of [["docs/roadmap.json", rendered.json], ["docs/roadmap.md", rendered.markdown]] as const) {
+      try {
+        const file = await readGuardedDeliverable(path, { cwd: this.d.cwd, deny: this.d.deny ?? [], private: name => matchesPolicy(this.d.cwd, name, this.d.piiPaths ?? [], true) });
+        current(); exportStates.push(Buffer.from(file.data).toString("utf8") === expected);
+      } catch (error) { if (error instanceof PreEffectToolRefusal) throw error; exportStates.push(error instanceof DeliverableRefusal && error.message.includes("does not exist") ? false : undefined); }
+    }
+    const exportMatches = exportStates.includes(false) ? false : exportStates.every(value => value === true) ? true : undefined;
+    current();
+    const refs = new Set<string>();
+    for (const view of views) {
+      for (const issue of view.issues) refs.add(issue.ref);
+      for (const member of view.tasks) {
+        const task = this.d.board.get(member.id); if (!task) continue;
+        try { const source = this.planIssueIdentity(task); if (source && this.publicMetadataText(source.repo)) refs.add(`${source.repo.toLowerCase()}#${source.issue}`); } catch { /* ambiguous identity is unknown */ }
+      }
+    }
+    const issueStates = new Map<string, "open" | "closed">(), issueDeadline = performance.now() + 20_000;
+    for (const ref of [...refs].sort().slice(0, 100)) {
+      const match = /^([^#]+)#([1-9][0-9]*)$/.exec(ref); if (!match || issueDeadline <= performance.now()) break;
+      const value = await readPlanIssueMetadata(match[1]!, Number(match[2]), async (args, timeout, cwd, cap) => {
+        current(); const remaining = issueDeadline - performance.now();
+        return remaining > 0 ? this.roadmapGh()([...args.slice(0, 2), "--hostname", "github.com", ...args.slice(2)], Math.min(timeout ?? remaining, remaining), cwd, cap) : { code: 1, stdout: "" };
+      });
+      current(); if (value) issueStates.set(ref, value.state === "CLOSED" ? "closed" : "open");
+    }
+    let mirror: Awaited<ReturnType<typeof readMirrorSnapshot>> | undefined, repo: string | undefined;
+    if (config.github_mirror) {
+      try { repo = this.roadmapRepository(); mirror = await readMirrorSnapshot(repo, this.roadmapGh()); }
+      catch { /* partial or unavailable evidence stays unknown */ }
+      current();
+    }
+    const milestones: DriftMilestone[] = views.map(view => {
+      const tasks = view.tasks.map(member => {
+        const task = this.d.board.get(member.id)!;
+        let issue: string | null | undefined;
+        try { const source = this.planIssueIdentity(task); issue = source ? `${source.repo.toLowerCase()}#${source.issue}` : null; } catch { issue = undefined; }
+        const issueState: "open" | "closed" | "unknown" = issue ? issueStates.get(issue) ?? "unknown" : "unknown";
+        const merge = task.sdlc?.merge?.state === "merged" ? task.sdlc.merge : task.sdlc?.mergeReadback;
+        const mergedAt = merge?.state === "merged" ? merge.cost?.mergedAt ?? undefined : task.sdlc?.pr && task.state === "approved" ? undefined : null;
+        const report = merge?.state === "merged" ? this.currentSpecReport(task) : undefined;
+        const unchangedSpecs = mergedAt === null ? [] : report?.complete && report.errors === 0 && !report.truncated && report.head === merge?.head ? report.unchanged.map(row => row.id) : undefined;
+        return { id: task.id, state: task.state, issue, issueState, feature: /^feat(?:\([^)]*\))?:/i.test(task.title), specIssue: !!task.sdlc?.issue, mergedAt, unchangedSpecs };
+      });
+      const children = view.children.map(id => views.find(row => row.id === id));
+      const open = view.tasks.some(row => !["approved", "cancelled"].includes(row.state)) || view.issues.some(row => issueStates.get(row.ref) === "open") || view.releases.some(row => !["shipped", "dropped", "unknown"].includes(row.state)) || children.some(row => row && !["done", "dropped"].includes(row.state));
+      const uncertain = !!view.withheld || view.issues.some(row => !issueStates.has(row.ref)) || view.releases.some(row => row.state === "unknown") || children.some(row => !row);
+      const merged = view.tasks.some(row => { const task = this.d.board.get(row.id); return task?.sdlc?.merge?.state === "merged" || task?.sdlc?.mergeReadback?.state === "merged"; });
+      let mirrorDiff: boolean | undefined;
+      if (mirror && repo && !view.withheld && view.title !== "[withheld]") {
+        try {
+          const marker = `<!-- ahub-roadmap:${this.d.project}:${view.id} -->`, bound = this.d.board.mirrorMilestone(repo, view.id);
+          const recovered = bound === undefined ? recoverMirrorBinding(marker, view.title, mirror.milestones) : undefined;
+          if (recovered?.kind === "ambiguous" || recovered?.titleConflicts.length) mirrorDiff = true;
+          else {
+            const number = bound ?? (recovered?.kind === "bind" ? recovered.number : undefined), remote = number === undefined ? null : mirror.milestones.find(row => row.number === number);
+            if (number === undefined || remote) mirrorDiff = bound === undefined || planRoadmapMirror(repo, { title: view.title, state: view.state === "done" || view.state === "dropped" ? "closed" : "open", marker, issues: view.issues.filter(row => row.ref.startsWith(`${repo}#`)).map(row => Number(row.ref.slice(repo!.length + 1))) }, remote ?? null, mirror.issues).calls.length > 0;
+          }
+        } catch { /* unknown mirror evidence */ }
+      }
+      return { id: view.id, state: view.state, tasks, openItems: open ? true : uncertain ? undefined : false, mergedCode: merged ? true : tasks.some(row => row.mergedAt === undefined) ? undefined : false, specs: view.specs, mirrorDiff };
+    });
+    current(); return checkRoadmap({ milestones, now: this.d.now?.() ?? Date.now(), closeLagMs: 24 * 60 * 60_000, mirrorEnabled: config.github_mirror, exportMatches }, include);
+  }
+
+  /** Serialize at the host caller. Persist only admitted ids-only notices, so unavailable feeds can retry. */
+  async roadmapNotify(taskIds: readonly number[], send: (task: number, milestone: number | null, rule: number, marker: string) => boolean): Promise<number> {
+    if (!taskIds.length) return 0;
+    const views = this.milestoneList(HUB);
+    if (!views.some(view => view.tasks.some(task => taskIds.includes(task.id)))) return 0;
+    const select = (finding: RoadmapDrift) => {
+      const referenced = finding.items.filter(item => /^task:[1-9][0-9]*$/.test(item)).map(item => Number(item.slice(5)));
+      const eligible = views.filter(view => finding.milestone === null || view.id === finding.milestone).flatMap(view => view.tasks.map(task => task.id));
+      const marker = createHash("sha256").update(JSON.stringify([finding.rule, finding.milestone, finding.items, finding.cause])).digest("hex");
+      return !this.d.board.hasRoadmapNotice(marker) && taskIds.some(id => eligible.includes(id) && (!referenced.length || referenced.includes(id)));
+    };
+    const checked = await this.roadmapCheck(HUB, select);
+    let sent = 0;
+    for (const finding of checked.findings) {
+      const referenced = finding.items.filter(item => /^task:[1-9][0-9]*$/.test(item)).map(item => Number(item.slice(5)));
+      const eligible = views.filter(view => finding.milestone === null || view.id === finding.milestone).flatMap(view => view.tasks.map(task => task.id));
+      const task = taskIds.find(id => eligible.includes(id) && (!referenced.length || referenced.includes(id)));
+      if (task === undefined) continue;
+      const marker = createHash("sha256").update(JSON.stringify([finding.rule, finding.milestone, finding.items, finding.cause])).digest("hex");
+      if (this.d.board.hasRoadmapNotice(marker)) continue;
+      const latest = this.d.board.get(task);
+      if (!latest || this.isPii(latest) || !this.milestoneList(HUB).some(view => (finding.milestone === null || view.id === finding.milestone) && view.tasks.some(row => row.id === task))) continue;
+      if (send(task, finding.milestone, finding.rule, marker) && this.d.board.recordRoadmapNotice(marker)) sent++;
+    }
+    return sent;
+  }
+
+  /** Preview every fixed GitHub call from a complete inventory; confirmation binds both calls and local bindings. */
+  async roadmapSync(by: PeerId, input: { apply?: boolean; confirm?: string } = {}): Promise<{ repo: string; calls: string[][]; bindings: { milestone: number; number: number }[]; fingerprint: string; applied: boolean }> {
+    this.roadmapReadAuthority(by);
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => key !== "apply" && key !== "confirm") || typeof input.apply !== "undefined" && typeof input.apply !== "boolean" || input.confirm !== undefined && (typeof input.confirm !== "string" || !/^[a-f0-9]{64}$/.test(input.confirm))) throw new PreEffectToolRefusal("invalid roadmap sync options; preview before applying");
+    if (input.apply) this.roadmapApplyAuthority(by);
+    const config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const };
+    if (!config.github_mirror) throw new PreEffectToolRefusal("roadmap GitHub mirror is off; enable roadmap.github_mirror in trusted configuration before syncing");
+    const repo = this.roadmapRepository(), views = this.milestoneList(by);
+    if (views.length > 100) throw new PreEffectToolRefusal("roadmap mirror exceeds 100 milestones; narrow the roadmap before syncing");
+    const deadline = performance.now() + 50_000;
+    const stamp = () => createHash("sha256").update(JSON.stringify([this.d.board.milestones(), this.d.board.milestoneLinks(), this.d.board.list(), views.map(view => [view.id, this.d.board.mirrorMilestone(repo, view.id)]), this.d.roadmapConfig?.(), this.d.routing(), this.d.piiPaths, this.d.deny])).digest("hex");
+    let before = stamp(); const check = this.requestCheck(by, () => this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError ? "roadmap is held by recovery or storage" : undefined);
+    const current = () => { check(); this.roadmapReadAuthority(by); if (input.apply) this.roadmapApplyAuthority(by); if (this.roadmapRepository() !== repo || stamp() !== before) throw new PreEffectToolRefusal("roadmap, origin or authority changed; preview sync again"); };
+    const run = this.roadmapGh();
+    const snapshot = await readMirrorSnapshot(repo, async (...args) => { current(); const result = await run(...args); current(); return result; });
+    current();
+    const bindings: { milestone: number; number: number }[] = [], calls: string[][] = [], createIds: (number | undefined)[] = [], issueOwners = new Set<number>();
+    for (const view of views) for (const issue of view.issues) if (issue.ref.startsWith(`${repo}#`)) {
+      const id = milestoneId(Number(issue.ref.slice(repo.length + 1)));
+      if (issueOwners.has(id)) throw new PreEffectToolRefusal("an issue is linked to multiple roadmap milestones; settle its placement before syncing");
+      issueOwners.add(id);
+    }
+    for (const view of views) {
+      if (view.withheld || view.title === "[withheld]" || view.outcome === "[withheld]") throw new PreEffectToolRefusal("roadmap mirror contains withheld membership or metadata; inspect privacy before syncing");
+      const marker = `<!-- ahub-roadmap:${this.d.project}:${view.id} -->`, bound = this.d.board.mirrorMilestone(repo, view.id);
+      const matching = bound === undefined ? recoverMirrorBinding(marker, view.title, snapshot.milestones) : undefined;
+      if (matching?.kind === "ambiguous" || matching?.titleConflicts.length) throw new PreEffectToolRefusal("roadmap GitHub milestone identity is ambiguous; inspect matching milestones before syncing");
+      const remoteId = bound ?? (matching?.kind === "bind" ? matching.number : undefined);
+      if (bound === undefined && remoteId !== undefined) bindings.push({ milestone: view.id, number: remoteId });
+      const remote = remoteId === undefined ? null : snapshot.milestones.find(row => row.number === remoteId);
+      if (remoteId !== undefined && !remote) throw new PreEffectToolRefusal("recorded GitHub milestone is missing from the complete inventory; inspect the binding");
+      const issues = view.issues.filter(row => row.ref.startsWith(`${repo}#`)).map(row => Number(row.ref.slice(repo.length + 1)));
+      const planned = planRoadmapMirror(repo, { title: view.title, state: view.state === "done" || view.state === "dropped" ? "closed" : "open", issues, marker }, remote ?? null, snapshot.issues);
+      for (const call of planned.calls) {
+        const detached = /^repos\/[^/]+\/[^/]+\/issues\/([1-9][0-9]*)$/.exec(call[1] ?? "");
+        if (detached && call.includes("milestone=null") && issueOwners.has(Number(detached[1]))) continue;
+        calls.push(call); createIds.push(remoteId === undefined ? view.id : undefined);
+        if (calls.length > 200) throw new PreEffectToolRefusal("roadmap mirror exceeds 200 writes; narrow the roadmap before syncing");
+      }
+    }
+    const hiddenIssues = new Set<number>();
+    for (const task of this.d.board.list()) if (this.isPii(task) || task.signals.includes("pii") || task.signals.includes("pii_path")) {
+      try { const issue = this.planIssueIdentity(task); if (issue?.repo.toLowerCase() === repo) hiddenIssues.add(issue.issue); }
+      catch { throw new PreEffectToolRefusal("private issue placement is unknown; inspect privacy before syncing"); }
+    }
+    if (calls.some(call => { const match = /^repos\/[^/]+\/[^/]+\/issues\/([1-9][0-9]*)$/.exec(call[1] ?? ""); return !!match && hiddenIssues.has(Number(match[1])); })) throw new PreEffectToolRefusal("roadmap mirror would change private issue membership; inspect privacy before syncing");
+    const fingerprint = createHash("sha256").update(JSON.stringify({ repo, bindings, calls })).digest("hex");
+    if (!input.apply) return { repo, calls, bindings, fingerprint, applied: false };
+    if (input.confirm !== fingerprint) throw new PreEffectToolRefusal(`roadmap sync preview changed; run ahub roadmap sync and retry with --confirm ${fingerprint}`);
+    let effects = false;
+    const effectCurrent = () => { try { current(); } catch (error) { if (effects) throw new Error("roadmap sync authority changed after effects; inspect the mirror and preview again before retrying"); throw error; } };
+    effectCurrent();
+    for (const binding of bindings) {
+      effectCurrent();
+      try { this.d.board.bindMirrorMilestone(repo, binding.milestone, binding.number); effects = true; before = stamp(); }
+      catch (error) { if (effects) throw new Error("roadmap binding changed after effects; inspect the mirror and preview again"); throw error; }
+    }
+    for (let index = 0; index < calls.length; index++) {
+      effectCurrent();
+      let result: Awaited<ReturnType<SdlcGh>>;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) { if (effects) throw new Error("roadmap sync reached its deadline after effects; inspect the mirror and preview again"); throw new PreEffectToolRefusal("roadmap sync deadline expired before writes; preview again"); }
+      effects = true;
+      try { result = await run(calls[index]!, Math.min(10_000, remaining), undefined, 64 * 1024); }
+      catch { throw new Error("roadmap GitHub write outcome is unknown; inspect the mirror and preview again before retrying"); }
+      if (result.code !== 0 || Buffer.byteLength(result.stdout) > 64 * 1024) throw new Error("roadmap GitHub write was not confirmed; inspect the mirror and preview again before retrying");
+      const local = createIds[index];
+      if (local !== undefined) {
+        let number: number;
+        try {
+          const created = JSON.parse(result.stdout) as Record<string, unknown>, call = calls[index]!;
+          number = milestoneId(created.number);
+          if (created.title !== call.find(value => value.startsWith("title="))?.slice(6) || created.description !== call.find(value => value.startsWith("description="))?.slice(12) || created.state !== call.find(value => value.startsWith("state="))?.slice(6) || typeof created.html_url !== "string" || created.html_url.toLowerCase() !== `https://github.com/${repo}/milestone/${number}`) throw new Error("mismatch");
+        } catch { throw new Error("roadmap milestone creation was not confirmed; preview again to recover its marker"); }
+        effectCurrent();
+        try { this.d.board.bindMirrorMilestone(repo, local, number); before = stamp(); }
+        catch { throw new Error("roadmap milestone was created but its binding is uncertain; preview again to recover its marker"); }
+      }
+      effectCurrent();
+    }
+    return { repo, calls, bindings, fingerprint, applied: true };
   }
 
   // ---- R3 (#1481): bottom-up placement. Reads are the roadmap read authority; every write below is the R1 writer, never a new one. ----

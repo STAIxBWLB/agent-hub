@@ -85,7 +85,7 @@ try {
   } else noteNames = readdirSync(join(root, "docs/agent-notes"));
   // #1268: every user-facing page directly under docs/ and docs/addons/ needs a stamp too; an absent directory lists nothing.
   // The smoke ledger and the retired GSD analysis are dated records with their own evidence, like specs and the changelog.
-  const records = new Set(["docs/smoke.md", "docs/gsd-collaboration-analysis.md"]);
+  const records = new Set(["docs/smoke.md", "docs/gsd-collaboration-analysis.md", "docs/roadmap.md"]);
   const pages = (dir) => {
     if (!committed) return existsSync(join(root, dir)) ? readdirSync(join(root, dir)) : [];
     const listed = git("ls-tree", "-z", "--name-only", `${headId}:${dir}`);
@@ -131,6 +131,14 @@ try {
     if (commits || dirty.stdout) reports.push(`${doc}: stale (${commits} source commit${commits === 1 ? "" : "s"}${dirty.stdout ? "; uncommitted source changes" : ""})`);
   }
 } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+// The gate opts into the roadmap validator; standalone release evidence stays self-contained.
+if (process.env.AHUB_CHECK_ROADMAP === "1") {
+  const validator = join(dirname(fileURLToPath(import.meta.url)), "check-roadmap.mjs");
+  const result = spawnSync(process.execPath, [validator, root, ...(committed ? ["--committed"] : [])], { encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, env: process.env });
+  if (result.status !== 0) errors.push("roadmap validation failed");
+  if (!jsonOutput && result.stdout) process.stdout.write(result.stdout);
+  if (!jsonOutput && result.stderr) process.stderr.write(result.stderr);
+}
 if (!jsonOutput) for (const report of reports) console.log(`docs: ${report}`);
 if (requireFresh && reports.length) errors.push("release requires fresh documentation stamps");
 if (requireFresh && errors.length) errors.push("release refused: merge the release PR with a merge commit and verify all documentation stamps before tagging");

@@ -5,6 +5,7 @@ import { conductorLocalOperation, conductorOperation, OPERATIONAL_PERSON_GUIDANC
 import { sayRecipients } from "./say-input.ts";
 import { parseAnswerArgs } from "./answer-args.ts";
 import { parseRoadmapArgs, renderRoadmap } from "./roadmap.ts";
+import { roadmapWorktree, writeRoadmap } from "./roadmap-write.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
@@ -1717,7 +1718,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     let options;
     try { options = parseRoadmapArgs(args); } catch (error) { return fail(`${error instanceof Error ? error.message : "invalid roadmap arguments"}; see ahub help roadmap`); }
     // R3 (#1481): the GitHub reads and the model call each carry their own deadline, so these ops wait longer than the 30 s default.
-    const text = await taskOp(options.op, options.args, false, undefined, ["hub_roadmap_unplaced", "hub_roadmap_triage", "roadmap_import_github"].includes(options.op) ? 60_000 : undefined);
+    const text = await taskOp(options.op, options.args, false, undefined, ["hub_roadmap_unplaced", "hub_roadmap_triage", "roadmap_import_github", "hub_roadmap_check", "roadmap_sync", "roadmap_sync_apply", "roadmap_export_apply"].includes(options.op) ? 60_000 : undefined);
+    if (options.write) {
+      let rendered: { json: string; markdown: string };
+      try { rendered = JSON.parse(text); const root = roadmapWorktree(cwd, invokedFrom), policy = loadConfig(cwd); writeRoadmap(root, rendered, { deny: policy.local.deny, readOnly: policy.data?.readonly ?? [], pii: policy.pii?.paths ?? [] }); }
+      catch (error) { return fail(error instanceof Error ? error.message : "roadmap export unavailable"); }
+      if (!options.json) { console.log("Roadmap files written in the current worktree."); return; }
+    }
     if (options.json) console.log(text);
     else console.log(renderRoadmap(text, outputOptions().columns));
   },

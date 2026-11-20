@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Check roadmap drift, preview an opt-in GitHub milestone mirror, and export validated public roadmap files (Refs #1482, hub task 951).
+
 - Report Pi prompt context occupancy and session model in headless and TUI modes, and bind verified TUI sessions to Record capture (Refs #1549).
 
 - Read merged PR CI costs from complete branch-scoped evidence when GitHub omits run-to-PR links, including first-pass status and full-gate and macOS shard counts (Refs #1579, Refs #1555, hub task 1032).

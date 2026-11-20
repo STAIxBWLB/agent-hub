@@ -33,7 +33,7 @@ export const conductorLocalAction = (value:unknown): value is ConductorLocalActi
 /** Daemon-authorized labels. Recovery labels pass the initial role check, then require their separate per-operation proof. */
 export const CONDUCTOR_DAEMON_OPERATIONS = ["roster add","roster remove","stop","queue show","queue resolve","queue discard","settings set","doctor orphans kill","logs","export",
   "sdlc configure",
-  "board import","intake approve","schedule run","schedule pause","schedule resume","goal link","task unassign","guidance probe register","guidance probe start","guidance probe show","guidance probe receipts","guidance probe cancel","restart","upgrade","recovery resume","recovery abort","sdlc survey start","sdlc survey show","sdlc audit start","sdlc audit show"] as const;
+  "board import","intake approve","schedule run","schedule pause","schedule resume","goal link","task unassign","roadmap sync","roadmap export","guidance probe register","guidance probe start","guidance probe show","guidance probe receipts","guidance probe cancel","restart","upgrade","recovery resume","recovery abort","sdlc survey start","sdlc survey show","sdlc audit start","sdlc audit show"] as const;
 /**
  * #933: forms whose effect runs in the CLI process itself (local files). The daemon admits and audits them once at the handshake (`admit`),
  * after the CLI has validated their arguments. Recovery-bearing restart/upgrade forms use the separate source-issued continuation proof.
@@ -72,6 +72,7 @@ function restartOrUpgrade(command: string, args: readonly string[]): "restart" |
 export function conductorOperation(command:string,args:readonly string[]): ConductorOperation | undefined {
   const words=args.filter(arg=>!arg.startsWith("--"));
   const sub=words[0];
+  if (command === "roadmap" && args.includes("--apply") && (sub === "sync" || sub === "export")) return `roadmap ${sub}`;
   if (command === "sdlc" && args[0] === "survey" && (args[1] === "start" || args[1] === "show")) return `sdlc survey ${args[1]}`;
   if (command === "sdlc" && args[0] === "audit" && (args[1] === "start" || args[1] === "show")) return `sdlc audit ${args[1]}`;
   if (command === "restart" || command === "upgrade") return restartOrUpgrade(command, args);
@@ -119,7 +120,7 @@ export function operationalRefusal(peer:string,command:string):string {
   return `${peer} cannot run ahub ${command}; ${OPERATIONAL_PERSON_GUIDANCE}; this operation requires the explicit conductor role`;
 }
 /** #933: the console task ops the conductor may now run, by audit label. The daemon admits each through `admitOperational` before Tasks sees it. */
-export const CONDUCTOR_TASK_OPS: Readonly<Record<string,ConductorOperation>> = {github_import:"board import",intake_approve:"intake approve",schedule_run:"schedule run",schedule_pause:"schedule pause",schedule_resume:"schedule resume",task_unassign:"task unassign"};
+export const CONDUCTOR_TASK_OPS: Readonly<Record<string,ConductorOperation>> = {github_import:"board import",intake_approve:"intake approve",schedule_run:"schedule run",schedule_pause:"schedule pause",schedule_resume:"schedule resume",task_unassign:"task unassign",roadmap_sync_apply:"roadmap sync",roadmap_export_apply:"roadmap export"};
 /** Fixed labels only; refused requests never put argument text in the audit. */
 export function operationalRequestLabel(value:unknown):string|undefined {
   if(!value || typeof value!=="object" || Array.isArray(value))return undefined;
