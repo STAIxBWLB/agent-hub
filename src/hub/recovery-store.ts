@@ -265,8 +265,19 @@ export async function stopSignedRunner(id: string, home = hubHome(), waitMs = 50
   return false;
 }
 
-/** An exclusive runner claim. Never steal a live or uncertain owner on resume. */
-export function claimRunner(id: string, home = hubHome()): () => void {
+/** One operation's runner claim: `release` gives the slot back and leaves the db, `retire` removes the db (#329). */
+interface RunnerClaim {
+  /** The row leaves and the handle closes, so the db survives for the next owner. */
+  release(): void;
+  /**
+   * #329/#1541: close the handle and remove the db while this process's row still names it, so no pass can claim the freed slot
+   * in between and have the file unlinked under its own handle (SQLITE_READONLY_DBMOVED). False when the db could not be
+   * removed: the row then keeps refusing a new owner until this process exits and a later claim replaces the stale one.
+   */
+  retire(): boolean;
+}
+
+function openRunnerClaim(id: string, home: string): RunnerClaim {
   const path = `${operationPath(id, home)}.runner.db`;
   const nonce = randomUUID();
   const db = new Database(path, { create: true });
@@ -291,10 +302,23 @@ export function claimRunner(id: string, home = hubHome()): () => void {
       db.query("INSERT OR REPLACE INTO runner (slot, pid, nonce, signature) VALUES (1, ?, ?, ?)").run(process.pid, nonce, signature);
     }).immediate();
   } catch (error) { db.close(); throw error; }
-  return () => {
-    db.query("DELETE FROM runner WHERE slot = 1 AND nonce = ?").run(nonce);
-    db.close();
+  return {
+    release: () => {
+      // A db another pass already removed cannot be written; the caller reports `kept` instead of throwing out of its pass.
+      try { db.query("DELETE FROM runner WHERE slot = 1 AND nonce = ?").run(nonce); } finally { db.close(); }
+    },
+    retire: () => {
+      // #329: the row stays until the file is gone, so the freed slot can never be claimed between a release and an unlink.
+      try { db.close(); } catch { return false; }
+      try { rmSync(path, { force: true }); return true; } catch { return false; }
+    },
   };
+}
+
+/** An exclusive runner claim. Never steal a live or uncertain owner on resume. */
+export function claimRunner(id: string, home = hubHome()): () => void {
+  const claim = openRunnerClaim(id, home);
+  return () => claim.release();
 }
 
 /**
@@ -313,29 +337,33 @@ export function anyRecoveryHold(home = hubHome(), nonBlocking = false): boolean 
 
 /**
  * #1541: remove one terminal receipt and its runner db. The exclusive runner claim is the only mutual exclusion: a live or
- * unidentifiable runner keeps the receipt, a dead one is replaced by `claimRunner` in its own transaction, so two retirers
+ * unidentifiable runner keeps the receipt, a dead one is replaced by `openRunnerClaim` in its own transaction, so two retirers
  * on the same stale claim cannot both proceed. Under the claim `confirm` sees the receipt as it is now; the receipt leaves
- * first, then the claim row is released, then the runner db. An interruption between them leaves only a runner db without
- * a receipt, which the next call settles through the ENOENT branch (a later claimant re-reads the receipt, finds none and
- * fails). A runner db whose receipt is gone is settled the same way (`settled`, `confirm` never called); only the call that
- * removed the receipt answers `retired`.
+ * first, then the runner db, and this process's claim row leaves with that file, never before it (#329): a pass therefore
+ * cannot claim the freed slot in between and have the file unlinked under its own handle (SQLITE_READONLY_DBMOVED). An
+ * interruption leaves only a runner db without a receipt, which the next call settles through the ENOENT branch (a later
+ * claimant re-reads the receipt, finds none and fails). A runner db whose receipt is gone is settled the same way
+ * (`settled`, `confirm` never called); only the call that removed the receipt answers `retired`, and a db this call cannot
+ * remove answers `kept` so the next pass settles it.
  */
-export function retireOperation(id: string, home: string, confirm: (record: unknown) => boolean, hooks: { betweenPair?: () => void } = {}): "retired" | "settled" | "kept" {
+export function retireOperation(id: string, home: string, confirm: (record: unknown) => boolean, hooks: { betweenPair?: () => void; beforeRunnerRemoval?: () => void } = {}): "retired" | "settled" | "kept" {
   const file = operationPath(id, home);
-  let release: () => void;
-  try { release = claimRunner(id, home); } catch { return "kept"; }
-  let result: "retired" | "settled" = "settled";
+  let claim: RunnerClaim;
+  try { claim = openRunnerClaim(id, home); } catch { return "kept"; }
+  // Giving the claim back is best effort: a pass only reaches here with the receipt still present, so the answer is `kept`.
+  const giveUp = (): "kept" => { try { claim.release(); } catch { /* the db another pass already moved */ } return "kept"; };
+  let removed = false;
   try {
-    let record: unknown, removed = false;
+    let record: unknown;
     try { record = readOperation(id, home); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "kept"; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return giveUp(); }
     if (record !== undefined) {
-      if (!confirm(record)) return "kept";
+      if (!confirm(record)) return giveUp();
       rmSync(file); removed = true;
       hooks.betweenPair?.();
     }
-    result = removed ? "retired" : "settled";
-  } finally { release(); }
-  rmSync(`${file}.runner.db`, { force: true });
-  return result;
+  } catch (error) { giveUp(); throw error; }
+  // The seam where a second pass used to claim the slot the release had just freed, and then lose the file to this unlink.
+  hooks.beforeRunnerRemoval?.();
+  return claim.retire() ? (removed ? "retired" : "settled") : "kept";
 }
