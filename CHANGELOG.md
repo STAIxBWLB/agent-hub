@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Verify Claude Code 2.1.328 and 2.1.329 as headless implementers with isolated model-free transport and wrapper receipts (Refs #888, hub task 1023).
+
 ## 0.44.0
 
 - Release N-1 for 0.44.x is published 0.43.0, with exact agent-mem 0.29.0 and control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.0. The isolated compatibility fixture covers old clients and plugins against the new daemon and new clients and plugins against the old daemon; it does not prove live-agent, rollback, or shared-home compatibility. The protocol window and CLI forms are unchanged; the backlog pull MCP description now explicitly names planner-only authority. This release pins agent-mem 0.30.0 and does not automatically raise the memory home or sync format floor; compatibility after a person raises a floor requires separate verification.
