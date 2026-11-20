@@ -15,6 +15,13 @@ import { cleanEnvironment, restoreEnvironment, restoreOnTestEnd, useEnvironmentS
 useEnvironmentScope();   // #1262: registers the afterEach in THIS file's scope; an import by an earlier file would bind it to that file
 
 const PACKAGE_ROOT = resolve(import.meta.dir, "..");
+// #1577 exception (docs/agent-notes/tests.md): this body keeps two real daemons and a real upgrade CLI child, and the test process
+// itself runs synchronous `ps` identity reads (processSignature), so Bun's timeout must never be the first thing to fire. The work is
+// fixed, never a guess at how long a hub takes: 14,739 ms in the green macOS shard 4/4 run 44732101559 (head 3cc4818b) and over 20 s
+// in both ledger failures (44703709611, and 44732101559 attempt 1, which was cut with a single daemon up), i.e. the same steps cost
+// what the runner gives them. Body 45 s + cleanup 4 x 6 s = 69 s stays under this test's 90 s timeout.
+const BODY_DEADLINE_MS = 45_000;
+const CLEANUP_STEP_MS = 6_000;
 
 function isolate(root: string) {
   const saved = cleanEnvironment(), env = cleanEnvironment(), bin = join(root, "bin");   // #1262: the file's clean snapshot, never an environment another test's abandoned body still holds
@@ -40,12 +47,23 @@ test("#607 a real scoped A upgrade preserves B's daemon, channel session and ord
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-two-project-upgrade-"))), scope = isolate(root);
   let lifecycle: typeof import("../src/hub/lifecycle.ts") | undefined;
   let channel: ControlClient | undefined, operation: RecoveryOperation | undefined, production: RecoveryDriver | undefined;
+  let bodyFailure: unknown;
   const projects: Project[] = [];
+  const deadline = performance.now() + BODY_DEADLINE_MS;
+  /** What is left of the shared body deadline, never above the caller's own cap: a control request can never outlive the body. */
+  const left = (cap: number) => Math.max(1, Math.min(cap, Math.round(deadline - performance.now())));
+  /** One body step under the shared deadline, so a stalled hub fails this step by name and the cleanup below still runs (tests.md). */
+  const inBody = <T>(step: string, work: Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${step} did not settle within the ${BODY_DEADLINE_MS / 1000} s body deadline`)), left(BODY_DEADLINE_MS));
+    work.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
+  });
   try {
     const retained = stageCurrentRuntime(PACKAGE_ROOT, VERSION, scope.home);
-    const runtimeLifecycle: typeof import("../src/hub/lifecycle.ts") = await import(pathToFileURL(join(retained.root, "src/hub/lifecycle.ts")).href);
+    const runtimeLifecycle: typeof import("../src/hub/lifecycle.ts") = await inBody("the retained lifecycle import",
+      import(pathToFileURL(join(retained.root, "src/hub/lifecycle.ts")).href));
     lifecycle = runtimeLifecycle;
-    const runtimeRecovery: typeof import("../src/cli/upgrade-runtime.ts") = await import(pathToFileURL(join(retained.root, "src/cli/upgrade-runtime.ts")).href);
+    const runtimeRecovery: typeof import("../src/cli/upgrade-runtime.ts") = await inBody("the retained recovery import",
+      import(pathToFileURL(join(retained.root, "src/cli/upgrade-runtime.ts")).href));
     for (const name of ["a", "b"]) {
       const cwd = join(root, name); mkdirSync(join(cwd, ".agenthub"), { recursive: true });
       const git = Bun.spawn(["/usr/bin/git", "init", "-q", cwd], { env: scope.env, stdout: "ignore", stderr: "pipe" });
@@ -58,30 +76,30 @@ test("#607 a real scoped A upgrade preserves B's daemon, channel session and ord
       }));
       const registry = new Registry();
       try { projects.push(registry.register(realPath(cwd))); } finally { registry.close(); }
-      await runtimeLifecycle.startProject(projects[projects.length - 1]!, { env: scope.env });
+      await inBody(`the ${name} daemon start`, runtimeLifecycle.startProject(projects[projects.length - 1]!, { env: scope.env }));
     }
-    const a = projects[0]!, b = projects[1]!, bBefore = await runtimeLifecycle.startProject(b, { env: scope.env });
+    const a = projects[0]!, b = projects[1]!, bBefore = await inBody("the second b start", runtimeLifecycle.startProject(b, { env: scope.env }));
     // A real control-channel client exercises the native wire without starting a native CLI or account.
-    const bChannel = await ControlClient.connect(b.stateDir, { role: "peer", peer: "claude", channel: true, projectId: b.id, projectRoot: b.root, instanceId: bBefore.instanceId });
+    const bChannel = await inBody("the channel connect", ControlClient.connect(b.stateDir, { role: "peer", peer: "claude", channel: true, projectId: b.id, projectRoot: b.root, instanceId: bBefore.instanceId }, left(5_000)));
     channel = bChannel;
     let closes = 0; bChannel.onClose = () => { closes++; };
     const bSession = "fixture-project-b-session";
-    const facts = await bChannel.request({ t: "facts", phase: "session", sessionId: bSession, nativeInstanceId: bBefore.instanceId, hookPurpose: "facts" });
+    const facts = await bChannel.request({ t: "facts", phase: "session", sessionId: bSession, nativeInstanceId: bBefore.instanceId, hookPurpose: "facts" }, left(10_000));
     expect(facts.ok).toBe(true);
     const observations: string[] = [];
     const assertB = async (step: string) => {
       expect(bChannel.isOpen).toBe(true); expect(closes).toBe(0);
-      const status = await bChannel.request({ t: "status" });
+      const status = await bChannel.request({ t: "status" }, left(10_000));
       expect(status.status.instanceId).toBe(bBefore.instanceId); expect(status.status.pid).toBe(bBefore.pid);
-      const observed = await runtimeRecovery.inspectRecovery(b);
+      const observed = await inBody(`${step} recovery inspection`, runtimeRecovery.inspectRecovery(b));
       expect(observed.state).toBe("running"); expect(observed.instanceId).toBe(bBefore.instanceId);
       expect(observed.peers.find(peer => peer.id === "claude")?.sessionId).toBe(bSession);
       expect(recoveryLock(scope.home, b.root)).toBeUndefined();
-      expect((await runtimeLifecycle.startProject(b, { env: scope.env })).instanceId).toBe(bBefore.instanceId);
+      expect((await inBody(`${step} b start`, runtimeLifecycle.startProject(b, { env: scope.env }))).instanceId).toBe(bBefore.instanceId);
       observations.push(step);
     };
     await assertB("before-plan");
-    const source = await runtimeRecovery.inspectRecovery(a);
+    const source = await inBody("the a inspection", runtimeRecovery.inspectRecovery(a));
     expect(source.state).toBe("running"); expect(source.blockers).toEqual([]);
     const body: Omit<UpgradePlan, "fingerprint"> = { schema: 1, kind: "upgrade", version: VERSION, sourceRoot: retained.root, sourceDigest: retained.digest,
       scope: { projectRoot: a.root }, projects: [{ project: a, source, terminals: [], blockers: [] }], blockers: [] };
@@ -91,7 +109,8 @@ test("#607 a real scoped A upgrade preserves B's daemon, channel session and ord
     // All production effect ports remain real. The command guard refuses accidental registry, global or native execution.
     production = runtimeRecovery.makeRecoveryDriver(async (argv, options) => {
       expect(argv).toEqual([process.execPath, join(retained.root, "src/cli/main.js"), "--project", a.root, "up"]);
-      return runCommand(argv, options);
+      // The real `up` child keeps its own 60 s default, never past what remains of the body deadline.
+      return runCommand(argv, { ...options, timeoutMs: left(options?.timeoutMs ?? 60_000) });
     });
     function observe<A extends unknown[], R>(step: string, effect: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
       return async (...args) => { await assertB(`before-${step}`); const result = await effect(...args); await assertB(`after-${step}`); return result; };
@@ -108,21 +127,34 @@ test("#607 a real scoped A upgrade preserves B's daemon, channel session and ord
       closeTerminals: observe("close-terminals", actual.closeTerminals), restore: observe("restore", actual.restore),
       verify: observe("verify", actual.verify), release: observe("release", actual.release),
     };
-    const result = await runRecovery(operation.id, driver, scope.home);
+    const result = await inBody("the recovery run", runRecovery(operation.id, driver, scope.home));
     expect(result.phase, result.error).toBe("completed");
     expect(result.schema).toBe(3); expect(result.pluginInstalled).toBeUndefined(); expect(result.globalInstalled).toBeUndefined();
-    const afterA = await runtimeRecovery.inspectRecovery(a);
+    const afterA = await inBody("the a inspection after completion", runtimeRecovery.inspectRecovery(a));
     expect(afterA.instanceId).not.toBe(source.instanceId); expect(afterA.version).toBe(VERSION); expect(afterA.recovery?.phase).toBe("released");
     expect(recoveryLock(scope.home, a.root)).toBeUndefined();
     await assertB("after-completion");
     for (const step of ["prepare", "commit", "start", "restore", "verify", "release"]) expect(observations).toContain(`after-${step}`);
-  } finally {
+  } catch (error) { bodyFailure = error; throw error; }
+  finally {
     channel?.close();
+    const failures: string[] = [];
+    /** Every cleanup wait is its own bound (tests.md): a hub that will not stop fails this file's cleanup by name, never Bun's timeout. */
+    const bounded = async (step: string, work: () => Promise<unknown>) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([work(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${step} exceeded ${CLEANUP_STEP_MS / 1000} s`)), CLEANUP_STEP_MS); })]);
+      } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
+      finally { clearTimeout(timer); }
+    };
     try {
-      if (operation && production && recoveryLock(scope.home, projects[0]?.root) === operation.id)
-        await disposeRecovery(operation.id, { stop: true }, "owned test fixture cleanup", production, scope.home);
-      if (lifecycle) for (const project of projects) await lifecycle.stopProject(project);
-      rmSync(root, { recursive: true, force: true });
+      const owned = operation, effects = production;
+      if (owned && effects && recoveryLock(scope.home, projects[0]?.root) === owned.id)
+        await bounded("recovery dispose cleanup", () => disposeRecovery(owned.id, { stop: true }, "owned test fixture cleanup", effects, scope.home));
+      if (lifecycle) for (const project of projects) await bounded(`stopping ${project.id}`, () => lifecycle!.stopProject(project));
+      await bounded("fixture removal", async () => rmSync(root, { recursive: true, force: true }));
     } finally { scope.restore(); }
+    // A cleanup failure is never swallowed; the body's own failure rides along when both happen.
+    if (failures.length) throw new Error(`fixture cleanup did not finish: ${failures.join("; ")}${bodyFailure === undefined ? "" : ` (body: ${bodyFailure instanceof Error ? bodyFailure.message : String(bodyFailure)})`}`);
   }
-}, 20_000);
+}, 90_000);
