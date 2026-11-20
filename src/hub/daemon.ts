@@ -13551,7 +13551,9 @@ export async function startDaemon(opts: DaemonOptions) {
   { const every = opts.handoffCatchUpMs ?? 5 * 60_000, watch = opts.handoffWatchMs ?? 15_000;
     const periodic = setInterval(() => void handoffCatchUp(), every), descriptorWatch = setInterval(handoffWatch, watch);
     periodic.unref?.(); descriptorWatch.unref?.(); intervals.push(periodic, descriptorWatch); }
+  startupTimings.mark("post_ready_handoff");
   tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits();
+  startupTimings.mark("post_ready_queue");
   for (const name of opts.configWatch === false ? [] : CONFIG_SOURCE_FILES) {
     const path = join(opts.cwd, ".agenthub", name);
     const listener = (current: import("node:fs").Stats, previous: import("node:fs").Stats) => {
@@ -13564,17 +13566,21 @@ export async function startDaemon(opts: DaemonOptions) {
     configWatchers.push({ path, listener });
   }
   startupCleanup.push(stopConfigWatch);
+  startupTimings.mark("post_ready_watch");
   // #258: approvals whose settle entry a crash cut off are settled now (decisions, contracts and fails reach long-term).
   try { const settled = tasks.reconcileMemory(); if (settled) log(`hub memory: settled ${settled} approved task${settled === 1 ? "" : "s"} a stop had left unsettled`); }
   catch (e) { log(`hub memory reconciliation failed: ${(e as Error).message}`); }
+  startupTimings.mark("post_ready_reconcile");
   if (memoryStore) {
     // #258: which long-term tasks are open, and who holds them, after this machine's last sync.
     try { checkMemory(); for (const g of memoryStore.goals(memoryProject).filter((x) => x.state !== "done" && x.state !== "dropped")) notify(`long-term task ${goalLine(g)}`); }
     catch (e) { log(`hub memory goals unreadable: ${(e as Error).message}`); }
+    startupTimings.mark("post_ready_goals");
     renewAllLeases();
     const leases = setInterval(renewAllLeases, 10 * 60_000); leases.unref?.(); intervals.push(leases);
     rescheduleMemorySync(true);
   }
+  startupTimings.mark("post_ready_leases");
   opts.memorySyncTrigger?.(syncNow);
   if (crashed) {
     // This run owns the record now, so its clean stop removes it even if no peer attaches to rewrite it.
@@ -13586,10 +13592,13 @@ export async function startDaemon(opts: DaemonOptions) {
     });
   }
   // After a crash that recorded Pi, crash recovery starts it (#66): its recorded session first, a fresh one if that fails.
+  startupTimings.mark("post_ready_crash");
   const piRecovered = !archivedPiContinuity && !!crashed?.peers.some((p) => definitionOf(p.peer)?.session.restoreOnStart);
   if (piAutoStart() && !recoveryActive() && !piRecovered) autoStartPi();
   // #843 AC3: at hub start, after the roster and the control socket exist; never awaited, so a slow probe delays no start.
+  startupTimings.mark("post_ready_pi");
   void sweepAgentDrift();
+  startupTimings.mark("post_ready_drift");
   // #515b: the loopback ports of the two egress proxies, for a host-only test that connects to the proxy this daemon actually started. Ports only: no list, no authority.
   startupTimings.mark("post_ready");
   log(startupTimings.finish());
