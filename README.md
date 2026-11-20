@@ -132,7 +132,7 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   ([guidance probes](docs/design/guidance-probes.md)).
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
-  in process with no claude-mem worker (short- and long-term tiers, a typed graph,
+  in process (short- and long-term tiers, a typed graph,
   git sync between machines). Agents get
   it as a recall preface, as briefs on a task, and through bounded search tools.
   Managed headless peers can save compact `amem:` records from final answers; the
@@ -222,17 +222,12 @@ Live checks that still need a real account or a person are listed in the
 | [Security notes](docs/security.md) | what the hub defends and what it does not |
 | [Design spec](docs/specs/2026-09-19-agent-hub-design.md) | how it is built and why |
 | [Smoke checklist](docs/smoke.md) | what has been verified against real agents |
+| [Influences](docs/influences.md) | projects whose features informed agent-hub |
 | [Changelog](CHANGELOG.md), [Contributing](CONTRIBUTING.md) | releases and how to contribute |
 
 Coding agents that work on this repository follow [`AGENTS.md`](AGENTS.md) and
 [`docs/agent-notes/`](docs/agent-notes/).
 The managed agent guidance explains the marker-only no-reply path for a delivery that needs no answer (#1550).
-
-## Origin
-
-The first idea came from [agent-bridge](https://github.com/raysonmeng/agent-bridge),
-which lets Claude Code and Codex talk to each other. agent-hub has since grown into a
-different system with its own goals and shares no code with it.
 
 ## License
 

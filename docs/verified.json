@@ -163,6 +163,12 @@
         "src/cli/help.ts"
       ]
     },
+    "docs/influences.md": {
+      "verifiedAgainst": "bfa5c3b99459168cbda7966069535a7b4c7b3c5d",
+      "paths": [
+        "docs/specs/2026-09-19-agent-hub-design.md"
+      ]
+    },
     "docs/events.md": {
       "verifiedAgainst": "250eb2d8ee7ea86254295e1b9e7515e3851d00c8",
       "paths": [
