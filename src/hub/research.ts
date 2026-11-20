@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { segmentsOf, streamEnd } from "./log-rotation.ts";
 import { join } from "node:path";
 import { isModelEvidence, MODEL_EVIDENCE, parseEventLine, readEvents, scanEventLines, type ModelEvidence, type RoleIdentity, type StampedEvent } from "./events.ts";
 import { safeModelLabel } from "../omniroute/usage.ts";
@@ -342,7 +343,7 @@ const TRACKED = new Set(["hub_start", "state", "tooling", "memory_brief", "task"
  * only that slice. What a slice cannot see is carried: one catch-up pass over the bytes appended since the last closure (the first closure after a start reads the file once) keeps, per task id, the
  * byte offset of its latest proposal and the `FoldCarry` as of that offset, plus the offset each usage key was first counted at. A task the tail has no start for (its proposal is not in the file, or it
  * was evicted) is read whole, which is also what `ahub research backfill` does.
- * ponytail: `firstUsage` holds one entry per usage row of the log (about 74 000 rows in a 180 MB log), `starts` at most `maxTasks` carries; the upgrade path is to rotate `events.jsonl` or keep the keys in `hub.db`.
+ * ponytail: `firstUsage` holds one entry per usage row of the log (about 74 000 rows in a 180 MB log), `starts` at most `maxTasks` carries; `events.jsonl` rotates by size (#1546), which bounds both; the upgrade path past that is to keep the keys in `hub.db`.
  */
 export class ResearchTail {
   private carry = new FoldCarry();
@@ -358,8 +359,9 @@ export class ResearchTail {
   constructor(readonly file: string, readonly maxTasks = 512) {}
   private reset(): void { this.carry = new FoldCarry(); this.scanned = 0; this.firstUsage.clear(); this.starts.clear(); this.restarted.clear(); this.started.clear(); }
   private catchUp(): void {
-    if (!existsSync(this.file)) { this.reset(); return; }
-    if (statSync(this.file).size < this.scanned) this.reset(); // the log was archived and started again
+    const segments = segmentsOf(this.file); // #1546: an offset is a position in the stream of rotated segments plus the live file, so a rotation moves no offset
+    if (!segments.length) { this.reset(); return; }
+    if (streamEnd(segments) < this.scanned) this.reset(); // the log was archived and started again
     this.scanned = scanEventLines(this.file, this.scanned, (line, offset) => {
       const type = lineType(line);
       if (type !== undefined && !TRACKED.has(type)) return;
@@ -382,7 +384,9 @@ export class ResearchTail {
   /** The events `taskRecords` needs for `taskId`, and where its fold starts (undefined for a whole-file read). A quota row is skipped: no field of a record reads one. */
   events(taskId: number): { events: StampedEvent[]; start?: FoldStart } {
     this.catchUp();
-    const held = this.restarted.has(taskId) ? undefined : this.starts.get(taskId);
+    let held = this.restarted.has(taskId) ? undefined : this.starts.get(taskId);
+    // A start whose bytes retention dropped (its segment is gone) cannot be sliced: read what the log still holds, which is what `ahub research backfill` does.
+    if (held && held.offset < (segmentsOf(this.file)[0]?.start ?? 0)) held = undefined;
     if (!held) { this.lastRead = { from: 0, to: this.scanned }; return { events: readEvents(this.file) }; }
     const events: StampedEvent[] = [];
     scanEventLines(this.file, held.offset, line => {

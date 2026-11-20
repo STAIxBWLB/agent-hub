@@ -1,5 +1,6 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import type { TaskAttribution } from "./attribution.ts";
+import { segmentsOf, streamEnd } from "./log-rotation.ts";
 import type { PeerId } from "./envelope.ts";
 import type { StageSwitchTrace as SwitchTrace } from "../models/route/stage-fallback.ts";
 import type { ScreenRecord } from "./inference.ts";
@@ -164,23 +165,44 @@ export function tokenDeltas(): (peer: string, total: number, session: string) =>
 }
 
 /**
- * Events at or after `since` (ms), skipping lines a crash cut short.
- * ponytail: reads the whole file, which is never rotated; rotate by month or index by time when it gets large.
+ * Events at or after `since` (ms), skipping lines a crash cut short. Reads every rotated segment (`log-rotation.ts`, #1546) oldest first and then the live file, so rotation never hides history from a reader;
+ * the segment list is read again afterwards and the read repeated if a rotation moved the live file meanwhile.
  */
 export function readEvents(file: string, since = 0): StampedEvent[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8").split("\n").flatMap(line => {
-    const event = parseEventLine(line, since);
-    return event === undefined ? [] : [event];
-  });
+  for (let attempt = 0; ; attempt++) {
+    const segments = segmentsOf(file), out: StampedEvent[] = [];
+    for (const segment of segments) {
+      let text: string;
+      try { text = readFileSync(segment.path, "utf8"); } catch { continue; } // moved by a rotation since the listing: the check below repeats the read
+      for (const line of text.split("\n")) { const event = parseEventLine(line, since); if (event !== undefined) out.push(event); }
+    }
+    const again = segmentsOf(file);
+    if (attempt >= 3 || (again.length === segments.length && again.every((segment, i) => segment.path === segments[i]!.path && segment.start === segments[i]!.start))) return out;
+  }
 }
 
 /**
- * #1555 AC5: the whole lines of `file` from byte `from` up to byte `to` (default: the end), each with the byte offset it starts at, read in bounded chunks, never the file from byte 0 unless `from` is 0.
+ * #1555 AC5, #1546: the whole lines of the event log (its rotated segments and the live file make one byte stream: an offset is a position in that stream, so it keeps its meaning across a rotation) from byte `from` up to byte `to` (default: the end), each with the byte offset it starts at, read in bounded chunks, never the file from byte 0 unless `from` is 0.
  * A trailing piece with no newline yet is not a line: it is left for the pass that sees its end. Returns the offset after the last whole line, which is where the next pass starts.
  * A line is the bytes between two `\n`, so a multi-byte character never splits one.
+ * Bytes below the oldest kept segment are gone: a `from` below it starts at the oldest segment. A trailing piece with no newline can only be the live file's last bytes.
  */
 export function scanEventLines(file: string, from: number, each: (line: string, offset: number) => void, to = Infinity): number {
+  const segments = segmentsOf(file);
+  if (!segments.length) return from;
+  let position = Math.max(from, segments[0]!.start);
+  const end = Math.min(streamEnd(segments), to);
+  for (const segment of segments) {
+    const segmentEnd = Math.min(segment.start + segment.size, end);
+    if (segmentEnd <= position) continue;
+    if (segment.start >= end) break;
+    position = segment.start + scanFileLines(segment.path, position - segment.start, (line, offset) => each(line, segment.start + offset), segmentEnd - segment.start);
+    if (position < segmentEnd) break; // a trailing piece with no newline yet: the next pass sees its end
+  }
+  return position;
+}
+
+function scanFileLines(file: string, from: number, each: (line: string, offset: number) => void, to: number): number {
   if (!existsSync(file)) return from;
   const fd = openSync(file, "r");
   try {
