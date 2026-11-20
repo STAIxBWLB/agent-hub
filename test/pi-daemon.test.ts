@@ -1709,6 +1709,7 @@ test("Pi check commits its managed worktree and runs the exact recorded head (#1
     }),
   };
   const { stateDir, daemon, console_ } = await hub(config, false, { commit: true, boundedTools });
+  expect(hubGitSync(["-C", stateDir, "config", "core.excludesFile", "/dev/null"], { encoding: "utf8" }).status).toBe(0);
   const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
   const task = board.propose("user", { title: "Edit fixture", class: "implement" });
   board.update(task.id, "user", "assigned", { owner: "pi" });
@@ -1716,6 +1717,13 @@ test("Pi check commits its managed worktree and runs the exact recorded head (#1
   const peer = daemon.bus.peers.get("pi") as PiPeer;
   expect((await piToolCall(peer, "hub_task_accept", { id: task.id }, "check-accept")).failed).not.toBe(true);
   const worktree = join(stateDir, ".worktrees", `pi-${task.id}`);
+  writeFileSync(join(worktree, ".env"), "fixture secret\n");
+  const refused = await piToolCall(peer, "hub_check_start", { id: task.id, check: "typecheck" }, "managed-refused");
+  expect(refused.failed).toBe(true);
+  expect(refused.text).toContain("will not commit");
+  expect(refused.text).toContain("hub_check_start");
+  expect(requests).toHaveLength(0);
+  rmSync(join(worktree, ".env"));
   writeFileSync(join(worktree, "fixture.txt"), "first change\n");
   const result = await piToolCall(peer, "hub_check_start", { id: task.id, check: "typecheck" }, "managed-check");
   expect(result.failed).not.toBe(true);

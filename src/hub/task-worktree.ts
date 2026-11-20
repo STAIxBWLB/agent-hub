@@ -31,7 +31,7 @@ export const taskWorktreeBranch = (peer: PeerId, task: number): string => `task/
 export interface TaskWorktreeEntry { peer: string; task: number; path: string; branch: string; base: string; /** The hub's own last commit on the branch, once it made one. */ head?: string }
 export type TaskWorktreeAvailability = { ok: true } | { ok: false; reason: string; next: string };
 export type TaskWorktreeResult = { ok: true; path: string; branch: string; base: string; created: boolean } | { ok: false; reason: string };
-export type TaskWorktreeCommit = { ok: true; commit: string; branch: string; pushed: boolean; note?: string } | { ok: false; reason: string; commit?: string };
+export type TaskWorktreeCommit = { ok: true; commit: string; branch: string; pushed: boolean; note?: string } | { ok: false; reason: string; commit?: string; uncertain?: true };
 export interface TaskWorktreeRemoval { removed: boolean; branchDeleted: boolean; kept?: string }
 
 export interface TaskWorktreePort {
@@ -265,7 +265,8 @@ export class TaskWorktrees implements TaskWorktreePort {
   private async commit(input: { peer: PeerId; task: number; title: string; current?: () => boolean }): Promise<TaskWorktreeCommit> {
     const { peer, task } = input;
     const current = () => !input.current || input.current();
-    const fail = (reason: string, commit?: string): TaskWorktreeCommit => ({ ok: false, reason, ...(commit ? { commit } : {}) });
+    let uncertain = false;
+    const fail = (reason: string, commit?: string): TaskWorktreeCommit => ({ ok: false, reason, ...(commit ? { commit } : {}), ...(uncertain ? { uncertain: true as const } : {}) });
     if (!current()) return fail("task authority changed before the worktree commit");
     let records: Record<string, TaskWorktreeEntry>;
     try { records = this.readRecords(); } catch (error) { return fail((error as Error).message); }
@@ -311,6 +312,7 @@ export class TaskWorktrees implements TaskWorktreePort {
       if (!current()) return fail("task authority changed before the worktree commit");
       // 4. The commit object is made from the validated tree by the hub (no hook, no signing, no index read), and the branch moves to it only if it still sits at the recorded tip.
       const title = shown(input.title, 200) || `task ${task}`;
+      uncertain = true; // Git may have written an object or moved the branch even if a later step fails.
       const made = this.git(["-c", `user.name=${peer}`, "-c", `user.email=${peer}@agent-hub.invalid`, "-c", "commit.gpgSign=false", "commit-tree", tree, "-p", expectedTip, "-m", title, "-m", `Task #${task} by ${peer}. Committed by the hub for a sandboxed peer.`], path), commit = made.stdout.trim();
       if (made.status !== 0 || !SHA.test(commit)) return fail(`git commit-tree failed: ${shown(made.stderr)}`);
       if (this.git(["update-ref", `refs/heads/${branch}`, commit, expectedTip], path).status !== 0) return fail(`${branch} moved while the hub was committing; nothing was kept. Decline the task so the hub clears it`);
@@ -325,7 +327,7 @@ export class TaskWorktrees implements TaskWorktreePort {
 
   /** 5. One explicit refspec for this branch, only to an origin that is this project's repository. */
   private async push(path: string, branch: string, commit: string, _peer: PeerId, current: () => boolean): Promise<TaskWorktreeCommit> {
-    const fail = (reason: string, sha?: string): TaskWorktreeCommit => ({ ok: false, reason, ...(sha ? { commit: sha } : {}) });
+    const fail = (reason: string, sha?: string): TaskWorktreeCommit => ({ ok: false, reason, ...(sha ? { commit: sha } : {}), uncertain: true });
     if (!current()) return fail("task authority changed after the worktree commit; the commit was kept", commit);
     if (this.tip(branch) !== commit) return fail(`${branch} no longer points at the hub's commit ${commit.slice(0, 12)}; the hub will not push it. Decline the task so the hub clears it`);
     const urls = [...this.git(["remote", "get-url", "--push", "--all", "origin"], path).stdout.trim().split("\n"), ...this.git(["remote", "get-url", "--all", "origin"], path).stdout.trim().split("\n")].filter(Boolean);

@@ -8748,7 +8748,11 @@ export class Tasks {
     if (task.state !== "in_progress" || this.isPii(task) || !current()) throw new PreEffectToolRefusal("check unavailable");
     const result = await port.commitAndPush({ peer: by, task: id, title: task.title, current });
     // A commit or push can have landed even when the request loses authority during an await.
-    if (!result.ok) throw new Error(`managed worktree check: ${result.reason}`);
+    if (!result.ok) {
+      const reason = `managed worktree check: ${result.reason.replaceAll("hub_task_done", "hub_check_start")}`;
+      if (result.uncertain) throw new Error(reason);
+      throw new PreEffectToolRefusal(reason);
+    }
     if (!current()) throw new Error("check unavailable: task authority changed after the worktree commit");
     const fresh = this.d.board.get(id);
     if (!fresh || fresh.history.length !== task.history.length) throw new Error("check unavailable: task changed after the worktree commit");
