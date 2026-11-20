@@ -1,4 +1,5 @@
 import { claimListId } from "./board.ts";
+import { segmentsOf } from "./log-rotation.ts";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -32,7 +33,8 @@ export function dogfoodLines(file: string, cap = DOGFOOD_BYTE_CAP): Source<strin
     if (start) { const newline = text.indexOf("\n"); text = newline < 0 ? "" : text.slice(newline + 1); }
     const whole = text.endsWith("\n") || !text;
     if (!whole) text = text.slice(0,Math.max(0,text.lastIndexOf("\n") + 1));
-    return source(text.split("\n").filter(Boolean), !start && n === stat.size && whole);
+    // #1546: rotated segments hold older history this tail never reads, so the read is not whole once the log has rotated.
+    return source(text.split("\n").filter(Boolean), !start && n === stat.size && whole && !segmentsOf(file).some(segment => !segment.live));
   } catch { return missing([]); }
   finally { if (fd !== undefined) closeSync(fd); }
 }

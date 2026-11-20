@@ -1,11 +1,12 @@
 import { waitForStartupReadiness, type StartupOwner } from "./startup-readiness.ts";
+import { rotateTextLogAtStart } from "./log-rotation.ts";
 import { resolveProjectRuntime, recordProjectRuntime, confirmProjectRuntime, readProjectRuntimeForCaller, projectRuntimeRefusal, type ProjectRuntimeSelection } from "./project-runtime.ts";
 import { scheduleRuntimeCapturePrune } from "./runtime-capture-prune.ts";
 import { createProjectRuntimeAccess, type ProjectRuntimeAccess } from "./project-runtime-state.ts";
 import { isDatabaseBusyReply, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:net";
 import { ControlClient, PROTOCOL, PROTOCOL_MIN, controlProtocolWindow, readControl } from "./control-client.ts";
@@ -218,7 +219,11 @@ export async function startProject(project: Project, options: { unattended?: boo
         const temporary = `${marker}.${randomUUID()}.tmp`;
         writeFileSync(temporary, JSON.stringify({ root: project.root, projectId: project.id }), { mode: 0o600 });
         renameSync(temporary, marker);
+        let rotationNote = "";
+        try { rotateTextLogAtStart(join(project.stateDir, "hub.log")); } // #1546: no daemon holds it open yet, so an oversized log is moved aside before the new one opens it
+        catch (error) { rotationNote = `${new Date().toISOString()} hub.log rotation failed: ${(error as Error).message.slice(0, 160)}\n`; }
         const log = openSync(join(project.stateDir, "hub.log"), "a");
+        if (rotationNote) try { writeSync(log, rotationNote); } catch { /* the note is advisory */ }
         try {
           options.current?.();
           const child = spawn(process.execPath, [join(runtime.root, "src/cli/main.ts"), "--project", project.root, ...(options.liveTest ? ["--live-test"] : []), "daemon",
