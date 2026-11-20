@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Verify Claude Code 2.1.328 as a headless implementer with isolated model-free transport and wrapper receipts (Refs #888, hub task 1023).
+- Verify Claude Code 2.1.328 and 2.1.329 as headless implementers with isolated model-free transport and wrapper receipts (Refs #888, hub task 1023).
 
 ## 0.44.0
 
