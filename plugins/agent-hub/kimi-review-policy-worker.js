@@ -7,7 +7,7 @@ import { createHash } from "crypto";
 import { lstatSync, readFileSync } from "fs";
 import { dirname as dirname2, join as join2, resolve as resolve2 } from "path";
 
-// ../../node_modules/@staix/agent-mem/src/memory/platform.ts
+// node_modules/@staix/agent-mem/src/memory/platform.ts
 import { realpathSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
 import { createRequire } from "module";
