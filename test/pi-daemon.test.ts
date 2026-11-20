@@ -16,6 +16,7 @@ import { hubGitSync } from "../src/hub/git.ts";
 import { DEFAULT_CONFIG, startDaemon, type DaemonOptions } from "../src/hub/daemon.ts";
 import { PI_CEILING_KIND, PI_CEILING_UNIT } from "../src/pi/ceiling.ts";
 import { piFailureText } from "../src/hub/pi-failure.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
 // Emulated native peers probe no real account; isolated runner availability remains real and disabled.
 const fakeSpecTools = () => ({
@@ -1697,11 +1698,12 @@ test("Pi check commits its managed worktree and runs the exact recorded head (#1
   const dir = mkdtempSync(join(tmpdir(), "pi-check-worktree-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
-  const requests: CheckRequest[] = [];
+  const requests: CheckRequest[] = []; let busy = false;
   const boundedTools: NonNullable<DaemonOptions["boundedTools"]> = {
     ...fakeSpecTools(), runner: () => ({
       available: async () => ({ available: true }), sweep: async () => [], stopAll: async () => {},
       start: request => {
+        if (busy) throw new PreEffectToolRefusal("busy");
         requests.push(request);
         return { run: randomUUID(), done: new Promise<RunReceipt>(() => {}) };
       },
@@ -1731,4 +1733,15 @@ test("Pi check commits its managed worktree and runs the exact recorded head (#1
   expect(saved.refs.commit).toMatch(/^[0-9a-f]{40}$/);
   expect(saved.refs.branch).toBe(`task/${task.id}-pi`);
   expect(requests[0]).toMatchObject({ task: task.id, owner: "pi", ref: saved.refs.commit, revision: saved.history.length });
+  busy = true;
+  writeFileSync(join(worktree, "fixture.txt"), "second change\n");
+  const rejected = await piToolCall(peer, "hub_check_start", { id: task.id, check: "typecheck" }, "managed-busy");
+  expect(rejected.failed).toBe(true);
+  expect(rejected.text).toContain("outcome is uncertain");
+  const updated = board.get(task.id)!;
+  expect(updated.refs.commit).toMatch(/^[0-9a-f]{40}$/);
+  expect(updated.refs.commit).not.toBe(saved.refs.commit);
+  const db = new Database(join(stateDir, "hub.db"));
+  try { expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id='managed-busy'").get()).toEqual({ state: "pending", result: null }); }
+  finally { db.close(); }
 });

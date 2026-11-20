@@ -8753,9 +8753,9 @@ export class Tasks {
       if (result.uncertain) throw new Error(reason);
       throw new PreEffectToolRefusal(reason);
     }
-    if (!current()) throw new Error("check unavailable: task authority changed after the worktree commit");
+    if (!current()) throw new Error("check unavailable: task authority changed after the worktree commit; read hub_task_show before retrying");
     const fresh = this.d.board.get(id);
-    if (!fresh || fresh.history.length !== task.history.length) throw new Error("check unavailable: task changed after the worktree commit");
+    if (!fresh || fresh.history.length !== task.history.length) throw new Error("check unavailable: task changed after the worktree commit; read hub_task_show before retrying");
     if (fresh.refs.commit === result.commit && fresh.refs.branch === result.branch) return fresh;
     return this.d.board.update(id, HUB, "check worktree committed", { refs: { commit: result.commit, branch: result.branch } }, undefined, {}, fresh.history.length);
   }
