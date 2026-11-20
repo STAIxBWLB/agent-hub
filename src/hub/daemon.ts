@@ -265,7 +265,7 @@ import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
 import { CaptureStore, configuredPolicy, recordsEnabled, looksSecret, DEFAULT_LEASE_MS, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
 import { memoryProjectKey } from "@staix/agent-mem";
-import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
+import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, createMemoryPolicyVersion, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory, createIntentBriefSource, createStandalonePolicy } from "@staix/agent-mem";
 import { SourceRegistry, SOURCE_UTF8_PROJECTION_VERSION, type SourceMeta } from "./sources.ts";
 import { evidenceSnapshotKey, readEvidenceSource } from "./source-read.ts";
@@ -2016,14 +2016,13 @@ export async function startDaemon(opts: DaemonOptions) {
     try { candidates = openProfileCandidates(memoryBinding!); const opened = candidates; startupCleanup.push(() => opened.close()); }
     catch { log("memory candidate sidecar unavailable"); }
   }
-  const memorySyncPolicyVersion = () => {
-    const profile = memoryBinding?.status(memoryStore);
-    return createHash("sha256").update(JSON.stringify([
-      profile ? [profile.state, "profile" in profile ? profile.profile : undefined, "generation" in profile ? profile.generation : undefined,
-        "selectorRevision" in profile ? profile.selectorRevision : undefined] : "unbound", config.local.deny,
-      config.pii?.paths ?? [], activeRouting().signals.pii_patterns,
-    ])).digest("hex");
-  };
+  const memorySyncPolicyVersion = createMemoryPolicyVersion(
+    () => JSON.stringify([memoryBinding?.fenceStamp() ?? "unbound", config.local.deny, config.pii?.paths ?? [], activeRouting().signals.pii_patterns]),
+    () => ({
+      profile: memoryBinding?.status(memoryStore, { skippedRows: false }) ?? "unbound",
+      inputs: [config.local.deny, config.pii?.paths ?? [], activeRouting().signals.pii_patterns],
+    }),
+  );
   let captureBinding = memoryBinding;
   if (config.memory.enabled && !captureBinding && !memoryProblem) {
     try { captureBinding = new MemoryProfileBinding({ project: memoryProject, projectKey: memoryProjectRaw }); }
