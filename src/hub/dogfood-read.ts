@@ -247,7 +247,7 @@ export async function dogfoodPrs(repo: string, tasks: Source<DogfoodTask[]>, sin
         }
       } catch { /* Missing or incomplete recorded heads cannot certify CI. */ }
       return reply;
-    });
+    }, undefined, undefined, undefined, true);
     const row: DogfoodPr = cost ?? {repo,pr:item.number,state:"MERGED",mergedAt:date(item.mergedAt),complete:false};
     const linked = runsComplete ? runs.filter((r:any)=>date(r.created_at)!<=row.mergedAt!) : [];
     if (runsComplete) {

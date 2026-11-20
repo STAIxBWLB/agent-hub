@@ -745,7 +745,7 @@ async function identicalTreeGate(repository: string, tree: string, run: SdlcGh, 
 }
 
 /** PR cost evidence excludes titles, bodies and comment text; unknown/truncated coverage never becomes zero. */
-export async function readPrCostHistory(repository: string, number: number, run: SdlcGh = sdlcGh, snapshot?: unknown, expectedHead?: string, firstSubmittedHead?: string): Promise<import("./cost-governance.ts").CostPr | undefined> {
+export async function readPrCostHistory(repository: string, number: number, run: SdlcGh = sdlcGh, snapshot?: unknown, expectedHead?: string, firstSubmittedHead?: string, recordedHeadInventory = false): Promise<import("./cost-governance.ts").CostPr | undefined> {
   if (!repo(repository) || !id(number)) return;
   const [owner, name] = repository.split("/");
   try {
@@ -775,6 +775,11 @@ export async function readPrCostHistory(repository: string, number: number, run:
     const linked = runs.workflow_runs.filter((row: { head_sha?: string; pull_requests?: number[] }) => heads.has(row.head_sha ?? "") || Array.isArray(row.pull_requests) && row.pull_requests.includes(number));
     if (linked.some((row: { id?: number; run_attempt?: number }) => !id(row.id) || !id(row.run_attempt))) return result;
     result.ciRuns = linked.map((row: { id: number; run_attempt: number }) => ({ id: row.id, attempt: row.run_attempt }));
+    // The dogfood reader supplies a separately validated, complete recorded-head inventory for its bounded time window.
+    if (recordedHeadInventory && runs.total_count === runs.workflow_runs.length) {
+      result.complete = reviewComplete && commitComplete;
+      return result;
+    }
     const directComplete = runs.total_count === runs.workflow_runs.length && runs.workflow_runs.every((row: { pull_requests?: number[] }) => Array.isArray(row.pull_requests) && row.pull_requests.length > 0 && row.pull_requests.every(id));
     if (directComplete) {
       result.ciRuns = runs.workflow_runs.filter((row: { pull_requests: number[] }) => row.pull_requests.includes(number)).map((row: { id: number; run_attempt: number }) => ({ id: row.id, attempt: row.run_attempt }));
