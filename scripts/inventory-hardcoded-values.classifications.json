@@ -206,6 +206,7 @@
   "scripts/check.sh:shell:inline:AHUB_CHECK_HANG_S=2700#0": "test seam",
   "scripts/check.sh:shell:inline:AHUB_CHECK_LOCK_WAIT_S=1800#0": "test seam",
   "scripts/check.sh:shell:inline:bun test --timeout=20000#0": "operational",
+  "scripts/check.sh:shell:inline:head=1#0": "contract",
   "scripts/check.sh:shell:inline:sleep=0#0": "operational",
   "scripts/check.sh:shell:inline:sleep=5#0": "operational",
   "scripts/ci-gates.mjs:attempt:inline:attempt=0#0": "operational",

@@ -22,6 +22,20 @@ if [ -n "$shard" ]; then
   if [ "$changed" -eq 1 ]; then echo "check: AHUB_CHECK_SHARD and --changed cannot be combined" >&2; exit 2; fi
 fi
 
+# #1577 entry 3: every step that can end the gate names itself. `step NAME CMD...` runs CMD and, when it exits non-zero, prints one
+# `check: FAILED step 'NAME' (exit N)` line (a GitHub annotation too under Actions) and exits with CMD's own status, so a red shard never
+# needs its log read to find the step. It changes no exit status and retries nothing.
+failed_line() {
+  echo "check: FAILED $1" >&2
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::error title=check failed::$1"; fi
+}
+step() {
+  local name=$1 rc=0
+  shift
+  "$@" || rc=$?
+  if [ "$rc" -ne 0 ]; then failed_line "step '$name' (exit $rc)"; exit "$rc"; fi
+}
+
 # One heavy job per repo (#398): every worktree shares the git common dir, so a second gate waits here instead of
 # depending on a chat message being read in time. AHUB_CHECK_LOCK_WAIT_S bounds the wait (0 fails at once).
 # ponytail: liveness is `kill -0`, so a reused pid keeps a crashed holder's slot until its directory is removed by
@@ -45,29 +59,31 @@ if common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); 
   trap release_heavy EXIT
 fi
 
-if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then node scripts/check-docs.mjs; fi
-bun install --frozen-lockfile >/dev/null
+if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then step "docs check" node scripts/check-docs.mjs; fi
+# The install's own output stays quiet inside the wrapped command: a redirection on this line would cover `step` too and swallow the
+# `::error` annotation failed_line prints for GitHub Actions.
+step "bun install" bash -c 'bun install --frozen-lockfile >/dev/null'
 # Release N-1 and the older supported protocol floor are separately exact-locked test fixtures, never root CLI dependencies.
 for fixture_dir in test/fixtures/protocol-v16 test/fixtures/release-n-1; do
-  if [ -f "$fixture_dir/package.json" ]; then (cd "$fixture_dir" && bun install --frozen-lockfile >/dev/null); fi
+  if [ -f "$fixture_dir/package.json" ]; then step "fixture install $fixture_dir" bash -c 'cd "$1" && bun install --frozen-lockfile >/dev/null' _ "$fixture_dir"; fi
 done
 if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then
   if [ "$(uname -s)" = "Darwin" ]; then
     # ponytail: the 5120 MiB heap is about twice the measured 2.45 GiB peak and leaves headroom on the 7 GB runner; split the program with incremental builds or project references when it no longer fits.
-    NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=5120" bun x tsc --noEmit
+    NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=5120" step "typecheck" bun x tsc --noEmit
   else
-    bun x tsc --noEmit
+    step "typecheck" bun x tsc --noEmit
   fi
-  bun scripts/check-roles.ts
-  bun scripts/inventory-hardcoded-values.ts --check   # #719 (#1180): unknown keys may only shrink, never grow
-  bun scripts/readme-facts.ts   # #1268: generated doc facts match package.json and .bun-version (`--write` fixes)
-  bun scripts/build.mjs --check
-  node scripts/check-package.mjs # includes the standalone pet host, JXA and HTML assets
+  step "roles check" bun scripts/check-roles.ts
+  step "hardcoded-values inventory" bun scripts/inventory-hardcoded-values.ts --check   # #719 (#1180): unknown keys may only shrink, never grow
+  step "readme facts" bun scripts/readme-facts.ts   # #1268: generated doc facts match package.json and .bun-version (`--write` fixes)
+  step "bundle freshness" bun scripts/build.mjs --check
+  step "package contents" node scripts/check-package.mjs # includes the standalone pet host, JXA and HTML assets
 fi
 
 test_args=()
 if [ "$changed" -eq 1 ]; then
-  selection=$(node scripts/changed-tests.mjs ${changed_base:+"$changed_base"})
+  selection=$(node scripts/changed-tests.mjs ${changed_base:+"$changed_base"}) || { rc=$?; failed_line "step 'changed-tests selection' (exit $rc)"; exit "$rc"; }
   if [ "$selection" = "ALL" ]; then echo "check: --changed selected the full suite" >&2
   elif [ -z "$selection" ]; then echo "check: --changed found no affected tests"; echo "check: OK (changed)"; exit 0
   else
@@ -142,7 +158,9 @@ trap 'exit 143' TERM
 # process substitution: with a pipe `$!` would be the filter and `wait` its status, so the watchdog would stop the filter and leave bun
 # running and a failing suite would read as passing; a process substitution cannot be waited on with a bound, and a leaked fixture child that
 # keeps the output open must not hold the gate before the leak scan names it.
-scripts/progress-tee.sh "$progress" < "$output_fifo" >&2 &
+summary="$check_tmp/test-summary.txt"
+: > "$summary"
+scripts/progress-tee.sh "$progress" "$summary" < "$output_fifo" >&2 &
 tee_pid=$!
 # #613: and no ORCA_* variable (src/hub/orca-env.ts names the launcher's four; the whole prefix goes): a run from an Orca pane would otherwise open real tabs and agents there.
 while IFS= read -r orca_var; do unset "$orca_var"; done < <(compgen -e | grep '^ORCA_' || true)
@@ -174,6 +192,21 @@ tee_pid=""
 # the daemon. Run this after test failures as well.
 leaks=0
 node scripts/check-owned-processes.mjs "$check_tmp" "$ledger" || leaks=$?
+if [ "$tests" -ne 0 ]; then
+  # #1577 entry 3: one line that says which step ended the shard and what was running, whether or not a `(fail)` line exists. A run cut by
+  # the watchdog or a signal exits 128+N; a runner or preload crash exits with no failing test at all.
+  # Bun prints every failing test a second time in its `N tests failed:` recap after the last file, and that repeat is the same
+  # line byte for byte (the recorded duration included), so this counts distinct rows. The recap carries no file header, so the
+  # last `H` row is still the file that was running when the run ended.
+  fails=$(grep '^F ' "$summary" 2>/dev/null | sort -u | wc -l | tr -d '[:space:]' || true)
+  last_file=$(grep '^H ' "$summary" 2>/dev/null | tail -1 | cut -c3- || true)
+  first_fail=$(grep '^F ' "$summary" 2>/dev/null | head -1 | cut -c3- | cut -c1-160 || true)
+  if [ "${fails:-0}" -gt 0 ]; then cause="$fails failing test(s), first: ${first_fail}"
+  elif [ "$tests" -gt 128 ]; then cause="the test runner was stopped by signal $((tests - 128)) (the quiet or total watchdog, or a CI cancel) with no failing test line"
+  else cause="the test runner exited with no failing test line (a crash, a preload or an argument error)"; fi
+  failed_line "step 'bun test' (exit $tests): $cause; last test file started: ${last_file:-none}"
+fi
+if [ "$leaks" -ne 0 ]; then failed_line "step 'leaked process scan' (exit $leaks)"; fi
 if [ "$tests" -ne 0 ] || [ "$leaks" -ne 0 ]; then
   echo "check: preserved test fixtures at $check_tmp" >&2
   if [ "$leaks" -ne 0 ]; then exit 1; fi
