@@ -164,6 +164,72 @@ test("a retargeted link at the environment memory home moves the version and the
   }
 });
 
+test("a retargeted symlink at AMEM_HOME moves the version and the fence refuses it", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "hub-memory-anchor-amem-")));
+  homes.push(root);
+  const first = join(root, "a");
+  const seed = new MemoryStore({ home: first });
+  seed.note(note(A, "alpha contract"));
+  seed.close();
+  await migrateShards({ memoryDir: join(first, "memory"), mode: "apply", authorizedPerson: true, tty: true });
+  const other = join(root, "b");
+  mkdirSync(join(other, "memory"), { recursive: true });
+  // agent-mem canonicalizes AMEM_HOME, so the bound home is the link's target: only the resolved string sees a retarget.
+  const link = join(root, "amem-link");
+  symlinkSync(join(first, "memory"), link);
+  const saved = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = link;
+  try {
+    const { store, binding } = openProfileMemory({ project: A, projectKey: A });
+    try {
+      const p = policy(binding, store, () => [["deny"]]);
+      const version = p.version();
+      unlinkSync(link);
+      symlinkSync(join(other, "memory"), link);
+      expect(p.version()).not.toBe(version);
+      expect(binding.status(store, { skippedRows: false }).state).toBe("unavailable");
+    } finally { store.close(); }
+  } finally {
+    if (saved === undefined) delete process.env.AMEM_HOME;
+    else process.env.AMEM_HOME = saved;
+  }
+});
+
+test("a rewritten config home pointer moves the version and the fence refuses it", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "hub-memory-anchor-config-")));
+  homes.push(root);
+  const first = join(root, "a");
+  const seed = new MemoryStore({ home: first });
+  seed.note(note(A, "alpha contract"));
+  seed.close();
+  await migrateShards({ memoryDir: join(first, "memory"), mode: "apply", authorizedPerson: true, tty: true });
+  const other = join(root, "b");
+  mkdirSync(join(other, "memory"), { recursive: true });
+  // The pointer file lives in the default home and names the home in use. Rewriting it moves the bound home without
+  // changing any stamped directory's own tuple.
+  const hub = join(root, "hub");
+  const configDir = join(hub, "memory");
+  mkdirSync(configDir, { recursive: true });
+  const pointer = join(configDir, "amem.config.json");
+  writeFileSync(pointer, JSON.stringify({ home: join(first, "memory") }));
+  const saved = process.env.AGENTHUB_HOME, savedAmem = process.env.AMEM_HOME;
+  process.env.AGENTHUB_HOME = hub;
+  delete process.env.AMEM_HOME;
+  try {
+    const { store, binding } = openProfileMemory({ project: A, projectKey: A });
+    try {
+      const p = policy(binding, store, () => [["deny"]]);
+      const version = p.version();
+      writeFileSync(pointer, JSON.stringify({ home: join(other, "memory") }));
+      expect(p.version()).not.toBe(version);
+      expect(binding.status(store, { skippedRows: false }).state).toBe("unavailable");
+    } finally { store.close(); }
+  } finally {
+    if (saved === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = saved;
+    if (savedAmem === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = savedAmem;
+  }
+});
+
 test("a fenced directory replaced by a file fails closed instead of throwing", async () => {
   const { home, memory } = await split();
   const { store, binding } = openProfileMemory({ home, project: A, projectKey: A });

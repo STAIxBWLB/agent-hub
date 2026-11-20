@@ -236,12 +236,6 @@ export class MemoryProfileBinding {
   private readonly project: string | undefined;
   /** The raw key `project` was resolved from; an alias added later must not leave writes on the old key. */
   private readonly projectKey: string | undefined;
-  /**
-   * The paths a symlink retarget moves `home` through, stamped on every fence check. An explicit home is stamped followed,
-   * because a link swap under it changes that directory's own tuple; the environment-derived memory dir is stamped itself,
-   * because the hub home above it is stamped nowhere and only the link's own tuple sees a retarget.
-   */
-  private readonly anchors: readonly (readonly [string, boolean])[];
   private unavailable = false;
 
   constructor(opts: ProfileMemoryOptions = {}, private readonly onUnavailable?: (neutralReason: string) => void, directMemoryDir?: string) {
@@ -250,25 +244,37 @@ export class MemoryProfileBinding {
     this.directMemoryDir = directMemoryDir;
     this.project = opts.project;
     this.projectKey = opts.projectKey;
-    if (directMemoryDir !== undefined) {
-      this.home = canonicalHome(directMemoryDir);
-      this.anchors = [[directMemoryDir, true]];
-    } else if (opts.home === undefined) {
-      const env = memoryHome();
-      this.home = canonicalHome(env);
-      this.anchors = [[env, false]];
-    } else {
-      this.home = homeFor(opts);
-      this.anchors = [[opts.home, true]];
-    }
+    this.home = this.resolvedHome();
     this.profile = Object.freeze({ ...currentProfile(this.home, this.project) });
     this.explicitProfile = this.profile.kind === "shared-v1" ? "shared-v1" : Object.freeze({ generation: this.profile.generation! });
+  }
+
+  /**
+   * The memory dir `assertCurrent()` compares against, by the same resolution: the whole string is the change signal for the
+   * home itself, so every input agent-mem's resolution reads shows when it moves - `AMEM_HOME` (canonicalized to its target,
+   * which a stamp of the old target cannot see), the machine config's `home` key inside the default home, and the
+   * `AGENTHUB_HOME` default with its `memory` child. Cost: one resolution, no profile, shard or alias parse.
+   */
+  private resolvedHome(): string {
+    return this.directMemoryDir === undefined ? homeFor(this.options) : canonicalHome(this.directMemoryDir);
+  }
+
+  /**
+   * The home's own change signal. An explicit home is a fixed string, so its followed tuple already sees every retarget
+   * below it (a link swap changes the containing directory's tuple) and costs one stat. The environment home is not fixed:
+   * agent-mem canonicalizes `AMEM_HOME` to its target and reads the default home's config pointer, so there the resolution
+   * itself is the signal.
+   */
+  private homeSignal(): string {
+    if (this.directMemoryDir !== undefined) return statStamp(this.directMemoryDir, true);
+    if (this.options.home !== undefined) return statStamp(this.options.home, true);
+    return this.resolvedHome();
   }
 
   assertCurrent(): void {
     if (this.unavailable) throw new Error(UNAVAILABLE);
     try {
-      const currentHome = this.directMemoryDir === undefined ? homeFor(this.options) : canonicalHome(this.directMemoryDir);
+      const currentHome = this.resolvedHome();
       const current = currentProfile(currentHome, this.project);
       if (currentHome !== this.home || !sameProfile(current, this.profile)) throw new Error(UNAVAILABLE);
       if (this.projectKey !== undefined && resolveAlias(currentHome, this.projectKey) !== this.project) throw new Error(UNAVAILABLE);
@@ -291,8 +297,9 @@ export class MemoryProfileBinding {
   }
 
   /**
-   * The cheap change signal for `assertCurrent()`: the stat tuple of every metadata object it resolves, or `unavailable` once
-   * the fence latched. It never parses a profile, shard or alias file, so a caller may poll it per fence check.
+   * The cheap change signal for `assertCurrent()`: `homeSignal()` plus the stat tuple of every metadata object it resolves,
+   * or `unavailable` once the fence latched. It never parses a profile, shard or alias file, so a caller may poll it per
+   * fence check.
    * A stat can still throw where `assertCurrent()` would have latched (ENOTDIR once a metadata directory became a file,
    * EACCES on a directory that lost read permission), and callers poll this unguarded on a peer's turn: every stat error
    * latches the binding unavailable and returns `unavailable`, the same fail-closed result the fence gives.
@@ -300,7 +307,7 @@ export class MemoryProfileBinding {
   fenceStamp(): string {
     if (this.unavailable) return "unavailable";
     try {
-      const anchor = this.anchors.map(([path, follow]) => statStamp(path, follow)).join("#");
+      const anchor = this.homeSignal();
       return [anchor, ...fenceObjects(this.home, this.profile, this.project, this.projectKey).map(path => statStamp(path))].join("|");
     } catch {
       this.invalidate();
