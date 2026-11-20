@@ -236,7 +236,7 @@ import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter
 import { ClaudeTodoSource, DoingTracker, readAiTitle, DOING_STUB, SESSION_TITLE_HINT, sessionTitleText, sessionTitleBindings, unnamedSessionLabel, type DoingKind, type PeerDoing, type TitleCursor } from "./peer-doing.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { VERSION, displayVersion } from "../version.ts";
-import { appendRecords, taskRecords } from "./research.ts";
+import { appendRecords, ResearchTail, taskRecords } from "./research.ts";
 import { readEvidence } from "./research-record.ts";
 import { memoryFigures, onlyTaskMemory, UNKNOWN_MEMORY_FIGURES, type MemoryFigures } from "./research-memory.ts";
 import { parseResearchRunners, type RegisteredRunnerV1 } from "./research-runner.ts";
@@ -1360,7 +1360,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /**
    * #247: the approved task's research record, built from events.jsonl with the function `ahub research backfill` uses.
    * Never blocks or fails the task flow: a write error is one hub.log line per hub run.
-   * ponytail: reads the whole events file at each approval; an incremental per-task index if that file grows large.
+   * Reads one slice of the events file per closure (`ResearchTail`, #1555): after a start the first closure scans the file once, later ones only the bytes appended since.
    */
   let researchLogged = false;
   // The approving turn ends after the approval and its usage arrives later still, so a record waits until no open turn
@@ -1369,6 +1369,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // first writes once its peers have stopped and their turns ended.
   const researchGraceMs = opts.researchGraceMs ?? 10_000;
   const researchPending = new Map<number, { since: number; timer: ReturnType<typeof setTimeout> }>();
+  // #1555 AC5: a closing task reads the slice of events.jsonl from its own proposal, with the cross-task state carried up to there, not the file from byte 0 (`ResearchTail`; backfill keeps the whole-file pass).
+  const researchTail = new ResearchTail(join(opts.stateDir, "events.jsonl"));
   /**
    * #1279: the counter figures of one task, read from agent-mem's sidecar at the moment the record is written (the sidecar, the store and the memory project are bound further down, and exist by
    * then). Undefined when memory or the sidecar is off, so the record's counters stay unknown; a task that is private reports none, whatever the sidecar holds.
@@ -1404,7 +1406,8 @@ export async function startDaemon(opts: DaemonOptions) {
       // #1277: the board and journal are read through a read-only handle, so the record carries its v2 blocks; the family lookup is the project's own (instances resolve there).
       // Scoped to the one task: the live writer runs on the daemon thread and must not parse every task's history and the whole journal for one record (a backfill reads them all).
       const evidence = { ...readEvidence(opts.stateDir, projectId, taskId), familyOf: (peer: string) => adapterCatalog.familyOf(peer, declarations), memory: onlyTaskMemory(taskId, memoryFiguresFor) };
-      appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }, evidence).filter((r) => r.task === taskId));
+      const slice = researchTail.events(taskId);
+      appendRecords(projectId, taskRecords(slice.events, projectId, { version: VERSION, source: "live" }, evidence, slice.start).filter((r) => r.task === taskId));
     } catch (error) {
       if (!researchLogged) log(`research record not written: ${(error as Error).message}`);
       researchLogged = true;

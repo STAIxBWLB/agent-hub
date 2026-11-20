@@ -175,6 +175,37 @@ export function readEvents(file: string, since = 0): StampedEvent[] {
   });
 }
 
+/**
+ * #1555 AC5: the whole lines of `file` from byte `from` up to byte `to` (default: the end), each with the byte offset it starts at, read in bounded chunks, never the file from byte 0 unless `from` is 0.
+ * A trailing piece with no newline yet is not a line: it is left for the pass that sees its end. Returns the offset after the last whole line, which is where the next pass starts.
+ * A line is the bytes between two `\n`, so a multi-byte character never splits one.
+ */
+export function scanEventLines(file: string, from: number, each: (line: string, offset: number) => void, to = Infinity): number {
+  if (!existsSync(file)) return from;
+  const fd = openSync(file, "r");
+  try {
+    const end = Math.min(fstatSync(fd).size, to);
+    const chunk = Buffer.alloc(1 << 20);
+    let pending = Buffer.alloc(0), base = from, at = from;
+    while (at < end) {
+      const n = readSync(fd, chunk, 0, Math.min(chunk.length, end - at), at);
+      if (n <= 0) break;
+      at += n;
+      const data = pending.length ? Buffer.concat([pending, chunk.subarray(0, n)]) : Buffer.from(chunk.subarray(0, n));
+      let lineStart = 0;
+      for (let nl = data.indexOf(0x0a, lineStart); nl >= 0; nl = data.indexOf(0x0a, lineStart)) {
+        each(data.toString("utf8", lineStart, nl), base + lineStart);
+        lineStart = nl + 1;
+      }
+      base += lineStart;
+      pending = data.subarray(lineStart);
+    }
+    return base;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** The historical event-reader predicate, shared without adding shape or line-size restrictions. */
 export function parseEventLine(line: string, since = 0): StampedEvent | undefined {
   if (!line.trim()) return undefined;
