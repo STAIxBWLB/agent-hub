@@ -1692,3 +1692,35 @@ test("#1447 known preflight limit: host-busy Pi refuses cancelled-task tools bef
     await h.event({ type: "agent_settled", generation: 1 });
   } finally { release(); options.selectModel = selectModel; h.pi["sendRpc"] = sendRpc; }
 }, 20_000);
+
+test("Pi check commits its managed worktree and runs the exact recorded head (#1549)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-check-worktree-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const requests: CheckRequest[] = [];
+  const boundedTools: NonNullable<DaemonOptions["boundedTools"]> = {
+    ...fakeSpecTools(), runner: () => ({
+      available: async () => ({ available: true }), sweep: async () => [], stopAll: async () => {},
+      start: request => {
+        requests.push(request);
+        return { run: randomUUID(), done: new Promise<RunReceipt>(() => {}) };
+      },
+      result: async () => undefined, markStale: async () => {}, consumeOutput: async () => {}, cancel: async () => {},
+    }),
+  };
+  const { stateDir, daemon, console_ } = await hub(config, false, { commit: true, boundedTools });
+  const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
+  const task = board.propose("user", { title: "Edit fixture", class: "implement" });
+  board.update(task.id, "user", "assigned", { owner: "pi" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  expect((await piToolCall(peer, "hub_task_accept", { id: task.id }, "check-accept")).failed).not.toBe(true);
+  const worktree = join(stateDir, ".worktrees", `pi-${task.id}`);
+  writeFileSync(join(worktree, "fixture.txt"), "first change\n");
+  const result = await piToolCall(peer, "hub_check_start", { id: task.id, check: "typecheck" }, "managed-check");
+  expect(result.failed).not.toBe(true);
+  const saved = board.get(task.id)!;
+  expect(saved.refs.commit).toMatch(/^[0-9a-f]{40}$/);
+  expect(saved.refs.branch).toBe(`task/${task.id}-pi`);
+  expect(requests[0]).toMatchObject({ task: task.id, owner: "pi", ref: saved.refs.commit, revision: saved.history.length });
+});

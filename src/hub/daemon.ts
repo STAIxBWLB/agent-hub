@@ -5981,9 +5981,19 @@ export async function startDaemon(opts: DaemonOptions) {
       const current = authorized();
       if (current.updated !== updated || current.history.length !== revision || connectionGeneration(by) !== generation || !may(by, "check_run") || stopping || recoveryActive()) throw new PreEffectToolRefusal("check unavailable");
       if (!runnerState.available) throw new PreEffectToolRefusal(`runner unavailable: ${runnerState.reason ?? "unknown"}`);
-      const ref = current.refs.commit ?? current.refs.branch;
+      const stillCurrent = () => {
+        const fresh = board.get(current.id);
+        return !!fresh && fresh.owner === by && fresh.state === "in_progress" && fresh.updated === updated && fresh.history.length === revision
+          && !tasks.isPii(fresh) && !turns.get(by)?.private && !contextPii(by) && connectionGeneration(by) === generation
+          && may(by, "check_run") && membershipAllowed(by) && !stopping && !recoveryActive();
+      };
+      const managed = await tasks.worktreeForCheck(by, current.id, stillCurrent);
+      const checked = managed ?? current;
+      if (!managed && !stillCurrent()) throw new PreEffectToolRefusal("check unavailable");
+      if (managed && (stopping || recoveryActive() || !runnerState.available || !currentCheck({ task: checked.id, owner: by, generation, updated: checked.updated, revision: checked.history.length }))) throw new Error("check unavailable: task authority or runner changed after the worktree commit");
+      const ref = checked.refs.commit ?? checked.refs.branch;
       if (!ref) throw new PreEffectToolRefusal("check requires task branch or commit");
-      const handle = checkRunner.start({ task: current.id, owner: by, generation, updated, revision: current.history.length, ref, check: a.check, ...(a.files === undefined ? {} : { files: a.files }) });
+      const handle = checkRunner.start({ task: checked.id, owner: by, generation, updated: checked.updated, revision: checked.history.length, ref, check: a.check, ...(a.files === undefined ? {} : { files: a.files }) });
       checkPending.add(handle.run);
       checkOwners.set(by, (checkOwners.get(by) ?? 0) + 1);
       void handle.done.finally(() => { checkPending.delete(handle.run); const left = (checkOwners.get(by) ?? 1) - 1; if (left > 0) checkOwners.set(by, left); else checkOwners.delete(by); settleCheck(by); }).catch(() => {});

@@ -183,3 +183,32 @@ test("hub_task_done carries the hub's commit: the worktree is committed first, t
   expect(stranger).toBeInstanceOf(PreEffectToolRefusal); // a sandboxed peer that does not own the task is refused before any git call
   expect(await f.tasks.worktreeHandoff("user", row.id, undefined)).toBeUndefined();
 });
+
+
+test("managed check commits the exact tree, reuses its head, and later handoff builds on it (#1549)", async () => {
+  const f = await rig();
+  const row = f.offer("pi"); f.tasks.accept("pi", row.id);
+  const worktree = join(f.cwd, ".worktrees", `pi-${row.id}`);
+  writeFileSync(join(worktree, "a.txt"), "first edit\n");
+  const first = await f.tasks.worktreeForCheck("pi", row.id, () => true);
+  if (!first?.refs.commit) throw new Error("missing managed check commit");
+  expect(first.refs.commit).toBe(f.git("rev-parse", `task/${row.id}-pi`));
+  expect(first?.refs.branch).toBe(`task/${row.id}-pi`);
+  const repeat = await f.tasks.worktreeForCheck("pi", row.id, () => true);
+  expect(repeat?.refs.commit).toBe(first?.refs.commit);
+  expect(repeat?.history.length).toBe(first?.history.length);
+  writeFileSync(join(worktree, "a.txt"), "second edit\n");
+  const final = await f.tasks.worktreeHandoff("pi", row.id, undefined);
+  expect(f.git("rev-parse", `${final!.commit}^`)).toBe(first.refs.commit);
+  expect(await f.tasks.worktreeForCheck("codex", row.id, () => true)).toBeUndefined();
+});
+
+test("managed check refuses protected paths and revoked authority without recording refs (#1549)", async () => {
+  const f = await rig(); const row = f.offer("pi"); f.tasks.accept("pi", row.id);
+  const worktree = join(f.cwd, ".worktrees", `pi-${row.id}`);
+  writeFileSync(join(worktree, ".env"), "secret\n");
+  await expect(f.tasks.worktreeForCheck("pi", row.id, () => true)).rejects.toThrow("will not commit");
+  expect(f.board.get(row.id)?.refs.commit).toBeUndefined();
+  await expect(f.tasks.worktreeForCheck("pi", row.id, () => false)).rejects.toThrow("check unavailable");
+  expect(f.board.get(row.id)?.refs.commit).toBeUndefined();
+});

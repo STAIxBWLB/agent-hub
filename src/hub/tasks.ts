@@ -8739,6 +8739,23 @@ export class Tasks {
     return { ...cleanRefs(refs), commit: result.commit, branch: result.branch };
   }
 
+  /** Commit the managed owner worktree for a check and bind its exact head through the board. */
+  async worktreeForCheck(by: PeerId, id: number, current: () => boolean): Promise<Task | undefined> {
+    const port = this.d.taskWorktree;
+    if (!port || !port.applies(by) || !port.describe(by, id)) return undefined;
+    const task = this.need(id, false, true);
+    this.mine(task, by, "owner", true);
+    if (task.state !== "in_progress" || this.isPii(task) || !current()) throw new PreEffectToolRefusal("check unavailable");
+    const result = await port.commitAndPush({ peer: by, task: id, title: task.title, current });
+    // A commit or push can have landed even when the request loses authority during an await.
+    if (!result.ok) throw new Error(`managed worktree check: ${result.reason}`);
+    if (!current()) throw new Error("check unavailable: task authority changed after the worktree commit");
+    const fresh = this.d.board.get(id);
+    if (!fresh || fresh.history.length !== task.history.length) throw new Error("check unavailable: task changed after the worktree commit");
+    if (fresh.refs.commit === result.commit && fresh.refs.branch === result.branch) return fresh;
+    return this.d.board.update(id, HUB, "check worktree committed", { refs: { commit: result.commit, branch: result.branch } }, undefined, {}, fresh.history.length);
+  }
+
   /** Decline or cancel: clear the hub-made worktree and its empty branch. Uncommitted work is kept and reported, never force-removed. */
   private releaseHubWorktree(task: Task, peer: PeerId | null | undefined): void {
     const port = this.d.taskWorktree;
