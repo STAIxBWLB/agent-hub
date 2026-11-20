@@ -6,24 +6,36 @@ import { join } from "node:path";
 // #1577 entry 3: a red shard names the step that ended it. scripts/check.sh runs from a copy in a scratch repo with a fake `bun` and stub steps,
 // so each path (a once-only step, a runner that exits with no (fail) line, a signal, a (fail) line, a leak scan) is reached on demand.
 
-function scratch(bunBody: string, stubs: { docs?: number; leaks?: number } = {}) {
+function scratch(bunBody: string, stubs: { docs?: number; leaks?: number; install?: number } = {}) {
   const repo = mkdtempSync(join(tmpdir(), "ahub-check-names-"));
   mkdirSync(join(repo, "scripts")); mkdirSync(join(repo, "fakebin"));
   for (const file of ["check.sh", "progress-tee.sh", "hang-watch.sh"]) { copyFileSync(join(import.meta.dir, "../scripts", file), join(repo, "scripts", file)); chmodSync(join(repo, "scripts", file), 0o755); }
   writeFileSync(join(repo, "scripts/check-docs.mjs"), `process.exit(${stubs.docs ?? 0});\n`);
   writeFileSync(join(repo, "scripts/check-owned-processes.mjs"), `process.exit(${stubs.leaks ?? 0});\n`);
   writeFileSync(join(repo, "scripts/record-test-process.mjs"), "");
-  writeFileSync(join(repo, "fakebin/bun"), `#!/usr/bin/env bash\nif [ "$1" = install ]; then exit 0; fi\nif [ "$1" = test ]; then\n${bunBody}\nfi\nexit 0\n`);
+  writeFileSync(join(repo, "fakebin/bun"), `#!/usr/bin/env bash\nif [ "$1" = install ]; then exit ${stubs.install ?? 0}; fi\nif [ "$1" = test ]; then\n${bunBody}\nfi\nexit 0\n`);
   chmodSync(join(repo, "fakebin/bun"), 0o755);
   expect(Bun.spawnSync(["git", "init", "-q"], { cwd: repo }).exitCode).toBe(0);
-  const run = (shard = "2/4") => {
-    const env = { ...process.env, PATH: `${join(repo, "fakebin")}:${process.env.PATH}`, AHUB_CHECK_SHARD: shard, AHUB_CHECK_LOCK_WAIT_S: "0", AHUB_CHECK_WARM_GIT: "/nonexistent" } as Record<string, string>;
-    delete env.GITHUB_ACTIONS;
+  const run = (shard = "2/4", extra: Record<string, string> = {}) => {
+    const env = { ...process.env, PATH: `${join(repo, "fakebin")}:${process.env.PATH}`, AHUB_CHECK_SHARD: shard, AHUB_CHECK_LOCK_WAIT_S: "0", AHUB_CHECK_WARM_GIT: "/nonexistent", ...extra } as Record<string, string>;
+    if (!("GITHUB_ACTIONS" in extra)) delete env.GITHUB_ACTIONS;
     const result = Bun.spawnSync(["bash", "scripts/check.sh"], { cwd: repo, env });
     return { code: result.exitCode, err: result.stderr.toString(), out: result.stdout.toString() };
   };
   return { repo, run };
 }
+
+// The install command's own output is quieted inside the wrapped command, never by a redirection on the `step` line: that would cover the
+// wrapper too and drop the `::error` annotation a red install is supposed to add.
+test("a failing bun install keeps its GitHub Actions annotation", () => {
+  const f = scratch("exit 0", { install: 2 });
+  try {
+    const r = f.run("1/4", { GITHUB_ACTIONS: "true" });
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("check: FAILED step 'bun install' (exit 2)");
+    expect(r.out).toContain("::error title=check failed::step 'bun install' (exit 2)");
+  } finally { rmSync(f.repo, { recursive: true, force: true }); }
+});
 
 test("a once-only step that fails is named, with its own exit status", () => {
   const f = scratch("exit 0", { docs: 7 });

@@ -60,7 +60,9 @@ if common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); 
 fi
 
 if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then step "docs check" node scripts/check-docs.mjs; fi
-step "bun install" bun install --frozen-lockfile >/dev/null
+# The install's own output stays quiet inside the wrapped command: a redirection on this line would cover `step` too and swallow the
+# `::error` annotation failed_line prints for GitHub Actions.
+step "bun install" bash -c 'bun install --frozen-lockfile >/dev/null'
 # Release N-1 and the older supported protocol floor are separately exact-locked test fixtures, never root CLI dependencies.
 for fixture_dir in test/fixtures/protocol-v16 test/fixtures/release-n-1; do
   if [ -f "$fixture_dir/package.json" ]; then step "fixture install $fixture_dir" bash -c 'cd "$1" && bun install --frozen-lockfile >/dev/null' _ "$fixture_dir"; fi
