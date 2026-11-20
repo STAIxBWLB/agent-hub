@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CandidateStore, MemoryStore, aliasLogPath, realPath, memoryHome, memoryProjectKey, openShardStore, readShardedSelection, resolveAlias, resolveProfile,
@@ -119,9 +119,11 @@ function receipt(profile: BoundProfile, state: MemoryProfileReceipt["state"], sk
   };
 }
 
-/** One lstat tuple: the identity a metadata object carries between two reads. */
-function statStamp(path: string): string {
-  const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+/** One stat tuple: the identity a metadata object carries between two reads. `follow` resolves a configured home's symlinks. */
+function statStamp(path: string, follow = false): string {
+  const stat = follow
+    ? statSync(path, { bigint: true, throwIfNoEntry: false })
+    : lstatSync(path, { bigint: true, throwIfNoEntry: false });
   if (!stat) return "absent";
   const kind = stat.isDirectory() ? "d" : stat.isFile() ? "f" : stat.isSymbolicLink() ? "l" : "o";
   return `${kind}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
@@ -278,7 +280,10 @@ export class MemoryProfileBinding {
    */
   fenceStamp(): string {
     if (this.unavailable) return "unavailable";
-    return fenceObjects(this.home, this.profile, this.project, this.projectKey).map(statStamp).join("|");
+    // A configured home is stamped through its symlinks: retargeting one moves the canonical memory dir without touching it.
+    const anchor = this.directMemoryDir !== undefined ? statStamp(this.directMemoryDir, true)
+      : this.options.home === undefined ? "environment" : statStamp(this.options.home, true);
+    return [anchor, ...fenceObjects(this.home, this.profile, this.project, this.projectKey).map(path => statStamp(path))].join("|");
   }
 
   status(store?: MemoryStore, opts: { skippedRows?: boolean } = {}): MemoryProfileReceipt {

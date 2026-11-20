@@ -1,7 +1,7 @@
 // hub task 1028 (#1545 Root Cause 1): the memory sync policy version is cached on a stat tuple of the
 // metadata the profile fence resolves, and never queries bridgeStatus.
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, appendAlias, migrateShards, type NoteInput } from "@staix/agent-mem";
@@ -106,6 +106,29 @@ test("a rewrite that keeps the identity re-reads once and keeps the same version
     writeFileSync(join(memory, "shards.json"), readFileSync(join(memory, "shards.json")));
     expect(p.version()).toBe(first);
     expect(p.reads()).toBe(2);
+  } finally { store.close(); }
+});
+
+test("a retargeted home symlink moves the version and the fence refuses it", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "hub-memory-anchor-")));
+  homes.push(root);
+  const parent = join(root, "a");
+  const seed = new MemoryStore({ home: parent });
+  seed.note(note(A, "alpha contract"));
+  seed.close();
+  await migrateShards({ memoryDir: join(parent, "memory"), mode: "apply", authorizedPerson: true, tty: true });
+  const other = join(root, "b");
+  mkdirSync(join(other, "memory"), { recursive: true });
+  const link = join(root, "link");
+  symlinkSync(parent, link);
+  const { store, binding } = openProfileMemory({ home: link, project: A, projectKey: A });
+  try {
+    const p = policy(binding, store, () => [["deny"]]);
+    const first = p.version();
+    unlinkSync(link);
+    symlinkSync(other, link);
+    expect(p.version()).not.toBe(first);
+    expect(binding.status(store, { skippedRows: false }).state).toBe("unavailable");
   } finally { store.close(); }
 });
 
