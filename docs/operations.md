@@ -1304,7 +1304,9 @@ the selected Xcode or Command Line Tools dir (`xcode-select -p`; for an Xcode
 app, its whole `Contents`, whose `SharedFrameworks` its tools load), write the
 project and a temp dir of their own (`TMPDIR`, made for each command and
 removed when it ends; one left by a hub crash, named `ahub-cmd-*`, goes with
-the OS temp cleanup), and nothing else; the shared temp dirs are closed.
+the OS temp cleanup), and nothing else; the shared temp dirs are closed. Bun's
+and npm's package caches default to that temp dir (`BUN_INSTALL_CACHE_DIR`,
+`NPM_CONFIG_CACHE`) unless the command's environment already names them (#1549).
 
 Some names stay closed to those commands, and to Pi's, wherever they may
 otherwise write: anything named `.git` at any depth, the `config` and `hooks`
@@ -1527,7 +1529,11 @@ The daemon samples its event loop every 100 ms. A missed tick delayed by at leas
 Recently completed synchronous intervals are retained so a span that blocked the
 loop can be identified after its callback has returned. An open asynchronous span
 is only a concurrent wait, not proof that it occupied the CPU; untracked occupancy
-is reported as unknown. Background snapshot, queue/status and memory boundaries
+is reported as unknown. An asynchronous span that starts and settles inside one
+loop turn is counted as a synchronous interval, and after a span's first await
+the probe follows at most 16 microtask hops per request to record a continuation
+that runs synchronously; a block after a real I/O wait is beyond that bound, so
+such a slice is a lower bound (#1545). Background snapshot, queue/status and memory boundaries
 use the fixed `background` kind rather than inventing a tool request.
 
 Per observer, retained work is capped at 128 operations, 256 active span registrations, 512
@@ -2176,8 +2182,14 @@ ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex
   cannot be undone. So does a turn whose boundary evidence is unknown: snapshot
   Git calls made in one callback burst share a 250 ms budget, and a capture that
   runs past it, fails, or sees HEAD move while it is taken is unknown, never a
-  stale baseline (hub.log says `snapshot unavailable` once per burst). A turn
+  stale baseline (for a task or review capture hub.log says `snapshot unavailable`
+  once per burst; a turn boundary logs it only when a cooldown starts). A turn
   whose diff or HEAD-move evidence cannot be read is unknown as well (#576).
+  After five consecutive exhausted bursts in one execution root (the project
+  root or a peer's worktree), turn boundaries there skip the capture for ten
+  minutes and record unknown evidence; the first boundary after that tries
+  again, one more exhausted burst starts the wait again, and a restart clears
+  the count (#1550).
 - Claude's turns are not recorded: its channel shows the hub no turn boundary.
   Claude Code's own checkpoints cover its edits, though not its shell commands.
 - The snapshots are unreferenced objects in the repository's own object store, so
@@ -2819,7 +2831,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Routing | `tasks.rescreen_max` (1-100 attempts, default 10) | `config.local.json` | live; the next release-timer re-screen uses it |
 | Routing | `tasks.split_min_observations` (3-100 measured tasks, default 5) | `config.local.json` | live; the next shadow split prediction uses it |
 | Routing | `tasks.split_max_failure_share` (0-1, default 0.3) | `config.local.json` | live; the next shadow split prediction uses it |
-| Switches | `tasks.auto_pull` (default off: pull the top explicitly reserved ready card when a planner slot frees) | `config.local.json` | live; the next freed planner slot uses it |
+| Switches | `tasks.auto_pull` (default off: pull the top explicitly reserved ready card when a slot frees, a backlog plan or dependency approval readies it, or its peer first attaches idle) | `config.local.json` | live; the next trigger uses it |
 | Routing | `tasks.queue_backpressure.max_queued` (0-10000), `.max_oldest_s` (0-604800); 0, the default, disables each ([backpressure](#queue-backpressure-on-automatic-task-offers-800)) | `config.local.json` | live |
 | Roles | `planner` (one or up to eight planner holders) | `config.local.json` | at once |
 | Routing | `bus.max_attempts` (1-100 attempts, default 3) | `config.local.json` | live; next safe-failure retry evaluation, retaining existing counts and quota pauses |
@@ -4113,7 +4125,10 @@ registry installs, unversioned coordinator sources, unknown layouts and symlinks
 remain. Reserved `.runtime-prune-*` quarantine paths cannot launch a managed
 runtime. Changed or unknown quarantined contents remain undeleted for inspection.
 Admission is home-wide, at most once per hour with at most three removals per
-run. `~/.agenthub/runtime-prune.db` records admission and the bounded outcome.
+run. A start while a recovery hold exists (or cannot be read) schedules no pass;
+the recovery runner schedules one after it releases its lock, a pass deferred
+only by recovery coordination starts no one-hour wait, and `ahub doctor` reports
+that deferral without failing runtime pruning (#1546). `~/.agenthub/runtime-prune.db` records admission and the bounded outcome.
 Admission stores the worker's PID and process signature. The next admission
 atomically replaces a worker proven gone; live or uncertain owners remain
 fenced. Worker completion uses the normal database wait bound, while startup
