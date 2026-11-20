@@ -45,3 +45,13 @@ export function jcodeContextValue(value: unknown, sessionId: string, measuredAt:
   const tokens = okay ? raw.used as number : null, window = okay ? raw.size as number : null;
   return { source: "jcode_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
 }
+
+/** Pi reports the last assistant prompt's input and cache counters, not cumulative consumption. */
+export function piContext(value: unknown, sessionId: string, measuredAt: number): ContextReading {
+  const raw = object(value), parts = [raw.input, raw.cacheRead, raw.cacheWrite];
+  const valid = parts.every(n => Number.isSafeInteger(n) && (n as number) >= 0);
+  const sum = valid ? parts.reduce<number>((a, n) => a + (n as number), 0) : null;
+  const tokens = Number.isSafeInteger(sum) ? sum : null;
+  const window = Number.isSafeInteger(raw.contextWindow) && (raw.contextWindow as number) > 0 ? raw.contextWindow as number : null;
+  return { source: "pi_usage", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
+}
