@@ -36,6 +36,8 @@ held record lacked, and a held v2 row written before `ownerModels` existed (#140
 `ahub research backfill` can prove an owner model from the surviving events (readers keep the latest row of a task). A v2 row also replaces a held v1 row of the same task. A failing write is one `hub.log` line per hub run and
 never changes the task flow.
 
+The live writer does not read `events.jsonl` from byte 0 at each closure (#1555 AC5). One catch-up pass over the bytes appended since the last closure (the first closure after a hub start reads the file once) keeps, for each task id, the byte offset of its latest proposal and the cross-task state as of that offset: which peers are attached, their add-on fingerprints, whether the log reports briefs at all, and the first hub run that attributes person events. A closing task then reads only its own slice from that offset, skips `quota` rows (no record field reads one), and ignores a usage row whose key the log counted before the slice. A task whose proposal the tail does not hold, or an id the log started more than once, is read whole, as before. The row is the same one the whole-file fold gives for that task, byte for byte (`test/research-slice.test.ts`); a difference is a defect.
+
 `ahub research backfill` builds the same records from a project's existing `events.jsonl` (marked
 `writer.source: "backfill"`), reading every event attributed to a task, and appends those the store does not hold yet.
 It is for tasks approved before research was on: a record it writes is final, so running it while a live record still

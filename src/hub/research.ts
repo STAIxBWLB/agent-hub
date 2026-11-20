@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { isModelEvidence, MODEL_EVIDENCE, type ModelEvidence, type RoleIdentity, type StampedEvent } from "./events.ts";
+import { isModelEvidence, MODEL_EVIDENCE, parseEventLine, readEvents, scanEventLines, type ModelEvidence, type RoleIdentity, type StampedEvent } from "./events.ts";
 import { safeModelLabel } from "../omniroute/usage.ts";
 import { hubHome } from "./project.ts";
 import { ADDONS, addonState, type Addon, type AddonName } from "./tooling.ts";
@@ -156,17 +156,15 @@ const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[ke
  * read-only and closed fields only, `readEvidence`) fills the review, merge, spec and delivery-state blocks; without it those fields are null, not 0. A task that was approved
  * and later reopened keeps its approved record, as before.
  */
-export function taskRecords(events: StampedEvent[], projectId: string, writer: TaskRecord["writer"], evidence: ResearchEvidence = NO_EVIDENCE): TaskRecord[] {
+export function taskRecords(events: StampedEvent[], projectId: string, writer: TaskRecord["writer"], evidence: ResearchEvidence = NO_EVIDENCE, start?: FoldStart): TaskRecord[] {
   const tasks = new Map<number, Acc>(), earlier: Acc[] = [];
+  // #1555 AC5: a fold over a slice of the log starts from what the events before the slice said (`ResearchTail`); a fold over the whole log starts empty and is the reference a slice must equal.
+  const carry = start ? start.carry.clone() : new FoldCarry();
   const acc = (id: number) => { let a = tasks.get(id); if (!a) tasks.set(id, a = blank(id)); return a; };
   const seenUsage = new Set<string>();
-  let briefReporting = false;
-  // #1278: the time of the first hub run that attributes person events. A task that began before it has an unknown person block (see `startsAttribution`).
-  let personReportingSince: number | null = null;
-  // A fingerprint belongs to one attachment of its peer: from a state event that brings it online to the next offline.
-  // Detection settles in the background, so it can arrive after the peer's first work in that attachment.
-  const attach = new Map<string, number>(), online = new Set<string>();
-  const tooling = new Map<string, { attach: number; addons: Addon[] }>();
+  // The cross-task state is `carry`: whether briefs and person attribution are reported at all (#1278: a task that began before the first attributing hub run has an unknown person block), and the
+  // fingerprints. A fingerprint belongs to one attachment of its peer: from a state event that brings it online to the next offline. Detection settles in the background, so it can arrive after the peer's first work in that attachment.
+  const { attach, tooling } = carry;
   /** A peer that worked on the task carries the fingerprint of the attachment it worked in. */
   /**
    * `acted`: the peer did something for the task (an attributed turn, tokens, the actor of a board move). A peer only
@@ -182,16 +180,10 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   };
   for (const e of events) {
     if (e.type === "route" && e.decisionTarget === "judge") continue;
-    // A crash writes no offline: a new run is a new attachment, and no fingerprint from before it describes later work.
-    if (e.type === "hub_start") { online.clear(); tooling.clear(); if (startsAttribution(e)) personReportingSince ??= Date.parse(e.at); continue; }
-    if (e.type === "state") {
-      if (e.state === "offline") online.delete(e.peer);
-      else if (!online.has(e.peer)) { online.add(e.peer); attach.set(e.peer, (attach.get(e.peer) ?? 0) + 1); }
-      continue;
-    }
+    carry.observe(e);
+    if (e.type === "hub_start" || e.type === "state") continue;
     if (e.type === "tooling") {
       const now = attach.get(e.peer) ?? 0;
-      tooling.set(e.peer, { attach: now, addons: e.addons });
       for (const a of tasks.values()) if (a.peers.get(e.peer) === now) a.tooling[e.peer] = e.addons;
       continue;
     }
@@ -250,8 +242,8 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       if (e.preparedRoles !== undefined) (a.sessionRoles ??= []).push({ peer: e.peer, turn: e.turn, roles: e.preparedRoles?.map(role => ({ id: role.id, layer: role.layer, hash: role.hash })) ?? null });
     }
     else if (e.type === "usage") {
-      const key = `${e.peer}\0${e.source}\0${e.id}`;
-      if (seenUsage.has(key)) continue;
+      const key = usageKey(e);
+      if (seenUsage.has(key) || start?.usageSeenBefore?.(key)) continue;
       seenUsage.add(key);
       const u = a.usage[e.peer] ??= { input: null, output: null, cacheRead: null, total: null };
       u.input = add(u.input, e.inputTokens); u.output = add(u.output, e.outputTokens); u.cacheRead = add(u.cacheRead, e.cacheReadTokens); u.total = add(u.total, e.totalTokens);
@@ -263,7 +255,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     }
     else if (e.type === "route") a.models.add(e.route);
     else if (e.type === "route_outcome") { if (e.next?.tests === "pass") a.tests.pass++; if (e.next?.tests === "fail") a.tests.fail++; }
-    else if (e.type === "memory_brief") { briefReporting = true; a.briefs.delivered++; if (e.fails > 0) a.briefs.withFail++; a.briefNotes += (Number.isSafeInteger(e.native) ? e.native : 0) + (Number.isSafeInteger(e.claudeMem) ? e.claudeMem : 0); a.briefFails += Number.isSafeInteger(e.fails) ? e.fails : 0; }
+    else if (e.type === "memory_brief") { a.briefs.delivered++; if (e.fails > 0) a.briefs.withFail++; a.briefNotes += (Number.isSafeInteger(e.native) ? e.native : 0) + (Number.isSafeInteger(e.claudeMem) ? e.claudeMem : 0); a.briefFails += Number.isSafeInteger(e.fails) ? e.fails : 0; }
     else if (e.type === "stuck") a.stuck++;
     else if (e.type === "overlap") a.overlaps++;
     else if (e.type === "conflict") a.conflicts++;
@@ -278,7 +270,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(closedAt);
     const task = evidence.tasks.get(a.task), board = evidence.board;
     const began = a.createdAt ? Date.parse(a.createdAt) : a.startedAt ? Date.parse(a.startedAt) : NaN;
-    const covered = personCoverage(personReportingSince, began);
+    const covered = personCoverage(carry.personReportingSince, began);
     const ownerFamily = closedId(a.owners.at(-1) ? evidence.familyOf?.(a.owners.at(-1)!) : undefined);
     const approvedMs = outcome === "approved" ? Date.parse(approvedAt!) : null;
     const created = a.createdAt ? Date.parse(a.createdAt) : NaN;
@@ -295,13 +287,112 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       merge: mergeBlock(task, lastDoneMs, approvedMs),
       specs: specsBlock(task, a.pii),
       // A task with no brief is a known 0 only when the log shows briefs were being reported at all (memory on); otherwise nothing says whether one was built.
-      memory: { briefs: briefs.delivered || (briefReporting ? 0 : null), briefNotes: briefs.delivered ? briefNotes : briefReporting ? 0 : null, fails: briefs.delivered ? briefFails : briefReporting ? 0 : null, ...(evidence.memory?.(a.task) ?? UNKNOWN_MEMORY_FIGURES) },
+      memory: { briefs: briefs.delivered || (carry.briefReporting ? 0 : null), briefNotes: briefs.delivered ? briefNotes : carry.briefReporting ? 0 : null, fails: briefs.delivered ? briefFails : carry.briefReporting ? 0 : null, ...(evidence.memory?.(a.task) ?? UNKNOWN_MEMORY_FIGURES) },
       person: personFigures(person, covered),
       stalls: task && board ? task.history.filter(entry => entry.sweep).length : null,
       handoffs: task?.handoffs ? { in: task.handoffs.in, out: task.handoffs.out } : { in: null, out: null },
       cohort: cohort ?? "none" });
   }
   return out.sort((x, y) => closedAtOf(x)!.localeCompare(closedAtOf(y)!) || x.task - y.task);
+}
+
+/** The key one usage row is counted once under, across every task of the log. */
+const usageKey = (e: { peer: string; source: string; id: string }): string => `${e.peer}\0${e.source}\0${e.id}`;
+
+/**
+ * #1555 AC5: the state `taskRecords` carries from one event to the next across tasks, which a fold over a slice of the log must start with: which peers are attached and their add-on fingerprints, whether the
+ * log reports briefs at all, and the first hub run that attributes person events. Everything else the fold keeps is per task, or per usage key (`FoldStart.usageSeenBefore`).
+ */
+export class FoldCarry {
+  attach = new Map<string, number>();
+  online = new Set<string>();
+  tooling = new Map<string, { attach: number; addons: Addon[] }>();
+  briefReporting = false;
+  personReportingSince: number | null = null;
+  /** The only writer: an event that is not one of these changes none of it. */
+  observe(e: StampedEvent): void {
+    if (e.type === "hub_start") {
+      // A crash writes no offline: a new run is a new attachment, and no fingerprint from before it describes later work.
+      this.online.clear(); this.tooling.clear();
+      if (startsAttribution(e)) this.personReportingSince ??= Date.parse(e.at);
+    } else if (e.type === "state") {
+      if (e.state === "offline") this.online.delete(e.peer);
+      else if (!this.online.has(e.peer)) { this.online.add(e.peer); this.attach.set(e.peer, (this.attach.get(e.peer) ?? 0) + 1); }
+    } else if (e.type === "tooling") this.tooling.set(e.peer, { attach: this.attach.get(e.peer) ?? 0, addons: e.addons });
+    // A brief counts once it names a task, as the fold's own task-attributed path does.
+    else if (e.type === "memory_brief" && typeof e.task === "number") this.briefReporting = true;
+  }
+  clone(): FoldCarry {
+    const c = new FoldCarry();
+    c.attach = new Map(this.attach); c.online = new Set(this.online); c.tooling = new Map(this.tooling);
+    c.briefReporting = this.briefReporting; c.personReportingSince = this.personReportingSince;
+    return c;
+  }
+}
+/** Where a fold over a slice starts: the carry as of the slice's first byte, and whether a usage key was already counted before it. */
+export interface FoldStart { carry: FoldCarry; usageSeenBefore?: (key: string) => boolean }
+
+/** The type of a line the hub wrote (`{"v":1,"at":"...","type":"x",...`), read without parsing it; undefined for any other shape, which is then parsed. */
+const lineType = (line: string): string | undefined => /^\{"v":\d+,"at":"[^"]*","type":"([a-z_]+)"/.exec(line)?.[1];
+/** The types whose events change what a later slice must start with, or where a task's current incarnation begins. Every other line is skipped unparsed while the tail catches up. */
+const TRACKED = new Set(["hub_start", "state", "tooling", "memory_brief", "task", "usage"]);
+
+/**
+ * #1555 AC5: the live writer's reader of `events.jsonl`. `taskRecords` over the whole file and over the slice from a task's first event give the same record for that task, so the live writer reads
+ * only that slice. What a slice cannot see is carried: one catch-up pass over the bytes appended since the last closure (the first closure after a start reads the file once) keeps, per task id, the
+ * byte offset of its latest proposal and the `FoldCarry` as of that offset, plus the offset each usage key was first counted at. A task the tail has no start for (its proposal is not in the file, or it
+ * was evicted) is read whole, which is also what `ahub research backfill` does.
+ * ponytail: `firstUsage` holds one entry per usage row of the log (about 74 000 rows in a 180 MB log), `starts` at most `maxTasks` carries; the upgrade path is to rotate `events.jsonl` or keep the keys in `hub.db`.
+ */
+export class ResearchTail {
+  private carry = new FoldCarry();
+  private scanned = 0;
+  private firstUsage = new Map<string, number>();
+  private starts = new Map<number, { offset: number; carry: FoldCarry }>();
+  /** Ids the log starts more than once (`ahub reset --all` kept both): `taskRecords` also returns the earlier incarnation's record, so such an id is read whole, exactly as before. */
+  private restarted = new Set<number>();
+  /** Every id the log has started, however many tasks the carry map keeps: an evicted start must not hide that a later one is a restart. One small integer per task. */
+  private started = new Set<number>();
+  /** The byte range the last `events` call parsed, for tests and diagnostics: `from` 0 means a whole-file read. */
+  lastRead: { from: number; to: number } = { from: 0, to: 0 };
+  constructor(readonly file: string, readonly maxTasks = 512) {}
+  private reset(): void { this.carry = new FoldCarry(); this.scanned = 0; this.firstUsage.clear(); this.starts.clear(); this.restarted.clear(); this.started.clear(); }
+  private catchUp(): void {
+    if (!existsSync(this.file)) { this.reset(); return; }
+    if (statSync(this.file).size < this.scanned) this.reset(); // the log was archived and started again
+    this.scanned = scanEventLines(this.file, this.scanned, (line, offset) => {
+      const type = lineType(line);
+      if (type !== undefined && !TRACKED.has(type)) return;
+      const e = parseEventLine(line);
+      if (e === undefined) return;
+      if (e.type === "task" && (e.event === "proposed" || e.event === "backlogged")) {
+        // The same two events start a task anew in `taskRecords`, so what came before them belongs to an earlier incarnation.
+        if (this.started.has(e.id)) this.restarted.add(e.id);
+        this.started.add(e.id);
+        this.starts.delete(e.id);
+        this.starts.set(e.id, { offset, carry: this.carry.clone() });
+        if (this.starts.size > this.maxTasks) this.starts.delete(this.starts.keys().next().value!);
+      } else if (e.type === "usage" && typeof e.task === "number") {
+        const key = usageKey(e);
+        if (!this.firstUsage.has(key)) this.firstUsage.set(key, offset);
+      }
+      this.carry.observe(e);
+    });
+  }
+  /** The events `taskRecords` needs for `taskId`, and where its fold starts (undefined for a whole-file read). A quota row is skipped: no field of a record reads one. */
+  events(taskId: number): { events: StampedEvent[]; start?: FoldStart } {
+    this.catchUp();
+    const held = this.restarted.has(taskId) ? undefined : this.starts.get(taskId);
+    if (!held) { this.lastRead = { from: 0, to: this.scanned }; return { events: readEvents(this.file) }; }
+    const events: StampedEvent[] = [];
+    scanEventLines(this.file, held.offset, line => {
+      if (lineType(line) === "quota") return;
+      const e = parseEventLine(line);
+      if (e !== undefined) events.push(e);
+    }, this.scanned);
+    this.lastRead = { from: held.offset, to: this.scanned };
+    return { events, start: { carry: held.carry, usageSeenBefore: key => (this.firstUsage.get(key) ?? Infinity) < held.offset } };
+  }
 }
 
 /** The observations of the peers that held the task, one entry per model with its strongest grade, sorted by model. A peer that only reviewed contributes nothing. */

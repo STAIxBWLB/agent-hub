@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Verify Claude Code 2.1.328 and 2.1.329 as headless implementers with isolated model-free transport and wrapper receipts (Refs #888, hub task 1023).
+- Read only the slice of `events.jsonl` a closing task needs when the live research writer builds its record, with the same row as `ahub research backfill` (Refs #1555, hub task 1003).
 
 ## 0.44.0
 
