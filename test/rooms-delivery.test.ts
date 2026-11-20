@@ -1111,8 +1111,12 @@ test("a replaced presence snapshot keeps its pending reply request until the rec
     await f.event.wait(() => f.frames.some(frame => frame.sender === f.owner && frame.ephemeral && frame.phase === "replacement-presence") && f.broker.stats().queuedFrames === 3, "normal state update replaces pending presence in its legacy and codec groups behind one durable packet");
     expect(observations.filter(row => row.recipient === "beta")).toHaveLength(betaBeforeReplacement);
     gate.release();
-    await f.event.wait(() => freshObservations().some(row => row.recipient === "beta" && row.state === "paused" && row.requestReply) && freshObservations().some(row => row.recipient === "alpha"), "recipient answers the request carried by the replacement snapshot");
-    expect(freshObservations().filter(row => row.recipient === "alpha").every(row => !row.requestReply)).toBe(true);
+    // #1577: alpha may observe beta's own session-start request (requestReply true by design) before or after the replacement, and under load it arrives after the baseline above. That packet is not an echo, so the
+    // wait is on beta's answer itself: alpha's latest observation carries no request. A reply that requested again would never satisfy it (the wait times out), and everything observed after it is asserted below.
+    const alphaRows = () => freshObservations().filter(row => row.recipient === "alpha");
+    await f.event.wait(() => freshObservations().some(row => row.recipient === "beta" && row.state === "paused" && row.requestReply) && alphaRows().length > 0 && alphaRows().at(-1)!.requestReply === false, "recipient answers the request carried by the replacement snapshot");
+    expect(alphaRows().filter(row => row.requestReply).length).toBeLessThanOrEqual(1);
+    const answeredAt = beforeReplacement + freshObservations().length;
     // Forward chat barriers flush both transports without changing alpha's native
     // paused state. Reply snapshots must not request another reply or echo forever.
     for (let n = 0; n < 3; n++) {
@@ -1121,7 +1125,7 @@ test("a replaced presence snapshot keeps its pending reply request until the rec
       await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "forward transport barrier after presence reply");
       expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
     }
-    expect(freshObservations().filter(row => row.recipient === "alpha").every(row => !row.requestReply)).toBe(true);
+    expect(observations.slice(answeredAt).filter(row => row.recipient === "alpha").every(row => !row.requestReply)).toBe(true);
     expect(observations.length - beforeReplacement).toBeLessThanOrEqual(8);
     expect(f.b.bus.stateOf("codex@alpha")).toBe("paused");
   } finally {
