@@ -93,22 +93,30 @@ test("conductor CLI detached restart completes through a real target process wit
     const main = join(realPath(resolve(import.meta.dir, "..")), "src", "cli", "main.js");
     const producer = Bun.spawn([process.execPath, main, "--project", root, "restart", "--yes", "--json"], { cwd: root, env: { ...env, AGENTHUB_PEER_ID: "codex" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     cli = producer;
-    // #1577: the producer announces the operation and exits when it has spawned the detached runner. How long that takes depends on the machine's load (about 1 s idle, over a minute with every core busy), so no
-    // wall-clock bound decides it: the producer is waited for, and a producer that hangs is the test's own timeout and the gate's quiet-output watch.
-    const [code, stdout, stderr] = await Promise.all([producer.exited, new Response(producer.stdout).text(), new Response(producer.stderr).text()]);
-    expect(code, stderr).toBe(0);
-    const announced = JSON.parse(stdout); operationId = announced.id; expect(operationId).toMatch(/^[a-f0-9-]{36}$/);
+    // #1577: the producer announces the operation and exits when it has spawned the detached runner; a real restart takes about 7 s idle and 15 to 20 s on a loaded CI runner (the flake ledger's failures came at
+    // 24 to 25 s, the receipt still at an intermediate step), so the old fixed 10 s and 15 s budgets ended runs that were still progressing. The waits are on the conditions that settle the test: the producer exiting,
+    // then a terminal receipt, or the detached runner gone without one (a crashed runner can never finish: that fails at once and names the step). One shared deadline well under the 60 s test timeout is a cleanup
+    // bound only, never a guess at restart time: when it passes the producer is killed and the test throws, so the finally block (runner and target cleanup) always runs instead of the test timeout abandoning it.
+    const deadline = Date.now() + 45_000;
+    const expired = () => Date.now() >= deadline;
+    const watchdog = setTimeout(() => producer.kill("SIGTERM"), Math.max(0, deadline - Date.now()));
+    let code: number, stdout: string, stderr: string;
+    try { [code, stdout, stderr] = await Promise.all([producer.exited, new Response(producer.stdout).text(), new Response(producer.stderr).text()]); }
+    finally { clearTimeout(watchdog); }
+    expect(code, stderr!).toBe(0);
+    const announced = JSON.parse(stdout!); operationId = announced.id; expect(operationId).toMatch(/^[a-f0-9-]{36}$/);
     let receipt: RecoveryOperation | undefined;
-    // #1577: a real restart takes 7 s idle, 15 to 20 s on a loaded CI runner and longer under heavier load; the fixed 15 s budget this wait had ended runs that were still progressing (24 to 25 s failures in the flake
-    // ledger, a receipt still at an intermediate step). The wait is now on the two things that settle it: a terminal receipt, or the detached runner being gone without one (a crashed runner can never finish, so that
-    // fails at once and names the step). A runner that merely lives is progress; a hang is the test's own timeout and the gate's quiet-output watch.
+    const terminal = () => receipt !== undefined && (receipt.phase === "completed" || receipt.phase === "blocked");
+    const read = () => { receipt = readOperation<RecoveryOperation>(operationId!, home); return terminal(); };
     const settled = () => {
-      receipt = readOperation<RecoveryOperation>(operationId!, home);
-      if (receipt.phase === "completed" || receipt.phase === "blocked") return true;
-      return runner !== undefined && processLiveness(runner.pid, runner.signature) === "gone";
+      if (read()) return true;
+      if (runner === undefined || processLiveness(runner.pid, runner.signature) !== "gone") return false;
+      // The runner may have written its terminal receipt and exited between the read above and the liveness check: read the final file once more.
+      read();
+      return true;
     };
-    await until(settled, "detached conductor restart reaches terminal receipt", Number.POSITIVE_INFINITY);
-    if (receipt!.phase !== "completed" && receipt!.phase !== "blocked") throw new Error(`detached runner ended before a terminal receipt: ${receipt!.phase}/${receipt!.step}`);
+    while (!settled() && !expired()) await Bun.sleep(20);
+    if (!terminal()) throw new Error(`${expired() ? "detached restart did not settle before the shared deadline" : "detached runner ended before a terminal receipt"}: ${receipt?.phase}/${receipt?.step}`);
     expect({ phase: receipt!.phase, step: receipt!.step, error: receipt!.error }).toEqual({ phase: "completed", step: "completed", error: undefined });
     await sourceRelease;
     expect(receipt!.plan.kind).toBe("restart"); expect(receipt!.targetRoot).toBe(receipt!.sourceRoot);
