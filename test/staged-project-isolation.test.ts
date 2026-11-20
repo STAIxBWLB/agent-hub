@@ -19,7 +19,7 @@ const PACKAGE_ROOT = resolve(import.meta.dir, "..");
 // itself runs synchronous `ps` identity reads (processSignature), so Bun's timeout must never be the first thing to fire. The work is
 // fixed, never a guess at how long a hub takes: 14,739 ms in the green macOS shard 4/4 run 44732101559 (head 3cc4818b) and over 20 s
 // in both ledger failures (44703709611, and 44732101559 attempt 1, which was cut with a single daemon up), i.e. the same steps cost
-// what the runner gives them. Body 45 s + cleanup 4 x 6 s = 69 s stays under this test's 90 s timeout.
+// what the runner gives them. Body 45 s + cleanup 5 x 6 s = 75 s stays under this test's 90 s timeout.
 const BODY_DEADLINE_MS = 45_000;
 const CLEANUP_STEP_MS = 6_000;
 
@@ -49,12 +49,18 @@ test("#607 a real scoped A upgrade preserves B's daemon, channel session and ord
   let channel: ControlClient | undefined, operation: RecoveryOperation | undefined, production: RecoveryDriver | undefined;
   let bodyFailure: unknown;
   const projects: Project[] = [];
+  // A step the deadline gives up on does not stop: runRecovery has no cancel path and its runner claim belongs to this process,
+  // so its effects keep writing the fixture. Each one is recorded here and settled before anything stops or removes it.
+  const abandoned: Promise<unknown>[] = [];
   const deadline = performance.now() + BODY_DEADLINE_MS;
   /** What is left of the shared body deadline, never above the caller's own cap: a control request can never outlive the body. */
   const left = (cap: number) => Math.max(1, Math.min(cap, Math.round(deadline - performance.now())));
   /** One body step under the shared deadline, so a stalled hub fails this step by name and the cleanup below still runs (tests.md). */
   const inBody = <T>(step: string, work: Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${step} did not settle within the ${BODY_DEADLINE_MS / 1000} s body deadline`)), left(BODY_DEADLINE_MS));
+    const timer = setTimeout(() => {
+      abandoned.push(work.then(() => {}, () => {}));
+      reject(new Error(`${step} did not settle within the ${BODY_DEADLINE_MS / 1000} s body deadline`));
+    }, left(BODY_DEADLINE_MS));
     work.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
   });
   try {
@@ -140,19 +146,25 @@ test("#607 a real scoped A upgrade preserves B's daemon, channel session and ord
     channel?.close();
     const failures: string[] = [];
     /** Every cleanup wait is its own bound (tests.md): a hub that will not stop fails this file's cleanup by name, never Bun's timeout. */
-    const bounded = async (step: string, work: () => Promise<unknown>) => {
+    const bounded = async (step: string, work: () => Promise<unknown>): Promise<boolean> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([work(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${step} exceeded ${CLEANUP_STEP_MS / 1000} s`)), CLEANUP_STEP_MS); })]);
-      } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
+        return true;
+      } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); return false; }
       finally { clearTimeout(timer); }
     };
     try {
+      // Whatever the deadline abandoned still owns the operation, the daemons and the fixture; settle it before touching them.
+      // Its own awaits take 1 ms once the deadline passed, so this returns at once rather than waiting out its work.
+      const settled = await bounded("abandoned body work", () => Promise.all(abandoned));
       const owned = operation, effects = production;
       if (owned && effects && recoveryLock(scope.home, projects[0]?.root) === owned.id)
         await bounded("recovery dispose cleanup", () => disposeRecovery(owned.id, { stop: true }, "owned test fixture cleanup", effects, scope.home));
       if (lifecycle) for (const project of projects) await bounded(`stopping ${project.id}`, () => lifecycle!.stopProject(project));
-      await bounded("fixture removal", async () => rmSync(root, { recursive: true, force: true }));
+      // A directory live work still uses is never removed.
+      if (settled) await bounded("fixture removal", async () => rmSync(root, { recursive: true, force: true }));
+      else failures.push(`fixture kept: ${root} is still used by work the deadline abandoned`);
     } finally { scope.restore(); }
     // A cleanup failure is never swallowed; the body's own failure rides along when both happen.
     if (failures.length) throw new Error(`fixture cleanup did not finish: ${failures.join("; ")}${bodyFailure === undefined ? "" : ` (body: ${bodyFailure instanceof Error ? bodyFailure.message : String(bodyFailure)})`}`);
