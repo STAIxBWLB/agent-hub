@@ -54,6 +54,7 @@ export interface MergeOutcome {
 export const MERGE_READBACK_INTERVAL_MS = 5 * 60_000;
 // ponytail: 60 s bounds paged branch and job readbacks; lower it once a single bounded provider read supplies the same evidence.
 export const MERGE_READBACK_DEADLINE_MS = 60_000;
+export const INLINE_MERGE_READBACK_DEADLINE_MS = 8_000;
 const SHA = /^[0-9a-f]{40}$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 /**
@@ -307,7 +308,7 @@ export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }):
   if (input.recordMerge) {
     // #481 S7: the merged PR's review and CI figures, read once now that the merge is observed. After the merge there is nothing left to race, so this await is fine;
     // its own bound keeps a slow GitHub from holding the record, and a failed read records no cost (unknown), never a zero.
-    const costDeadline = performance.now() + MERGE_READBACK_DEADLINE_MS;
+    const costDeadline = performance.now() + INLINE_MERGE_READBACK_DEADLINE_MS;
     const cost = result.state === "merged" ? await readPrCostHistory(decision.repo, decision.pr, (args, timeout, cwd, cap) => {
       const left = costDeadline - performance.now();
       return left > 0 ? input.run(args, Math.min(timeout ?? 10_000, left), cwd, cap) : Promise.resolve({ code: 1, stdout: "" });

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { childEnv, stopOwnedProcess } from "./child-process.ts";
 import { hostExecutable } from "./host-executable.ts";
+import { readBranchCi } from "./sdlc-branch-ci.ts";
 
 /** The off-mode default (#257). Off output, receipts and schemas keep this shape. */
 export const SDLC_STAGES = ["spec", "plan", "implement", "review", "verify", "merge", "release"] as const;
@@ -785,7 +786,6 @@ export async function readPrCostHistory(repository: string, number: number, run:
       result.ciRuns = runs.workflow_runs.filter((row: { pull_requests: number[] }) => row.pull_requests.includes(number)).map((row: { id: number; run_attempt: number }) => ({ id: row.id, attempt: row.run_attempt }));
       result.complete = reviewComplete && commitComplete;
     }
-    const { readBranchCi } = await import("./sdlc-branch-ci.ts");
     const branch = await readBranchCi(repository, number, firstSubmittedHead, run);
     const sameDirectRuns = !directComplete || branch && result.ciRuns?.length === branch.runs.length && result.ciRuns.every(row => branch.runs.some(candidate => candidate.id === row.id));
     if (branch && sameDirectRuns) {
