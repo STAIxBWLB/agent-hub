@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  CandidateStore, MemoryStore, realPath, memoryHome, memoryProjectKey, openShardStore, readShardedSelection, resolveAlias, resolveProfile, resolveShardProfile,
+  CandidateStore, MemoryStore, aliasLogPath, realPath, memoryHome, memoryProjectKey, openShardStore, readShardedSelection, resolveAlias, resolveProfile,
+  resolveShardProfile, shardKeyHash,
   type BoundProfile, type ProfileInput, type StoreOptions,
 } from "@staix/agent-mem";
 import packageJson from "../../package.json";
@@ -117,6 +119,72 @@ function receipt(profile: BoundProfile, state: MemoryProfileReceipt["state"], sk
   };
 }
 
+/** One lstat tuple: the identity a metadata object carries between two reads. */
+function statStamp(path: string): string {
+  const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  if (!stat) return "absent";
+  const kind = stat.isDirectory() ? "d" : stat.isFile() ? "f" : stat.isSymbolicLink() ? "l" : "o";
+  return `${kind}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+}
+
+/**
+ * Every metadata object `assertCurrent()` resolves, in a fixed order: the selector pair and machine identity, the alias log,
+ * the public-prune and placement markers, this project's shard descriptor and generation files. A stamped directory covers a
+ * child created, removed or renamed inside it; an append to an existing placement journal changes no identity the version
+ * reads, and the next full fence sees it.
+ * ponytail: a stat tuple per call is the whole change signal. A filesystem with a coarser mtime tick could hide an in-place
+ * rewrite of the same size within one tick; agent-mem's own placement-binding memo accepts the same ceiling (agent-mem 0.30.0,
+ * `readActivePlacementBinding`). Upgrade to a kernel-sequenced revision if a target filesystem loses nanosecond stamps.
+ */
+function fenceObjects(home: string, profile: BoundProfile, project: string | undefined, projectKey: string | undefined): string[] {
+  const paths = [
+    home,
+    join(home, "profile.json"), join(home, "shards.json"), join(home, "machine.json"),
+    join(home, "public-prune-view.intent.json"), join(home, "profile.lock"),
+    join(home, "sync-placement"), join(home, "sync-placement", "active.json"), join(home, "sync-placement-activation.json"),
+  ];
+  if (projectKey !== undefined) paths.push(aliasLogPath(home));
+  if (profile.pruneInputSetHash !== undefined) {
+    paths.push(join(home, "public-prune-input-sets"), join(home, "public-prune-input-sets", `${profile.pruneInputSetHash}.json`));
+  }
+  if (profile.placementHead !== undefined) {
+    const epochs = join(home, "sync-placement", "epochs"), epoch = join(epochs, profile.placementHead);
+    paths.push(epochs, epoch, join(epoch, "epoch.json"), join(epoch, "activation.json"));
+  }
+  if (profile.sharded === true && project !== undefined) {
+    const projects = join(home, "projects"), descriptor = join(projects, shardKeyHash(project));
+    paths.push(projects, descriptor, join(descriptor, "project.json"));
+  }
+  if (profile.kind === "generation" && profile.sharded !== true) paths.push(join(home, "generations"));
+  paths.push(profile.dir);
+  for (const name of ["generation.json", "generation-seal.json", "migration-sources.json", "machine.json", "project.json", "prune-translations.jsonl"]) {
+    paths.push(join(profile.dir, name));
+  }
+  for (const name of ["legacy", "legacy-main"]) paths.push(join(profile.dir, name));
+  return paths;
+}
+
+/**
+ * The memory sync policy version. `changeKey` is cheap (fence stat tuples plus the policy inputs) and is taken on every call;
+ * `read` resolves the profile and is reached only when that key moved. A key that moved without the policy inputs changing
+ * recomputes the same version, so a rewrite that keeps the identity does not abort an in-flight pass.
+ */
+export function createMemoryPolicyVersion(
+  changeKey: () => string,
+  read: () => { profile: MemoryProfileReceipt | "unbound"; inputs: readonly unknown[] },
+): () => string {
+  let last: { key: string; version: string } | undefined;
+  return () => {
+    const key = changeKey();
+    if (last?.key === key) return last.version;
+    const { profile, inputs } = read();
+    const identity = profile === "unbound" ? "unbound" : [profile.state, profile.profile, profile.generation, profile.selectorRevision];
+    const version = createHash("sha256").update(JSON.stringify([identity, ...inputs])).digest("hex");
+    last = { key, version };
+    return version;
+  };
+}
+
 /**
  * The project key agent-mem's own CLI binds: memoryProjectKey(cwd) through the person-reviewed alias log of the
  * canonical memory home. The daemon and `ahub memory`/`ahub goal` use it so both open the same shard and rows.
@@ -204,10 +272,19 @@ export class MemoryProfileBinding {
     try { this.onUnavailable?.(UNAVAILABLE); } catch { /* Observer failures cannot undo the latch. */ }
   }
 
-  status(store?: MemoryStore): MemoryProfileReceipt {
+  /**
+   * The cheap change signal for `assertCurrent()`: the stat tuple of every metadata object it resolves, or `unavailable` once
+   * the fence latched. It never parses a profile, shard or alias file, so a caller may poll it per fence check.
+   */
+  fenceStamp(): string {
+    if (this.unavailable) return "unavailable";
+    return fenceObjects(this.home, this.profile, this.project, this.projectKey).map(statStamp).join("|");
+  }
+
+  status(store?: MemoryStore, opts: { skippedRows?: boolean } = {}): MemoryProfileReceipt {
     try { this.assertCurrent(); } catch { /* Report the latched state without exposing metadata errors. */ }
     let skippedRows = 0;
-    if (!this.unavailable && store) {
+    if (opts.skippedRows !== false && !this.unavailable && store) {
       try { skippedRows = store.bridgeStatus()?.skippedRows ?? 0; } catch { this.invalidate(); }
     }
     return receipt(this.profile, this.unavailable ? "unavailable" : "ready", skippedRows);
