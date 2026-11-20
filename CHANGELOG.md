@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Rotate `events.jsonl` (64 MiB segments, three kept) and `hub.log` (16 MiB, two kept) by size. A rotated segment is named by its starting byte, so every reader and every persisted offset (the usage roll-up, the live research tail) keeps its meaning across a rotation, and `ahub research backfill` gives the same records for a task whose events sit in a rotated segment. The oldest event segment is kept while it holds an open task's events (Refs #1546, hub task 1021).
 - Drop a closed task's ephemeral state: its `touches` rows, the output tail and staged output of its finished isolated checks, and the settled results of a closed Pi session shrink to 2,000 characters with a shell exit code kept. Tasks, history, receipts and roll-ups are untouched (Refs #1555, hub task 1004).
 - Remove the rooms-delivery replaced-presence flake: the test counted beta's own session-start presence request as an echo of the replacement reply, and now waits on beta's answer (Refs #1577, Refs #1260, hub task 1035).
 - Remove the conductor detached-restart flake: the test waits for the restart terminal receipt or the runner exit instead of fixed 10 s and 15 s budgets (Refs #1577, Refs #1260, hub task 1033).

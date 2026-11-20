@@ -30,6 +30,7 @@ import { externalInstanceBinding, sameExternalInstanceBinding, externalInstanceS
 import { OperationalAuthorityError, OPERATIONAL_PERSON_GUIDANCE, operationalRosterSetting, operationalSetting, operationalRefusal, operationalRequestLabel, CONDUCTOR_DAEMON_OPERATIONS, CONDUCTOR_TASK_OPS, conductorLocalOperation } from "./operational-authority.ts";
 import { operationalView, redactBusEvent } from "./operational-view.ts";
 import { inspectSelectedOrphans, stopSelectedOrphan, orphanProcessPorts } from "./orphan-process.ts";
+import { lastEventTime, rotateEventsIfLarge, textLogRotator } from "./log-rotation.ts";
 import { dogfoodLines } from "./dogfood-read.ts";
 import { deriveMemoryCodeOverlay, unavailableMemoryCodeOverlay } from "./memory-code-overlay.ts";
 import { readMemoryCodeHead, type MemoryCodeHead } from "./memory-code-head.ts";
@@ -1234,7 +1235,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const checkOperational=(authority:SettingAuthority)=>{if(authority==="conductor"){const scope=operationalContext.getStore();if(!scope)throw new OperationalAuthorityError("operational conductor authority unavailable");scope.current();}};
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
-  const log = (line: string) => { const text=`${new Date().toISOString()} ${line}`;try { appendFileSync(logFile, `${text}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ }
+  const rotateHubLog = textLogRotator(logFile); // #1546: copy-truncate, because the daemon's own stderr also appends to this file
+  const log = (line: string) => { const text=`${new Date().toISOString()} ${line}`;try { appendFileSync(logFile, `${text}\n`); rotateHubLog(); } catch { /* the state dir is gone; the watchdog is stopping the hub */ }
     let publicLine:string|undefined,view:ReturnType<typeof operationalView>|undefined;
     for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");view??=publicOperationalView();publicLine??=view.line(text);sock.send(JSON.stringify({t:"operational_log",line:publicLine,complete:view.complete,...(!view.complete?{incompleteReason:view.incompleteReason}:{})}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
   };
@@ -4148,6 +4150,22 @@ export async function startDaemon(opts: DaemonOptions) {
   // #683 U2: events.jsonl folded into hub.db, a bounded pass at a time, so `usage` never rescans the log.
   const usageRollup = new UsageRollup(join(opts.stateDir, "hub.db"), join(opts.stateDir, "events.jsonl"));
   startupCleanup.push(() => usageRollup.close());
+  /**
+   * #1546: the event log rotates by size. The oldest segment is kept while it holds an event at or after an open task's creation (its research record would lose input), so an open task's events are never
+   * dropped and the log grows past its bound until that task closes. The daemon is the only appender, and `renameSync` runs between two synchronous appends.
+   */
+  const rotateEventLog = () => {
+    try {
+      const open = board.list().filter(task => !isClosedTaskState(task.state));
+      const earliest = open.length ? Math.min(...open.map(task => task.created)) : Infinity;
+      const result = rotateEventsIfLarge(join(opts.stateDir, "events.jsonl"), { keepOldest: oldest => {
+        const last = lastEventTime(oldest.path);
+        return last === undefined || last >= earliest ? "an open task's events are in it" : undefined;
+      } });
+      if (result.rotated) log(`events.jsonl rotated${result.dropped ? `; dropped ${basename(result.dropped.path)}` : ""}${result.kept ? `; kept ${basename(result.kept.segment.path)} (${result.kept.reason})` : ""}`);
+    } catch (error) { log(`events.jsonl rotation failed: ${sanitize((error as Error).message).slice(0, 160)}`); }
+  };
+  rotateEventLog();
   const pollUsageRollup = () => { try { usageRollup.poll(); } catch (error) { log(`usage roll-up pass failed: ${(error as Error).message.slice(0, 120)}`); } };
   pollUsageRollup();
   startupTimings.mark("usage_rollup");
@@ -4938,6 +4956,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (stopping || recoveryActive() || opts.bandsHeld?.()) return;
       void tasks.runSecurityScan().catch(error => log(`sdlc security scan failed: ${sanitize((error as Error).message).slice(0, 160)}`));
     }, opts.securityScanEveryMs ?? 3_600_000),
+    setInterval(() => { if (!stopping && !recoveryActive()) rotateEventLog(); }, 60_000), // #1546
     setInterval(() => {
       if (!stopping && !recoveryActive() && !bus.isRecoveryHeld) {
         try { visuals.prune(config.visuals.retention_days, Date.now(), task => !!board.get(task)); }

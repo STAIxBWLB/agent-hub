@@ -1,6 +1,7 @@
 import type { Database } from "./db-schema.ts";
 import { openHubDatabase } from "./db-schema.ts";
-import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { segmentsOf, streamEnd } from "./log-rotation.ts";
 
 /**
  * The usage roll-up (#683 U2): `events.jsonl` folded into `hub.db`, so a view never rescans the whole log.
@@ -103,30 +104,44 @@ export class UsageRollup {
   poll(maxMs = 20): { bytes: number; done: boolean } {
     const deadline = performance.now() + Math.max(0, Math.min(20, maxMs));
     if (this.closed) return { bytes: 0, done: true };
-    if (!existsSync(this.eventsFile)) return { bytes: 0, done: true };
-    const fd = openSync(this.eventsFile, "r");
+    // #1546: the log is the rotated segments plus the live file, one byte stream; the stored offset is a position in that stream, so it survives a rotation unchanged.
+    const segments = segmentsOf(this.eventsFile);
+    if (!segments.length) return { bytes: 0, done: true };
+    const end = streamEnd(segments);
+    let { offset } = this.state();
+    if (end < offset) { this.reset(); offset = 0; }
+    if (end === offset) return { bytes: 0, done: true };
+    // Kept history starts at the oldest segment: bytes below it were dropped by retention after the roll-up folded them (or, on a first fold, never will be).
+    if (offset < segments[0]!.start) {
+      const first = segments[0]!.start;
+      const moved = this.db.transaction(() => { if (this.state().offset !== offset) return false; this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(first); return true; }).immediate();
+      return { bytes: 0, done: !moved ? false : first >= end };
+    }
+    const segment = segments.find(candidate => offset < candidate.start + candidate.size)!;
+    const base = segment.start, local = offset - base;
+    const fd = openSync(segment.path, "r");
     try {
       const size = fstatSync(fd).size;
-      let { offset } = this.state();
-      if (size < offset) { this.reset(); offset = 0; }
-      if (size === offset) return { bytes: 0, done: true };
+      if (size === local) return { bytes: 0, done: true };
       // The cap bounds a pass, but one line is never split: a line longer than the cap makes this pass read on, up to MAX_LINE_BYTES, until it
       // holds a whole line, so a single large event can never stall the roll-up. A line past that bound is skipped as corrupt.
-      let want = Math.min(size - offset, this.opts.maxBytesPerPass ?? DEFAULT_MAX_BYTES), buffer: Buffer, got = 0, end = -1;
+      let want = Math.min(size - local, this.opts.maxBytesPerPass ?? DEFAULT_MAX_BYTES), buffer: Buffer, got = 0, last = -1;
       for (;;) {
         buffer = Buffer.alloc(want); got = 0;
-        while (got < want) { const n = readSync(fd, buffer, got, want - got, offset + got); if (!n) break; got += n; }
-        end = buffer.subarray(0, got).lastIndexOf(0x0a);
-        if (end >= 0 || offset + want >= size) break;                 // a whole line, or the end of the file (a line still being written)
+        while (got < want) { const n = readSync(fd, buffer, got, want - got, local + got); if (!n) break; got += n; }
+        last = buffer.subarray(0, got).lastIndexOf(0x0a);
+        if (last >= 0 || local + want >= size) break;                 // a whole line, or the end of the file (a line still being written)
         if (want >= MAX_LINE_BYTES) {                                  // an unbounded line: skip what was read up to the next newline
-          const next = this.skipLongLine(fd, offset, size);
+          const next = this.skipLongLine(fd, local, size);
           if (next === undefined) return { bytes: 0, done: true };
-          const moved = this.db.transaction(() => { if (this.state().offset !== offset) return false; this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(next); return true; }).immediate();
-          return moved ? { bytes: next - offset, done: next >= size } : { bytes: 0, done: false };
+          const moved = this.db.transaction(() => { if (this.state().offset !== offset) return false; this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(base + next); return true; }).immediate();
+          return moved ? { bytes: next - local, done: base + next >= end } : { bytes: 0, done: false };
         }
-        want = Math.min(size - offset, want * 2);
+        want = Math.min(size - local, want * 2);
       }
-      if (end < 0) return { bytes: 0, done: true };                    // the last line is still being written: it waits for the next pass
+      // A rotated segment always ends in a newline; one that does not (a hand-made file) is folded to its end rather than stalling the stream.
+      if (last < 0 && !segment.live && local + got >= size) last = got - 1;
+      if (last < 0) return { bytes: 0, done: true };                   // the last line is still being written: it waits for the next pass
       let consumed = 0;
       // The offset was read before the slice was; another roll-up on this hub.db (a restart that overlaps the old process) may have folded the same
       // bytes since. The transaction takes the write lock first and checks the stored offset again: a pass whose start is stale is abandoned whole,
@@ -136,18 +151,18 @@ export class UsageRollup {
         // Commit only complete processed records with their offset. Yield between records;
         // ponytail: one whole record and the existing corrupt-line skip are indivisible;
         // a streaming parser would be needed to preempt within either operation.
-        for (let start = 0; start <= end;) {
-          const newline = buffer.indexOf(0x0a, start);
-          if (newline < 0 || newline > end) break;
+        for (let start = 0; start <= last;) {
+          let newline = buffer.indexOf(0x0a, start);
+          if (newline < 0 || newline > last) { if (newline < 0 && start <= last) newline = last + 1; else break; }
           this.fold(buffer.subarray(start, newline).toString("utf8"));
-          consumed = newline + 1; start = consumed;
+          consumed = Math.min(newline + 1, got); start = consumed;
           if (performance.now() >= deadline) break;
         }
         this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(offset + consumed);
         return true;
       }).immediate();
       if (!applied) return { bytes: 0, done: false };                   // stale: the next pass starts from the stored offset
-      return { bytes: consumed, done: offset + consumed >= size };
+      return { bytes: consumed, done: offset + consumed >= end };
     } finally { closeSync(fd); }
   }
 

@@ -6,6 +6,10 @@ file is for tools (`ahub export`, `ahub report`, research measurements). The
 version is bumped only when a field changes meaning or goes away; new fields and
 new event types do not bump it.
 
+## Rotation (#1546)
+
+`events.jsonl` rotates by size: when the live file reaches 64 MiB the daemon renames it to `events.jsonl.<start>`, where `<start>` is the byte offset, in the one stream the segments and the live file make together, of the segment's first byte. Three rotated segments are kept. The oldest is dropped only when no open task could need it: it is kept while its last event is at or after the creation of the oldest open task, so the log may grow past three segments until that task closes, and `hub.log` says when it kept one. Readers (`ahub export`, `ahub report`, `ahub research backfill`, `ahub usage`, the startup seeds, `dogfood`) read the segments oldest first and then the live file, so they see the lines an unrotated file would have held; a byte offset is a position in that stream and survives a rotation. Dropped segments are gone: an offset below the oldest kept byte starts at the oldest kept segment, and a task whose first event was dropped is read from what the log still holds. `hub.log` rotates the same way at 16 MiB with two segments kept, by copy and truncate while the daemon runs (its stderr also appends to the file) and by rename at the next start.
+
 Every event has `v` (schema version), `at` (ISO time) and `type`. No event ever
 carries a message body or a task title or detail. Private (PII) envelopes are
 marked `private: true`, and PII tasks `pii: true`.

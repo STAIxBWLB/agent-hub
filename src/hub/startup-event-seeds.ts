@@ -1,6 +1,7 @@
-import { closeSync, existsSync, openSync, readSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { parseEventLine, type StampedEvent } from "./events.ts";
+import { segmentsOf } from "./log-rotation.ts";
 
 const STARTUP_EVENT_BUFFER_BYTES = 64 * 1024;
 export interface StartupEventSeeds {
@@ -16,11 +17,12 @@ export interface StartupEventSeeds {
 /** One streaming pass, retaining every accepted row and every historical dedupe key. */
 export function readStartupEventSeeds(file: string, options: { bufferBytes?: number } = {}): StartupEventSeeds {
   const seeds: StartupEventSeeds = { events: [], complete: true, nativeStopsSeen: new Set(), claudeNativeUsageSeen: new Set(), readPasses: 0, readBytes: 0 };
-  if (!existsSync(file)) return seeds;
+  const segments = segmentsOf(file); // #1546: rotated segments first, then the live file, so a restart still sees every dedupe key the kept history holds
+  if (!segments.length) return seeds;
   // Host-only chunk-boundary test seam, never a line, history or total-byte ceiling.
   const bufferBytes = options.bufferBytes ?? STARTUP_EVENT_BUFFER_BYTES;
   if (!Number.isSafeInteger(bufferBytes) || bufferBytes < 1) throw new Error("startup event buffer must be a positive integer; use the default reader buffer");
-  const decoder = new StringDecoder("utf8"), buffer = Buffer.alloc(bufferBytes), fd = openSync(file, "r");
+  const decoder = new StringDecoder("utf8"), buffer = Buffer.alloc(bufferBytes);
   let parts: string[] = [];
   const accept = (line: string) => {
     const event = parseEventLine(line);
@@ -37,17 +39,21 @@ export function readStartupEventSeeds(file: string, options: { bufferBytes?: num
     }
     if (start < text.length) parts.push(text.slice(start));
   };
-  try {
-    seeds.readPasses++;
-    for (;;) {
-      const bytes = readSync(fd, buffer, 0, buffer.length, null);
-      if (!bytes) break;
-      seeds.readBytes += bytes;
-      consume(decoder.write(buffer.subarray(0, bytes)));
-    }
-    consume(decoder.end());
+  seeds.readPasses++;
+  for (const segment of segments) {
+    let fd: number;
+    try { fd = openSync(segment.path, "r"); } catch { seeds.complete = false; continue; }
+    try {
+      for (;;) {
+        const bytes = readSync(fd, buffer, 0, buffer.length, null);
+        if (!bytes) break;
+        seeds.readBytes += bytes;
+        consume(decoder.write(buffer.subarray(0, bytes)));
+      }
+      consume(decoder.end());
+    } finally { closeSync(fd); }
     // readEvents also accepts a complete final JSON record without a newline.
-    if (parts.length) { seeds.complete = false; accept(parts.join("")); }
-    return seeds;
-  } finally { closeSync(fd); }
+    if (parts.length) { seeds.complete = false; accept(parts.join("")); parts = []; }
+  }
+  return seeds;
 }
