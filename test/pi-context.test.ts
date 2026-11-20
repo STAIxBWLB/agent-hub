@@ -19,11 +19,13 @@ test("verified Pi TUI reports session model, fenced occupancy and Record prompt"
   const f = await rosterPiFixture();
   const readings: unknown[] = [];
   (f.peer as any).opts.onContext = (value: unknown, session: string) => readings.push({ value, session });
+  (f.peer as any).opts.selectModel = async () => "mlx/fast";
   f.peer.recordInstruction = () => "Record instruction";
   try {
     await f.post("/event", { type: "pi_model", sessionId: f.sessionId, model: { id: "mlx/fast" } });
     expect(readings).toEqual([{ session: f.sessionId, value: undefined }]); readings.length = 0;
     const pending = f.peer.deliver([newEnvelope("user", "work", { to: ["pi"] })]);
+    const select = await f.next(); expect(select.type).toBe("set_model"); await f.ack(select);
     const prompt = await f.next(); expect(prompt.type).toBe("prompt"); expect(prompt.message).toContain("Record instruction");
     await f.ack(prompt); await pending;
     expect(f.peer.observedModel()).toEqual({ model: "mlx/fast", evidence: "session" });
@@ -94,6 +96,8 @@ test("Pi TUI occupancy reaches daemon status and rejects stale-session observati
     const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
     const post = (body: unknown) => fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify(body) });
     expect((await post({ type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: processSignature(owner.pid), sessionId: "s", sessionFile: join(root, "s.jsonl") })).ok).toBe(true);
+    const peer = daemon.bus.peers.get("pi") as any;
+    expect(typeof peer.recordInstruction).toBe("function"); expect(peer.verifiedRecordSession).toBe("s");
     await post({ type: "agent_start", sessionId: "s", generation: 1 });
     await post({ type: "pi_usage", sessionId: "s", generation: 1, context: { input: 20, cacheRead: 25, cacheWrite: 5, contextWindow: 100 } });
     const status = await console_.request({ t: "status" });

@@ -917,7 +917,7 @@ export class PiPeer extends BasePeer {
     const slash = model.indexOf("/");
     const provider = "agent-hub-local";
     const modelId = model;
-    if (this.opts.mode === "tui") { this.sessionModel = undefined; await this.sendTui({ type: "set_model", provider, modelId }); } else await this.sendRpc({ type: "set_model", provider, modelId });
+    if (this.opts.mode === "tui") { if (this.sessionModel !== modelId) this.sessionModel = undefined; await this.sendTui({ type: "set_model", provider, modelId }); } else await this.sendRpc({ type: "set_model", provider, modelId });
     this.requestedModel = model;
   }
 
