@@ -2260,6 +2260,7 @@
   "src/hub/sdlc-branch-ci.ts:PAGE_SIZE:constant:PAGE_SIZE=100#0": "safety floor",
   "src/hub/sdlc-branch-ci.ts:TIMEOUT:constant:TIMEOUT=10000#0": "operational",
   "src/hub/sdlc-branch-ci.ts:attempt:inline:attempt=1#0": "operational",
+  "src/hub/sdlc-merge.ts:INLINE_MERGE_READBACK_DEADLINE_MS:constant:INLINE_MERGE_READBACK_DEADLINE_MS=8000#0": "operational",
   "src/hub/sdlc-merge.ts:MERGE_READBACK_DEADLINE_MS:constant:MERGE_READBACK_DEADLINE_MS=60000#0": "operational",
   "src/hub/sdlc-merge.ts:MERGE_READBACK_INTERVAL_MS:constant:MERGE_READBACK_INTERVAL_MS=5 * 60000#0": "operational",
   "src/hub/sdlc-merge.ts:attempt:inline:attempt=0#0": "operational",
