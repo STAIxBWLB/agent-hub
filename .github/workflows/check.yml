@@ -42,6 +42,10 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || (!inputs.prepare_bundle && inputs.timing_runs != '20')
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: read
     outputs:
       run_gate: ${{ steps.reuse.outputs.run_gate }}
       admission: ${{ steps.reuse.outputs.admission }}
@@ -58,6 +62,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/ci-reuse.mjs
+      - name: Verify generated roadmap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-roadmap.mjs
       # #1268: stale documentation stamps show on every PR, even when the gate is reused; the gate's own check-docs fails on manifest errors and release requires fresh stamps.
       - name: Report stale documentation stamps
         continue-on-error: true

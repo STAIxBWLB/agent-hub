@@ -84,6 +84,13 @@ export class SupervisionFeed {
     return this.send(`task:${id}:${milestone}`, bits.join("; "), "status", id);
   }
 
+  /** R4: only ids and the fixed rule number enter the conductor's feed. */
+  roadmapFinding(taskId: number, milestone: number | null, rule: number, marker: string): boolean {
+    const task = this.d.tasks().find(row => row.id === taskId);
+    if (!task || !this.includes(task) || this.d.isPrivate(task) || milestone !== null && (!Number.isSafeInteger(milestone) || milestone < 1) || !Number.isSafeInteger(rule) || rule < 1 || rule > 8 || !/^[a-f0-9]{64}$/.test(marker)) return false;
+    return this.send(`roadmap:${marker}`, `roadmap${milestone === null ? "" : ` milestone ${milestone}`}, task ${taskId}: drift rule ${rule}; inspect ahub roadmap check`, "status", taskId);
+  }
+
   /** Only structured history metadata is read; notes may contain private content. */
   taskChanged(task: Task, entry: HistoryEntry, metadata: SupervisionFields = {}): void {
     const fields: SupervisionFields = { by: entry.by, owner: task.owner, ...(entry.reason ? { reason: entry.reason } : {}), ...metadata };

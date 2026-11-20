@@ -85,7 +85,7 @@ try {
   } else noteNames = readdirSync(join(root, "docs/agent-notes"));
   // #1268: every user-facing page directly under docs/ and docs/addons/ needs a stamp too; an absent directory lists nothing.
   // The smoke ledger and the retired GSD analysis are dated records with their own evidence, like specs and the changelog.
-  const records = new Set(["docs/smoke.md", "docs/gsd-collaboration-analysis.md"]);
+  const records = new Set(["docs/smoke.md", "docs/gsd-collaboration-analysis.md", "docs/roadmap.md"]);
   const pages = (dir) => {
     if (!committed) return existsSync(join(root, dir)) ? readdirSync(join(root, dir)) : [];
     const listed = git("ls-tree", "-z", "--name-only", `${headId}:${dir}`);

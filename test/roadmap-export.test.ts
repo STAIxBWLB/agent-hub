@@ -33,3 +33,38 @@ test("a private task never reaches either export", () => {
   expect(result.json).not.toContain("PRIVATE_CANARY");
   expect(result.markdown).not.toContain("PRIVATE_CANARY");
 });
+
+test("issue export applies only an exact preview and preserves the screened body", async () => {
+  const { Board } = await import("../src/hub/board.ts");
+  const { Bus } = await import("../src/hub/bus.ts");
+  const { Tasks } = await import("../src/hub/tasks.ts");
+  const { loadRouting } = await import("../src/hub/routing.ts");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "roadmap-export-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
+  const writes: string[][] = [];
+  const tasks = new Tasks({ cwd: dir, board, bus, project: "project", repository: "example/repo", routing: () => loadRouting(dir), notify: () => {},
+    roadmapGh: async args => { writes.push(args); return { code: 0, stdout: "{}" }; }, roadmapOrigin: () => "example/repo", roadmapConfig: () => ({ github_mirror: false, github_write: "off" }) });
+  try {
+    board.newMilestone({ title: "Public", outcome: "Outcome" }, "user");
+    const preview = await tasks.roadmapExport("user", { issue: 1145 });
+    expect(preview.call?.[1]).toBe("repos/example/repo/issues/1145");
+    await expect(tasks.roadmapExport("user", { issue: 1145, apply: true })).rejects.toThrow("preview changed");
+    await expect(tasks.roadmapExport("codex", { issue: 1145, apply: true, confirm: preview.fingerprint })).rejects.toThrow("require the person");
+    expect(writes).toHaveLength(0);
+    expect((await tasks.roadmapExport("user", { issue: 1145, apply: true, confirm: preview.fingerprint })).applied).toBe(true);
+    expect(writes[0]).toContain(`body=${preview.markdown}`);
+  } finally { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("R4 command forms keep read previews separate from confirmed writes", async () => {
+  const { parseRoadmapArgs } = await import("../src/cli/roadmap.ts");
+  const fingerprint = "a".repeat(64);
+  expect(parseRoadmapArgs(["check", "--json"])).toEqual({ op: "hub_roadmap_check", args: {}, json: true });
+  expect(parseRoadmapArgs(["sync"])).toEqual({ op: "roadmap_sync", args: {}, json: false });
+  expect(parseRoadmapArgs(["sync", "--apply", "--confirm", fingerprint])).toEqual({ op: "roadmap_sync_apply", args: { apply: true, confirm: fingerprint }, json: false });
+  expect(parseRoadmapArgs(["export", "--write"]).write).toBe(true);
+  expect(parseRoadmapArgs(["export", "--issue", "1145", "--apply", "--confirm", fingerprint]).op).toBe("roadmap_export_apply");
+  for (const bad of [["sync", "--apply"], ["export", "--apply", "--confirm", fingerprint], ["export", "--write", "--issue", "1"], ["check", "--apply"]]) expect(() => parseRoadmapArgs(bad)).toThrow();
+});

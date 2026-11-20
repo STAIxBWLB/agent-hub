@@ -10,6 +10,9 @@ paths:
   - src/hub/roadmap-view.ts
   - src/hub/roadmap-unplaced.ts
   - src/hub/roadmap-triage.ts
+  - src/hub/roadmap-check.ts
+  - src/hub/roadmap-sync.ts
+  - src/hub/roadmap-export.ts
   - src/hub/github-import.ts
   - src/hub/specs-task.ts
   - src/hub/board.ts
@@ -18,6 +21,7 @@ paths:
   - src/hub/daemon.ts
   - src/hub/restart.ts
   - src/cli/roadmap.ts
+  - src/cli/roadmap-write.ts
   - src/cli/main.ts
   - src/cli/help.ts
   - src/cli/identity.ts
@@ -30,6 +34,13 @@ paths:
   - test/roadmap-triage-tasks.test.ts
   - test/roadmap-r3-cli.test.ts
   - test/roadmap-r3-daemon.test.ts
+  - test/roadmap-check.test.ts
+  - test/roadmap-sync.test.ts
+  - test/roadmap-export.test.ts
+  - test/roadmap-write.test.ts
+  - test/roadmap-r4-daemon.test.ts
+  - test/check-roadmap.test.ts
+  - scripts/check-roadmap.mjs
 ---
 
 # Roadmap milestones
@@ -189,3 +200,15 @@ in `withheld`. Nothing is written to GitHub.
 
 `milestone_suggestions` and `milestone_imports` are additive tables outside the roadmap integrity digest: a lost suggestion is
 triaged again and an import mark only prevents a duplicate, so neither changes the recovery format.
+
+## Drift, mirror and export (R4)
+
+`hub_roadmap_check` and `ahub roadmap check` report the eight rules in #1482. Issue state is fresh bounded GitHub metadata, never inferred from a task verdict. At most 100 issue reads share a 20-second deadline; unreadable or unvisited evidence remains unknown. A merged issue is reported open only after 24 hours, so GitHub's closing lag does not become a false finding. A public `feat:` or `feat(...)` task with no recorded spec issue is a feature finding. Missing issue identity is a separate finding. The result has at most 100 findings and says `truncated` when more exist.
+
+`roadmap.github_mirror` defaults to false and `roadmap.github_write` to `off`; both are machine-local. The only other write value is `conductor`. `ahub roadmap sync` reads complete bounded all-state GitHub milestone and issue metadata, without issue bodies, and previews fixed `gh api` argument arrays. `--apply --confirm <fingerprint>` re-reads and rechecks the exact plan. The person may apply; the current rostered unique conductor may apply only with `github_write: "conductor"`. The operational audit and current caller, task, configuration, privacy and recovery fences remain in force. Incomplete pages, conflicting identity or withheld milestone membership refuse a plan. GitHub writes never delete a milestone, and a write whose effect cannot be confirmed is reported as uncertain rather than a safe retry.
+
+A local milestone has at most one remote number per repository. R3's `milestone_imports` marks are the durable binding, including for an imported milestone. A creation includes `<!-- ahub-roadmap:<project>:<local milestone id> -->` in its description; the response must confirm the number, repository URL, title, state and marker before binding. After a lost response, exactly one marked milestone is offered as a local binding in a new confirmed preview. Duplicate markers or a title match without the marker are refused for inspection. A new milestone's first preview creates only the milestone; a later preview binds its server-assigned number and plans issue membership. Moving an issue directly to another known milestone never follows the move with a stale unassignment.
+
+`ahub roadmap export` renders deterministic JSON and Markdown from screened milestone views. `--write` writes only `docs/roadmap.md` and `docs/roadmap.json` in the caller's Git worktree after proving it shares the selected repository, enforcing its current deny, read-only and PII path policy and refusing symlinks or hardlinks. A partially completed two-file write is reported. `--issue <n> --apply --confirm <fingerprint>` updates that issue body only after a matching preview, under the same person/conductor policy. The fingerprint binds repository, issue and rendered body.
+
+Task state and merge changes schedule affected public milestones for an ids-only supervision notice. The existing five-minute merge-readback sweep rechecks unresolved findings, including the close-lag boundary. A durable marker suppresses a finding already delivered; an unavailable feed or evidence is retried on a later change or sweep. Private tasks are never named. `scripts/check-roadmap.mjs` is a standalone Node validator: it checks the generated JSON's schema, linked spec IDs and tracked spec paths, and checks known issue states when a GitHub token is available. `scripts/check.sh` and the hosted docs step run it. Only `docs/roadmap.md` is exempt from the documentation stamp because this validation covers the generated page; the standalone release docs checker retains its Node-only contract.

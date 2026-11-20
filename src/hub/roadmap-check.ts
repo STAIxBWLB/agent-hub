@@ -1,7 +1,7 @@
 /** Evidence is supplied by the host, never by a model. Missing evidence stays unknown. */
 export interface DriftTask {
   id: number; state: string; issue: string | null | undefined; issueState: "open" | "closed" | "unknown";
-  feature: boolean; mergedAt: number | null | undefined;
+  feature: boolean; specIssue: boolean | undefined; mergedAt: number | null | undefined;
   unchangedSpecs: readonly string[] | undefined;
 }
 export interface DriftMilestone {
@@ -16,10 +16,15 @@ export interface RoadmapDriftInput {
 export interface RoadmapDrift {
   rule: number; milestone: number | null; items: string[]; cause: string; remedy: string;
 }
-export function checkRoadmap(input: RoadmapDriftInput): { findings: RoadmapDrift[]; unknown: number[] } {
+export const ROADMAP_FINDING_LIMIT = 100;
+export function checkRoadmap(input: RoadmapDriftInput, include: (finding: RoadmapDrift) => boolean = () => true): { findings: RoadmapDrift[]; unknown: number[]; truncated?: true } {
   if (!Number.isFinite(input.now) || !Number.isFinite(input.closeLagMs) || input.closeLagMs < 0) throw new Error("invalid roadmap clock");
-  const findings: RoadmapDrift[] = [], missing = new Set<number>();
-  const add = (rule: number, milestone: number | null, items: string[], cause: string, remedy: string) => findings.push({ rule, milestone, items, cause, remedy });
+  const findings: RoadmapDrift[] = [], missing = new Set<number>(); let truncated = false;
+  const add = (rule: number, milestone: number | null, items: string[], cause: string, remedy: string) => {
+    const finding = { rule, milestone, items, cause, remedy };
+    if (!include(finding)) return;
+    if (findings.length < ROADMAP_FINDING_LIMIT) findings.push(finding); else truncated = true;
+  };
   for (const m of [...input.milestones].sort((a, b) => a.id - b.id)) {
     if (!Number.isSafeInteger(m.id) || m.id < 1) throw new Error("invalid milestone id");
     for (const task of [...m.tasks].sort((a, b) => a.id - b.id)) {
@@ -35,10 +40,10 @@ export function checkRoadmap(input: RoadmapDriftInput): { findings: RoadmapDrift
             add(2, m.id, item, "merged task issue remains open", `ahub roadmap show ${m.id}`);
         }
       }
-      if (task.feature && task.issue === undefined) missing.add(6);
-      else if (task.feature && task.issue === null) add(6, m.id, item, "feature task has no spec issue", `ahub task show ${task.id}`);
+      if (task.feature && task.specIssue === undefined) missing.add(6);
+      else if (task.feature && !task.specIssue) add(6, m.id, item, "feature task has no spec issue", `ahub task show ${task.id}`);
       if (task.issue === undefined) missing.add(6);
-      else if (task.issue === null && !task.feature) add(6, m.id, item, "task has no issue", `ahub task show ${task.id}`);
+      else if (task.issue === null) add(6, m.id, item, "task has no issue", `ahub task show ${task.id}`);
       if (task.mergedAt === undefined || task.mergedAt !== null && task.unchangedSpecs === undefined) missing.add(5);
       else if (task.mergedAt !== null) for (const id of task.unchangedSpecs ?? [])
         add(5, m.id, [...item, `spec:${id}`], "merged change did not update covering spec", "ahub specs check");
@@ -56,5 +61,5 @@ export function checkRoadmap(input: RoadmapDriftInput): { findings: RoadmapDrift
   }
   if (input.exportMatches === undefined) missing.add(8);
   else if (!input.exportMatches) add(8, null, [], "roadmap export differs from board", "ahub roadmap export --write");
-  return { findings, unknown: [...missing].sort((a, b) => a - b) };
+  return { findings, unknown: [...missing].sort((a, b) => a - b), ...(truncated ? { truncated: true as const } : {}) };
 }

@@ -12,18 +12,38 @@ export const ROADMAP_FORMS = {
   triage: "triage [--repo <owner/name>] [--list] [--json]",
   accept: "accept <suggestion>", reject: "reject <suggestion>",
   importGithub: "import-github [--repo <owner/name>] [--apply] [--json]",
+  check: "check [--json]", sync: "sync [--apply --confirm <fingerprint>] [--json]",
+  export: "export [--write | --issue <n> [--apply --confirm <fingerprint>]] [--json]",
 } as const;
 export const ROADMAP_USAGE = `usage: ${Object.values(ROADMAP_FORMS).map(form => `ahub roadmap ${form}`).join(" | ")}`;
 export interface RoadmapArgs {
-  op: "hub_roadmap_list" | "hub_roadmap_show" | "hub_roadmap_edit" | "hub_roadmap_unplaced" | "hub_roadmap_triage" | "roadmap_import_github";
+  op: "hub_roadmap_list" | "hub_roadmap_show" | "hub_roadmap_check" | "hub_roadmap_edit" | "hub_roadmap_unplaced" | "hub_roadmap_triage" | "roadmap_import_github" | "roadmap_sync" | "roadmap_sync_apply" | "roadmap_export" | "roadmap_export_apply";
   args: Record<string, unknown>;
   json: boolean;
+  write?: boolean;
 }
 /** R3 commands: their flags are not milestone fields, so they are parsed apart from new/edit. */
 const R3_COMMANDS = ["unplaced", "triage", "accept", "reject", "import-github"];
 const R3_JSON = ["unplaced", "triage", "import-github"];
 const fieldFlags = ["title", "outcome", "horizon", "order", "target", "parent"];
 const usage = (message: string): never => { throw new Error(`${message}; ${ROADMAP_USAGE}`); };
+
+function parseR4(command: string, rest: readonly string[], jsonSeen: boolean): RoadmapArgs {
+  let json = jsonSeen, apply = false, write = false, issue: number | undefined, confirm: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i]!;
+    if (word === "--json" && !json) json = true;
+    else if (word === "--apply" && !apply && command !== "check") apply = true;
+    else if (word === "--write" && !write && command === "export") write = true;
+    else if (word === "--issue" && issue === undefined && command === "export") issue = integer(rest[++i]);
+    else if (word === "--confirm" && confirm === undefined && command !== "check") { confirm = rest[++i]; if (!confirm || !/^[a-f0-9]{64}$/.test(confirm)) return usage("roadmap confirmation needs a full fingerprint"); }
+    else return usage("unknown or duplicate roadmap option");
+  }
+  if (confirm && !apply || apply && !confirm || write && (apply || issue !== undefined) || command === "export" && apply && issue === undefined) return usage("roadmap apply needs its preview fingerprint and export --write is separate from --issue");
+  if (command === "check") return { op: "hub_roadmap_check", args: {}, json };
+  if (command === "sync") return { op: apply ? "roadmap_sync_apply" : "roadmap_sync", args: apply ? { apply, confirm } : {}, json };
+  return { op: apply ? "roadmap_export_apply" : "roadmap_export", args: { ...(issue === undefined ? {} : { issue }), ...(apply ? { apply, confirm } : {}) }, json, ...(write ? { write } : {}) };
+}
 function integer(value: string | undefined, zero = false): number {
   if (value === undefined || !/^(0|[1-9][0-9]*)$/.test(value)) return usage("roadmap needs a whole-number operand");
   return zero ? milestoneRevision(Number(value)) : milestoneId(Number(value));
@@ -65,6 +85,7 @@ export function parseRoadmapArgs(argv: readonly string[]): RoadmapArgs {
   if (argv[index] === "--json") { json = true; index++; }
   const command = argv[index] ?? "list";
   if (argv[index] !== undefined) index++;
+  if (["check", "sync", "export"].includes(command)) return parseR4(command, argv.slice(index), json);
   if (!["list", "show", "new", "edit", "link", "unlink", "order", "state", ...R3_COMMANDS].includes(command)) return usage("unknown roadmap command");
   if (R3_COMMANDS.includes(command)) return parseR3(command, argv.slice(index), json);
   const operands: string[] = [], flags = new Map<string, string>();
@@ -165,6 +186,28 @@ export function renderRoadmap(input: unknown, width = 80): string {
     }
   };
   const names = (rows: unknown[], one: (value: Row) => string) => { for (const value of rows) add(one(row(value))); };
+  if (Array.isArray(view.findings) && Array.isArray(view.unknown)) {
+    add(`Roadmap drift (${view.findings.length} findings)`);
+    names(view.findings, finding => `  Rule ${count(finding.rule)}, milestone ${finding.milestone === null ? "none" : count(finding.milestone)}: ${text(finding.cause)}; ${list(finding.items).map(text).join(", ")}. Next: ${text(finding.remedy)}`);
+    if (view.unknown.length) add(`Unknown evidence for rules: ${view.unknown.map(count).join(", ")}`);
+    if (view.truncated === true) add("More findings exist; narrow the roadmap before relying on this list.");
+    return lines.join("\n");
+  }
+  if (Array.isArray(view.calls) && typeof view.fingerprint === "string") {
+    add(`GitHub mirror: ${view.applied ? "applied" : "dry run"}`);
+    for (const call of view.calls) if (Array.isArray(call)) add(`  gh ${call.map(value => `'${String(value).replaceAll("'", "'\\''")}'`).join(" ")}`);
+    for (const binding of list(view.bindings)) { const b = row(binding); add(`  Bind local milestone ${count(b.milestone)} to GitHub milestone ${count(b.number)}`); }
+    if (!view.applied) add(`Apply this exact preview: ahub roadmap sync --apply --confirm ${text(view.fingerprint)}`);
+    return lines.join("\n");
+  }
+  if (typeof view.markdown === "string" && typeof view.fingerprint === "string") {
+    add(view.markdown);
+    const endpoint = Array.isArray(view.call) ? view.call[1] : undefined;
+    const issue = typeof endpoint === "string" ? /\/issues\/([1-9][0-9]*)$/.exec(endpoint)?.[1] : undefined;
+    if (issue && !view.applied) add(`Apply this exact issue preview: ahub roadmap export --issue ${issue} --apply --confirm ${text(view.fingerprint)}`);
+    if (view.applied) add("GitHub issue update confirmed.");
+    return lines.join("\n");
+  }
   if (Array.isArray(view.issues) && Array.isArray(view.tasks) && Array.isArray(view.specs) && view.privateTasks !== undefined) {
     add(`Unplaced work${view.repo ? ` (${text(view.repo)})` : ""}`);
     if (view.partial === true) add("Partial: the GitHub read stopped early or a list was cut, so these lists are a lower bound.");
