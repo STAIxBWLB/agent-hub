@@ -61,7 +61,7 @@ export async function readBranchCi(repo: string, number: number, firstHead: stri
     const checks = rows.filter(row => row.path === ".github/workflows/check.yml" && timestamp(row.created_at) >= start && timestamp(row.created_at) <= end && (row.pull_requests.length === 0 || row.pull_requests.includes(number)));
     if (checks.some(row => row.pull_requests.some((value: number) => value !== number))) return;
     // ponytail: inspect at most one page of check runs and ten attempts each; raise the bounds with a provider-side summary.
-    if (checks.length > PAGE_SIZE || checks.some(row => !integer(row.id) || !integer(row.run_attempt) || row.run_attempt > PAGE_LIMIT || !/^[a-f0-9]{40}$/.test(row.head_sha) || row.status !== "completed" || typeof row.conclusion !== "string")) return;
+    if (checks.length > PAGE_SIZE || checks.some(row => !integer(row.id) || !integer(row.run_attempt) || row.run_attempt > PAGE_LIMIT || !/^[a-f0-9]{40}$/.test(row.head_sha) || typeof row.status !== "string")) return;
     if (new Set(checks.map(row => row.id)).size !== checks.length) return;
     const timeline = await pages(run, `repos/${repo}/issues/${number}/timeline`, [], "[.[]|{event,created_at}]");
     if (!timeline) return;
@@ -85,34 +85,42 @@ export async function readBranchCi(repo: string, number: number, firstHead: stri
       return draft;
     };
     let macosShardRuns = 0, firstPass: 0 | 1 | null = null, firstDecided = false;
+    const observedRuns: { id: number; attempt: number; conclusion: string }[] = [];
     const ordered = checks.sort((a, b) => timestamp(a.created_at) - timestamp(b.created_at) || a.id - b.id);
     const firstHeadTimes = ordered.filter(row => firstHead && row.head_sha === firstHead).map(row => timestamp(row.created_at));
     const firstOrderAmbiguous = new Set(firstHeadTimes).size !== firstHeadTimes.length;
     for (const check of ordered) {
+      let atMerge: { id: number; attempt: number; conclusion: string } | undefined;
       for (let attempt = 1; attempt <= check.run_attempt; attempt++) {
-        const jobs = await pages(run, `repos/${repo}/actions/runs/${check.id}/attempts/${attempt}/jobs`, [], "{total_count,jobs:[.jobs[]|{name,status,conclusion}]}", "jobs");
+        const attemptReply = await run(["api", `repos/${repo}/actions/runs/${check.id}/attempts/${attempt}`, "--jq", "{id,run_attempt,status,conclusion,created_at,updated_at}"], TIMEOUT, undefined, CAP);
+        if (attemptReply.code !== 0) return;
+        const observed = JSON.parse(attemptReply.stdout), created = timestamp(observed.created_at), updated = timestamp(observed.updated_at);
+        if (observed.id !== check.id || observed.run_attempt !== attempt || !Number.isFinite(created) || !Number.isFinite(updated) || created === end || updated === end) return;
+        if (created > end) continue;
+        if (observed.status !== "completed" || typeof observed.conclusion !== "string" || updated > end) return;
+        atMerge = { id: check.id, attempt, conclusion: observed.conclusion };
+        const jobs = await pages(run, `repos/${repo}/actions/runs/${check.id}/attempts/${attempt}/jobs`, [], "{total_count,jobs:[.jobs[]|{name,status,conclusion,runner_id}]}", "jobs");
         if (!jobs || jobs.some(job => typeof job.name !== "string")) return;
         const shards = jobs.filter(job => /^check \(macos-latest\) shard [1-4]\/4$/.test(job.name));
-        if (shards.some(job => typeof job.status !== "string" || job.status !== "completed" || typeof job.conclusion !== "string")) return;
-        macosShardRuns += shards.filter(job => job.conclusion !== "skipped").length;
+        if (shards.some(job => job.status !== "completed" || typeof job.conclusion !== "string" || !(job.runner_id === null || integer(job.runner_id)) || job.runner_id === null && job.conclusion !== "skipped" && job.conclusion !== "cancelled")) return;
+        const ran = shards.filter(job => job.conclusion !== "skipped" && integer(job.runner_id));
+        macosShardRuns += ran.length;
         if (attempt !== 1 || firstDecided || !firstHead || check.head_sha !== firstHead) continue;
         const draft = draftAt(timestamp(check.created_at));
         if (draft === undefined) return;
-        const attemptReply = await run(["api", `repos/${repo}/actions/runs/${check.id}/attempts/1`, "--jq", "{id,run_attempt,status,conclusion}"], TIMEOUT, undefined, CAP);
-        if (attemptReply.code !== 0) return;
-        const observed = JSON.parse(attemptReply.stdout);
-        if (observed.id !== check.id || observed.run_attempt !== 1 || typeof observed.status !== "string") return;
-        if (draft || shards.length === 0 || shards.every(job => job.conclusion === "skipped") || observed.status !== "completed" || observed.conclusion === "cancelled") continue;
+        if (draft || ran.length === 0 || observed.status !== "completed" || observed.conclusion === "cancelled") continue;
         if (observed.conclusion === "success") firstPass = 1;
         else if (observed.conclusion === "failure" || observed.conclusion === "timed_out") firstPass = 0;
         else return;
         firstDecided = true;
       }
+      if (!atMerge) return;
+      observedRuns.push(atMerge);
     }
-    const successfulGateRuns = checks.filter(row => row.conclusion === "success").length;
-    const failedGateRuns = checks.filter(row => row.conclusion === "failure" || row.conclusion === "timed_out").length;
-    const cancelledGateRuns = checks.filter(row => row.conclusion === "cancelled").length;
-    return { runs: checks.map(row => ({ id: row.id, attempt: row.run_attempt })), fullGateRuns: checks.length,
-      successfulGateRuns, failedGateRuns, cancelledGateRuns, otherGateRuns: checks.length - successfulGateRuns - failedGateRuns - cancelledGateRuns, macosShardRuns, firstPass: firstOrderAmbiguous ? null : firstPass };
+    const successfulGateRuns = observedRuns.filter(row => row.conclusion === "success").length;
+    const failedGateRuns = observedRuns.filter(row => row.conclusion === "failure" || row.conclusion === "timed_out").length;
+    const cancelledGateRuns = observedRuns.filter(row => row.conclusion === "cancelled").length;
+    return { runs: observedRuns.map(row => ({ id: row.id, attempt: row.attempt })), fullGateRuns: observedRuns.length,
+      successfulGateRuns, failedGateRuns, cancelledGateRuns, otherGateRuns: observedRuns.length - successfulGateRuns - failedGateRuns - cancelledGateRuns, macosShardRuns, firstPass: firstOrderAmbiguous ? null : firstPass };
   } catch { return; }
 }

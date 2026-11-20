@@ -782,8 +782,9 @@ export async function readPrCostHistory(repository: string, number: number, run:
     }
     const { readBranchCi } = await import("./sdlc-branch-ci.ts");
     const branch = await readBranchCi(repository, number, firstSubmittedHead, run);
-    if (branch) {
-      if (!directComplete) result.ciRuns = branch.runs;
+    const sameDirectRuns = !directComplete || branch && result.ciRuns?.length === branch.runs.length && result.ciRuns.every(row => branch.runs.some(candidate => candidate.id === row.id));
+    if (branch && sameDirectRuns) {
+      result.ciRuns = branch.runs;
       result.fullGateRuns = branch.fullGateRuns; result.cancelledGateRuns = branch.cancelledGateRuns;
       result.successfulGateRuns = branch.successfulGateRuns; result.failedGateRuns = branch.failedGateRuns; result.otherGateRuns = branch.otherGateRuns;
       result.macosShardRuns = branch.macosShardRuns; result.firstPass = branch.firstPass;
