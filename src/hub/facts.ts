@@ -8,6 +8,8 @@ import { isDenied } from "../local/deny.ts";
 import { hubGitArgv, hubGitEnv } from "./git.ts";
 import { realPath } from "./project.ts";
 import { insideRoot } from "./path-policy.ts";
+import { classifyShellWrite } from "./task-shell-command.ts";
+import type { EditCounts, TurnEdits } from "./events.ts";
 
 /**
  * Turn-free facts (issue #108): what changed in an owner's files since it last acknowledged them, as a diff with who
@@ -300,6 +302,7 @@ export class Facts {
     this.unfollowed.clear(); // what was seen is forgotten: a notice about it would be stale
     this.writes.clear();
     this.receipts.clear();
+    this.tally.clear();
     this.epoch = Date.now();
   }
 
@@ -315,6 +318,30 @@ export class Facts {
 
   readReceipt(peer: PeerId, task: number, path: string): ReadReceipt | undefined {
     return this.receipts.get(peer)?.get(`${task}\0${path}`);
+  }
+
+  /** #1556 T2: counts of the writes the hook saw this turn, per peer; counts only, never a path or a command. Memory only, cleared at `takeEdits`, `closeTask`-independent. */
+  private readonly tally = new Map<PeerId, { e: EditCounts; s: EditCounts }>();
+  /** Grade one write of `path` for `peer`: 1 verified full read, 2 partial read only, 3 blind or stale, undefined when the pre-image is unknown (counted in the total only, never guessed). */
+  private grade(peer: PeerId, path: string, pre: string | undefined): 1 | 2 | 3 | undefined {
+    const task = this.o.scope(peer)?.task?.id;
+    const r = task === undefined ? undefined : this.readReceipt(peer, task, path);
+    if (!r) return 3;
+    if (pre === undefined) return undefined;
+    if (createHash("sha256").update(pre).digest("hex") !== r.sha256) return 3;
+    return r.scope === "full" ? 1 : 2;
+  }
+  private count(peer: PeerId, route: "e" | "s", grade: 1 | 2 | 3 | undefined): void {
+    let t = this.tally.get(peer);
+    if (!t) this.tally.set(peer, (t = { e: [0, 0, 0, 0, 0], s: [0, 0, 0, 0, 0] }));
+    t[route][0]++;
+    if (grade !== undefined) t[route][grade]++;
+  }
+  /** The counts for the turn that just ended, or undefined when no write was seen (a read-only turn adds no field). Clears them. */
+  takeEdits(peer: PeerId): TurnEdits | undefined {
+    const t = this.tally.get(peer);
+    this.tally.delete(peer);
+    return t ? { obs: "hook", ...(t.e[0] ? { e: t.e } : {}), ...(t.s[0] ? { s: t.s } : {}) } : undefined;
   }
 
   /** The task closed: its receipts go. */
@@ -597,6 +624,7 @@ export class Facts {
     if (file && pre?.version) {
       this.touch(peer, file, pre.version);
       if (["Edit", "MultiEdit", "Write"].includes(tool)) {
+        this.count(peer, "e", this.grade(peer, file, pre.version.text));
         this.wrote(peer, file);
         const expected = !pre.version.projected && this.latest.get(file)?.hash === pre.version.hash ? applyEdit(pre.version.text, tool, input) : undefined;
         const version = this.observe(file, expected === undefined ? undefined : { peer, expected: sha1(expected) });
@@ -614,6 +642,14 @@ export class Facts {
         // Only a whole read of an unchanged file says what the peer saw: no offset or limit, and nothing Read cuts.
         if (!pre.version.projected && version.hash === pre.version.hash && input.offset === undefined && input.limit === undefined && readWhole(pre.version.text)) this.view(peer).set(file, version);
         return this.observeAll();
+      }
+    }
+    if (tool === "Bash" && typeof input.command === "string") {
+      // #1556 T2: one shell-route write per command; its worst target decides the grade, and a target that is not a project file or has no known pre-image counts in the total only.
+      const c = classifyShellWrite(input.command);
+      if (c.kind === "write") {
+        const grades = c.targets.map((t) => { const f = this.rel(t); return f === undefined ? undefined : this.grade(peer, f, this.latest.get(f)?.text); });
+        this.count(peer, "s", grades.includes(3) ? 3 : grades.includes(undefined) ? undefined : grades.includes(2) ? 2 : 1);
       }
     }
     this.observeAll();

@@ -2,15 +2,15 @@ import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { segmentsOf, streamEnd } from "./log-rotation.ts";
 import { join } from "node:path";
-import { isModelEvidence, MODEL_EVIDENCE, parseEventLine, readEvents, scanEventLines, type ModelEvidence, type RoleIdentity, type StampedEvent } from "./events.ts";
+import { isModelEvidence, MODEL_EVIDENCE, parseEventLine, turnEdits, type TurnEdits, readEvents, scanEventLines, type ModelEvidence, type RoleIdentity, type StampedEvent } from "./events.ts";
 import { safeModelLabel } from "../omniroute/usage.ts";
 import { hubHome } from "./project.ts";
 import { ADDONS, addonState, type Addon, type AddonName } from "./tooling.ts";
 import { MIN_ATTEMPTS, mulberry32 } from "./bench.ts";
 import { UNKNOWN_MEMORY_FIGURES } from "./research-memory.ts";
 import { addPersonEvent, emptyPersonCounts, isPersonEvent, personCoverage, personFigures, personTask, startsAttribution, type PersonCounts } from "./person-figures.ts";
-import { closedId, journalFigures, mergeBlock, NO_EVIDENCE, reviewBlock, specsBlock, type CancelCause, type CohortKind, type DeliveryBlock, type HandoffsBlock, type MemoryBlock, type MergeBlock, type PersonBlock, type ResearchEvidence, type ReviewBlock, type SpecsBlock, cancelCauseOf } from "./research-record.ts";
-export type { CancelCause, CohortKind, DeliveryBlock, HandoffsBlock, MemoryBlock, MergeBlock, PersonBlock, ResearchEvidence, ReviewBlock, SpecsBlock } from "./research-record.ts";
+import { closedId, journalFigures, mergeBlock, NO_EVIDENCE, reviewBlock, specsBlock, type CancelCause, type CohortKind, type DeliveryBlock, type EditGovernanceBlock, editGovernanceBlock, type HandoffsBlock, type MemoryBlock, type MergeBlock, type PersonBlock, type ResearchEvidence, type ReviewBlock, type SpecsBlock, cancelCauseOf } from "./research-record.ts";
+export type { CancelCause, CohortKind, DeliveryBlock, EditGovernanceBlock, HandoffsBlock, MemoryBlock, MergeBlock, PersonBlock, ResearchEvidence, ReviewBlock, SpecsBlock } from "./research-record.ts";
 
 /**
  * #247: opt-in research records of how tasks went, built only from `events.jsonl` (ids, states, counts, tokens), so the
@@ -88,6 +88,8 @@ export interface TaskRecord {
   /** Persisted idle-ladder entries on the task's board history (the stall table itself is cleared when a task closes); null without the board. */
   stalls?: number | null;
   handoffs?: HandoffsBlock; cohort?: CohortKind;
+  /** #1556 T2: text-free edit governance counts folded from `turn_end.edits`; a row written before it has none and reads as unknown. */
+  edits?: EditGovernanceBlock;
 }
 /** A record carries merge figures when any of them is known. */
 const mergeKnown = (r: TaskRecord): boolean => !!r.merge && (r.merge.ciRuns !== null || r.merge.ciReruns !== null || r.merge.githubReviews !== null || r.merge.approvedToMergedMs !== null);
@@ -117,7 +119,7 @@ export const recordKey = (r: { project: string; task: number; createdAt: string 
 /** When a record's task closed: v2 says so, a v1 row is approved-only and closed at its approval. */
 export const closedAtOf = (r: TaskRecord): string | null => r.closedAt ?? r.approvedAt;
 
-type V2Fields = "closedAt" | "cancelCause" | "declines" | "escalations" | "review" | "delivery" | "merge" | "specs" | "memory" | "person" | "stalls" | "handoffs" | "cohort";
+type V2Fields = "closedAt" | "cancelCause" | "declines" | "escalations" | "review" | "delivery" | "merge" | "specs" | "memory" | "person" | "stalls" | "handoffs" | "cohort" | "edits";
 type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers" | "briefs" | "person" | "ownerModels" | V2Fields> & {
   models: Set<string>;
   /** #1402: peer -> model -> strongest grade, every peer that worked on the task; the owners are picked at the end. */
@@ -127,6 +129,8 @@ type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wall
   /** #1277: what the events alone say; the board and journal evidence is joined at the end. */
   cancelledAt: string | null; declines: number; escalations: number; lastDoneMs: number | null; envelopes: number; dropped: { fyi: number; hop: number };
   briefNotes: number; briefFails: number; cohort: "silent" | "advisory" | null;
+  /** #1556 T2: each attributed, non-private turn's validated `edits`, in log order. */
+  editTurns: TurnEdits[];
 };
 /** Keyed by peer ids, model names and reasons, any of which may be `constructor` or `__proto__`: no prototype to inherit from. */
 const keyed = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
@@ -134,7 +138,7 @@ const blank = (task: number): Acc => ({ task, class: null, pii: false, createdAt
   reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: keyed(), stuck: 0, overlaps: 0, conflicts: 0,
   tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(), observed: new Map(),
   approvedAt: null, lastState: null, tooling: keyed(), peers: new Map(), briefs: { delivered: 0, withFail: 0 }, person: emptyPersonCounts(),
-  cancelledAt: null, declines: 0, escalations: 0, lastDoneMs: null, envelopes: 0, dropped: { fyi: 0, hop: 0 }, briefNotes: 0, briefFails: 0, cohort: null });
+  cancelledAt: null, declines: 0, escalations: 0, lastDoneMs: null, envelopes: 0, dropped: { fyi: 0, hop: 0 }, briefNotes: 0, briefFails: 0, cohort: null, editTurns: [] });
 const add = (current: number | null, value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? (current ?? 0) + value : current;
 /** Strongest grade first: `served`, `session`, `configured`. */
 const gradeRank = (grade: ModelEvidence): number => MODEL_EVIDENCE.indexOf(grade);
@@ -240,6 +244,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     else if (e.type === "turn_end") {
       a.turns++; a.activeMs += e.ms; a.filesChanged += e.files ?? 0;
       if (e.model !== undefined) observeModel(a, e.peer, e.model, e.modelEvidence);
+      if (e.edits !== undefined && e.pii !== true) { const edits = turnEdits(e.edits); if (edits) a.editTurns.push(edits); } // a PII turn contributes nothing
       if (e.preparedRoles !== undefined) (a.sessionRoles ??= []).push({ peer: e.peer, turn: e.turn, roles: e.preparedRoles?.map(role => ({ id: role.id, layer: role.layer, hash: role.hash })) ?? null });
     }
     else if (e.type === "usage") {
@@ -266,7 +271,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     // Approved wins over a later reopening (the record the live writer stored at the approval); otherwise the task must end cancelled.
     const outcome: "approved" | "cancelled" | undefined = a.approvedAt ? "approved" : a.lastState === "cancelled" && a.cancelledAt ? "cancelled" : undefined;
     if (!outcome) continue;
-    const { person, approvedAt, lastState: _state, models, observed, tooling: fingerprints, peers, briefs, cancelledAt, declines, escalations, lastDoneMs, envelopes, dropped, briefNotes, briefFails, cohort, ...rest } = a;
+    const { person, approvedAt, lastState: _state, models, observed, tooling: fingerprints, peers, briefs, cancelledAt, declines, escalations, lastDoneMs, envelopes, dropped, briefNotes, briefFails, cohort, editTurns, ...rest } = a;
     const closedAt = (outcome === "approved" ? approvedAt : cancelledAt)!;
     const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(closedAt);
     const task = evidence.tasks.get(a.task), board = evidence.board;
@@ -292,7 +297,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       person: personFigures(person, covered),
       stalls: task && board ? task.history.filter(entry => entry.sweep).length : null,
       handoffs: task?.handoffs ? { in: task.handoffs.in, out: task.handoffs.out } : { in: null, out: null },
-      cohort: cohort ?? "none" });
+      cohort: cohort ?? "none", edits: editGovernanceBlock(editTurns) });
   }
   return out.sort((x, y) => closedAtOf(x)!.localeCompare(closedAtOf(y)!) || x.task - y.task);
 }

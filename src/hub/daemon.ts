@@ -136,7 +136,7 @@ import { planFingerprint, registeredProjects, type UpgradePlan } from "../cli/up
 import { conductorRecoveryBinding } from "../cli/conductor-recovery.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
-import { eventLog, readEvents, turnModelFields, type HubEvent, type RoleIdentity } from "./events.ts";
+import { eventLog, readEvents, turnModelFields, type HubEvent, type RoleIdentity, type TurnEdits } from "./events.ts";
 import { SpecTaskInspector } from "./specs-task.ts";
 import { KimiUsage, kimiSeedRows, type KimiRowAttribution, type KimiUsageScheduler } from "./kimi-usage.ts";
 import { KimiEventWriter } from "./kimi-events.ts";
@@ -3475,6 +3475,14 @@ export async function startDaemon(opts: DaemonOptions) {
       const task = taskId ? candidates.find(task => task.id === Number(taskId)) : candidates.length === 1 ? candidates[0] : undefined;
       if (task) progress.observe(peer, task.id, observation);
     } catch { /* optional observation never fails a tool or native turn */ }
+  };
+  /** #1556 T2: the `turn_end.edits` counts of a turn, only with research on and never for a private turn. A read-only turn adds nothing; a turn whose snapshot saw changed files but whose hooks saw no write is tree-only, with the changed-file count as its unattributed writes. */
+  const turnEditsFor = (peer: PeerId, open: { private?: boolean }, files: number | undefined): { edits?: TurnEdits } => {
+    let taken: TurnEdits | undefined;
+    try { taken = factsFor(peer).takeEdits(peer); } catch { /* optional counts never fail a turn end */ }
+    if (!config.research.enabled || open.private) return {};
+    if (taken) return { edits: taken };
+    return files !== undefined && files > 0 ? { edits: { obs: "tree", u: files } } : {};
   };
   /** Whether facts are tracked now. When tracking resumes (a PII task closed), everything observed before is dropped. */
   let factsWereOn = false;
@@ -8096,7 +8104,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn. A launcher-bound pull-only native turn follows the same rule.
         const nativeFactsTurn = nativeHookLaunches.current(e.peer) !== undefined && bus.peers.get(e.peer)?.pullOnly === true;
-        if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}), ...noteObservedModel(e.peer, observedTurnModel(e.peer)) });
+        if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}), ...noteObservedModel(e.peer, observedTurnModel(e.peer)), ...turnEditsFor(e.peer, open, files) });
         if (!nativeFactsTurn && definitionOf(e.peer)?.turnEnd !== "native-hook") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());
