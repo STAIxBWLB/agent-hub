@@ -41,6 +41,15 @@ test("verified Pi TUI reports session model, fenced occupancy and Record prompt"
   } finally { await f.cleanup(); }
 }, 10_000);
 
+test("a personal TUI turn observes its verified native session model", async () => {
+  const f = await rosterPiFixture();
+  try {
+    await f.post("/event", { type: "pi_model", sessionId: f.sessionId, model: { id: "mlx/fast" } });
+    await f.post("/event", { type: "agent_start", sessionId: f.sessionId, generation: 1 });
+    expect(f.peer.observedModel()).toEqual({ model: "mlx/fast", evidence: "session" });
+  } finally { await f.cleanup(); }
+}, 10_000);
+
 test("the actual extension emits prompt occupancy and the current model in its snapshot", async () => {
   const posts: any[] = []; let queued: any;
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {

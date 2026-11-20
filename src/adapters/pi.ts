@@ -1008,6 +1008,7 @@ export class PiPeer extends BasePeer {
     if (event.type === "agent_start") {
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration + 1;
       if (generation <= this.budgetGeneration) return;
+      if (this.opts.mode === "tui" && this.sessionModel && this.verifiedOwner() && (event.sessionId === undefined || event.sessionId === this.sessionId)) this.turnModel = { model: this.sessionModel, evidence: "session" };
       this.modelStep = 0;
       this.ceilingUnsafe = false; this.turnObserved = false;
       this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false; this.abortedToolIds.clear(); this.abortIdsOverflow = false;
