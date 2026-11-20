@@ -1115,7 +1115,9 @@ test("a replaced presence snapshot keeps its pending reply request until the rec
     // wait is on beta's answer itself: alpha's latest observation carries no request. A reply that requested again would never satisfy it (the wait times out), and everything observed after it is asserted below.
     const alphaRows = () => freshObservations().filter(row => row.recipient === "alpha");
     await f.event.wait(() => freshObservations().some(row => row.recipient === "beta" && row.state === "paused" && row.requestReply) && alphaRows().length > 0 && alphaRows().at(-1)!.requestReply === false, "recipient answers the request carried by the replacement snapshot");
-    expect(alphaRows().filter(row => row.requestReply).length).toBeLessThanOrEqual(1);
+    // Exact allowance: one fresh request (beta's session-start one) only when alpha saw none before the baseline; otherwise none, as before.
+    const earlierRequests = observations.slice(0, beforeReplacement).filter(row => row.recipient === "alpha" && row.requestReply).length;
+    expect(alphaRows().filter(row => row.requestReply).length).toBeLessThanOrEqual(earlierRequests === 0 ? 1 : 0);
     const answeredAt = beforeReplacement + freshObservations().length;
     // Forward chat barriers flush both transports without changing alpha's native
     // paused state. Reply snapshots must not request another reply or echo forever.
