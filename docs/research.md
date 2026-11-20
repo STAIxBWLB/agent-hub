@@ -101,6 +101,8 @@ delivery is created no later than it is updated), and treats the journal as unkn
 | `cohort` | `silent`, `advisory` or `none` |
 | `edits` | #1556 T2, text-free counts folded from `turn_end.edits` of the owner turns of a non-PII task: `observability` (`hook_and_tree`, `stream_and_tree`, `tree_only`, `unknown`), `policyArm`, `editTool` and `shellRoute` (`total`, `verifiedFullRead`, `partialReadOnly`, `blindOrStale`, and `occRejected` or `blockedByGuard`), `unattributedTreeWrites`, `postEdit`. `editTool` and `shellRoute` are null, never 0, when no hook or stream saw the task's tool calls (`tree_only`) or the log holds no edit evidence; `quality.json` then counts each of their leaves as unknown. Live writer and `ahub research backfill` fold the same events with one function, so the rows are byte-identical. A row written before this has no block and reads as unknown |
 
+When a write's pre-image is unavailable, its route total remains known but all three read-grade fields are null. A task mixing observability kinds has unknown route totals instead of partial counts. A tree-write or post-edit total is null when any contributing turn lacks that evidence.
+
 The record reads the board through a read-only handle (`readEvidence`): titles, details, plans, refs and notes are never
 decoded, and the journal's envelope bodies are never read.
 

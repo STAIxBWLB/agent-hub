@@ -30,7 +30,7 @@ test("turnEdits rebuilds only the closed shape and drops anything else whole", (
 test("a task whose turns carry no edits has the all-unknown block; hook turns give bounded counts", () => {
   expect(rec(life(1, [turn(1)]))[0]!.edits).toEqual({ observability: "unknown", policyArm: "unknown", editTool: null, shellRoute: null, unattributedTreeWrites: null, postEdit: { editsWhileCheckFailing: null, revertedWrites: null } });
   const r = rec(life(2, [turn(2, { edits: { obs: "hook", arm: "baseline", e: [3, 1, 1, 1, 0], s: [1, 0, 0, 1, 0] } }), turn(2, { edits: { obs: "hook", e: [1, 1, 0, 0, 0] } })]))[0]!;
-  expect(r.edits).toMatchObject({ observability: "hook_and_tree", policyArm: "baseline", editTool: { total: 4, verifiedFullRead: 2, partialReadOnly: 1, blindOrStale: 1, occRejected: 0 }, shellRoute: { total: 1, blindOrStale: 1, blockedByGuard: 0 }, unattributedTreeWrites: 0 });
+  expect(r.edits).toMatchObject({ observability: "hook_and_tree", policyArm: "baseline", editTool: { total: 4, verifiedFullRead: 2, partialReadOnly: 1, blindOrStale: 1, occRejected: 0 }, shellRoute: { total: 1, blindOrStale: 1, blockedByGuard: 0 }, unattributedTreeWrites: null });
 });
 
 test("tree_only surfaces record null for editTool and shellRoute, never 0, and quality counts them unknown", () => {
@@ -42,6 +42,21 @@ test("tree_only surfaces record null for editTool and shellRoute, never 0, and q
   expect(q.fields["edits.shellRoute.blockedByGuard"]).toEqual({ n: 2, unknown: 1 });
   expect(q.fields["edits.observability"]).toEqual({ n: 2, unknown: 0 });
   expect(q.fields["edits.editTool"]).toBeUndefined();
+});
+
+test("a write with an unavailable pre-image keeps its total but has unknown read grades", () => {
+  const record = rec(life(8, [turn(8, { edits: { obs: "hook", e: [2, 1, 0, 0, 0], s: [1, 0, 0, 0, 0] } })]))[0]!;
+  expect(record.edits?.editTool).toEqual({ total: 2, verifiedFullRead: null, partialReadOnly: null, blindOrStale: null, occRejected: 0 });
+  expect(record.edits?.shellRoute).toEqual({ total: 1, verifiedFullRead: null, partialReadOnly: null, blindOrStale: null, blockedByGuard: 0 });
+  const quality = buildResearchQuality([record], []);
+  expect(quality.fields["edits.editTool.verifiedFullRead"]).toEqual({ n: 1, unknown: 1 });
+});
+
+test("mixed tree-only and hook evidence never presents partial route counts as complete", () => {
+  const block = editGovernanceBlock([{ obs: "hook", e: [1, 1, 0, 0, 0] }, { obs: "tree", u: 2 }]);
+  expect(block.observability).toBe("unknown");
+  expect(block.editTool).toBeNull(); expect(block.shellRoute).toBeNull();
+  expect(block.unattributedTreeWrites).toBeNull();
 });
 
 test("a PII turn contributes nothing and live and backfill agree byte for byte", () => {
