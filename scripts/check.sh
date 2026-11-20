@@ -59,7 +59,7 @@ if common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); 
   trap release_heavy EXIT
 fi
 
-if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then step "docs check" node scripts/check-docs.mjs; step "roadmap check" node scripts/check-roadmap.mjs; fi
+if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then AHUB_CHECK_ROADMAP=1 step "docs check" node scripts/check-docs.mjs; fi
 # The install's own output stays quiet inside the wrapped command: a redirection on this line would cover `step` too and swallow the
 # `::error` annotation failed_line prints for GitHub Actions.
 step "bun install" bash -c 'bun install --frozen-lockfile >/dev/null'

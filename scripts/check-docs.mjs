@@ -131,6 +131,14 @@ try {
     if (commits || dirty.stdout) reports.push(`${doc}: stale (${commits} source commit${commits === 1 ? "" : "s"}${dirty.stdout ? "; uncommitted source changes" : ""})`);
   }
 } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+// The gate opts into the roadmap validator; standalone release evidence stays self-contained.
+if (process.env.AHUB_CHECK_ROADMAP === "1") {
+  const validator = join(dirname(fileURLToPath(import.meta.url)), "check-roadmap.mjs");
+  const result = spawnSync(process.execPath, [validator, root, ...(committed ? ["--committed"] : [])], { encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, env: process.env });
+  if (result.status !== 0) errors.push("roadmap validation failed");
+  if (!jsonOutput && result.stdout) process.stdout.write(result.stdout);
+  if (!jsonOutput && result.stderr) process.stderr.write(result.stderr);
+}
 if (!jsonOutput) for (const report of reports) console.log(`docs: ${report}`);
 if (requireFresh && reports.length) errors.push("release requires fresh documentation stamps");
 if (requireFresh && errors.length) errors.push("release refused: merge the release PR with a merge commit and verify all documentation stamps before tagging");

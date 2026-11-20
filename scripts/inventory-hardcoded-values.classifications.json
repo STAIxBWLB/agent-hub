@@ -202,6 +202,7 @@
   "scripts/check-docs.mjs:dirtiness:inline:entries.length > 4096=4096#0": "safety floor",
   "scripts/check-docs.mjs:dirtiness:inline:info.size > 4 * 1024 * 1024=4 * 1024 * 1024#0": "safety floor",
   "scripts/check-docs.mjs:timeout:inline:timeout=2000#0": "operational",
+  "scripts/check-docs.mjs:timeout:inline:timeout=30_000#0": "operational",
   "scripts/check-memory-consumer-parity.ts:timeout:inline:timeout=15_000#0": "operational",
   "scripts/check-roadmap.mjs:<module>:inline:Buffer.byteLength(lines.slice(0, end + 1).join(\\n)) > 8192=8192#0": "safety floor",
   "scripts/check-roadmap.mjs:<module>:inline:document.milestones.length > 1000=1000#0": "contract",
