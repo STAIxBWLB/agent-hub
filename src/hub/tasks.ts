@@ -3605,8 +3605,10 @@ export class Tasks {
   /** Build drift only from the same screened views and host-owned evidence as roadmap reads. */
   async roadmapCheck(by: PeerId, include?: (finding: RoadmapDrift) => boolean): Promise<ReturnType<typeof checkRoadmap>> {
     const check = this.requestCheck(by); check(); this.roadmapReadAuthority(by);
-    const revision = this.d.board.statusRevision(), views = this.milestoneList(by), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const }, privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
-    const current = () => { check(); this.roadmapReadAuthority(by); if (this.d.board.statusRevision() !== revision || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
+    const views = this.milestoneList(by), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const }, privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
+    const snapshot = (rows: typeof views) => JSON.stringify([rows, rows.flatMap(view => view.tasks.map(member => this.d.board.get(member.id)))]);
+    const evidence = snapshot(views);
+    const current = () => { check(); this.roadmapReadAuthority(by); if (snapshot(this.milestoneList(by)) !== evidence || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
     let exportMatches: boolean | undefined;
     try {
       const file = await readGuardedDeliverable("docs/roadmap.json", { cwd: this.d.cwd, deny: this.d.deny ?? [], private: path => matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? [], true) });

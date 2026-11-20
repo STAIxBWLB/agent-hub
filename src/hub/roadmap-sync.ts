@@ -13,6 +13,7 @@ export async function readMirrorSnapshot(repoInput: string, run: SdlcGh): Promis
   const repo = githubRepo(repoInput), deadline = performance.now() + 20_000;
   const pages = async (kind: "milestones" | "issues"): Promise<Record<string, unknown>[]> => {
     const rows: Record<string, unknown>[] = [], seen = new Set<number>();
+    // ponytail: this all-state inventory has a 1000-row ceiling including pull requests; page milestone members and desired issues separately to remove it.
     for (let page = 1; page <= 10; page++) {
       const left = deadline - performance.now();
       if (left <= 0) throw new Error("roadmap mirror inventory timed out");

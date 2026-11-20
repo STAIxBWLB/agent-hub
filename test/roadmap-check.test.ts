@@ -88,3 +88,21 @@ test("an old merged task with an open issue yields one ids-only notice across re
     expect(notices).toEqual([{ id: task.id, m: milestone.id, rule: 2 }]);
   } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("an unrelated task write during an issue read does not invalidate roadmap evidence", async () => {
+  const { Board } = await import("../src/hub/board.ts"); const { Bus } = await import("../src/hub/bus.ts"); const { Tasks } = await import("../src/hub/tasks.ts");
+  const { loadRouting } = await import("../src/hub/routing.ts"); const { mkdtempSync, rmSync } = await import("node:fs"); const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "roadmap-fence-")), board = new Board(join(root, "hub.db")), bus = new Bus({ batchMs: 0 });
+  const unrelated = board.propose("user", { title: "Unrelated", class: "implement" });
+  const gh = async () => { board.update(unrelated.id, "user", "accepted", { state: "in_progress", owner: "codex" }); return { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 7, state: "OPEN", createdAt: "2026-01-01T00:00:00Z", lastEditedAt: null } } } }) }; };
+  const tasks = new Tasks({ cwd: root, board, bus, project: "project", repository: "example/repo", routing: () => loadRouting(root), roadmapGh: gh, notify: () => {} });
+  try {
+    const milestone = board.newMilestone({ title: "Public", outcome: "Outcome", state: "active" }, "user");
+    const task = board.propose("user", { title: "Member", class: "implement" });
+    board.update(task.id, "user", "accepted", { state: "in_progress", owner: "codex", sdlc: { stage: "build", repo: "example/repo", issue: 7 } });
+    board.linkMilestone(milestone.id, "task", String(task.id), "user", milestone.revision);
+    const result = await tasks.roadmapCheck("user");
+    expect(board.get(unrelated.id)?.state).toBe("in_progress");
+    expect(result.findings.some(row => row.rule === 1)).toBe(false);
+  } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
+});

@@ -50,5 +50,10 @@ export function writeRoadmap(root: string, files: { json: string; markdown: stri
         written++;
       } finally { if (fd !== undefined) closeSync(fd); try { unlinkSync(temp); } catch {} }
     }
-  } catch { throw new Error(written ? "roadmap export partially written; inspect both files before retrying" : "roadmap export was not written; inspect the paths before retrying"); }
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^E[A-Z0-9]+$/.test(error.code) ? error.code : undefined;
+    const message = error instanceof Error && ["roadmap export target changed", "temporary export is not a plain file"].includes(error.message) ? error.message : undefined;
+    const cause = code ?? message ?? "unknown write failure";
+    throw new Error(written ? `roadmap export partially written (${cause}); inspect both files before retrying` : `roadmap export was not written (${cause}); inspect the paths before retrying`);
+  }
 }
