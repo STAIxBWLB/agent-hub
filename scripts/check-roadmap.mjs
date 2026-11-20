@@ -94,8 +94,9 @@ try {
       if (!entry.paths.length) fail(`roadmap spec has no paths: ${spec.id}`);
       for (const path of entry.paths) {
         if (!safePath(path)) fail(`unsafe roadmap spec path: ${path}`);
-        const found = committed ? git("ls-tree", "-r", "--name-only", head.stdout.trim(), "--", path) : git("ls-files", "--", path);
-        if (found.status !== 0 || !found.stdout.trim()) fail(`missing roadmap spec path: ${path}`);
+        const found = git("ls-files", ...(committed ? [`--with-tree=${head.stdout.trim()}`] : []), "-z", "--", path);
+        const matches = found.stdout.split("\0").filter(Boolean);
+        if (found.status !== 0 || !matches.length || committed && !matches.some(file => git("cat-file", "-e", `${head.stdout.trim()}:${file}`).status === 0)) fail(`missing roadmap spec path: ${path}`);
       }
     }
   }

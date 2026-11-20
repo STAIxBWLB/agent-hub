@@ -58,13 +58,16 @@ test("Tasks check uses screened board evidence and the generated JSON without ex
     const hidden = board.propose("user", { title: "PRIVATE_CANARY", class: "implement", signals: ["pii"] });
     board.linkMilestone(milestone.id, "task", String(feature.id), "user", milestone.revision);
     board.linkMilestone(milestone.id, "task", String(hidden.id), "user", board.milestone(milestone.id)!.revision);
-    mkdirSync(join(root, "docs")); writeFileSync(join(root, "docs/roadmap.json"), roadmapExport(tasks.milestoneList("user")).json);
+    mkdirSync(join(root, "docs")); const rendered = roadmapExport(tasks.milestoneList("user"));
+    writeFileSync(join(root, "docs/roadmap.json"), rendered.json); writeFileSync(join(root, "docs/roadmap.md"), rendered.markdown);
     const result = await tasks.roadmapCheck("user");
     expect(result.findings.filter(row => row.rule === 6).map(row => row.cause)).toEqual(["feature task has no spec issue", "task has no issue"]);
     expect(JSON.stringify(result)).not.toContain("PRIVATE_CANARY");
     expect(JSON.stringify(result)).not.toContain(`task:${hidden.id}`);
     expect(result.findings.some(row => row.rule === 8)).toBe(false);
-    writeFileSync(join(root, "docs/roadmap.json"), "{}\n");
+    writeFileSync(join(root, "docs/roadmap.md"), "stale\n");
+    expect((await tasks.roadmapCheck("user")).findings.some(row => row.rule === 8)).toBe(true);
+    writeFileSync(join(root, "docs/roadmap.md"), rendered.markdown); writeFileSync(join(root, "docs/roadmap.json"), "{}\n");
     expect((await tasks.roadmapCheck("user")).findings.some(row => row.rule === 8)).toBe(true);
   } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
 });

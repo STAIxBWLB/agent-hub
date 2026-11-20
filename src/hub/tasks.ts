@@ -3609,11 +3609,14 @@ export class Tasks {
     const snapshot = (rows: typeof views) => JSON.stringify([rows, rows.flatMap(view => view.tasks.map(member => this.d.board.get(member.id)))]);
     const evidence = snapshot(views);
     const current = () => { check(); this.roadmapReadAuthority(by); if (snapshot(this.milestoneList(by)) !== evidence || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
-    let exportMatches: boolean | undefined;
-    try {
-      const file = await readGuardedDeliverable("docs/roadmap.json", { cwd: this.d.cwd, deny: this.d.deny ?? [], private: path => matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? [], true) });
-      current(); exportMatches = Buffer.from(file.data).toString("utf8") === roadmapExport(views).json;
-    } catch (error) { if (error instanceof PreEffectToolRefusal) throw error; if (error instanceof DeliverableRefusal && error.message.includes("does not exist")) exportMatches = false; }
+    const rendered = roadmapExport(views), exportStates: (boolean | undefined)[] = [];
+    for (const [path, expected] of [["docs/roadmap.json", rendered.json], ["docs/roadmap.md", rendered.markdown]] as const) {
+      try {
+        const file = await readGuardedDeliverable(path, { cwd: this.d.cwd, deny: this.d.deny ?? [], private: name => matchesPolicy(this.d.cwd, name, this.d.piiPaths ?? [], true) });
+        current(); exportStates.push(Buffer.from(file.data).toString("utf8") === expected);
+      } catch (error) { if (error instanceof PreEffectToolRefusal) throw error; exportStates.push(error instanceof DeliverableRefusal && error.message.includes("does not exist") ? false : undefined); }
+    }
+    const exportMatches = exportStates.includes(false) ? false : exportStates.every(value => value === true) ? true : undefined;
     current();
     const refs = new Set<string>();
     for (const view of views) {
