@@ -173,6 +173,7 @@ test("an origin that is not this project's repository blocks the push, the commi
   f.setPushable(false);
   const first = await f.worktrees.commitAndPush({ peer: "pi", task: 7, title: "t" });
   if (first.ok) throw new Error("unreachable");
+  expect(first.uncertain).toBe(true); // A committed branch must never be reported as a pre-effect refusal.
   const firstCommit = first.commit!, firstReason = first.reason;
   expect(firstCommit).toMatch(/^[0-9a-f]{40}$/); expect(firstReason).toContain("origin is not this project's repository");
   expect(f.git(f.bare, "for-each-ref", "--format=%(refname)")).toBe("refs/heads/main");
