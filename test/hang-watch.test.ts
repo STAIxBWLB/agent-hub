@@ -141,7 +141,8 @@ test("through the real fifo, filter and watchdog: a run that keeps passing tests
 }, 15_000);
 
 test("through the real fifo, filter and watchdog: a run that goes silent after its results is stopped on the quiet bound", async () => {
-  const out = await gate('echo "(pass) a" >&2; echo "(pass) b" >&2; exec sleep 60', 1, 60);
+  // The bound stays at 2 s: the assertion is progress=2, so both result lines must be counted before the quiet rule may fire, and a 1 s bound can land anywhere from just over 0 s to 2 s after the watch starts.
+  const out = await gate('echo "(pass) a" >&2; echo "(pass) b" >&2; exec sleep 60', 2, 60);
   expect(out.stderr).toContain("cause=quiet");
   expect(out.stdout).toMatch(/GATE exit=143 progress=2/);
 }, 15_000);
