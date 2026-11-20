@@ -93,17 +93,22 @@ test("conductor CLI detached restart completes through a real target process wit
     const main = join(realPath(resolve(import.meta.dir, "..")), "src", "cli", "main.js");
     const producer = Bun.spawn([process.execPath, main, "--project", root, "restart", "--yes", "--json"], { cwd: root, env: { ...env, AGENTHUB_PEER_ID: "codex" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     cli = producer;
-    const timer = setTimeout(() => producer.kill("SIGTERM"), 10_000);
-    let code: number, stdout: string, stderr: string;
-    try { [code, stdout, stderr] = await Promise.all([producer.exited, new Response(producer.stdout).text(), new Response(producer.stderr).text()]); }
-    finally { clearTimeout(timer); }
-    expect(code, stderr!).toBe(0);
-    const announced = JSON.parse(stdout!); operationId = announced.id; expect(operationId).toMatch(/^[a-f0-9-]{36}$/);
+    // #1577: the producer announces the operation and exits when it has spawned the detached runner. How long that takes depends on the machine's load (about 1 s idle, over a minute with every core busy), so no
+    // wall-clock bound decides it: the producer is waited for, and a producer that hangs is the test's own timeout and the gate's quiet-output watch.
+    const [code, stdout, stderr] = await Promise.all([producer.exited, new Response(producer.stdout).text(), new Response(producer.stderr).text()]);
+    expect(code, stderr).toBe(0);
+    const announced = JSON.parse(stdout); operationId = announced.id; expect(operationId).toMatch(/^[a-f0-9-]{36}$/);
     let receipt: RecoveryOperation | undefined;
-    await until(() => {
+    // #1577: a real restart takes 7 s idle, 15 to 20 s on a loaded CI runner and longer under heavier load; the fixed 15 s budget this wait had ended runs that were still progressing (24 to 25 s failures in the flake
+    // ledger, a receipt still at an intermediate step). The wait is now on the two things that settle it: a terminal receipt, or the detached runner being gone without one (a crashed runner can never finish, so that
+    // fails at once and names the step). A runner that merely lives is progress; a hang is the test's own timeout and the gate's quiet-output watch.
+    const settled = () => {
       receipt = readOperation<RecoveryOperation>(operationId!, home);
-      return receipt.phase === "completed" || receipt.phase === "blocked";
-    }, "detached conductor restart reaches terminal receipt", 750);
+      if (receipt.phase === "completed" || receipt.phase === "blocked") return true;
+      return runner !== undefined && processLiveness(runner.pid, runner.signature) === "gone";
+    };
+    await until(settled, "detached conductor restart reaches terminal receipt", Number.POSITIVE_INFINITY);
+    if (receipt!.phase !== "completed" && receipt!.phase !== "blocked") throw new Error(`detached runner ended before a terminal receipt: ${receipt!.phase}/${receipt!.step}`);
     expect({ phase: receipt!.phase, step: receipt!.step, error: receipt!.error }).toEqual({ phase: "completed", step: "completed", error: undefined });
     await sourceRelease;
     expect(receipt!.plan.kind).toBe("restart"); expect(receipt!.targetRoot).toBe(receipt!.sourceRoot);
@@ -142,4 +147,4 @@ test("conductor CLI detached restart completes through a real target process wit
     if (!failures.length) rmSync(temporary, { recursive: true, force: true });
     expect(failures.length, "owned restart processes could not all be confirmed stopped; fixture retained").toBe(0);
   }
-}, 30_000);
+}, 60_000);
