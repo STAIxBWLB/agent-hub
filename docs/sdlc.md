@@ -727,3 +727,13 @@ or additional task readback. Live audit/survey dogfood (#1403 T8) still requires
 the person's separate instruction; this feature adds no schedule or live run.
 
 Externally observed merged PRs use host-only `mergeReadback` evidence. Its cost fields remain unknown if the bounded readback cannot complete. The latest configured security scan reports a per-source number or `unknown`; an unreadable source is never reported as zero.
+
+## Closed-task compaction (#1555 AC6)
+
+A task that reaches `approved` or `cancelled` drops its ephemeral state, and nothing a metric or a verdict reads:
+
+- Its `touches` rows (`Turns.pruneTouches`). Every reader looks at open tasks only (`conflictsOf`, `pathWarnings`, the owner-write evidence of an in-progress task), and the overlap counts are already frozen in `tasks.history`. A startup pass also prunes rows of tasks that closed while no hub ran. A turn that ends after its task closed records no rows.
+- The output tail and staged `output.log` of its finished or stale isolated checks (`ContainerRunner.compactTask`). The receipt keeps its status, exit, head, tree, timing, owner and revision; a queued or running run is never touched.
+- The settled results of a closed Pi session in `pi_tool_receipts` (`compactPiResult`): a new session closes the earlier ones, and a result over 2,000 characters keeps its prefix and, for a shell result, its exit code. The active session's receipts are untouched.
+
+Task rows, history, `sdlc` receipts, `usage_rollup` and `rollup_seen` are never deleted or edited. `test/terminal-compaction.test.ts` computes `sdlcMetrics`, `costMetrics`, `releaseMetrics`, the usage roll-up and the whole task rows before and after a compaction and requires them identical.

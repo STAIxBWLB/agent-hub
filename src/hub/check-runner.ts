@@ -40,6 +40,8 @@ export interface RunnerOptions {
   projectDir: string; stateDir: string; storageDir: string; projectKey: string;
   enabled: boolean | (() => boolean); isDenied: (path: string) => boolean;
   onResult?: (receipt: RunReceipt) => void | Promise<void>;
+  /** #1555 AC6: whether the task is approved or cancelled, so a run that settles after its task closed is compacted when it leaves the queue. */
+  taskClosed?: (task: number) => boolean;
   /** Daemon authority fence, re-evaluated across every asynchronous stage. */
   isCurrent?: (request: CheckRequest) => boolean;
   /** Test seams; never supplied from a tool request or config. */
@@ -262,7 +264,10 @@ export class ContainerRunner {
     const entry = this.queue.shift(); if (!entry) return;
     this.active = entry;
     try { await this.execute(entry); }
-    finally { this.active = undefined; this.entries.delete(entry.receipt.run); entry.resolve({ ...entry.receipt }); void this.drain(); }
+    finally { this.active = undefined; this.entries.delete(entry.receipt.run); entry.resolve({ ...entry.receipt }); void this.compactIfClosed(entry.receipt.task); void this.drain(); }
+  }
+  private async compactIfClosed(task: number): Promise<void> {
+    try { if (this.options.taskClosed?.(task)) await this.compactTask(task); } catch { /* retention only: the files stay */ }
   }
   private async heavy(entry: Entry): Promise<() => Promise<void>> {
     const lock = join(this.common, "ahub-heavy.lock");
@@ -497,6 +502,25 @@ export class ContainerRunner {
     }
   }
   async consumeOutput(run: string): Promise<void> { if (/^[a-f0-9-]{36}$/.test(run)) await rm(join(this.root, run, "output.log"), { force: true }); }
+  /**
+   * #1555 AC6: a task reached approved or cancelled. Its finished receipts keep every field the verdict and the metrics read, but lose the output tail, and the staged output
+   * file goes with it (nobody reads either once the task is closed). A run still queued or running is left alone, and each rewrite goes through the receipt's own save turn.
+   */
+  async compactTask(task: number): Promise<number> {
+    const names = await readdir(this.records).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; });
+    let compacted = 0;
+    for (const name of names) {
+      const run = name.endsWith(".json") ? name.slice(0, -5) : "";
+      if (!/^[a-f0-9-]{36}$/.test(run) || this.entries.has(run)) continue;
+      let receipt: RunReceipt | undefined;
+      try { receipt = await this.result(run); } catch { continue; }
+      if (!receipt || receipt.task !== task || (receipt.status !== "finished" && receipt.status !== "stale")) continue;
+      if (receipt.tail !== "") { receipt.tail = ""; await this.save(receipt); }
+      await this.consumeOutput(run);
+      compacted++;
+    }
+    return compacted;
+  }
   async cancel(run: string): Promise<void> {
     const entry = this.entries.get(run); if (!entry) return;
     entry.receipt.cancelled = true; entry.abort.abort();

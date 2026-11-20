@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Drop a closed task's ephemeral state: its `touches` rows, the output tail and staged output of its finished isolated checks, and the settled results of a closed Pi session shrink to 2,000 characters with a shell exit code kept. Tasks, history, receipts and roll-ups are untouched (Refs #1555, hub task 1004).
 - Remove the rooms-delivery replaced-presence flake: the test counted beta's own session-start presence request as an echo of the replacement reply, and now waits on beta's answer (Refs #1577, Refs #1260, hub task 1035).
 - Remove the conductor detached-restart flake: the test waits for the restart terminal receipt or the runner exit instead of fixed 10 s and 15 s budgets (Refs #1577, Refs #1260, hub task 1033).
 - Verify Claude Code 2.1.328 and 2.1.329 as headless implementers with isolated model-free transport and wrapper receipts (Refs #888, hub task 1023).
