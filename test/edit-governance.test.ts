@@ -6,7 +6,8 @@ import { turnEdits, type StampedEvent } from "../src/hub/events.ts";
 import { Facts } from "../src/hub/facts.ts";
 import { editGovernanceBlock } from "../src/hub/research-record.ts";
 import { buildResearchQuality } from "../src/hub/research-quality.ts";
-import { taskRecords } from "../src/hub/research.ts";
+import { ResearchTail, taskRecords } from "../src/hub/research.ts";
+import { readEvents } from "../src/hub/events.ts";
 
 // #1556 T2: turn_end.edits counts and the text-free EditGovernanceBlock.
 let clock = Date.parse("2026-11-01T00:00:00Z");
@@ -45,10 +46,16 @@ test("tree_only surfaces record null for editTool and shellRoute, never 0, and q
 
 test("a PII turn contributes nothing and live and backfill agree byte for byte", () => {
   const events = life(5, [turn(5, { edits: { obs: "hook", e: [9, 9, 0, 0, 0] }, pii: true }), turn(5, { edits: { obs: "hook", e: [1, 0, 0, 1, 0] } })]);
-  const a = rec(events), b = rec(structuredClone(events));
-  expect(JSON.stringify(a[0]!.edits)).toBe(JSON.stringify(b[0]!.edits));
-  expect(a[0]!.edits!.editTool!.total).toBe(1);
-  expect(editGovernanceBlock([{ obs: "hook", e: [1, 0, 0, 1, 0] }])).toEqual(a[0]!.edits!);
+  const root = mkdtempSync(join(tmpdir(), "ahub-edit-fold-"));
+  try {
+    const file = join(root, "events.jsonl"); writeFileSync(file, events.map(event => JSON.stringify(event)).join("\n") + "\n");
+    const slice = new ResearchTail(file).events(5);
+    const live = taskRecords(slice.events, "p-1", { version: "test", source: "live" }, undefined, slice.start);
+    const backfill = rec(readEvents(file));
+    expect(JSON.stringify(live[0]!.edits)).toBe(JSON.stringify(backfill[0]!.edits));
+    expect(live[0]!.edits!.editTool!.total).toBe(1);
+    expect(editGovernanceBlock([{ obs: "hook", e: [1, 0, 0, 1, 0] }])).toEqual(live[0]!.edits!);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("Facts counts hook writes per turn: a read-only turn has no edits, a mutating turn has bounded counts, takeEdits clears", () => {
@@ -62,9 +69,25 @@ test("Facts counts hook writes per turn: a read-only turn has no edits, a mutati
     facts.postTool("codex", "w1", "Write", { file_path: join(root, "a.txt"), content: "x" });
     facts.preTool("codex", "w2", "Write", { file_path: join(root, "b.txt"), content: "y" }); writeFileSync(join(root, "b.txt"), "y");
     facts.postTool("codex", "w2", "Write", { file_path: join(root, "b.txt"), content: "y" });
-    facts.preTool("codex", "b1", "Bash", { command: "sed -i s/x/z/ a.txt" }); facts.postTool("codex", "b1", "Bash", { command: "sed -i s/x/z/ a.txt" });
+    facts.preTool("codex", "b1", "Bash", { command: "sed -i s/x/z/ a.txt" }); writeFileSync(join(root, "a.txt"), "z"); facts.postTool("codex", "b1", "Bash", { command: "sed -i s/x/z/ a.txt" });
     const t = facts.takeEdits("codex")!;
     expect(t).toEqual({ obs: "hook", e: [2, 1, 0, 1, 0], s: [1, 0, 0, 1, 0] });
     expect(facts.takeEdits("codex")).toBeUndefined();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("no-op hook calls do not report edits and a verified Codex patch reports stream evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-edit-stream-"));
+  try {
+    const file = join(root, "a.txt"); writeFileSync(file, "one\ntwo\n");
+    const facts = new Facts({ root, tmp: join(root, ".t"), instance: "t", scope: () => ({ task: { id: 7 } }) as never, peers: () => ["codex"], nameable: () => true } as never);
+    const edit = { file_path: file, content: "one\ntwo\n" };
+    facts.preTool("codex", "e", "Write", edit); facts.postTool("codex", "e", "Write", edit);
+    const shell = { command: "sed -i s/none/z/ a.txt" };
+    facts.preTool("codex", "s", "Bash", shell); facts.postTool("codex", "s", "Bash", shell);
+    expect(facts.takeEdits("codex")).toBeUndefined();
+    writeFileSync(file, "one\nTWO\n");
+    facts.codexItem("codex", { type: "fileChange", status: "completed", changes: [{ path: file, kind: { type: "update" }, diff: "@@ -1,2 +1,2 @@\n one\n-two\n+TWO" }] });
+    expect(facts.takeEdits("codex")).toEqual({ obs: "stream", e: [1, 0, 0, 1, 0] });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

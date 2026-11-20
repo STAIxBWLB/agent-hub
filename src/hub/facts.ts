@@ -185,7 +185,7 @@ export class Facts {
    */
   private readonly firstSeen = new Map<PeerId, Map<string, Version>>();
   /** A tool call's observation before it ran, by Claude's tool use id. */
-  private readonly before = new Map<string, { peer: PeerId; file?: string; version?: Version }>();
+  private readonly before = new Map<string, { peer: PeerId; file?: string; version?: Version; shell?: { file: string; version: Version }[] }>();
   /** Peers whose coverage notice went out in this tracking epoch. */
   private readonly covered = new Set<PeerId>();
   /** Each peer's native session or thread: a new one starts its views over. */
@@ -321,7 +321,7 @@ export class Facts {
   }
 
   /** #1556 T2: counts of the writes the hook saw this turn, per peer; counts only, never a path or a command. Memory only, cleared at `takeEdits`, `closeTask`-independent. */
-  private readonly tally = new Map<PeerId, { e: EditCounts; s: EditCounts }>();
+  private readonly tally = new Map<PeerId, { obs: "hook" | "stream"; e: EditCounts; s: EditCounts }>();
   /** Grade one write of `path` for `peer`: 1 verified full read, 2 partial read only, 3 blind or stale, undefined when the pre-image is unknown (counted in the total only, never guessed). */
   private grade(peer: PeerId, path: string, pre: string | undefined): 1 | 2 | 3 | undefined {
     const task = this.o.scope(peer)?.task?.id;
@@ -331,9 +331,9 @@ export class Facts {
     if (createHash("sha256").update(pre).digest("hex") !== r.sha256) return 3;
     return r.scope === "full" ? 1 : 2;
   }
-  private count(peer: PeerId, route: "e" | "s", grade: 1 | 2 | 3 | undefined): void {
+  private count(peer: PeerId, route: "e" | "s", grade: 1 | 2 | 3 | undefined, obs: "hook" | "stream" = "hook"): void {
     let t = this.tally.get(peer);
-    if (!t) this.tally.set(peer, (t = { e: [0, 0, 0, 0, 0], s: [0, 0, 0, 0, 0] }));
+    if (!t) this.tally.set(peer, (t = { obs, e: [0, 0, 0, 0, 0], s: [0, 0, 0, 0, 0] }));
     t[route][0]++;
     if (grade !== undefined) t[route][grade]++;
   }
@@ -341,7 +341,7 @@ export class Facts {
   takeEdits(peer: PeerId): TurnEdits | undefined {
     const t = this.tally.get(peer);
     this.tally.delete(peer);
-    return t ? { obs: "hook", ...(t.e[0] ? { e: t.e } : {}), ...(t.s[0] ? { s: t.s } : {}) } : undefined;
+    return t ? { obs: t.obs, ...(t.e[0] ? { e: t.e } : {}), ...(t.s[0] ? { s: t.s } : {}) } : undefined;
   }
 
   /** The task closed: its receipts go. */
@@ -606,7 +606,9 @@ export class Facts {
     const file = path ? this.rel(path) : undefined;
     const version = file ? this.observe(file) : undefined;
     if (toolUseId) {
-      this.before.set(toolUseId, { peer, ...(file ? { file } : {}), ...(version ? { version } : {}) });
+      const shell = tool === "Bash" && typeof input.command === "string" ? classifyShellWrite(input.command) : undefined;
+      const targets = shell?.kind === "write" ? shell.targets.flatMap(target => { const name = this.rel(target); return name ? [{ file: name, version: this.observe(name) }] : []; }) : [];
+      this.before.set(toolUseId, { peer, ...(file ? { file } : {}), ...(version ? { version } : {}), ...(targets.length ? { shell: targets } : {}) });
       if (this.before.size > 256) this.before.delete(this.before.keys().next().value as string);
     }
   }
@@ -624,10 +626,10 @@ export class Facts {
     if (file && pre?.version) {
       this.touch(peer, file, pre.version);
       if (["Edit", "MultiEdit", "Write"].includes(tool)) {
-        this.count(peer, "e", this.grade(peer, file, pre.version.text));
         this.wrote(peer, file);
         const expected = !pre.version.projected && this.latest.get(file)?.hash === pre.version.hash ? applyEdit(pre.version.text, tool, input) : undefined;
         const version = this.observe(file, expected === undefined ? undefined : { peer, expected: sha1(expected) });
+        if (pre.peer === peer && expected !== undefined && sha1(expected) === version.hash && version.hash !== pre.version.hash) this.count(peer, "e", this.grade(peer, file, pre.version.text));
         const last = this.transitions.get(file)?.at(-1);
         if (last?.seq === version.seq && last.by === peer && this.view(peer).get(file)?.hash === pre.version.hash) this.view(peer).set(file, version);
         return this.observeAll();
@@ -644,13 +646,9 @@ export class Facts {
         return this.observeAll();
       }
     }
-    if (tool === "Bash" && typeof input.command === "string") {
-      // #1556 T2: one shell-route write per command; its worst target decides the grade, and a target that is not a project file or has no known pre-image counts in the total only.
-      const c = classifyShellWrite(input.command);
-      if (c.kind === "write") {
-        const grades = c.targets.map((t) => { const f = this.rel(t); return f === undefined ? undefined : this.grade(peer, f, this.latest.get(f)?.text); });
-        this.count(peer, "s", grades.includes(3) ? 3 : grades.includes(undefined) ? undefined : grades.includes(2) ? 2 : 1);
-      }
+    if (tool === "Bash" && pre?.peer === peer && pre.shell) {
+      // Count each observed file modification, not a command that may touch several files or no file.
+      for (const target of pre.shell) if (this.load(target.file).hash !== target.version.hash) this.count(peer, "s", this.grade(peer, target.file, target.version.text));
     }
     this.observeAll();
   }
@@ -677,6 +675,7 @@ export class Facts {
         this.wrote(peer, file);
         const now = this.load(file);
         const matches = was && !was.projected && !now.projected ? codexEffect(was.text, now, change, (a, b) => this.diff(a, b)) : false;
+        if (matches && was && was.hash !== now.hash) this.count(peer, "e", this.grade(peer, file, was.text), "stream");
         const version = this.observe(file, matches ? { peer, expected: now.hash } : undefined);
         const last = this.transitions.get(file)?.at(-1);
         if (was && last?.seq === version.seq && last.by === peer && this.view(peer).get(file)?.hash === was.hash) this.view(peer).set(file, version);

@@ -8104,7 +8104,8 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn. A launcher-bound pull-only native turn follows the same rule.
         const nativeFactsTurn = nativeHookLaunches.current(e.peer) !== undefined && bus.peers.get(e.peer)?.pullOnly === true;
-        if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}), ...noteObservedModel(e.peer, observedTurnModel(e.peer)), ...turnEditsFor(e.peer, open, files) });
+        const edits = turnEditsFor(e.peer, open, files); // Discard the tally even when a native completion is unconfirmed.
+        if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}), ...noteObservedModel(e.peer, observedTurnModel(e.peer)), ...edits });
         if (!nativeFactsTurn && definitionOf(e.peer)?.turnEnd !== "native-hook") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());
