@@ -485,12 +485,15 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
 
 const unboundRecoveryInspection = inspectRecovery;
 
-export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: string, clock?: Pick<RecoveryDriver, "now" | "sleep">, conductorPeer?: string): RecoveryDriver {
+/** `clock.waitSliceMs` (#1578) lets a test poll the attachment wait in a coarser slice; production passes nothing and keeps 1 s. */
+export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: string, clock?: Pick<RecoveryDriver, "now" | "sleep"> & { waitSliceMs?: number }, conductorPeer?: string): RecoveryDriver {
   let authorizedOperation: RecoveryOperation | undefined;
   const recoveryCurrent = async () => { if (conductorPeer) { if (!authorizedOperation) throw new FinalRefusal("conductor recovery authority unavailable"); await authorizeConductorOperation(authorizedOperation, conductorPeer); } };
   const inspectRecovery = (project: Project, features?: readonly string[], purpose?: "cleanup") => unboundRecoveryInspection(project, features, purpose, conductorPeer);
   const now = clock?.now ?? (() => Date.now());
   const sleep = clock?.sleep ?? ((ms: number) => Bun.sleep(ms));
+  // #1578: the attachment wait polls in this slice. Only a test injects a larger one, so a 600 s deadline costs fewer polls.
+  const waitSliceMs = clock?.waitSliceMs ?? 1000;
   /** `only`: one binding's native profile, for a command run once per profile (#450 I3: Claude instances may differ). */
   const env = (op: RecoveryOperation, project?: Project, only?: TerminalBinding): NodeJS.ProcessEnv => {
     const value = { ...process.env };
@@ -686,7 +689,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           else { launchState = "older-instance"; olderHandle = evidence.handle; }
         } else if (evidence.state === "live" && evidence.session) {
           if (now() >= deadline) break;
-          await sleep(Math.min(1000, deadline - now()));
+          await sleep(Math.min(waitSliceMs, deadline - now()));
           continue;
         }
       }
@@ -704,7 +707,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         throw nativeFailure(planned, binding.peer, "launcher_unverified", `${binding.peer}: the chosen restoration launcher's identity cannot be verified (${launchState}); saved terminal retained; no terminal was created`, { handle: binding.handle, launcherState: launchState });
       }
       if (now() >= deadline) break;
-      await sleep(Math.min(1000, deadline - now()));
+      await sleep(Math.min(waitSliceMs, deadline - now()));
     }
     const terminal: NonNullable<ProjectProgress["attachmentTimeouts"]>[string]["terminal"] = { handle: binding.handle, incarnationId: binding.incarnationId, state: "unknown" };
     try {

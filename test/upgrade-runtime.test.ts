@@ -1533,7 +1533,7 @@ test("the recovery driver passes the saved Qwen conversation id through its emit
 });
 
 // #414: Orca can report the preserved terminal ready before its authenticated peer attaches.
-function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pending" | "failed") {
+function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pending" | "failed", options: { waitSliceMs?: number } = {}) {
   const control = { attachAfterRead: true, noId: false, wrongSession: false, wrongOperation: false, wrongInstance: false, persistOriginalBeforeAttach: false, corruptIntegrity: false, attachAfterMs: 0, interruptAtMs: Infinity, exitAtMs: Infinity, unavailableAtMs: Infinity, pulseAtMs: Infinity, noRecord: false, staleEndedAtCreate: false, idAfterMs: 0, offlineId: false, recordAtPostCreateRead: Infinity, replacementAtRead: false, endedAtRead: false, olderAtRead: "none" };
   let elapsed = 0;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-414-"))), stateDir = join(root, "state");
@@ -1603,7 +1603,7 @@ function delayedManagedFixture(peer: "claude" | "codex" | "pi", pending?: "pendi
     recordLauncher();
   }
   return { root, stateDir, planned, progress, op, control, idleWaits, removeClaudeTranscript: () => rmSync(join(config, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`)), setAttached: (value: boolean) => { attached = value; }, elapsed: () => elapsed,
-    driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, sleep: async (ms) => { elapsed += ms; if (elapsed >= control.unavailableAtMs) { server.stop(true); control.unavailableAtMs = Infinity; } if (elapsed >= control.exitAtMs) { recordLauncher(false); control.exitAtMs = Infinity; } if (elapsed >= control.interruptAtMs) throw new Error("fixture coordinator interrupted"); } }), creates: () => creates,
+    driver: makeRecoveryDriver(run, undefined, { now: () => elapsed, waitSliceMs: options.waitSliceMs, sleep: async (ms) => { elapsed += ms; if (elapsed >= control.unavailableAtMs) { server.stop(true); control.unavailableAtMs = Infinity; } if (elapsed >= control.exitAtMs) { recordLauncher(false); control.exitAtMs = Infinity; } if (elapsed >= control.interruptAtMs) throw new Error("fixture coordinator interrupted"); } }), creates: () => creates,
     endLauncher: () => recordLauncher(false),
     resetPostCreateReads: () => { postCreateReads = 0; },
     replaceTerminal: () => { shown.handle = "term-replacement"; shown.incarnationId = "inc-replacement"; },
@@ -2607,6 +2607,9 @@ test("#466 an interrupted repair preserves its actual wrong-session cause inside
 });
 
 // ---- #489 H4: the recovery waits are settings, read from the project's own config at the start of each wait ----
+// #1578: these cases assert the deadline itself, so they poll it in a coarser slice than production's 1 s. The deadline
+// arithmetic is untouched: the last slice is clamped to the remaining time, so `elapsed` still lands exactly on the bound.
+const WAIT_SLICE = { waitSliceMs: 10_000 };
 const configureRecovery = (root: string, recovery: Record<string, unknown>, file: "config.json" | "config.local.json" = "config.local.json") => {
   mkdirSync(join(root, ".agenthub"), { recursive: true });
   writeFileSync(join(root, ".agenthub", file), JSON.stringify({ recovery }));
@@ -2614,7 +2617,7 @@ const configureRecovery = (root: string, recovery: Record<string, unknown>, file
 const gitInit = (root: string) => { const result = Bun.spawnSync(["git", "-C", root, "init", "-q"]); if (result.exitCode !== 0) throw new Error("git init failed"); };
 
 test("#489 H4 a configured managed attachment wait is the one the real driver waits, records and names, and a raised deadline is the receipt's", async () => {
-  const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false; // the terminal never attaches: only the wait ends it
+  const f = delayedManagedFixture("claude", undefined, WAIT_SLICE); f.control.attachAfterRead = false; // the terminal never attaches: only the wait ends it
   gitInit(f.root); configureRecovery(f.root, { reconnect_wait_s: 700 });
   f.op.step = "restore:p-215";
   try {
@@ -2630,7 +2633,7 @@ test("#489 H4 a configured managed attachment wait is the one the real driver wa
 // Each case waits out a simulated 600 s against a real hub socket (a few seconds idle, slower on a shard), so each is its own test with an explicit bound.
 for (const [name, recovery] of [["nothing configured", undefined], ["a value below its floor", { reconnect_wait_s: 100 }], ["a string", { reconnect_wait_s: "700" }], ["a non-integer", { reconnect_wait_s: 700.5 }]] as const) {
   test(`#489 H4 the managed attachment wait is exactly the old 600 seconds with ${name} in the file`, async () => {
-    const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false;
+    const f = delayedManagedFixture("claude", undefined, WAIT_SLICE); f.control.attachAfterRead = false;
     gitInit(f.root); if (recovery) configureRecovery(f.root, recovery);
     try {
       await expect(f.driver.restore(f.planned, f.progress, f.op, "claude", () => {})).rejects.toThrow("attachment not verified within 600 s");
@@ -2640,7 +2643,7 @@ for (const [name, recovery] of [["nothing configured", undefined], ["a value bel
 }
 
 test("#489 H4 an attachment wait already running keeps its deadline when the file changes meanwhile, and the next wait reads the new value", async () => {
-  const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false;
+  const f = delayedManagedFixture("claude", undefined, WAIT_SLICE); f.control.attachAfterRead = false;
   gitInit(f.root); configureRecovery(f.root, { reconnect_wait_s: 700 });
   let editedAt = -1;
   // The fixture's clock is its own `elapsed`: edit the file the first time the fake clock passes 100 s, which is inside a 700 s wait and never before it starts.
@@ -2651,7 +2654,7 @@ test("#489 H4 an attachment wait already running keeps its deadline when the fil
     expect(f.elapsed()).toBe(700_000); // and did not move the running wait's deadline
   } finally { clearInterval(watch); f.cleanup(); }
   // the next wait, in the same project, reads the edited file
-  const next = delayedManagedFixture("claude"); next.control.attachAfterRead = false;
+  const next = delayedManagedFixture("claude", undefined, WAIT_SLICE); next.control.attachAfterRead = false;
   gitInit(next.root); configureRecovery(next.root, { reconnect_wait_s: 700 });
   configureRecovery(next.root, { reconnect_wait_s: 900 });
   try {
@@ -2660,7 +2663,7 @@ test("#489 H4 an attachment wait already running keeps its deadline when the fil
 }, 120_000);
 
 test("#489 H4 a configured unmanaged reconnect wait is the one the real driver waits and names, and unset it is the old 90 seconds", async () => {
-  const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false; // the terminal never attaches: only the wait ends it
+  const f = delayedManagedFixture("claude", undefined, WAIT_SLICE); f.control.attachAfterRead = false; // the terminal never attaches: only the wait ends it
   gitInit(f.root); configureRecovery(f.root, { unmanaged_reconnect_wait_s: 200 });
   f.planned.terminals = []; f.planned.reconnectOnly = ["claude"];
   try {
@@ -2672,7 +2675,7 @@ test("#489 H4 a configured unmanaged reconnect wait is the one the real driver w
 });
 
 test("#489 H4 a machine-local recovery wait that git tracks is refused: the real driver waits the shared file's value", async () => {
-  const f = delayedManagedFixture("claude"); f.control.attachAfterRead = false; // the terminal never attaches: only the wait ends it
+  const f = delayedManagedFixture("claude", undefined, WAIT_SLICE); f.control.attachAfterRead = false; // the terminal never attaches: only the wait ends it
   gitInit(f.root);
   configureRecovery(f.root, { reconnect_wait_s: 650 }, "config.json");
   configureRecovery(f.root, { reconnect_wait_s: 900 }, "config.local.json");
