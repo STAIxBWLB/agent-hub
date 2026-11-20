@@ -132,6 +132,55 @@ test("a retargeted home symlink moves the version and the fence refuses it", asy
   } finally { store.close(); }
 });
 
+test("a retargeted link at the environment memory home moves the version and the fence refuses it", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "hub-memory-anchor-env-")));
+  homes.push(root);
+  const first = join(root, "a");
+  const seed = new MemoryStore({ home: first });
+  seed.note(note(A, "alpha contract"));
+  seed.close();
+  await migrateShards({ memoryDir: join(first, "memory"), mode: "apply", authorizedPerson: true, tty: true });
+  const other = join(root, "b");
+  mkdirSync(join(other, "memory"), { recursive: true });
+  // The hub home above the memory dir is stamped nowhere, so only the link's own tuple sees this retarget.
+  const hub = join(root, "hub");
+  mkdirSync(hub);
+  symlinkSync(join(first, "memory"), join(hub, "memory"));
+  const saved = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = hub;
+  try {
+    const { store, binding } = openProfileMemory({ project: A, projectKey: A });
+    try {
+      const p = policy(binding, store, () => [["deny"]]);
+      const version = p.version();
+      unlinkSync(join(hub, "memory"));
+      symlinkSync(join(other, "memory"), join(hub, "memory"));
+      expect(p.version()).not.toBe(version);
+      expect(binding.status(store, { skippedRows: false }).state).toBe("unavailable");
+    } finally { store.close(); }
+  } finally {
+    if (saved === undefined) delete process.env.AGENTHUB_HOME;
+    else process.env.AGENTHUB_HOME = saved;
+  }
+});
+
+test("a fenced directory replaced by a file fails closed instead of throwing", async () => {
+  const { home, memory } = await split();
+  const { store, binding } = openProfileMemory({ home, project: A, projectKey: A });
+  try {
+    const p = policy(binding, store, () => [["deny"]]);
+    const first = p.version();
+    // `projects` is stamped and every shard descriptor below it is too; a file there makes the child stat ENOTDIR.
+    const projects = join(memory, "projects");
+    rmSync(projects, { recursive: true, force: true });
+    writeFileSync(projects, "");
+    let moved: string | undefined;
+    expect(() => { moved = p.version(); }).not.toThrow();
+    expect(moved).not.toBe(first);
+    expect(binding.status(store, { skippedRows: false }).state).toBe("unavailable");
+  } finally { store.close(); }
+});
+
 test("the version path never asks the store for bridgeStatus", async () => {
   const { home } = await split();
   const { store, binding } = openProfileMemory({ home, project: A, projectKey: A });
