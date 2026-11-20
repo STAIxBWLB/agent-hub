@@ -3,8 +3,8 @@ export interface ReviewScope { scope: "none" | "delta" | "full"; reviewers: numb
 export interface CostPlan { review?: ReviewScope; ci?: "focused" | "full" | "reuse" }
 export interface ReviewCost extends CostPlan { head?: string }
 export interface CostTask { repo: string; pr: number; private?: boolean; history: { event: string; at: number; reviewCost?: ReviewCost }[] }
-export interface CostPr { repo: string; pr: number; state: "OPEN" | "CLOSED" | "MERGED"; mergedAt?: number; complete: boolean; ciRuns?: { id: number; attempt: number }[]; reviews?: number }
-export interface CostRow { repo: string; pr: number; reviewRounds: number; ciRuns: number | null; ciReruns: number | null; fullReReviews: number; deltaReviews: number; reviewMs: number | null; unknownReviewScopes: number; githubReviews: number | null; complete: boolean }
+export interface CostPr { repo: string; pr: number; state: "OPEN" | "CLOSED" | "MERGED"; mergedAt?: number; complete: boolean; ciRuns?: { id: number; attempt: number }[]; reviews?: number; fullGateRuns?: number; successfulGateRuns?: number; failedGateRuns?: number; cancelledGateRuns?: number; otherGateRuns?: number; macosShardRuns?: number; firstPass?: 0 | 1 | null }
+export interface CostRow { repo: string; pr: number; reviewRounds: number; ciRuns: number | null; ciReruns: number | null; fullReReviews: number; deltaReviews: number; reviewMs: number | null; unknownReviewScopes: number; githubReviews: number | null; complete: boolean; fullGateRuns?: number; successfulGateRuns?: number; failedGateRuns?: number; cancelledGateRuns?: number; otherGateRuns?: number; macosShardRuns?: number }
 export interface CostReport { rows: CostRow[]; truncated: boolean }
 /**
  * #1087: why a cost scope was refused. The message is fixed text that names the field and its allowed values and never the value given, so a call site may show it
@@ -43,7 +43,7 @@ export function cleanCostPlan(input: unknown, field: string | { review: string; 
  * #481 S7: what the guarded merge records about a merged PR, from the PR read once at merge. Every field is `null` when the read could not establish it, never 0.
  * CI figures need the complete read (runs linked by every head of the PR); a rerun is an attempt after the first of one run id, i.e. the same head run again.
  */
-export interface MergeCost { mergedAt: number | null; ciRuns: number | null; ciReruns: number | null; reviews: number | null }
+export interface MergeCost { mergedAt: number | null; ciRuns: number | null; ciReruns: number | null; reviews: number | null; fullGateRuns?: number | null; successfulGateRuns?: number | null; failedGateRuns?: number | null; cancelledGateRuns?: number | null; otherGateRuns?: number | null; macosShardRuns?: number | null; firstPass?: 0 | 1 | null }
 export function ciRunCounts(runs: readonly { id: number; attempt: number }[] | undefined): { runs: number; reruns: number } | null {
   if (!runs || runs.length > 100) return null;
   const attempts = new Map<number, number>();
@@ -57,13 +57,15 @@ export function mergeCostFrom(pr: CostPr | undefined): MergeCost | undefined {
   if (!pr || pr.state !== "MERGED") return undefined;
   const counts = pr.complete ? ciRunCounts(pr.ciRuns) : null;
   return { mergedAt: Number.isSafeInteger(pr.mergedAt) && pr.mergedAt! >= 0 ? pr.mergedAt! : null, ciRuns: counts?.runs ?? null, ciReruns: counts?.reruns ?? null,
-    reviews: Number.isSafeInteger(pr.reviews) && pr.reviews! >= 0 ? pr.reviews! : null };
+    reviews: Number.isSafeInteger(pr.reviews) && pr.reviews! >= 0 ? pr.reviews! : null,
+    ...(pr.complete && pr.fullGateRuns !== undefined ? { fullGateRuns: pr.fullGateRuns, successfulGateRuns: pr.successfulGateRuns ?? null, failedGateRuns: pr.failedGateRuns ?? null, cancelledGateRuns: pr.cancelledGateRuns ?? null, otherGateRuns: pr.otherGateRuns ?? null, macosShardRuns: pr.macosShardRuns ?? null, firstPass: pr.firstPass ?? null } : {}) };
 }
 /** Bounded, finite or absent: a stored record is data, never trusted shape. */
 export function cleanMergeCost(value: unknown): MergeCost | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>, field = (key: string) => Number.isSafeInteger(raw[key]) && (raw[key] as number) >= 0 ? raw[key] as number : null;
-  return { mergedAt: field("mergedAt"), ciRuns: field("ciRuns"), ciReruns: field("ciReruns"), reviews: field("reviews") };
+  return { mergedAt: field("mergedAt"), ciRuns: field("ciRuns"), ciReruns: field("ciReruns"), reviews: field("reviews"),
+    ...(Object.hasOwn(raw, "fullGateRuns") ? { fullGateRuns: field("fullGateRuns"), successfulGateRuns: field("successfulGateRuns"), failedGateRuns: field("failedGateRuns"), cancelledGateRuns: field("cancelledGateRuns"), otherGateRuns: field("otherGateRuns"), macosShardRuns: field("macosShardRuns"), firstPass: raw.firstPass === 0 || raw.firstPass === 1 ? raw.firstPass : null } : {}) };
 }
 const validRepo = (repo: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.startsWith("-");
 const key = (repo: string, pr: number) => `${repo.toLowerCase()}#${pr}`;
@@ -99,12 +101,14 @@ export function costMetrics(tasks: CostTask[], prs: CostPr[]): CostReport {
     }
     if (pr.ciRuns && pr.ciRuns.length > 100) { complete = false; truncated = true; }
     if (!pr.ciRuns || pr.reviews === undefined || rounds.some(round => round.elapsed === undefined || round.scope === undefined)) complete = false;
+    const ci = pr.complete ? ciRunCounts(pr.ciRuns) : null;
     rows.push({ repo: pr.repo.toLowerCase(), pr: pr.pr, reviewRounds: rounds.length,
-      ciRuns: pr.ciRuns ? attempts.size : null, ciReruns: pr.ciRuns ? [...attempts.values()].reduce((sum, n) => sum + n - 1, 0) : null,
+      ciRuns: ci?.runs ?? null, ciReruns: ci?.reruns ?? null,
       fullReReviews: rounds.filter((round, index) => index > 0 && round.scope === "full").length,
       deltaReviews: rounds.filter(round => round.scope === "delta").length,
       reviewMs: rounds.every(round => round.elapsed !== undefined) ? rounds.reduce((sum, round) => sum + round.elapsed!, 0) : null,
-      unknownReviewScopes: rounds.filter(round => round.scope === undefined).length, githubReviews: pr.reviews ?? null, complete });
+      unknownReviewScopes: rounds.filter(round => round.scope === undefined).length, githubReviews: pr.reviews ?? null, complete,
+      ...(pr.complete && pr.fullGateRuns !== undefined ? { fullGateRuns: pr.fullGateRuns, successfulGateRuns: pr.successfulGateRuns, failedGateRuns: pr.failedGateRuns, cancelledGateRuns: pr.cancelledGateRuns, otherGateRuns: pr.otherGateRuns, macosShardRuns: pr.macosShardRuns } : {}) });
   }
   return { rows: rows.sort((a, b) => a.repo.localeCompare(b.repo) || a.pr - b.pr), truncated };
 }

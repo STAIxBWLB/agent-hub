@@ -231,9 +231,12 @@ test("connection replacement invalidates a context waiter even when native sessi
 }, 20_000);
 
 test("expired context requests cannot persist a late checkpoint", async () => {
-  const f = await fixture(); f.reading(); await until(() => !!request(f.pushes));
+  // The subject is the refusal after expiry, never the length of the wait: the shortest legal checkpoint timeout (the
+  // config bound is 1 s) and 600 ms of slack past it replace the fixture's 5 s default and a 5.1 s sleep.
+  const f = await fixture(0.8, false, undefined, { budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 1 } });
+  f.reading(); await until(() => !!request(f.pushes));
   const id = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1];
-  await Bun.sleep(5100);
+  await Bun.sleep(1600);
   const late = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "too late", request_id: id } });
   expect(late.ok).toBe(false); expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
   expect(f.daemon.bus.stateOf("claude")).not.toBe("paused");

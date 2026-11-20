@@ -269,6 +269,7 @@ const SUMMARY_ROWS: [string, string, boolean][] = [
   ["acceptance_to_plan_ms", "acceptance to plan", true], ["accepted_to_plan_ms", "task acceptance to plan", true], ["acceptance_to_first_review_ms", "acceptance to first review", true], ["acceptance_to_merge_ms", "acceptance to merge", true],
   ["rework_rounds", "rework rounds", false], ["same_head_ci_reruns", "same-head CI reruns", false], ["stale_head_re_reviews", "stale-head re-reviews", false],
   ["review_rounds_at_merge", "review rounds at merge", false], ["ci_runs_at_merge", "CI runs at merge", false], ["github_reviews_at_merge", "GitHub reviews at merge", false],
+  ["full_gate_runs", "full gate runs", false], ["successful_gate_runs", "successful gate runs", false], ["failed_gate_runs", "failed gate runs", false], ["cancelled_gate_runs", "cancelled gate runs", false], ["other_gate_runs", "other gate runs", false], ["macos_shard_runs", "macOS shard runs", false],
 ];
 const BAND_TONE: Record<string, Tone> = { ok: "success", log: "muted", diagnose: "attention", propose: "failure" };
 /** `ahub sdlc metrics [--since ...]`: times and counts from board history, the two approval rates, stalls and band tiers. */
@@ -310,6 +311,9 @@ export function renderSdlcCosts(result: unknown, columns?: number, _now = Date.n
     out.push(...(out.length > 1 ? [blank] : []), ...wrap(repo, room(columns), 2).map((line): Line => [s(line, "info")]), ...grid(["PR", "ROUNDS", "CI", "RERUNS", "FULL", "DELTA", "REVIEW", "UNK", "OK"], rows.filter(row => String(row.repo) === repo).map(row => [
       s(`#${row.pr}`, "issueRef"), s(count(row.reviewRounds)), s(count(row.ciRuns)), s(count(row.ciReruns)), s(count(row.fullReReviews)), s(count(row.deltaReviews)), s(span(row.reviewMs)),
       s(count(row.unknownReviewScopes), row.unknownReviewScopes ? "attention" : "muted"), s(row.complete ? "yes" : "no", row.complete ? "success" : "attention")]), columns));
+    for (const row of rows.filter(row => String(row.repo) === repo && row.fullGateRuns !== undefined)) {
+      out.push(...para(`#${row.pr}: full gates ${count(row.fullGateRuns)} (success ${count(row.successfulGateRuns)}, failed ${count(row.failedGateRuns)}, cancelled ${count(row.cancelledGateRuns)}, other ${count(row.otherGateRuns)}); macOS shards ${count(row.macosShardRuns)}`, columns));
+    }
   }
   if (c?.truncated) out.push(blank, ...para("truncated: more PRs than one read covers, or a read was incomplete", columns, "attention"));
   if (c?.privateTasks === "withheld") out.push(...para("private tasks are withheld", columns, "muted"));

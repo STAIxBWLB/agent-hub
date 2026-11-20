@@ -13784,6 +13784,12 @@ var init_host_executable = __esm(() => {
   init_project();
 });
 
+// src/hub/sdlc-branch-ci.ts
+var CAP2;
+var init_sdlc_branch_ci = __esm(() => {
+  CAP2 = 256 * 1024;
+});
+
 // src/hub/sdlc.ts
 var SDLC_STAGES, PLAYBOOK_STAGES, BASES2, STAGE_GATES, GATES;
 var init_sdlc = __esm(() => {
@@ -13798,6 +13804,7 @@ var init_sdlc = __esm(() => {
   init_workflow();
   init_child_process();
   init_host_executable();
+  init_sdlc_branch_ci();
   SDLC_STAGES = ["spec", "plan", "implement", "review", "verify", "merge", "release"];
   PLAYBOOK_STAGES = ["intent", "spec", "plan", "build", "test", "review", "merge", "release", "maintain"];
   BASES2 = [...new Set([...SDLC_STAGES, ...PLAYBOOK_STAGES])];
