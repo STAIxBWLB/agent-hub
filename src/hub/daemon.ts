@@ -8746,8 +8746,9 @@ export async function startDaemon(opts: DaemonOptions) {
         tuiHintContext: () => ({ tui: startMode(peer) === "tui", afterCrash: crashReported }),
         preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld"),
         // #1601: the one cause a configured kind may name in hub.log, because the line above replaces every adapter log of this peer.
-        // The sentence comes from the kind's own module and carries the ceiling's minutes and the recovery command, never a tool title.
-        onToolCeiling: ({ ceilingMs }) => log(jcodeToolCeilingCause(ceilingMs)),
+        // The sentence comes from the kind's own module and carries the ceiling's minutes, this peer's own launch and the row the
+        // person settles, never a tool title.
+        onToolCeiling: ({ ceilingMs }) => log(jcodeToolCeilingCause(ceilingMs, peer)),
         // #801: Jcode 0.99.1's usage_update is `{ used, size }`, the live session's context occupancy: a context reading bound to the adapter's own session id, never a tokens event
         // or a quota window. An invalid shape reports a null reading (unknown, not the previous value).
         onUsageDiagnostic: (observation, sessionId) => {

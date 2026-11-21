@@ -111,10 +111,16 @@ test("#1601 the default ceiling outlasts a 50-minute silent gate wait, still can
     // The host port carries the ceiling and nothing else, so a configured kind can log the cause without a tool title.
     expect(causes).toEqual([{ ceilingMs: TOOL_CEILING_MS }]);
     expect(logs.at(-1)).toContain("silent past the 60 min tool ceiling; cancelling the turn");
-    // #1601: the configured kind's own sentence, which is what hub.log gets instead of the withheld line.
-    expect(jcodeToolCeilingCause(TOOL_CEILING_MS)).toBe(
+    // #1601: the configured kind's own sentence, which is what hub.log gets instead of the withheld line. It names the launch that
+    // restarts this peer - the base peer, then an extra instance (#685) that a bare `ahub jcode` would not start - and the held row's settle command.
+    expect(jcodeToolCeilingCause(TOOL_CEILING_MS, "jcode")).toBe(
       "Jcode turn cancelled by the open-tool ceiling (60 min, adapter_timing.acp_tool_ceiling_min) after a tool call stayed silent; "
-      + "the delivery is held for review and the peer is offline with queued work retained - restart it with 'ahub jcode' to resume delivery");
+      + "the delivery is held for review and the peer is offline with queued work retained - restart it with 'ahub jcode', then settle the held row "
+      + "('ahub queue list --peer jcode' names it; 'ahub queue show <id>' prints the resolve command)");
+    expect(jcodeToolCeilingCause(TOOL_CEILING_MS, "jcode-local")).toBe(
+      "Jcode turn cancelled by the open-tool ceiling (60 min, adapter_timing.acp_tool_ceiling_min) after a tool call stayed silent; "
+      + "the delivery is held for review and the peer is offline with queued work retained - restart it with 'ahub jcode --as jcode-local', then settle the held row "
+      + "('ahub queue list --peer jcode-local' names it; 'ahub queue show <id>' prints the resolve command)");
   } finally { Date.now = now; await peer.stop(); }
 });
 

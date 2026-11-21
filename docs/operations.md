@@ -2968,7 +2968,12 @@ it can be tightened or raised, and remains `max(watchdogMs, configured ceiling)`
 with remaining-only rearming, so a tool call that reports no progress for those
 minutes still ends the turn. A turn the ceiling cancels names its cause: hub.log
 gets the ceiling and its minutes for a configured kind whose own native
-diagnostics stay withheld, and a private turn's tool titles stay withheld with them.
+diagnostics stay withheld, plus the launch that restarts that peer (`ahub jcode`,
+or `ahub jcode --as <peer>` for an extra instance) and the held row it leaves
+behind; a private turn's tool titles stay withheld with them. That restart brings
+the peer back but does not redeliver the cancelled delivery, so the person settles
+it with the command `ahub queue show <id>` prints, after
+`ahub queue list --peer <peer>` names the row.
 
 The activity delay defaults to the legacy 50 ms and never exceeds that buffer window;
 its 4096-character threshold and privacy handling stay fixed. Jcode's default
