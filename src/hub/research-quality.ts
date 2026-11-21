@@ -49,7 +49,9 @@ const leaves = (value: unknown, prefix: string, out: Map<string, unknown>): void
   out.set(prefix, value);
 };
 /** The v2 blocks whose leaves are counted; v1 fields predate the report and are not unknown by design. */
-const BLOCKS = ["review", "delivery", "merge", "specs", "memory", "person", "handoffs"] as const;
+const BLOCKS = ["review", "delivery", "merge", "specs", "memory", "person", "handoffs", "edits"] as const;
+/** The leaves of the two nullable edit-count objects. */
+const EDIT_LEAVES = { editTool: ["total", "verifiedFullRead", "partialReadOnly", "blindOrStale", "occRejected"], shellRoute: ["total", "verifiedFullRead", "partialReadOnly", "blindOrStale", "blockedByGuard"] } as const;
 const SCALARS = ["stalls", "cohort", "declines", "escalations", "cancelCause"] as const;
 
 /** `since` and `until` are epoch ms; a record counts when its terminal time falls inside. */
@@ -66,6 +68,8 @@ export function buildResearchQuality(records: readonly ResearchRecord[], events:
   for (const r of v2) {
     const seen = new Map<string, unknown>();
     for (const block of BLOCKS) leaves((r as unknown as Record<string, unknown>)[block] ?? null, block, seen);
+    // #1556 T2: a null `editTool` or `shellRoute` (a tree_only surface) is unknown at each of its leaves, so every leaf has the same n and `unknown` says how many records could not observe it.
+    for (const [key, names] of Object.entries(EDIT_LEAVES)) if (r.edits && r.edits[key as keyof typeof EDIT_LEAVES] === null) { seen.delete(`edits.${key}`); for (const name of names) seen.set(`edits.${key}.${name}`, null); }
     // A block that is absent from the record counts as unknown at its own name.
     for (const block of BLOCKS) if (![...seen.keys()].some(k => k.startsWith(`${block}.`) || k === block)) seen.set(block, null);
     for (const key of SCALARS) seen.set(key, (r as unknown as Record<string, unknown>)[key] ?? (key === "cancelCause" && r.outcome !== "cancelled" ? undefined : null));

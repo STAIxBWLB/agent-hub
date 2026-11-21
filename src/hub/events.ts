@@ -25,6 +25,24 @@ export function turnModelFields(observed: unknown): { model: string; modelEviden
   return label !== undefined && isModelEvidence(evidence) ? { model: label, modelEvidence: evidence } : {};
 }
 
+/** #1556 T2: the closed, text-free edit counts a turn may add to `turn_end` (only when it modified files). `e` is the edit tool [total, verifiedFull, partialOnly, blindOrStale, occRejected], `s` the shell route [total, verifiedFull, partialOnly, blindOrStale, blockedByGuard], `u` tree writes no stream attributed. Counts only: never a path, a command or text. */
+export const EDIT_OBS = ["hook", "stream", "tree"] as const;
+export const EDIT_ARMS = ["baseline", "soft_guidance", "route_guard", "occ_guard", "combined_guard", "shadow"] as const;
+export type EditCounts = [number, number, number, number, number];
+export interface TurnEdits { obs: (typeof EDIT_OBS)[number]; arm?: (typeof EDIT_ARMS)[number]; e?: EditCounts; s?: EditCounts; u?: number; fe?: number; rev?: number }
+const EDIT_MAX = 1_000_000;
+const editCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 && v <= EDIT_MAX;
+const editCounts = (v: unknown): EditCounts | undefined => Array.isArray(v) && v.length === 5 && v.every(editCount) ? (v as EditCounts).slice() as EditCounts : undefined;
+/** Rebuilds `turn_end.edits` from an untrusted value, field by field: a field that is not exactly the closed shape is dropped whole, and a value with no valid `obs` is dropped altogether. */
+export function turnEdits(raw: unknown): TurnEdits | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (!(EDIT_OBS as readonly unknown[]).includes(r.obs)) return undefined;
+  const e = editCounts(r.e), s = editCounts(r.s);
+  return { obs: r.obs as TurnEdits["obs"], ...((EDIT_ARMS as readonly unknown[]).includes(r.arm) ? { arm: r.arm as TurnEdits["arm"] } : {}), ...(e ? { e } : {}), ...(s ? { s } : {}),
+    ...(editCount(r.u) ? { u: r.u } : {}), ...(editCount(r.fe) ? { fe: r.fe } : {}), ...(editCount(r.rev) ? { rev: r.rev } : {}) };
+}
+
 /** Bumped whenever a field changes meaning or goes away; new fields and new types do not bump it. */
 export const EVENTS_SCHEMA = 1;
 
@@ -78,7 +96,7 @@ export type HubEvent =
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "native_thread"; peer: string; thread: string; fresh: boolean }
-  | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null; model?: string; modelEvidence?: ModelEvidence } & Partial<TaskAttribution>)
+  | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null; model?: string; modelEvidence?: ModelEvidence; edits?: TurnEdits } & Partial<TaskAttribution>)
   | { type: "native_turn_end"; peer: string; id?: string; reason?: "user_canceled" | "error" | "max_invocations" | "max_forced_invocations" | "max_token_budget_exceeded" | "terminal_step_type" | "terminal_custom_hook" }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
   | ({ type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true; instructed?: true } & Partial<TaskAttribution>)

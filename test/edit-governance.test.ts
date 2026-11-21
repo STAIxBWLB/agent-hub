@@ -1,0 +1,141 @@
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { turnEdits, type StampedEvent } from "../src/hub/events.ts";
+import { Facts } from "../src/hub/facts.ts";
+import { editGovernanceBlock } from "../src/hub/research-record.ts";
+import { buildResearchQuality } from "../src/hub/research-quality.ts";
+import { ResearchTail, taskRecords } from "../src/hub/research.ts";
+import { readEvents } from "../src/hub/events.ts";
+
+// #1556 T2: turn_end.edits counts and the text-free EditGovernanceBlock.
+let clock = Date.parse("2026-11-01T00:00:00Z");
+const at = () => new Date(clock += 60_000).toISOString();
+const task = (id: number, event: string, state: string, owner: string | null = null): StampedEvent =>
+  ({ v: 1, at: at(), type: "task", id, event, by: "hub", state, owner, reviewer: "claude", class: "implement", pii: false } as StampedEvent);
+const turn = (id: number, extra: Record<string, unknown> = {}): StampedEvent =>
+  ({ v: 1, at: at(), type: "turn_end", peer: "codex", turn: `codex#1.${id}.${clock}`, ms: 1000, task: id, attribution: "delivery", ...extra } as StampedEvent);
+const life = (id: number, between: StampedEvent[]): StampedEvent[] => [task(id, "proposed", "proposed"), task(id, "assigned", "in_progress", "codex"), ...between, task(id, "done", "in_review", "codex"), task(id, "approved", "approved", "codex")];
+const writer = { version: "test", source: "backfill" as const };
+const rec = (events: StampedEvent[]) => taskRecords(events, "p-1", writer);
+
+test("turnEdits rebuilds only the closed shape and drops anything else whole", () => {
+  expect(turnEdits({ obs: "hook", e: [2, 1, 0, 1, 0], path: "/etc/passwd", cmd: "rm -rf" })).toEqual({ obs: "hook", e: [2, 1, 0, 1, 0] });
+  expect(turnEdits({ obs: "tree", u: 3 })).toEqual({ obs: "tree", u: 3 });
+  for (const bad of [undefined, null, [], "x", { obs: "nope" }, { e: [1, 0, 0, 0, 0] }]) expect(turnEdits(bad)).toBeUndefined();
+  expect(turnEdits({ obs: "hook", e: [1, 2, 3], s: [1, -1, 0, 0, 0], arm: "bogus", u: 1.5 })).toEqual({ obs: "hook" });
+});
+
+test("a task whose turns carry no edits has the all-unknown block; hook turns give bounded counts", () => {
+  expect(rec(life(1, [turn(1)]))[0]!.edits).toEqual({ observability: "unknown", policyArm: "unknown", editTool: null, shellRoute: null, unattributedTreeWrites: null, postEdit: { editsWhileCheckFailing: null, revertedWrites: null } });
+  const r = rec(life(2, [turn(2, { edits: { obs: "hook", arm: "baseline", e: [3, 1, 1, 1, 0], s: [1, 0, 0, 1, 0] } }), turn(2, { edits: { obs: "hook", e: [1, 1, 0, 0, 0] } })]))[0]!;
+  expect(r.edits).toMatchObject({ observability: "hook_and_tree", policyArm: "baseline", editTool: { total: 4, verifiedFullRead: 2, partialReadOnly: 1, blindOrStale: 1, occRejected: 0 }, shellRoute: { total: 1, blindOrStale: 1, blockedByGuard: 0 }, unattributedTreeWrites: null });
+});
+
+test("tree_only surfaces record null for editTool and shellRoute, never 0, and quality counts them unknown", () => {
+  const events = [...life(3, [turn(3, { edits: { obs: "tree", u: 2 } })]), ...life(4, [turn(4, { edits: { obs: "hook", e: [1, 1, 0, 0, 0] } })])];
+  const records = rec(events);
+  expect(records.find(r => r.task === 3)!.edits).toMatchObject({ observability: "tree_only", editTool: null, shellRoute: null, unattributedTreeWrites: 2 });
+  const q = buildResearchQuality(records, events);
+  expect(q.fields["edits.editTool.total"]).toEqual({ n: 2, unknown: 1 });
+  expect(q.fields["edits.shellRoute.blockedByGuard"]).toEqual({ n: 2, unknown: 1 });
+  expect(q.fields["edits.observability"]).toEqual({ n: 2, unknown: 0 });
+  expect(q.fields["edits.editTool"]).toBeUndefined();
+});
+
+test("a write with an unavailable pre-image keeps its total but has unknown read grades", () => {
+  const record = rec(life(8, [turn(8, { edits: { obs: "hook", e: [2, 1, 0, 0, 0], s: [1, 0, 0, 0, 0] } })]))[0]!;
+  expect(record.edits?.editTool).toEqual({ total: 2, verifiedFullRead: null, partialReadOnly: null, blindOrStale: null, occRejected: 0 });
+  expect(record.edits?.shellRoute).toEqual({ total: 1, verifiedFullRead: null, partialReadOnly: null, blindOrStale: null, blockedByGuard: 0 });
+  const quality = buildResearchQuality([record], []);
+  expect(quality.fields["edits.editTool.verifiedFullRead"]).toEqual({ n: 1, unknown: 1 });
+});
+
+test("mixed tree-only and hook evidence never presents partial route counts as complete", () => {
+  const block = editGovernanceBlock([{ obs: "hook", e: [1, 1, 0, 0, 0] }, { obs: "tree", u: 2 }]);
+  expect(block.observability).toBe("unknown");
+  expect(block.editTool).toBeNull(); expect(block.shellRoute).toBeNull();
+  expect(block.unattributedTreeWrites).toBeNull();
+});
+
+test("a PII turn contributes nothing and live and backfill agree byte for byte", () => {
+  const events = life(5, [turn(5, { edits: { obs: "hook", e: [9, 9, 0, 0, 0] }, pii: true }), turn(5, { edits: { obs: "hook", e: [1, 0, 0, 1, 0] } })]);
+  const root = mkdtempSync(join(tmpdir(), "ahub-edit-fold-"));
+  try {
+    const file = join(root, "events.jsonl"); writeFileSync(file, events.map(event => JSON.stringify(event)).join("\n") + "\n");
+    const slice = new ResearchTail(file).events(5);
+    const live = taskRecords(slice.events, "p-1", { version: "test", source: "live" }, undefined, slice.start);
+    const backfill = rec(readEvents(file));
+    expect(JSON.stringify(live[0]!.edits)).toBe(JSON.stringify(backfill[0]!.edits));
+    expect(live[0]!.edits!.editTool!.total).toBe(1);
+    expect(editGovernanceBlock([{ obs: "hook", e: [1, 0, 0, 1, 0] }])).toEqual(live[0]!.edits!);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Facts counts hook writes per turn: a read-only turn has no edits, a mutating turn has bounded counts, takeEdits clears", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-editgov-"));
+  try {
+    writeFileSync(join(root, "a.txt"), "one\n"); writeFileSync(join(root, "b.txt"), "two\n");
+    const facts = new Facts({ root, tmp: join(root, ".t"), instance: "t", scope: () => ({ task: { id: 7 } }) as never, peers: () => ["codex"], nameable: () => true } as never);
+    facts.preTool("codex", "r0", "Read", { file_path: join(root, "a.txt") }); facts.postTool("codex", "r0", "Read", { file_path: join(root, "a.txt") });
+    expect(facts.takeEdits("codex")).toBeUndefined();
+    facts.preTool("codex", "w1", "Write", { file_path: join(root, "a.txt"), content: "x" }); writeFileSync(join(root, "a.txt"), "x");
+    facts.postTool("codex", "w1", "Write", { file_path: join(root, "a.txt"), content: "x" });
+    facts.preTool("codex", "w2", "Write", { file_path: join(root, "b.txt"), content: "y" }); writeFileSync(join(root, "b.txt"), "y");
+    facts.postTool("codex", "w2", "Write", { file_path: join(root, "b.txt"), content: "y" });
+    facts.preTool("codex", "b1", "Bash", { command: "sed -i s/x/z/ a.txt" }); writeFileSync(join(root, "a.txt"), "z"); facts.postTool("codex", "b1", "Bash", { command: "sed -i s/x/z/ a.txt" });
+    const t = facts.takeEdits("codex")!;
+    expect(t).toEqual({ obs: "hook", e: [2, 1, 0, 1, 0], s: [1, 0, 0, 1, 0] });
+    expect(facts.takeEdits("codex")).toBeUndefined();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("no-op hook calls do not report edits and a verified Codex patch reports stream evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-edit-stream-"));
+  try {
+    const file = join(root, "a.txt"); writeFileSync(file, "one\ntwo\n");
+    const facts = new Facts({ root, tmp: join(root, ".t"), instance: "t", scope: () => ({ task: { id: 7 } }) as never, peers: () => ["codex"], nameable: () => true } as never);
+    const edit = { file_path: file, content: "one\ntwo\n" };
+    facts.preTool("codex", "e", "Write", edit); facts.postTool("codex", "e", "Write", edit);
+    const shell = { command: "sed -i s/none/z/ a.txt" };
+    facts.preTool("codex", "s", "Bash", shell); facts.postTool("codex", "s", "Bash", shell);
+    expect(facts.takeEdits("codex")).toBeUndefined();
+    writeFileSync(file, "one\nTWO\n");
+    facts.codexItem("codex", { type: "fileChange", status: "completed", changes: [{ path: file, kind: { type: "update" }, diff: "@@ -1,2 +1,2 @@\n one\n-two\n+TWO" }] });
+    expect(facts.takeEdits("codex")).toEqual({ obs: "stream", e: [1, 0, 0, 1, 0] });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a Codex stream patch and shell modification leave the unobserved shell route unknown", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-edit-shell-"));
+  try {
+    const file = join(root, "a.txt"); writeFileSync(file, "one\ntwo\n");
+    const facts = new Facts({ root, tmp: join(root, ".t"), instance: "t", scope: () => ({ task: { id: 7 } }) as never, peers: () => ["codex"], nameable: () => true } as never);
+    facts.preTool("codex", "r", "Read", { file_path: file });
+    writeFileSync(file, "one\nTWO\n");
+    facts.codexItem("codex", { type: "fileChange", status: "completed", changes: [{ path: file, kind: { type: "update" }, diff: "@@ -1,2 +1,2 @@\n one\n-two\n+TWO" }] });
+    writeFileSync(file, "shell modification\n");
+    facts.codexItem("codex", { type: "commandExecution", status: "completed", commandActions: [{ type: "unknown", command: "sed -i s/TWO/shell/ a.txt" }] });
+    const edits = facts.takeEdits("codex")!;
+    expect(edits.obs).toBe("stream"); expect(edits.e?.[0]).toBe(1);
+    const record = rec(life(9, [turn(9, { edits })]))[0]!;
+    expect(record.edits?.shellRoute).toBeNull();
+    expect(buildResearchQuality([record], []).fields["edits.shellRoute.total"]).toEqual({ n: 1, unknown: 1 });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a write with a large unreadable pre-image has an unknown grade even without a receipt", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-edit-large-"));
+  try {
+    const file = join(root, "large.txt"); writeFileSync(file, "x".repeat(256 * 1024 + 1));
+    const facts = new Facts({ root, tmp: join(root, ".t"), instance: "t", scope: () => ({ task: { id: 7 } }) as never, peers: () => ["codex"], nameable: () => true } as never);
+    const input = { file_path: file, content: "replacement" };
+    facts.preTool("codex", "w", "Write", input); writeFileSync(file, input.content); facts.postTool("codex", "w", "Write", input);
+    const edits = facts.takeEdits("codex")!;
+    expect(edits.e).toEqual([1, 0, 0, 0, 0]);
+    const record = rec(life(10, [turn(10, { edits })]))[0]!;
+    expect(record.edits?.editTool).toMatchObject({ total: 1, blindOrStale: null, verifiedFullRead: null, partialReadOnly: null });
+    expect(buildResearchQuality([record], []).fields["edits.editTool.blindOrStale"]).toEqual({ n: 1, unknown: 1 });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

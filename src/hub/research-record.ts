@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import type { TurnEdits } from "./events.ts";
 import { join } from "node:path";
 import type { MemoryFigures } from "./research-memory.ts";
 import type { PersonFigures } from "./person-figures.ts";
@@ -57,6 +58,40 @@ export interface MemoryBlock {
 /** #1278: what the person was asked and did for the task (docs/research.md); every part is null when the log does not cover the task, never 0. Shape and rules: `src/hub/person-figures.ts`. */
 export type PersonBlock = PersonFigures;
 export interface HandoffsBlock { in: number | null; out: number | null }
+/**
+ * #1556 T2: edit governance figures folded from `turn_end.edits` (counts only, never a path, command or text). `editTool` and `shellRoute` are null, never 0, when no hook or stream saw the
+ * task's tool calls (`tree_only`) or the log holds no edit evidence (`unknown`); `unattributedTreeWrites` counts files the tree changed that no hook or stream attributed.
+ */
+export const EDIT_OBSERVABILITY = ["hook_and_tree", "stream_and_tree", "tree_only", "unknown"] as const;
+export const EDIT_POLICY_ARMS = ["baseline", "soft_guidance", "route_guard", "occ_guard", "combined_guard", "shadow", "unknown"] as const;
+export interface EditToolCounts { total: number; verifiedFullRead: number | null; partialReadOnly: number | null; blindOrStale: number | null; occRejected: number }
+export interface ShellRouteCounts { total: number; verifiedFullRead: number | null; partialReadOnly: number | null; blindOrStale: number | null; blockedByGuard: number }
+export interface EditGovernanceBlock {
+  observability: (typeof EDIT_OBSERVABILITY)[number]; policyArm: (typeof EDIT_POLICY_ARMS)[number];
+  editTool: EditToolCounts | null; shellRoute: ShellRouteCounts | null; unattributedTreeWrites: number | null;
+  postEdit: { editsWhileCheckFailing: number | null; revertedWrites: number | null };
+}
+/** The block for a task from its attributed turns' `edits` (already validated by `turnEdits`); undefined or empty evidence is the all-unknown block. Pure, shared by the live writer and backfill. */
+export function editGovernanceBlock(turns: readonly TurnEdits[] | undefined): EditGovernanceBlock {
+  const list = turns ?? [];
+  const kinds = new Set(list.map(t => t.obs));
+  const observability = kinds.size !== 1 ? "unknown" : kinds.has("hook") ? "hook_and_tree" : kinds.has("stream") ? "stream_and_tree" : "tree_only";
+  const sum = (pick: (t: TurnEdits) => number | undefined): number | null => { let n: number | null = null; for (const t of list) { const v = pick(t); if (v === undefined) return null; n = (n ?? 0) + v; } return n; };
+  const counts = (key: "e" | "s") => { const c = [0, 0, 0, 0, 0]; for (const t of list) { const v = t[key]; if (v) for (let i = 0; i < 5; i++) c[i]! += v[i]!; } return c as [number, number, number, number, number]; };
+  const seen = observability === "hook_and_tree" || observability === "stream_and_tree";
+  const [et, ef, ep, eb, eo] = counts("e"), [st, sf, sp, sb, sg] = counts("s");
+  // An observed write with an unavailable pre-image contributes to the total, but cannot prove any read grade.
+  const editGradesKnown = list.every(t => !t.e || t.e[0] === t.e[1] + t.e[2] + t.e[3]);
+  const shellGradesKnown = list.every(t => !t.s || t.s[0] === t.s[1] + t.s[2] + t.s[3]);
+  const arm = list.findLast(t => t.arm !== undefined)?.arm;
+  return {
+    observability, policyArm: arm ?? "unknown",
+    editTool: seen ? { total: et, verifiedFullRead: editGradesKnown ? ef : null, partialReadOnly: editGradesKnown ? ep : null, blindOrStale: editGradesKnown ? eb : null, occRejected: eo } : null,
+    shellRoute: observability === "hook_and_tree" ? { total: st, verifiedFullRead: shellGradesKnown ? sf : null, partialReadOnly: shellGradesKnown ? sp : null, blindOrStale: shellGradesKnown ? sb : null, blockedByGuard: sg } : null,
+    unattributedTreeWrites: sum(t => t.u),
+    postEdit: { editsWhileCheckFailing: sum(t => t.fe), revertedWrites: sum(t => t.rev) },
+  };
+}
 export type CohortKind = "silent" | "advisory" | "none";
 export const CANCEL_CAUSES = ["cancelled", "declined", "escalated", "stale", "unknown"] as const;
 export type CancelCause = (typeof CANCEL_CAUSES)[number];
