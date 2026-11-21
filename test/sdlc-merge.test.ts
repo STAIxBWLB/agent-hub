@@ -578,3 +578,13 @@ test("the control op always replies: a bad id, a missing task, an off repository
     expect(await client.request({ t: "sdlc", op: "merge", id: made.id, dryRun: true })).toMatchObject({ ok: true, mode: "dry-run", ran: false, decision: "refused" });
   } finally { client?.close(); await daemon?.stop(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a draft-approved head cannot merge before ready or while the connector review is pending", async () => {
+  const world = { 1: pr({ draft: true, requests: 1, review: "APPROVED" }) };
+  const i = input(world, [task(1, 1)]);
+  expect(await refusals(i)).toEqual(expect.arrayContaining(["draft (or draft status unknown)", "1 review request pending"]));
+  world[1].draft = false;
+  expect(await refusals(i)).toContain("1 review request pending");
+  world[1].requests = 0;
+  expect(await decideMerge(i.args)).toMatchObject({ action: "merge" });
+});

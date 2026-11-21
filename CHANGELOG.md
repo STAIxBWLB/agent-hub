@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Add descriptive edit-governance factorial, sensitivity and evidenced cost-per-success helpers (Refs #1556, hub task 1008).
+- Admit a verified draft head to review before macOS runs, while preserving the full exact-head merge gate (Refs #1576, hub task 1031).
 
 - Add opt-in edit route and read-receipt guards for hub-owned tools, plus edit supervision observations (Refs #1556, hub task 1007).
 

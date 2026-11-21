@@ -635,6 +635,8 @@ export function requiredCiBlocker(required: readonly string[], checks: PrEvidenc
 /** A complete resolved-thread snapshot already proves there is no pending unanswered bot thread. */
 export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, expected: string | undefined, required: readonly string[], repository?: string): ReviewReadiness | undefined {
   if (!evidence || evidence.unresolved !== 0) return undefined;
+  // A draft's failed aggregate needs job-step evidence, which this compact snapshot does not carry.
+  if (evidence.draft === true && evidence.checks.some(check => check.name === "check (macos-latest)" && check.state === "failed")) return undefined;
   const checks = requiredCheckNames(repository, required);
   if (!checks.length) return { ready: false, blockers: ["required checks unknown: set required_checks in .agenthub/sdlc.toml"], checks };
   if (!checks.every(name => evidence.checks.some(check => check.name === name)) || evidence.checks.some(check => check.state === "unknown")) return undefined;
@@ -648,7 +650,30 @@ export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, ex
 }
 
 /** `checks` (#824) names the required checks that were judged, so a fresh reviewer can be told which ones passed at this head; absent when the read was unknown. */
-export interface ReviewReadiness { head?: string; ready: boolean; blockers: string[]; reusedRun?: number; checks?: string[] }
+export interface ReviewReadiness { head?: string; ready: boolean; blockers: string[]; reusedRun?: number; checks?: string[]; deferred?: string[]; draftApprovalEligible?: boolean }
+
+/** Only this repository's actual draft-deferral step can explain its failed macOS aggregate. */
+async function draftMacosDeferred(repository: string, head: string, node: any, run: SdlcGh): Promise<boolean> {
+  if (repository.toLowerCase() !== "staixbwlb/agent-hub" || node?.name !== "check (macos-latest)"
+    || node.status !== "COMPLETED" || node.conclusion !== "FAILURE"
+    || node.checkSuite?.workflowRun?.workflow?.resourcePath !== "/STAIxBWLB/agent-hub/actions/workflows/check.yml") return false;
+  const url = typeof node.detailsUrl === "string" ? node.detailsUrl : "";
+  const match = /^https:\/\/github\.com\/STAIxBWLB\/agent-hub\/actions\/runs\/(\d+)\/job\/(\d+)$/.exec(url);
+  if (!match) return false;
+  const result = await run(["api", `repos/${repository}/actions/jobs/${match[2]}`], 10_000, undefined, 64 * 1024);
+  if (result.code !== 0 || Buffer.byteLength(result.stdout) > 64 * 1024) return false;
+  try {
+    const job = JSON.parse(result.stdout), steps = job.steps;
+    if (String(job.id) !== match[2] || String(job.run_id) !== match[1] || job.head_sha !== head
+      || job.name !== node.name || job.status !== "completed" || job.conclusion !== "failure" || !Array.isArray(steps)) return false;
+    const deferred = steps.filter((step: any) => step?.name === "macOS shards deferred for a draft PR");
+    const stacked = steps.filter((step: any) => step?.name === "macOS shards deferred for a stacked PR");
+    return deferred.length === 1 && deferred[0].status === "completed" && deferred[0].conclusion === "failure"
+      && stacked.length === 1 && stacked[0].conclusion === "skipped"
+      && steps.filter((step: any) => step?.conclusion === "failure").length === 1
+      && steps.every((step: any) => step?.status === "completed" && ["success", "skipped", "failure"].includes(step.conclusion));
+  } catch { return false; }
+}
 /** Metadata-only pre-review admission; no remote body or comment text is requested. */
 export async function readReviewReadiness(receipt: SdlcReceipt, expected: string | undefined, run: SdlcGh = sdlcGh, requiredChecks: readonly string[] = []): Promise<ReviewReadiness> {
   const unknown = (): ReviewReadiness => ({ ready: false, blockers: ["review readiness unavailable"] });
@@ -656,7 +681,7 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
   const full = requiredCheckNames(receipt.repo, requiredChecks);
   if (!full.length) return { ready: false, blockers: ["required checks unknown: set required_checks in .agenthub/sdlc.toml"], checks: full };
   const [owner, name] = receipt.repo.split("/");
-  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state commits(last:1){nodes{commit{oid tree{oid} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion startedAt checkSuite{workflowRun{workflow{resourcePath}}}} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}} reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{author{__typename} createdAt} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}";
+  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state isDraft reviewDecision reviewRequests(first:100){nodes{__typename} pageInfo{hasNextPage}} commits(last:1){nodes{commit{oid tree{oid} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion startedAt detailsUrl checkSuite{workflowRun{workflow{resourcePath}}}} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}} reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{author{__typename} createdAt} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}";
   try {
     const deadline = performance.now() + 20_000;
     const bounded: SdlcGh = (args, timeout, cwd, cap) => performance.now() < deadline
@@ -689,6 +714,25 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
     }) : [];
     const ciBlocker = requiredCiBlocker(full, checkEvidence, completeChecks);
     if (ciBlocker) blockers.push(ciBlocker);
+    let deferred: string[] | undefined;
+    const mac = "check (macos-latest)";
+    const macNodes = requiredNodes.filter(node => (node as { name?: unknown })?.name === mac);
+    if (pr.isDraft === true && !blockers.some(blocker => blocker !== ciBlocker) && ciBlocker
+      && [mac, "check (ubuntu-latest)", "seeded guards"].every(name => full.includes(name)) && macNodes.length === 1
+      && !requiredCiBlocker(full.filter(name => name !== mac), checkEvidence, completeChecks)
+      && checkEvidence.filter(check => check.name === mac).length === 1
+      && checkEvidence.find(check => check.name === mac)?.state === "failed"
+      && await draftMacosDeferred(receipt.repo, pr.headRefOid, macNodes[0], bounded)) {
+      // The proof is fetched separately; the PR may have changed while it was read.
+      const after = await bounded(args, 10_000, undefined, 512 * 1024);
+      try {
+        const refreshed = JSON.parse(after.stdout);
+        if (after.code === 0 && !refreshed.errors && JSON.stringify(refreshed.data?.repository?.pullRequest) === JSON.stringify(pr)) {
+          blockers.splice(blockers.indexOf(ciBlocker), 1);
+          deferred = [mac];
+        }
+      } catch { /* Incomplete evidence never admits review. */ }
+    }
     if (ciBlocker && contexts?.pageInfo?.hasNextPage === false && Array.isArray(nodes)
       && full.every(name => { const matches = (nodes as { name?: string; conclusion?: string }[]).filter(node => node?.name === name); return matches.length === 1 && matches[0]?.conclusion === "SKIPPED"; }) && sha(commit?.tree?.oid)) {
       reusedRun = await identicalTreeGate(receipt.repo, commit.tree.oid, bounded, full);
@@ -719,7 +763,12 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
       }
       if (unanswered) blockers.push("bot review threads unanswered");
     }
-    return { head: pr.headRefOid, ready: blockers.length === 0, blockers: [...new Set(blockers)], checks: [...full], ...(reusedRun !== undefined ? { reusedRun } : {}) };
+    const requests = pr.reviewRequests;
+    const draftApprovalEligible = !!deferred && Object.hasOwn(pr, "reviewDecision")
+      && [null, "APPROVED", "REVIEW_REQUIRED"].includes(pr.reviewDecision)
+      && requests?.pageInfo?.hasNextPage === false && parsePrEvidence({ headRefOid: pr.headRefOid, state: pr.state, files: [], statusCheckRollup: [], reviewRequests: requests.nodes }).pendingReviews !== null
+      && threads?.pageInfo?.hasNextPage === false && Array.isArray(threads.nodes) && threads.nodes.every((thread: { isResolved?: unknown }) => thread?.isResolved === true);
+    return { head: pr.headRefOid, ready: blockers.length === 0, blockers: [...new Set(blockers)], checks: full.filter(name => !deferred?.includes(name)), ...(deferred ? { deferred, draftApprovalEligible } : {}), ...(reusedRun !== undefined ? { reusedRun } : {}) };
   } catch { return unknown(); }
 }
 
