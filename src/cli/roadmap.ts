@@ -10,7 +10,7 @@ export const ROADMAP_FORMS = {
   order: "order <id> <n>", state: "state <id> <proposed|planned|active|done|dropped>",
   unplaced: "unplaced [--repo <owner/name>] [--json]",
   triage: "triage [--repo <owner/name>] [--list] [--json]",
-  decompose: "decompose <id> [--json]",
+  decompose: "decompose <id> [--accept <part>] [--json]",
   accept: "accept <suggestion>", reject: "reject <suggestion>",
   importGithub: "import-github [--repo <owner/name>] [--apply] [--json]",
   check: "check [--json]", sync: "sync [--apply --confirm <fingerprint>] [--json]",
@@ -51,13 +51,19 @@ function integer(value: string | undefined, zero = false): number {
 }
 
 function parseR3(command: string, rest: readonly string[], jsonSeen: boolean): RoadmapArgs {
-  let json = jsonSeen, list = false, apply = false, repo: string | undefined;
+  let json = jsonSeen, list = false, apply = false, repo: string | undefined, accept: number | undefined;
   const operands: string[] = [];
   for (let at = 0; at < rest.length; at++) {
     const word = rest[at]!;
     if (word === "--json") { if (json) return usage("duplicate roadmap --json flag"); json = true; continue; }
     if (word === "--list" && command === "triage") { if (list) return usage("duplicate roadmap --list flag"); list = true; continue; }
     if (word === "--apply" && command === "import-github") { if (apply) return usage("duplicate roadmap --apply flag"); apply = true; continue; }
+    if ((word === "--accept" || word.startsWith("--accept=")) && command === "decompose") {
+      if (accept !== undefined) return usage("duplicate roadmap --accept option");
+      const value = word === "--accept" ? rest[++at] : word.slice("--accept=".length);
+      accept = integer(value);
+      continue;
+    }
     if ((word === "--repo" || word.startsWith("--repo=")) && ["unplaced", "triage", "import-github"].includes(command)) {
       if (repo !== undefined) return usage("duplicate roadmap --repo option");
       const value = word === "--repo" ? rest[++at] : word.slice("--repo=".length);
@@ -75,7 +81,7 @@ function parseR3(command: string, rest: readonly string[], jsonSeen: boolean): R
   }
   if (command === "decompose") {
     if (operands.length !== 1) return usage("roadmap decompose needs one milestone id");
-    return { op: "hub_roadmap_decompose", args: { id: integer(operands[0]) }, json };
+    return { op: "hub_roadmap_decompose", args: { id: integer(operands[0]), ...(accept === undefined ? {} : { accept }) }, json };
   }
   if (operands.length) return usage(`roadmap ${command} takes no operands`);
   const base = repo === undefined ? {} : { repo };
@@ -224,6 +230,14 @@ export function renderRoadmap(input: unknown, width = 80): string {
     add(`Specs (${view.specs.length}${Number(row(view.more).specs) > 0 ? `, ${count(row(view.more).specs)} more` : ""})`);
     names(view.specs, spec => `  ${text(spec.id)}: ${text(spec.title)} (${text(spec.status)})\n    why: ${text(spec.reason)}`);
     add(`Private tasks counted, not listed: ${count(view.privateTasks)}`);
+    return lines.join("\n");
+  }
+  if (typeof view.part === "number" && typeof view.milestone === "number" && view.task !== undefined && view.task !== null) {
+    const task = row(view.task), draft = count(task.id);
+    add(`Milestone ${count(view.milestone)} part ${count(view.part)}: ${view.created === true ? "held as intake draft" : "already held as intake draft"} ${draft}`);
+    add(`  ${text(task.title)} (${text(task.state)})`);
+    add(`  ${view.intake === "spec" ? "It needs its own spec issue before implementation." : "It goes straight to a task."}`);
+    add(`  Nothing offers it until the hold is released: ahub intake approve ${draft}`);
     return lines.join("\n");
   }
   if (Array.isArray(view.parts) && typeof view.milestone === "number") {

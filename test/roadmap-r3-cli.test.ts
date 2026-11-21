@@ -11,6 +11,8 @@ test("unplaced, triage, decompose, accept, reject and import-github parse to the
   expect(parseRoadmapArgs(["triage", "--list", "--repo", "o/r"]).args).toEqual({ repo: "o/r", list: true });
   expect(parseRoadmapArgs(["decompose", "4"])).toEqual({ op: "hub_roadmap_decompose", args: { id: 4 }, json: false });
   expect(parseRoadmapArgs(["--json", "decompose", "4"])).toEqual({ op: "hub_roadmap_decompose", args: { id: 4 }, json: true });
+  expect(parseRoadmapArgs(["decompose", "4", "--accept", "2"])).toEqual({ op: "hub_roadmap_decompose", args: { id: 4, accept: 2 }, json: false });
+  expect(parseRoadmapArgs(["--json", "decompose", "4", "--accept=3"]).args).toEqual({ id: 4, accept: 3 });
   expect(parseRoadmapArgs(["accept", "12"])).toEqual({ op: "hub_roadmap_edit", args: { op: "accept", suggestion: 12 }, json: false });
   expect(parseRoadmapArgs(["reject", "3"]).args).toEqual({ op: "reject", suggestion: 3 });
   expect(parseRoadmapArgs(["import-github"])).toEqual({ op: "roadmap_import_github", args: {}, json: false });
@@ -23,6 +25,7 @@ test("the new commands refuse unknown, duplicate, misplaced and malformed input 
     ["unplaced", "--apply"], ["unplaced", "--list"], ["unplaced", "--json", "--json"],
     ["triage", "--apply"], ["triage", "--list", "--list"], ["triage", "7"],
     ["decompose"], ["decompose", "0"], ["decompose", "01"], ["decompose", "x"], ["decompose", "1", "2"], ["decompose", "--repo", "o/r"], ["decompose", "1", "--list"],
+    ["decompose", "1", "--accept"], ["decompose", "1", "--accept", "0"], ["decompose", "1", "--accept", "x"], ["decompose", "1", "--accept", "2", "--accept", "3"], ["triage", "--accept", "2"],
     ["accept"], ["accept", "0"], ["accept", "01"], ["accept", "x"], ["accept", "1", "2"], ["accept", "1", "--json"], ["accept", "--repo", "o/r"],
     ["reject"], ["reject", "-1"], ["reject", "1", "--list"],
     ["import-github", "--list"], ["import-github", "--apply", "--apply"], ["import-github", "2"], ["import-github", "--unknown"],
@@ -97,6 +100,22 @@ test("decompose renders each part with its intake decision, its cites and the pe
   expect(renderRoadmap(payload).split("\n").every(line => Bun.stringWidth(line) <= 80)).toBe(true);
   expect(renderRoadmap({ milestone: 4, dropped: 0, saved: null, unavailable: "the milestone links no spec or issue to decompose from", parts: [] }))
     .toContain("Decompose unavailable: the milestone links no spec or issue to decompose from");
+});
+
+test("an accepted part renders its draft, the part's kind and the release command, and never repeats a redacted title (AC2)", () => {
+  const accepted = { milestone: 4, part: 2, intake: "task", created: true, task: { id: 41, title: "Drop the legacy flag", state: "backlog", draft: true } };
+  const out = renderRoadmap(accepted, 200);
+  expect(out).toContain("Milestone 4 part 2: held as intake draft 41");
+  expect(out).toContain("Drop the legacy flag (backlog)");
+  expect(out).toContain("It goes straight to a task.");
+  expect(out).toContain("Nothing offers it until the hold is released: ahub intake approve 41");
+  expect(renderRoadmap({ ...accepted, part: 1, intake: "spec", created: false })).toContain("already held as intake draft 41");
+  expect(renderRoadmap({ ...accepted, part: 1, intake: "spec", created: false })).toContain("It needs its own spec issue before implementation.");
+  // The hub returns the public view, so a private part arrives already redacted and the renderer repeats only that.
+  const privateOut = renderRoadmap({ ...accepted, task: { id: 42, title: "[pii]", state: "backlog" } }, 200);
+  expect(privateOut).toContain("[pii]");
+  expect(privateOut).not.toContain("legacy");
+  expect(renderRoadmap(accepted).split("\n").every(line => Bun.stringWidth(line) <= 80)).toBe(true);
 });
 
 test("import-github renders a dry run with how to apply, and an applied run with counts and withheld milestones", () => {

@@ -175,11 +175,27 @@ shown; the answer is capped at eight parts and a repeated title is dropped. `int
 or `task`. Each kept part is screened again at the write and stored as a pending row of `milestone_decompositions`, attributed to
 `hub` as a model's answer. One pending row per milestone, so a newer run supersedes the older one in the same transaction, and
 settled rows keep the newest 200. An answer that cites nothing it was shown saves nothing and is reported in `dropped`. No model,
-a dead one, or a milestone that links nothing to decompose from reports `unavailable`, never a silent empty result. No other path
-reads the table: accepting a part is R2 part 2 and the GitHub write is part 3.
+a dead one, or a milestone that links nothing to decompose from reports `unavailable`, never a silent empty result.
+
+**Held intake draft.** `ahub roadmap decompose <id> --accept <part>` and `hub_roadmap_decompose {id, accept}` (the same configured
+planner or unique conductor, refused during a PII or private turn) accept one part of the pending answer, named by the 1-based
+position the proposal printed. Accepting creates the existing intake hold rather than a new board state: a backlog task with
+`draft`, so nothing offers, pulls or routes it, and the draft's text carries the part's `spec`/`task` kind and the milestone id a
+person reads before releasing it. The draft is linked to the milestone as a `task` link, and every board write goes through
+`Tasks`. `milestone_decomposition_accepts` keys each accepted part by its answer row and position, so accepting the same part
+twice returns the draft the first accept made and the board gains no row; a superseded answer is not pending, so an accept cannot
+land on it. An accept needs a pending answer and a part inside it, both refused before any write, and a milestone settled to
+`done` or `dropped` while the answer waits refuses there too. One accept of a part runs at a time, so two concurrent accepts of
+the same part make one draft and read the same task, and once the draft is saved the accept record, the link and the notice are
+best-effort: the caller is never refused after a board write, and a retry records a link an interrupted tail lost. Release stays
+the existing `ahub intake approve` by the person or the conductor acting for them, so no part reaches a peer before that approval
+and this command grants no release authority of its own. The reply and its notice carry the draft's id and the part's kind only:
+the result is a public view, so a part whose draft carries a PII signal reads `[withheld]` and no stored text is repeated. The
+GitHub write is part 3.
 
 `milestone_decompositions` is additive and outside the roadmap integrity digest like a suggestion: a lost answer is asked for
-again, and no recovery format changes.
+again, and no recovery format changes. `milestone_decomposition_accepts` is additive the same way: a lost accept row files the
+part again as a second draft rather than breaking a read.
 
 ## Bottom-up placement (R3)
 
