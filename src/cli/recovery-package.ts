@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { hubHome, realPath } from "../hub/project.ts";
 import { Registry } from "../hub/registry.ts";
+import { agentMemVersionInRange } from "../hub/agent-mem-range.ts";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
 export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string; pipeExitGraceMs?: number }) => Promise<CommandResult>;
@@ -48,8 +49,10 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const deps = pkg.dependencies ?? {};
   if (!Object.keys(deps).length) return undefined;
-  const version = deps["@staix/agent-mem"];
-  if (Object.keys(deps).length !== 1 || typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) throw new Error("unsupported runtime dependencies in recovery package");
+  const declared = deps["@staix/agent-mem"];
+  // #1605: a current package declares the patch range `~X.Y.Z`. A package staged before the range keeps its exact
+  // declaration, so a cached release still verifies; compound ranges, `^`, `*` and prereleases stay refused.
+  if (Object.keys(deps).length !== 1 || typeof declared !== "string" || !/^~?\d+\.\d+\.\d+$/.test(declared)) throw new Error("unsupported runtime dependencies in recovery package");
   let dir = dependencyRoot ? join(dependencyRoot, "node_modules/@staix/agent-mem")
     : dirname(createRequire(join(root, "package.json")).resolve("@staix/agent-mem"));
   if (dependencyRoot && !existsSync(dir)) throw new Error("memory runtime dependency is unavailable");
@@ -61,7 +64,9 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
     if (existsSync(manifest)) {
       const memory = JSON.parse(readFileSync(manifest, "utf8"));
       if (memory.name === "@staix/agent-mem") {
-        if (memory.version !== version || Object.keys(memory.dependencies ?? {}).length) throw new Error("memory runtime dependency identity/version mismatch");
+        const installed = typeof memory.version === "string" ? memory.version : "";
+        const accepted = declared.startsWith("~") ? agentMemVersionInRange(installed, declared) : installed === declared;
+        if (!accepted || Object.keys(memory.dependencies ?? {}).length) throw new Error("memory runtime dependency identity/version mismatch");
         return realPath(dir);
       }
     }

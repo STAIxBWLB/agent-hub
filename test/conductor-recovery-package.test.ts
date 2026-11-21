@@ -6,11 +6,13 @@ import { packageDigest, preserveRuntimeDependencies, recoveryPackageOptions, rec
 import { realPath } from "../src/hub/project.ts";
 
 const roots: string[] = [], version = "0.0.1", integrity = "sha512-fixture";
-const memoryVersion: string = JSON.parse(readFileSync(resolve(import.meta.dir, "../package.json"), "utf8")).dependencies["@staix/agent-mem"];
+// #1605: the package declares a patch range; the fixture's installed copy is its floor, a plain release inside it.
+const memoryRange: string = JSON.parse(readFileSync(resolve(import.meta.dir, "../package.json"), "utf8")).dependencies["@staix/agent-mem"];
+const memoryVersion = memoryRange.slice(1);
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function app(root: string): void {
   for (const folder of ["src/cli", "plugins/agent-hub/.claude-plugin", "templates", ".claude-plugin"]) mkdirSync(join(root, folder), { recursive: true });
-  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version, dependencies: { "@staix/agent-mem": memoryVersion } }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version, dependencies: { "@staix/agent-mem": memoryRange } }));
   writeFileSync(join(root, "src/cli/main.js"), "// fixture runtime only\n");
   writeFileSync(join(root, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version }));
 }
@@ -37,7 +39,7 @@ function fixture() {
 
 test("a real staged upgrade shape verifies its hoisted first-party runtime with the stageRelease digest", async () => {
   const f = fixture(), staged = await f.stage(), release = join(f.home, "releases", version);
-  expect(JSON.parse(readFileSync(join(f.source, "package.json"), "utf8")).dependencies).toEqual({ "@staix/agent-mem": memoryVersion });
+  expect(JSON.parse(readFileSync(join(f.source, "package.json"), "utf8")).dependencies).toEqual({ "@staix/agent-mem": memoryRange });
   expect(recoveryPackageOptions("upgrade", staged.root)).toEqual({ dependencyRoot: release });
   expect(recoveryTargetDigest("upgrade", staged.root)).toBe(staged.digest);
   expect(verifyRecoveryTarget("upgrade", staged.root, version)).toBe(staged.digest);
@@ -55,6 +57,21 @@ test("a missing or wrong-version hoisted dependency cannot pass target verificat
     expect(() => recoveryTargetDigest("upgrade", staged.root)).toThrow();
     expect(() => verifyRecoveryTarget("upgrade", staged.root, version)).toThrow();
   }
+});
+
+test("#1605 the recovery package accepts a plain release anywhere inside the declared range and refuses one outside it", async () => {
+  const f = fixture(), staged = await f.stage(), memory = join(f.home, "releases", version, "node_modules/@staix/agent-mem");
+  const [major, minor, patch] = memoryVersion.split(".").map(Number) as [number, number, number];
+  writeFileSync(join(memory, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: `${major}.${minor}.${patch + 1}`, exports: "./src/index.ts" }));
+  expect(verifyRecoveryTarget("upgrade", staged.root, version)).toBeTypeOf("string");
+  writeFileSync(join(memory, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: `${major}.${minor + 1}.0`, exports: "./src/index.ts" }));
+  expect(() => verifyRecoveryTarget("upgrade", staged.root, version)).toThrow("identity/version mismatch");
+});
+
+test("#1605 a release staged before the range keeps verifying its exact declaration", async () => {
+  const f = fixture(), staged = await f.stage();
+  writeFileSync(join(f.source, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version, dependencies: { "@staix/agent-mem": memoryVersion } }));
+  expect(verifyRecoveryTarget("restart", f.source, version)).toBeTypeOf("string");
 });
 
 test("tampering hoisted runtime bytes changes the target binding and refuses the cached release", async () => {

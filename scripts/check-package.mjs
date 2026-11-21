@@ -3,13 +3,15 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { packEntry } from './lib/npm-pack-shape.mjs';
+import { isAgentMemPatchRange } from './lib/agent-mem-range.mjs';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 assert.equal(manifest.name, '@staix/agent-hub');
 assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ['@staix/agent-mem'], 'Only the first-party memory core may be a runtime dependency');
-assert.match(manifest.dependencies['@staix/agent-mem'], /^\d+\.\d+\.\d+$/, 'The memory core must use an exact published version');
+const memoryCore = manifest.dependencies?.['@staix/agent-mem'];
+assert(isAgentMemPatchRange(memoryCore), `The memory core must declare a patch range such as ~0.32.1, not ${JSON.stringify(memoryCore)}: a plain patch inside the range ships without a hub release, and a new minor needs a reviewed raise`);
 assert.notEqual(manifest.private, true);
 assert.equal(manifest.publishConfig?.access, 'public');
 assert.deepEqual(Object.keys(manifest.exports ?? {}).sort(), ['./adapter', './conformance', './ui-plugin'], 'Only the reviewed adapter, conformance and acon plugin entry points may be public');

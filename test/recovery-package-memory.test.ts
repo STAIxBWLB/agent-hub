@@ -54,11 +54,21 @@ test("recovery refuses mismatched, ranged, transitive and symlinked memory runti
   writeFileSync(manifest, JSON.stringify({ ...original, dependencies: { unexpected: "1.0.0" } }));
   expect(() => packageDigest(f.root)).toThrow("identity/version mismatch");
   writeFileSync(manifest, JSON.stringify(original));
-  writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { "@staix/agent-mem": `^${hubPackage.dependencies["@staix/agent-mem"]}` } }));
+  writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { "@staix/agent-mem": `>=${hubPackage.dependencies["@staix/agent-mem"].slice(1)}` } }));
   expect(() => packageDigest(f.root)).toThrow("unsupported runtime dependencies");
   writeFileSync(join(f.root, "package.json"), JSON.stringify(f.manifest));
   symlinkSync("index.ts", join(f.dependency, "src/linked.ts"));
   expect(() => packageDigest(f.root)).toThrow("must not contain symlinks");
+});
+
+test("#1605 a range declaration accepts a plain release inside it and refuses one outside it", () => {
+  const floor = hubPackage.dependencies["@staix/agent-mem"].slice(1), [major, minor, patch] = floor.split(".").map(Number) as [number, number, number];
+  const inside = fixture(), insideManifest = join(inside.dependency, "package.json"), published = JSON.parse(readFileSync(insideManifest, "utf8"));
+  writeFileSync(insideManifest, JSON.stringify({ ...published, version: `${major}.${minor}.${patch + 1}` }));
+  expect(packageDigest(inside.root)).toBeTypeOf("string");
+  const outside = fixture(), outsideManifest = join(outside.dependency, "package.json");
+  writeFileSync(outsideManifest, JSON.stringify({ ...published, version: `${major}.${minor + 1}.0` }));
+  expect(() => packageDigest(outside.root)).toThrow("identity/version mismatch");
 });
 
 test("legacy dependency-free recovery keeps its historical digest (#412)", () => {

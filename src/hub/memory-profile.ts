@@ -6,9 +6,7 @@ import {
   resolveShardProfile, shardKeyHash,
   type BoundProfile, type ProfileInput, type StoreOptions,
 } from "@staix/agent-mem";
-import packageJson from "../../package.json";
-
-const EXPECTED_AGENT_MEM_VERSION = packageJson.dependencies["@staix/agent-mem"];
+import { AGENT_MEM_RANGE, agentMemVersionInRange } from "./agent-mem-range.ts";
 
 /**
  * Whether a curated store directory holds a derived index. agent-mem names the file per index version (`index.db` through 0.24.0, `index-v4.db` from 0.25.0, a later release its own), and
@@ -18,15 +16,14 @@ export function memoryIndexExists(memoryDir: string): boolean {
   try { return readdirSync(memoryDir).some(name => /^index(-v\d+)?\.db$/.test(name)); } catch { return false; }
 }
 
-/** Validate metadata located through the actual imported entry, never the hub pin alone. */
-export function assertAgentMemVersion(metadata: unknown, expectedVersion = EXPECTED_AGENT_MEM_VERSION): string {
-  if (!metadata || typeof metadata !== "object") throw new Error("cannot attest loaded agent-mem version");
-  const value = metadata as { name?: unknown; version?: unknown };
-  if (value.name !== "@staix/agent-mem" || typeof value.version !== "string"
-    || !/^\d+\.\d+\.\d+$/.test(value.version) || value.version !== expectedVersion) {
-    throw new Error("loaded agent-mem version does not match the exact dependency pin");
+/** Validate metadata located through the actual imported entry, never the declared range alone. */
+export function assertAgentMemVersion(metadata: unknown, range: string = AGENT_MEM_RANGE): string {
+  const value = (metadata ?? {}) as { name?: unknown; version?: unknown };
+  if (value.name !== "@staix/agent-mem" || !agentMemVersionInRange(value.version, range)) {
+    const loaded = typeof value.version === "string" ? value.version : "unknown";
+    throw new Error(`the loaded agent-mem ${loaded} is not a plain release inside the declared patch range ${range}; install a release in that range with \`bun install --frozen-lockfile\`, or raise the range in package.json with a compatibility review`);
   }
-  return value.version;
+  return value.version as string;
 }
 
 const loadedAgentMem = (() => {
@@ -45,7 +42,7 @@ const loadedAgentMem = (() => {
 })();
 export const AGENT_MEM_VERSION = loadedAgentMem.version;
 function assertLoadedAgentMem(): void {
-  if (!loadedAgentMem.valid) throw new Error("cannot attest loaded agent-mem version against the exact dependency pin");
+  if (!loadedAgentMem.valid) throw new Error(`the loaded agent-mem ${AGENT_MEM_VERSION} is not a plain release inside the declared patch range ${AGENT_MEM_RANGE}; reinstall it with \`bun install --frozen-lockfile\`, or raise the range in package.json with a compatibility review`);
 }
 export const MEMORY_PROFILE_UNAVAILABLE = "memory profile unavailable; inspect the selector and generation state, run ahub memory profile-check; use amem migrate --deactivate only to stop using the selected generation";
 const UNAVAILABLE = MEMORY_PROFILE_UNAVAILABLE;

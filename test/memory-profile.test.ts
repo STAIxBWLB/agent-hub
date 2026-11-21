@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, candidateTargetRevision, migrate } from "@staix/agent-mem";
 import { realPath } from "../src/hub/project.ts";
+import { AGENT_MEM_RANGE } from "../src/hub/agent-mem-range.ts";
 import {
   AGENT_MEM_VERSION, MEMORY_PROFILE_UNAVAILABLE, assertAgentMemVersion, bindProfileMemory, MemoryProfileBinding, openProfileCandidates, openProfileMemory, selectedMemoryProfile,
 } from "../src/hub/memory-profile.ts";
@@ -97,12 +98,19 @@ test("binding an injected store uses its direct canonical home and rejects misma
 });
 
 
-test("loaded core attestation rejects mismatched, unknown, or foreign package metadata", () => {
-  expect(AGENT_MEM_VERSION).toBe("0.32.0");
-  expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: "0.32.0" })).toBe("0.32.0");
-  for (const metadata of [undefined, {}, { name: "@staix/agent-mem", version: "0.2.0" }, { name: "@staix/agent-mem", version: "0.3.0" }, { name: "@staix/agent-mem", version: "0.3.1" },
-    { name: "foreign-package", version: "0.7.0" }, { name: "@staix/agent-mem", version: "unknown" }]) {
-    expect(() => assertAgentMemVersion(metadata)).toThrow();
+test("loaded core attestation accepts a plain release inside the declared patch range and refuses everything else", () => {
+  const installed = JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve("@staix/agent-mem")), "utf8")).version as string;
+  const [major, minor, patch] = AGENT_MEM_RANGE.slice(1).split(".").map(Number) as [number, number, number];
+  const floor = `${major}.${minor}.${patch}`;
+  expect(AGENT_MEM_RANGE).toMatch(/^~\d+\.\d+\.\d+$/);
+  expect(AGENT_MEM_VERSION).toBe(installed);
+  expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: floor })).toBe(floor);
+  expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: `${major}.${minor}.${patch + 1}` })).toBe(`${major}.${minor}.${patch + 1}`);
+  const below = patch > 0 ? `${major}.${minor}.${patch - 1}` : `${major}.${minor - 1}.9`;
+  for (const metadata of [undefined, {}, { name: "@staix/agent-mem", version: below }, { name: "@staix/agent-mem", version: `${major}.${minor + 1}.0` },
+    { name: "@staix/agent-mem", version: `${floor}-beta.1` }, { name: "@staix/agent-mem", version: `${major}.${minor}` },
+    { name: "foreign-package", version: floor }, { name: "@staix/agent-mem", version: "unknown" }]) {
+    expect(() => assertAgentMemVersion(metadata)).toThrow(/declared patch range/);
   }
 });
 

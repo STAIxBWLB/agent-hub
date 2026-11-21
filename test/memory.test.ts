@@ -1,7 +1,7 @@
 import { withoutPii } from "../src/hub/memory-policy.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { afterEach, expect, test, setSystemTime } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, CandidateStore, CaptureStore, writeCaptureConfigFile } from "@staix/agent-mem";
@@ -11,6 +11,8 @@ import { Briefs, related } from "../src/memory/brief.ts";
 import { recallFor } from "../src/memory/recall.ts";
 import { ask, gather } from "../src/hub/ask.ts";
 import { Board } from "../src/hub/board.ts";
+// #1605: the declared dependency is a patch range, so the reported version is the loaded release, never the range.
+const amemVersion: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve("@staix/agent-mem")), "utf8")).version;
 const clean: (() => void)[] = [];
 afterEach(() => { for (const f of clean.splice(0).reverse()) f(); });
 function rig() {
@@ -26,7 +28,7 @@ test("published amem recall, briefs, ask and candidates operate without any work
  const r=rig(); let calls=0; const worker=Bun.serve({hostname:"127.0.0.1",port:0,fetch(){calls++;return new Response("unexpected");}});clean.push(()=>worker.stop(true));
  const previous=globalThis.fetch; globalThis.fetch=((..._args:unknown[])=>{calls++;throw Error("network tripwire");}) as unknown as typeof fetch; clean.push(()=>{globalThis.fetch=previous;});
  const id=r.note("retired-route policy is curated"); r.note("private-value retired-route");r.note("foreign retired-route","project-b");
- expect(await r.client.health()).toEqual({ok:true,version:"0.32.0"});
+ expect(await r.client.health()).toEqual({ok:true,version:amemVersion});
  const recall=await recallFor("kimi",r.client,["ignored-legacy-name"],1000);expect(recall).toContain(id);expect(recall).not.toContain("private-value");
  const rows=await related(r.client,"project-b","retired-route");expect(rows.map(v=>v.id)).toEqual([`mem:${id}`]);
  const brief=await new Briefs(r.client,"project-b").forTask("codex",{id:1,title:"retired-route",refs:{}});expect(brief).toContain(`mem:${id}`);

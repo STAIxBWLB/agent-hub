@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Accept any plain agent-mem patch release inside a declared `~0.32.1` range instead of an exact pin (Refs #1605, hub task 1047). A patch inside the range reaches users without a hub PR or release; a new minor stays a reviewed raise. Memory opens only for a plain release the range accepts (`Bun.semver.satisfies`), the recovery package and `scripts/check-package.mjs` use the same rule, and `ahub doctor` and the memory client report the loaded release rather than the range. A daily scheduled and dispatch workflow installs the newest in-range patch beside the unchanged manifest and lockfile and runs the memory-surface gate against it. An in-place patch upgrade turns the sync-placement writer proof to `changed` until a person re-runs `amem migrate --sync-placement --dry-run`.
 - Open or attach a verified GitHub PR for a managed worktree at task completion (Refs #1549, hub task 1019).
 - The console keeps the selected row on screen in the Settings panel: the row window now leaves room for the notes above the table (#1607, hub task 1049).
 

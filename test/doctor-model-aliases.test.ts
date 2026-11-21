@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
+
+// #1605: the dependency is a patch range, so the doctor row names the loaded release.
+const amemVersion: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve("@staix/agent-mem")), "utf8")).version;
 
 async function doctor(
   served: string[],
@@ -76,7 +79,7 @@ test("#553 doctor reports retired routing tables as Config findings and still in
 test("#553 invalid routing does not abort doctor model and memory probes", async () => {
   const rows = await doctor(aliases, false, false, true);
   expect(rows).toContainEqual(expect.objectContaining({ name: "routing models", section: "Models", level: "unknown" }));
-  expect(rows).toContainEqual(expect.objectContaining({ name: "memory library", level: "ok", detail: expect.stringContaining("amem 0.32.0") }));
+  expect(rows).toContainEqual(expect.objectContaining({ name: "memory library", level: "ok", detail: expect.stringContaining(`amem ${amemVersion}`) }));
   expect(rows.some(row => row.name === "memory worker")).toBe(false);
   expect(rows.some(row => row.name === "catalog roles" && row.level === "fail")).toBe(false);
 });

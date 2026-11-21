@@ -1,6 +1,6 @@
-import packageJson from "../../package.json";
 import { createHash } from "node:crypto";
 import { controlWriteSpan } from "../hub/control-write-trace.ts";
+import { AGENT_MEM_VERSION } from "../hub/memory-profile.ts";
 import { CaptureStore, SearchIndex, looksSecret, memoryBase, readCaptureConfig, type CaptureOptions as StoreCaptureOptions, type MemoryStore, type CandidateStore, type View } from "@staix/agent-mem";
 
 export interface CaptureEvent {
@@ -149,6 +149,7 @@ export class MemoryClient {
     });
   }
   async health(): Promise<{ ok: boolean; version?: string }> {
-    return this.run(() => ({ ok: true, version: packageJson.dependencies["@staix/agent-mem"] })) ?? { ok: false };
+    // #1605: the dependency is a patch range, so report the attested loaded release rather than a range as a version.
+    return this.run(() => ({ ok: true, version: AGENT_MEM_VERSION })) ?? { ok: false };
   }
 }
