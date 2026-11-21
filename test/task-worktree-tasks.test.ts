@@ -7,7 +7,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { sdlcConfig } from "../src/hub/sdlc.ts";
+import { sdlcConfig, type SdlcGh } from "../src/hub/sdlc.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { TaskWorktrees } from "../src/hub/task-worktree.ts";
 import { BasePeer } from "../src/hub/peers.ts";
@@ -23,7 +23,7 @@ class Peer extends BasePeer {
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 
-async function rig() {
+async function rig(options: { pushed?: boolean; gh?: SdlcGh; mode?: "off" | "advise" } = {}) {
   const base = mkdtempSync(join(tmpdir(), "ahub-task-worktree-tasks-")); cleanup.push(() => rmSync(base, { recursive: true, force: true })); // registered before anything can throw
   const dir = realPath(base), cwd = join(dir, "project"), state = join(dir, "state");
   mkdirSync(cwd); mkdirSync(state); mkdirSync(join(cwd, ".agenthub"), { recursive: true });
@@ -39,8 +39,13 @@ async function rig() {
   cleanup.push(() => { bus.closeJournal(); board.close(); });
   for (const id of ["pi", "codex"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
   const worktrees = new TaskWorktrees({ root: cwd, stateFile: join(state, "task-worktrees.json"), applies: peer => peer === "pi" || peer === "local", deny: () => [], protectInstructions: () => false });
+  if (options.pushed) git("remote", "add", "origin", "https://github.com/example/repo.git");
+  const port = options.pushed ? {
+    applies: worktrees.applies, available: () => worktrees.available(), create: worktrees.create.bind(worktrees), describe: worktrees.describe.bind(worktrees), remove: worktrees.remove.bind(worktrees),
+    commitAndPush: async (input: Parameters<TaskWorktrees["commitAndPush"]>[0]) => { const result = await worktrees.commitAndPush(input); return result.ok ? { ...result, pushed: true } : result; },
+  } : worktrees;
   const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles: { claude: ["planner"] }, routing: () => loadRouting(cwd), notify: line => notices.push(line), wipLimit: () => 5,
-    sdlc: { config: () => sdlcConfig({ mode: "off" }) }, taskWorktree: worktrees,
+    ...(options.pushed ? { repository: "example/repo" } : {}), sdlc: { config: () => sdlcConfig({ mode: options.mode ?? "off" }), ...(options.gh ? { gh: options.gh } : {}) }, taskWorktree: port,
     capabilities: () => ({ pi: { tests: true, spec: true, network: true, worktree: true }, codex: { tests: true, spec: true, network: true, worktree: true } }) });
   const offer = (owner: string, signals: string[] = ["needs_worktree"], cls: "implement" | "bulk_edit" | "test" | "summarize" | "triage" | "review" | "plan" = "implement") => { const row = board.propose("user", { title: "raise the pin", class: cls, signals: signals as any }); board.update(row.id, "user", "assigned", { owner }); return row; };
   return { cwd, state, board, tasks, worktrees, notices, git, offer, branches: () => git("for-each-ref", "--format=%(refname)", "refs/heads/task/") };
@@ -58,6 +63,88 @@ test("accepting worktree work as a hub-sandboxed peer makes the worktree on the 
   expect(f.tasks.worktreeNote(task, "pi")).toContain("do not run git");
   expect(f.tasks.accept("pi", row.id).state).toBe("in_progress"); // a repeated accept reuses it
   expect(f.branches()).toBe(`refs/heads/task/${row.id}-pi`);
+});
+
+for (const mode of ["off", "advise"] as const) test(`managed pushed worktree opens a draft PR and records its verified identity only on done (${mode})`, async () => {
+  let f: Awaited<ReturnType<typeof rig>>, state: "missing" | "draft" | "ready" = "missing"; const calls: string[][] = [];
+  const gh: SdlcGh = async args => {
+    calls.push(args);
+    if (args[0] === "api") return { code: 0, stdout: "main" };
+    if (args[1] === "create") { state = "draft"; return { code: 0, stdout: "" }; }
+    if (args[1] === "ready") { state = "ready"; return { code: 0, stdout: "" }; }
+    return { code: 0, stdout: JSON.stringify(state === "missing" ? [] : [{ number: 32, state: "OPEN", headRefName: "task/1-pi", headRefOid: f.git("rev-parse", "task/1-pi"), isDraft: state === "draft", isCrossRepository: false, headRepository: { nameWithOwner: "example/repo" } }]) };
+  };
+  f = await rig({ pushed: true, gh, mode });
+  const row = f.offer("pi"); f.board.update(row.id, "user", "link issue", { sdlc: { stage: "build", repo: "example/repo", issue: 7 } }); f.tasks.accept("pi", row.id);
+  writeFileSync(join(f.cwd, ".worktrees", `pi-${row.id}`, "a.txt"), "edited\n");
+  const refs = await f.tasks.worktreeHandoff("pi", row.id, undefined);
+  expect(f.board.get(row.id)?.sdlc?.pr).toBeUndefined();
+  const done = await f.tasks.done("pi", row.id, "finished", refs);
+  expect(done.sdlc?.pr).toBe(32); expect(done.sdlc?.issue).toBe(7);
+  expect(calls.find(args => args[1] === "create")?.join(" ")).toContain("Refs #7");
+});
+
+test("an origin change after push refuses PR creation without recording an identity", async () => {
+  let f: Awaited<ReturnType<typeof rig>>; const calls: string[][] = [];
+  const gh: SdlcGh = async args => { calls.push(args); f.git("remote", "set-url", "origin", "https://github.com/other/repo.git"); return { code: 0, stdout: "[]" }; };
+  f = await rig({ pushed: true, gh }); const row = f.offer("pi"); f.tasks.accept("pi", row.id);
+  writeFileSync(join(f.cwd, ".worktrees", `pi-${row.id}`, "a.txt"), "edited\n");
+  await expect(f.tasks.worktreeHandoff("pi", row.id, undefined)).rejects.toThrow("origin changed");
+  expect(calls).toHaveLength(1); expect(f.board.get(row.id)?.sdlc?.pr).toBeUndefined();
+});
+
+test("an untrusted origin cannot dispatch GitHub PR calls", async () => {
+  const calls: string[][] = [];
+  const gh: SdlcGh = async args => { calls.push(args); return { code: 0, stdout: "[]" }; };
+  const f = await rig({ pushed: true, gh }); const row = f.offer("pi"); f.tasks.accept("pi", row.id);
+  f.git("remote", "set-url", "origin", "https://github.com/other/repo.git");
+  writeFileSync(join(f.cwd, ".worktrees", `pi-${row.id}`, "a.txt"), "edited\n");
+  await expect(f.tasks.worktreeHandoff("pi", row.id, undefined)).rejects.toThrow("origin is unavailable or changed");
+  expect(calls).toHaveLength(0); expect(f.board.get(row.id)?.sdlc?.pr).toBeUndefined();
+});
+
+test("lost owner authority after the push stops the PR write and is reported as post-effect", async () => {
+  let f: Awaited<ReturnType<typeof rig>>; const calls: string[][] = [];
+  const gh: SdlcGh = async args => { calls.push(args); f.board.update(1, "user", "reassigned", { owner: "codex" }); return { code: 0, stdout: "[]" }; };
+  f = await rig({ pushed: true, gh }); const row = f.offer("pi"); f.tasks.accept("pi", row.id);
+  writeFileSync(join(f.cwd, ".worktrees", `pi-${row.id}`, "a.txt"), "edited\n");
+  let failure: unknown; try { await f.tasks.worktreeHandoff("pi", row.id, undefined); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(Error); expect(failure).not.toBeInstanceOf(PreEffectToolRefusal);
+  expect((failure as Error).message).toContain("authority changed after the commit");
+  expect(calls).toHaveLength(1); expect(f.board.get(row.id)?.sdlc?.pr).toBeUndefined();
+});
+
+test("an existing task PR is reused and a later done refusal reports the prior commit effect", async () => {
+  const calls: string[][] = [];
+  const gh: SdlcGh = async args => { calls.push(args); return { code: 1, stdout: "" }; };
+  const f = await rig({ pushed: true, gh }); const row = f.offer("pi");
+  f.board.update(row.id, "user", "link PR", { sdlc: { stage: "build", repo: "example/repo", pr: 32 } }); f.tasks.accept("pi", row.id);
+  writeFileSync(join(f.cwd, ".worktrees", `pi-${row.id}`, "a.txt"), "edited\n");
+  const refs = await f.tasks.worktreeHandoff("pi", row.id, undefined);
+  expect(calls).toHaveLength(0);
+  let error: unknown;
+  try { await f.tasks.done("pi", row.id, "finished", refs, [{ path: "/outside", format: "md" }]); } catch (caught) { error = caught; }
+  expect(error).toBeInstanceOf(Error); expect(error).not.toBeInstanceOf(PreEffectToolRefusal);
+  expect((error as Error).message).toContain("managed worktree was committed");
+  expect(f.board.get(row.id)?.sdlc?.pr).toBe(32); expect(f.board.get(row.id)?.state).toBe("in_progress");
+});
+
+test("failed GitHub lookup reports the retained commit and retry reuses it", async () => {
+  let f: Awaited<ReturnType<typeof rig>>, unavailable = true; const calls: string[][] = [];
+  const gh: SdlcGh = async args => {
+    calls.push(args);
+    if (unavailable) return { code: 1, stdout: "" };
+    return { code: 0, stdout: JSON.stringify([{ number: 32, state: "OPEN", headRefName: "task/1-pi", headRefOid: f.git("rev-parse", "task/1-pi"), isDraft: false, isCrossRepository: false, headRepository: { nameWithOwner: "example/repo" } }]) };
+  };
+  f = await rig({ pushed: true, gh }); const row = f.offer("pi"); f.tasks.accept("pi", row.id);
+  writeFileSync(join(f.cwd, ".worktrees", `pi-${row.id}`, "a.txt"), "edited\n");
+  let failure: unknown; try { await f.tasks.worktreeHandoff("pi", row.id, undefined); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(Error); expect(failure).not.toBeInstanceOf(PreEffectToolRefusal);
+  expect((failure as Error).message).toContain("branch was pushed"); expect(f.board.get(row.id)?.sdlc?.pr).toBeUndefined();
+  const first = f.git("rev-parse", "task/1-pi"); unavailable = false;
+  const refs = await f.tasks.worktreeHandoff("pi", row.id, undefined);
+  expect(refs?.commit).toBe(first); expect((await f.tasks.done("pi", row.id, "finished", refs)).sdlc?.pr).toBe(32);
+  expect(calls.filter(args => args[1] === "create")).toHaveLength(0);
 });
 
 test("a peer that makes its own worktree gets no hub worktree, and a read-only class that does not declare the need gets none either (#1129 AC1)", async () => {

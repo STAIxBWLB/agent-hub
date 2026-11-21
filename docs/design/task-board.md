@@ -31,6 +31,7 @@ paths:
   - src/hub/main-checkout.ts
   - src/hub/checks.ts
   - src/hub/task-repository.ts
+  - src/hub/task-pr.ts
   - src/hub/no-writes.ts
   - src/hub/review-findings.ts
   - src/hub/review-anchor.ts
@@ -90,6 +91,17 @@ exact commit before the runner starts on that commit; an unchanged hub-committed
 head is reused. Owner, session, capability, privacy and recovery authority are
 rechecked across the awaited work, and a lost authority never starts a check.
 Peers without a hub-managed worktree retain their existing check path.
+
+On a public managed-worktree completion pushed to the trusted GitHub origin
+(#1549 T2), the hub finds one open same-repository PR at the exact pushed head,
+or creates it as a draft and makes it ready. It rechecks owner, session, task
+revision, privacy, recovery and origin around the bounded GitHub calls. The
+admitted done records the host-verified PR as `task.sdlc.pr`; `TaskRefs` has no PR
+field. A lost create response is resolved by lookup on retry. A failure after a
+commit or push reports the prior effect and directs the owner to inspect it.
+The generated PR body contains only the task number and a `Refs` link to the
+same-repository spec issue when known. Untrusted or absent origins do not grant
+GitHub write authority.
 
 Pressure checkpoints remain peer/session operations, including for taskless peers.
 A host waiter additionally captures its owned-work task ids, creation identities

@@ -1,12 +1,19 @@
 import type { SdlcGh } from "./sdlc.ts";
-import { GITHUB_PAGE_SIZE } from "./github-import.ts";
+import { GITHUB_PAGE_SIZE, GITHUB_READ_DEADLINE_MS } from "./github-import.ts";
 
 /** Create or recover one PR for a previously pushed, host-verified managed branch. */
 export async function managedTaskPullRequest(input: { repo: string; branch: string; commit: string; task: number; issue?: number; current: () => void }, run: SdlcGh): Promise<number> {
   const { repo, branch, commit, task, issue, current } = input;
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(repo) || !Number.isSafeInteger(task) || task < 1 || !/^task\/[1-9][0-9]*-[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(branch) || !branch.startsWith(`task/${task}-`) || !/^[a-f0-9]{40}$/.test(commit) || issue !== undefined && (!Number.isSafeInteger(issue) || issue < 1)) throw new Error("managed PR identity is invalid; inspect the task and retry");
   const target = `github.com/${repo}`;
-  const call: SdlcGh = async (args, timeout, cwd, cap) => { current(); const result = await run(args, timeout, cwd, cap); current(); return result; };
+  const deadline = performance.now() + GITHUB_READ_DEADLINE_MS;
+  const call: SdlcGh = async (args, timeout, cwd, cap) => {
+    current(); const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error("managed PR operation timed out; inspect GitHub before retrying hub_task_done");
+    const result = await run(args, Math.min(timeout ?? remaining, remaining), cwd, cap); current();
+    if (performance.now() > deadline) throw new Error("managed PR operation timed out; inspect GitHub before retrying hub_task_done");
+    return result;
+  };
   const lookup = async (): Promise<{ number: number; draft: boolean } | undefined> => {
     const reply = await call(["pr", "list", "--repo", target, "--state", "open", "--head", branch, "--limit", String(GITHUB_PAGE_SIZE), "--json", "number,headRefName,headRefOid,headRepository,isCrossRepository,isDraft,state"], 10_000, undefined, 256 * 1024);
     if (reply.code !== 0) throw new Error("managed PR lookup unavailable; inspect GitHub and retry hub_task_done");
