@@ -27,6 +27,16 @@ export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: s
   return [...command, kind, "--socket", socket, "--cwd", cwd, "--no-update", "--no-selfdev", ...(provider ? ["-p", provider] : []), ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : []),
     ...(kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", `agent-hub-${peer}`] : ["--mcp-tools", "eager"])];
 }
+/**
+ * #1601: the one host sentence a configured Jcode may write to hub.log, because the daemon replaces every line this adapter's
+ * own `log` port would carry with "Jcode native diagnostic: details withheld". It names the cause class, the ceiling's minutes,
+ * the launch that restarts this peer and the row the person settles, and it takes only the ceiling and the host's own peer id,
+ * so no tool title or native text can reach the log through it. `peer` is `jcode` for the base peer, an instance id otherwise (#685).
+ */
+export function jcodeToolCeilingCause(ceilingMs: number, peer: string): string {
+  const launch = peer === "jcode" ? "ahub jcode" : `ahub jcode --as ${peer}`;
+  return `Jcode turn cancelled by the open-tool ceiling (${Math.round(ceilingMs / 60_000)} min, adapter_timing.acp_tool_ceiling_min) after a tool call stayed silent; the delivery is held for review and the peer is offline with queued work retained - restart it with '${launch}', then settle the held row ('ahub queue list --peer ${peer}' names it; 'ahub queue show <id>' prints the resolve command)`;
+}
 /** The session preamble of a Jcode peer: the deferred-tools guidance (#912), then the hub's role contract when there is one. Sent once, with the session's first prompt. */
 export function jcodePreamble(roleContract?: string): string {
   return roleContract ? `${JCODE_DEFERRED_TOOLS_INSTRUCTION}\n\n${roleContract}` : JCODE_DEFERRED_TOOLS_INSTRUCTION;

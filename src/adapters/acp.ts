@@ -165,6 +165,11 @@ export interface AcpOptions {
    * request then follows the permission mode as before). A verdict beats `autoApprove`, withholds `allow_always` and carries the approval text.
    */
   actionGate?: (call: { names: readonly string[]; kind?: string; input: unknown }, session: string) => ActionGateVerdict | undefined;
+  /**
+   * #1601: the open-tool ceiling cancelled this turn. Carries the ceiling in milliseconds and nothing else, so a host can log the
+   * cause class and its minutes for a kind whose own log lines are withheld, without a tool title or any native text.
+   */
+  onToolCeiling?: (info: { ceilingMs: number }) => void;
   /** Transient person-only stream; no native update escapes through another observer. */
   onActivity?: (item: Activity) => void;
   isPrivateTurn?: () => boolean;
@@ -176,7 +181,9 @@ const HANDSHAKE_MS = 30_000;
 /** Sessions whose command list may wait for the bind (see `earlyCommands`). */
 const EARLY_COMMANDS_MAX = 8;
 const TOOL_INPUT_CAP = 64;
-export const TOOL_CEILING_MS = 30 * 60_000;
+/** #1601: 60 minutes, not the legacy 30, because this repository's own instructions expect a gate run to wait up to 50
+ *  (`dot remote verify . --wait 50m`). A tool call that reports no progress for that long is still cancelled here. */
+export const TOOL_CEILING_MS = 60 * 60_000;
 export const ACTIVITY_BATCH_MS = 50;
 
 export interface ManagedAcpLaunch {
@@ -793,6 +800,9 @@ export class AcpPeer extends BasePeer {
       const ceiling = Math.max(this.watchdogMs, this.opts.toolCeilingMs ?? TOOL_CEILING_MS);
       const remaining = ceiling - (Date.now() - this.lastSignAt);
       if (remaining > 0) { this.touch(Math.min(this.watchdogMs, remaining)); return; }
+      // #1601: the host side of the cause, fired before anything that can throw or withhold. A configured kind replaces every one
+      // of this adapter's log lines with a fixed withheld sentence, so this port is how the ceiling and its minutes reach hub.log.
+      try { this.opts.onToolCeiling?.({ ceilingMs: ceiling }); } catch { /* a diagnostics sink never decides the cancellation */ }
       // Privacy latches for the turn and fails closed, as in emitActivity; the title is agent-written, so one quoted line.
       try { this.activityPrivate ||= this.opts.isPrivateTurn?.() === true; } catch { this.activityPrivate = true; }
       const tools = this.activityPrivate ? "a tool call" : [...new Set(this.openTools.values())].map(title => JSON.stringify(activityText(title).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").slice(0, 80))).join(", ");

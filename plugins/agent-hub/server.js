@@ -5034,7 +5034,7 @@ var init_acp = __esm(() => {
   init_model_token();
   init_acp_session_model();
   init_native_capabilities();
-  TOOL_CEILING_MS = 30 * 60000;
+  TOOL_CEILING_MS = 60 * 60000;
   managedLaunches = new WeakMap;
   RpcTimeoutError = class RpcTimeoutError extends Error {
   };
@@ -5697,6 +5697,9 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
           this.touch(Math.min(this.watchdogMs, remaining));
           return;
         }
+        try {
+          this.opts.onToolCeiling?.({ ceilingMs: ceiling });
+        } catch {}
         try {
           this.activityPrivate ||= this.opts.isPrivateTurn?.() === true;
         } catch {
@@ -30886,10 +30889,10 @@ var adapterNumber = (def) => ({ group: "Start", store: "config", risk: "raises",
 var ACP_TOOL_CEILING_SETTING = adapterNumber({
   key: "adapter_timing.acp_tool_ceiling_min",
   path: ["adapter_timing", "acp_tool_ceiling_min"],
-  label: "Next ACP launch: open-tool ceiling (minutes, at least the watchdog)",
+  label: "Next ACP launch: open-tool ceiling (minutes, at least the watchdog; 60 covers a documented 50-minute gate wait)",
   min: 1,
-  max: 30,
-  defaultValue: 30,
+  max: 120,
+  defaultValue: 60,
   unit: "minutes",
   inventory: "src/adapters/acp.ts:TOOL_CEILING_MS"
 });

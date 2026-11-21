@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AcpPeer, ACTIVITY_BATCH_MS, TOOL_CEILING_MS } from "../src/adapters/acp.ts";
-import { JcodePeer, STEER_TIMEOUT_MS } from "../src/adapters/jcode.ts";
+import { JcodePeer, STEER_TIMEOUT_MS, jcodeToolCeilingCause } from "../src/adapters/jcode.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { OPERATIONAL_NUMBERS, adapterOperationalReaders, type AdapterTimingConfig } from "../src/hub/operational-settings.ts";
@@ -21,7 +21,7 @@ const until = async (condition: () => boolean) => {
 const acpSnapshot = (read: ReturnType<typeof adapterOperationalReaders>) => ({ toolCeilingMs: read.acpToolCeilingMs(), activityBatchMs: read.acpActivityBatchMs() });
 
 test("#489 H5 pins exactly three legacy defaults and keeps the fixed H1 bounds/apply path", () => {
-  expect([TOOL_CEILING_MS, ACTIVITY_BATCH_MS, STEER_TIMEOUT_MS]).toEqual([1_800_000, 50, 5000]);
+  expect([TOOL_CEILING_MS, ACTIVITY_BATCH_MS, STEER_TIMEOUT_MS]).toEqual([3_600_000, 50, 5000]);
   const pins: Record<string, { legacy: number; scale: number }> = {
     "adapter_timing.acp_tool_ceiling_min": { legacy: TOOL_CEILING_MS, scale: 60_000 },
     "adapter_timing.acp_activity_batch_ms": { legacy: ACTIVITY_BATCH_MS, scale: 1 },
@@ -55,9 +55,9 @@ test("#489 unset adapter readers equal legacy options and new snapshots capture 
   let config: AdapterTimingConfig = {};
   const read = adapterOperationalReaders(() => config);
   const first = { ...acpSnapshot(read), steerTimeoutMs: read.jcodeSteerTimeoutMs() };
-  expect(first).toEqual({ toolCeilingMs: 1_800_000, activityBatchMs: 50, steerTimeoutMs: 5000 });
+  expect(first).toEqual({ toolCeilingMs: 3_600_000, activityBatchMs: 50, steerTimeoutMs: 5000 });
   config = { adapter_timing: { acp_tool_ceiling_min: 4, acp_activity_batch_ms: 17, jcode_steer_timeout_s: 12 } };
-  expect(first).toEqual({ toolCeilingMs: 1_800_000, activityBatchMs: 50, steerTimeoutMs: 5000 });
+  expect(first).toEqual({ toolCeilingMs: 3_600_000, activityBatchMs: 50, steerTimeoutMs: 5000 });
   expect({ ...acpSnapshot(read), steerTimeoutMs: read.jcodeSteerTimeoutMs() }).toEqual({ toolCeilingMs: 240_000, activityBatchMs: 17, steerTimeoutMs: 12_000 });
 });
 
@@ -68,7 +68,7 @@ class ToolPeer extends AcpPeer {
   expire() { this.onWatchdog(); }
 }
 
-for (const ceilingMin of [1, 5]) test(`#489 configured ACP ceiling ${ceilingMin} min preserves watchdog floor and remaining-only rearm`, async () => {
+for (const ceilingMin of [1, 5, 60]) test(`#489 configured ACP ceiling ${ceilingMin} min preserves watchdog floor and remaining-only rearm`, async () => {
   let config: AdapterTimingConfig = { adapter_timing: { acp_tool_ceiling_min: ceilingMin } };
   const read = adapterOperationalReaders(() => config), receipts: { state: string }[] = [];
   const peer = new ToolPeer("kimi", { cmd: [...fakeAcp, "--mode-after-cancel"], cwd: process.cwd(), watchdogMs: 120_000, ...acpSnapshot(read) });
@@ -87,6 +87,40 @@ for (const ceilingMin of [1, 5]) test(`#489 configured ACP ceiling ${ceilingMin}
     peer.expire();
     expect(receipts.at(-1)?.state).toBe("needs_review");
     expect(peer.state).toBe("offline");
+  } finally { Date.now = now; await peer.stop(); }
+});
+
+test("#1601 the default ceiling outlasts a 50-minute silent gate wait, still cancels a hung call, and names the cause to the host", async () => {
+  const causes: { ceilingMs: number }[] = [], logs: string[] = [], receipts: { state: string }[] = [];
+  // No toolCeilingMs: the adapter must fall back to its own default, which is what the person's next launch gets unconfigured.
+  const peer = new ToolPeer("kimi", { cmd: [...fakeAcp, "--mode-after-cancel"], cwd: process.cwd(), watchdogMs: 120_000, onToolCeiling: info => causes.push(info), log: line => logs.push(line) });
+  cleanup.push(() => peer.stop()); peer.onDelivery = receipt => receipts.push(receipt);
+  await peer.start(); await peer.deliver([newEnvelope("user", "TOOL_SLOW", { to: ["kimi"] })], "default-ceiling");
+  await until(() => peer.nativeActivity);
+  const now = Date.now, start = (peer as unknown as { lastSignAt: number }).lastSignAt;
+  try {
+    Date.now = () => start + 1_801_000; // one second past the legacy 30 minutes, still inside the 50-minute gate wait
+    peer.expire();
+    expect(peer.state).toBe("busy");
+    expect(receipts.some(receipt => receipt.state === "needs_review")).toBe(false);
+    expect(causes).toEqual([]);
+    Date.now = () => start + TOOL_CEILING_MS + 1000;
+    peer.expire();
+    expect(receipts.at(-1)?.state).toBe("needs_review");
+    expect(peer.state).toBe("offline");
+    // The host port carries the ceiling and nothing else, so a configured kind can log the cause without a tool title.
+    expect(causes).toEqual([{ ceilingMs: TOOL_CEILING_MS }]);
+    expect(logs.at(-1)).toContain("silent past the 60 min tool ceiling; cancelling the turn");
+    // #1601: the configured kind's own sentence, which is what hub.log gets instead of the withheld line. It names the launch that
+    // restarts this peer - the base peer, then an extra instance (#685) that a bare `ahub jcode` would not start - and the held row's settle command.
+    expect(jcodeToolCeilingCause(TOOL_CEILING_MS, "jcode")).toBe(
+      "Jcode turn cancelled by the open-tool ceiling (60 min, adapter_timing.acp_tool_ceiling_min) after a tool call stayed silent; "
+      + "the delivery is held for review and the peer is offline with queued work retained - restart it with 'ahub jcode', then settle the held row "
+      + "('ahub queue list --peer jcode' names it; 'ahub queue show <id>' prints the resolve command)");
+    expect(jcodeToolCeilingCause(TOOL_CEILING_MS, "jcode-local")).toBe(
+      "Jcode turn cancelled by the open-tool ceiling (60 min, adapter_timing.acp_tool_ceiling_min) after a tool call stayed silent; "
+      + "the delivery is held for review and the peer is offline with queued work retained - restart it with 'ahub jcode --as jcode-local', then settle the held row "
+      + "('ahub queue list --peer jcode-local' names it; 'ahub queue show <id>' prints the resolve command)");
   } finally { Date.now = now; await peer.stop(); }
 });
 

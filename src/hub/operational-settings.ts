@@ -117,8 +117,8 @@ export const RECOVERY_TERMINAL_IDLE_WAIT_SETTING = recoveryNumber({
 
 const adapterNumber = <const T extends Omit<OperationalNumberSetting, "group" | "store" | "risk" | "applies" | "type">>(def: T) => ({ group: "Start", store: "config", risk: "raises", applies: "next use", type: "integer", ...def }) as const satisfies OperationalNumberSetting;
 export const ACP_TOOL_CEILING_SETTING = adapterNumber({
-  key: "adapter_timing.acp_tool_ceiling_min", path: ["adapter_timing", "acp_tool_ceiling_min"], label: "Next ACP launch: open-tool ceiling (minutes, at least the watchdog)",
-  min: 1, max: 30, defaultValue: 30, unit: "minutes", inventory: "src/adapters/acp.ts:TOOL_CEILING_MS",
+  key: "adapter_timing.acp_tool_ceiling_min", path: ["adapter_timing", "acp_tool_ceiling_min"], label: "Next ACP launch: open-tool ceiling (minutes, at least the watchdog; 60 covers a documented 50-minute gate wait)",
+  min: 1, max: 120, defaultValue: 60, unit: "minutes", inventory: "src/adapters/acp.ts:TOOL_CEILING_MS",
 });
 export const ACP_ACTIVITY_BATCH_SETTING = adapterNumber({
   key: "adapter_timing.acp_activity_batch_ms", path: ["adapter_timing", "acp_activity_batch_ms"], label: "Next ACP launch: activity display batch delay (milliseconds)",

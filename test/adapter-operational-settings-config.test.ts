@@ -20,7 +20,7 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 const settings = [ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING];
 const leaves = ["acp_tool_ceiling_min", "acp_activity_batch_ms", "jcode_steer_timeout_s"] as const;
-const defaults = { acp_tool_ceiling_min: 30, acp_activity_batch_ms: 50, jcode_steer_timeout_s: 5 };
+const defaults = { acp_tool_ceiling_min: 60, acp_activity_batch_ms: 50, jcode_steer_timeout_s: 5 };
 const changed = { acp_tool_ceiling_min: 2, acp_activity_batch_ms: 10, jcode_steer_timeout_s: 12 };
 function project() {
   const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-adapter-config-")));
@@ -33,10 +33,10 @@ const localJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
 
 test("#489 H5 three accepted settings share bounds/apply metadata and preserve default units", () => {
   expect(settings.map(row => row.key)).toEqual(leaves.map(leaf => `adapter_timing.${leaf}` as const));
-  expect(settings.map(row => [row.defaultValue, row.min, row.max])).toEqual([[30, 1, 30], [50, 10, 50], [5, 5, 60]]);
+  expect(settings.map(row => [row.defaultValue, row.min, row.max])).toEqual([[60, 1, 120], [50, 10, 50], [5, 5, 60]]);
   const unset: AdapterTimingConfig = { adapter_timing: {} };
   const readers = adapterOperationalReaders(() => unset);
-  expect([readers.acpToolCeilingMs(), readers.acpActivityBatchMs(), readers.jcodeSteerTimeoutMs()]).toEqual([1_800_000, 50, 5000]);
+  expect([readers.acpToolCeilingMs(), readers.acpActivityBatchMs(), readers.jcodeSteerTimeoutMs()]).toEqual([3_600_000, 50, 5000]);
   const custom = adapterOperationalReaders(() => ({ adapter_timing: changed }));
   expect([custom.acpToolCeilingMs(), custom.acpActivityBatchMs(), custom.jcodeSteerTimeoutMs()]).toEqual([120_000, 10, 12_000]);
   for (const row of settings) {
@@ -130,7 +130,7 @@ async function host(peer: "kimi" | "jcode") {
 type CapturedOptions = { opts: Pick<AcpOptions, "toolCeilingMs" | "activityBatchMs">; jcode: Pick<JcodeOptions, "steerTimeoutMs"> };
 for (const peer of ["kimi", "jcode"] as const) test(`#489 H5 ${peer} snapshots accepted timing at a new peer start, not an active session`, async () => {
   const f = await host(peer), first = await f.start(), old = first as unknown as CapturedOptions;
-  expect(old.opts).toMatchObject({ toolCeilingMs: 1_800_000, activityBatchMs: 50 });
+  expect(old.opts).toMatchObject({ toolCeilingMs: 3_600_000, activityBatchMs: 50 });
   if (peer === "jcode") expect(old.jcode.steerTimeoutMs).toBe(5000);
   const instance = (await f.client.request({ t: "status" })).status.instanceId;
   for (const [index, row] of settings.entries()) {
@@ -146,7 +146,7 @@ for (const peer of ["kimi", "jcode"] as const) test(`#489 H5 ${peer} snapshots a
     expect((await f.client.request({ t: "settings_undo", reason: "restore adapter override" })).ok).toBe(true);
     expect((await f.rows()).find(entry => entry.key === row.key)?.value).toBe(value);
     expect(f.daemon.bus.peers.get(peer)).toBe(first);
-    expect(old.opts).toMatchObject({ toolCeilingMs: 1_800_000, activityBatchMs: 50 });
+    expect(old.opts).toMatchObject({ toolCeilingMs: 3_600_000, activityBatchMs: 50 });
     if (peer === "jcode") expect(old.jcode.steerTimeoutMs).toBe(5000);
   }
   expect((await f.client.request({ t: "peer_stop", peer })).ok).toBe(true);
