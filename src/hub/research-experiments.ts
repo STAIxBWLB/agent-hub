@@ -578,7 +578,9 @@ export function editSuccessCost(costs: { execution?: EditCostComponent; verifica
     if (scope && (scope.length !== tasks.length || scope.some((task, index) => task !== tasks[index])) || unit !== undefined && unit !== component.unit) return null;
     scope = tasks; unit = component.unit;
   }
-  if (!scope || !unit || success.some(task => !scope!.includes(task))) return null;
+  if (!scope || !unit) return null;
+  const inScope = new Set(scope);
+  if (success.some(task => !inScope.has(task))) return null;
   const [execution, verification, rework, human] = components.map(component => component!.amount / success.length);
   const total = execution! + verification! + rework! + human!;
   if (!Number.isFinite(total)) return null;
