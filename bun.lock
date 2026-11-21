@@ -5,7 +5,7 @@
     "": {
       "name": "@staix/agent-hub",
       "dependencies": {
-        "@staix/agent-mem": "~0.32.1",
+        "@staix/agent-mem": ">=0.33.0 <1.0.0",
       },
       "devDependencies": {
         "@modelcontextprotocol/sdk": "^1.27.1",
@@ -22,7 +22,7 @@
 
     "@staix/agent-console": ["@staix/agent-console@0.2.0", "", { "bin": { "acon": "bin/acon.js" } }, "sha512-FSthEczbMWG2XSfxlMSZjtNkOcRj3J9xmtDdPBpE3uAvp1N8ZW74K3OxJAQ8ustESgJ6ahAJ/DLTaQLqhLmLGA=="],
 
-    "@staix/agent-mem": ["@staix/agent-mem@0.32.1", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-658xV0OymjwF6kO0KlzJ4NuPXHSjIbfoTbF/SYmDbWM1AkYEwDECO+xcQV0S3w/dPeiy46pWxlb6SKZN4WabOA=="],
+    "@staix/agent-mem": ["@staix/agent-mem@0.33.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-Z6b9ie0Lu9TvTnmw9JZj8okQm54KnrxHoY7rEg6PwUfTd3LwrWKwNnuIA+LZswktXgGBO11K8GkRzCRMHFdSNQ=="],
 
     "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
 

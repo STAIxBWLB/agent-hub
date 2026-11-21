@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { hubHome, realPath } from "../hub/project.ts";
 import { Registry } from "../hub/registry.ts";
-import { agentMemVersionInRange } from "../hub/agent-mem-range.ts";
+import { AGENT_MEM_HOST_API_RANGE, agentMemHostApiOk, agentMemVersionInRange, isAgentMemFloorRange, readHostApiConstants } from "../hub/agent-mem-range.ts";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
 export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string; pipeExitGraceMs?: number }) => Promise<CommandResult>;
@@ -50,9 +50,9 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
   const deps = pkg.dependencies ?? {};
   if (!Object.keys(deps).length) return undefined;
   const declared = deps["@staix/agent-mem"];
-  // #1605: a current package declares the patch range `~X.Y.Z`. A package staged before the range keeps its exact
-  // declaration, so a cached release still verifies; compound ranges, `^`, `*` and prereleases stay refused.
-  if (Object.keys(deps).length !== 1 || typeof declared !== "string" || !/^~?\d+\.\d+\.\d+$/.test(declared)) throw new Error("unsupported runtime dependencies in recovery package");
+  // #1611: a current package declares a floor range `>=X.Y.Z <M.0.0`; a package staged under #1605 declares `~X.Y.Z` and one before it an exact
+  // version, so a cached release still verifies (legacy forms need no host API); compound ranges, `^`, `*` and prereleases stay refused.
+  if (Object.keys(deps).length !== 1 || typeof declared !== "string" || !(/^~?\d+\.\d+\.\d+$/.test(declared) || isAgentMemFloorRange(declared))) throw new Error("unsupported runtime dependencies in recovery package");
   let dir = dependencyRoot ? join(dependencyRoot, "node_modules/@staix/agent-mem")
     : dirname(createRequire(join(root, "package.json")).resolve("@staix/agent-mem"));
   if (dependencyRoot && !existsSync(dir)) throw new Error("memory runtime dependency is unavailable");
@@ -65,7 +65,15 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
       const memory = JSON.parse(readFileSync(manifest, "utf8"));
       if (memory.name === "@staix/agent-mem") {
         const installed = typeof memory.version === "string" ? memory.version : "";
-        const accepted = declared.startsWith("~") ? agentMemVersionInRange(installed, declared) : installed === declared;
+        const accepted = declared.startsWith("~") || declared.startsWith(">=") ? agentMemVersionInRange(installed, declared) : installed === declared;
+        if (accepted && isAgentMemFloorRange(declared)) {
+          // #1611: a floor-form package also needs a host API the hub supports, read from the staged package's own platform module.
+          let text = "";
+          try { text = readFileSync(join(dir, "src/memory/platform.ts"), "utf8"); } catch { /* missing constants refuse below */ }
+          const host = readHostApiConstants(text);
+          if (!agentMemHostApiOk(host.min, host.version))
+            throw new Error(`memory runtime host API ${host.min ?? "missing"}..${host.version ?? "missing"} does not intersect the supported ${AGENT_MEM_HOST_API_RANGE[0]}..${AGENT_MEM_HOST_API_RANGE[1]}`);
+        }
         if (!accepted || Object.keys(memory.dependencies ?? {}).length) throw new Error("memory runtime dependency identity/version mismatch");
         return realPath(dir);
       }

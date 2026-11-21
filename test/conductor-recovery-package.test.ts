@@ -6,9 +6,9 @@ import { packageDigest, preserveRuntimeDependencies, recoveryPackageOptions, rec
 import { realPath } from "../src/hub/project.ts";
 
 const roots: string[] = [], version = "0.0.1", integrity = "sha512-fixture";
-// #1605: the package declares a patch range; the fixture's installed copy is its floor, a plain release inside it.
+// #1611: the package declares a floor range; the fixture's installed copy is its floor, a plain release inside it.
 const memoryRange: string = JSON.parse(readFileSync(resolve(import.meta.dir, "../package.json"), "utf8")).dependencies["@staix/agent-mem"];
-const memoryVersion = memoryRange.slice(1);
+const memoryVersion = memoryRange.slice(2).split(" ")[0] as string;
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function app(root: string): void {
   for (const folder of ["src/cli", "plugins/agent-hub/.claude-plugin", "templates", ".claude-plugin"]) mkdirSync(join(root, folder), { recursive: true });
@@ -23,6 +23,8 @@ function fixture() {
   mkdirSync(join(memory, "src"), { recursive: true }); mkdirSync(join(memory, "bin"));
   writeFileSync(join(memory, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: memoryVersion, exports: "./src/index.ts" }));
   writeFileSync(join(memory, "src/index.ts"), "export const fixture = true;\n");
+  mkdirSync(join(memory, "src/memory"));
+  writeFileSync(join(memory, "src/memory/platform.ts"), "export const HOST_API_VERSION = 1 as const;\nexport const HOST_API_MIN = 1 as const;\n");
   writeFileSync(join(memory, "bin/amem.js"), "// fixture CLI\n");
   for (const name of ["README.md", "LICENSE"]) writeFileSync(join(memory, name), "fixture\n");
   const stage = () => stageRelease(version, integrity, async (args) => {
@@ -59,12 +61,12 @@ test("a missing or wrong-version hoisted dependency cannot pass target verificat
   }
 });
 
-test("#1605 the recovery package accepts a plain release anywhere inside the declared range and refuses one outside it", async () => {
+test("#1611 the recovery package accepts a plain release anywhere inside the declared range and refuses one outside it", async () => {
   const f = fixture(), staged = await f.stage(), memory = join(f.home, "releases", version, "node_modules/@staix/agent-mem");
   const [major, minor, patch] = memoryVersion.split(".").map(Number) as [number, number, number];
-  writeFileSync(join(memory, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: `${major}.${minor}.${patch + 1}`, exports: "./src/index.ts" }));
+  writeFileSync(join(memory, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: `${major}.${minor + 3}.${patch + 1}`, exports: "./src/index.ts" }));
   expect(verifyRecoveryTarget("upgrade", staged.root, version)).toBeTypeOf("string");
-  writeFileSync(join(memory, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: `${major}.${minor + 1}.0`, exports: "./src/index.ts" }));
+  writeFileSync(join(memory, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: `${major + 1}.0.0`, exports: "./src/index.ts" }));
   expect(() => verifyRecoveryTarget("upgrade", staged.root, version)).toThrow("identity/version mismatch");
 });
 

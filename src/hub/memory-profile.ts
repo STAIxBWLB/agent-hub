@@ -6,7 +6,8 @@ import {
   resolveShardProfile, shardKeyHash,
   type BoundProfile, type ProfileInput, type StoreOptions,
 } from "@staix/agent-mem";
-import { AGENT_MEM_RANGE, agentMemVersionInRange } from "./agent-mem-range.ts";
+import * as agentMemExports from "@staix/agent-mem";
+import { AGENT_MEM_HOST_API_RANGE, AGENT_MEM_RANGE, agentMemHostApiOk, agentMemVersionInRange } from "./agent-mem-range.ts";
 
 /**
  * Whether a curated store directory holds a derived index. agent-mem names the file per index version (`index.db` through 0.24.0, `index-v4.db` from 0.25.0, a later release its own), and
@@ -17,11 +18,14 @@ export function memoryIndexExists(memoryDir: string): boolean {
 }
 
 /** Validate metadata located through the actual imported entry, never the declared range alone. */
-export function assertAgentMemVersion(metadata: unknown, range: string = AGENT_MEM_RANGE): string {
+export function assertAgentMemVersion(metadata: unknown, range: string = AGENT_MEM_RANGE, hostApi?: { min?: unknown; version?: unknown }): string {
   const value = (metadata ?? {}) as { name?: unknown; version?: unknown };
   if (value.name !== "@staix/agent-mem" || !agentMemVersionInRange(value.version, range)) {
     const loaded = typeof value.version === "string" ? value.version : "unknown";
-    throw new Error(`the loaded agent-mem ${loaded} is not a plain release inside the declared patch range ${range}; install a release in that range with \`bun install --frozen-lockfile\`, or raise the range in package.json with a compatibility review`);
+    throw new Error(`the loaded agent-mem ${loaded} is not a plain release inside the declared range ${range}; install a release in that range with \`bun install --frozen-lockfile\`, or raise the range in package.json with a compatibility review`);
+  }
+  if (hostApi && !agentMemHostApiOk(hostApi.min, hostApi.version)) {
+    throw new Error(`the loaded agent-mem ${value.version as string} declares host API ${String(hostApi.min)}..${String(hostApi.version)}, which does not intersect the supported ${AGENT_MEM_HOST_API_RANGE[0]}..${AGENT_MEM_HOST_API_RANGE[1]} (or HOST_API_MIN and HOST_API_VERSION are missing or invalid); install a release that exports a compatible host API with \`bun install --frozen-lockfile\`, or review the hub for the new host API`);
   }
   return value.version as string;
 }
@@ -36,14 +40,18 @@ const loadedAgentMem = (() => {
     const metadata: unknown = JSON.parse(readFileSync(new URL("../package.json", entry), "utf8"));
     const actual = metadata && typeof metadata === "object" && typeof (metadata as { version?: unknown }).version === "string"
       ? (metadata as { version: string }).version : "unknown";
-    try { return { version: assertAgentMemVersion(metadata), valid: true }; }
-    catch { return { version: actual, valid: false }; }
-  } catch { return { version: "unknown", valid: false }; }
+    // Read through the namespace, never a named import: a package without the constants must refuse with a cause, not fail at module link.
+    const exported = agentMemExports as unknown as { HOST_API_MIN?: unknown; HOST_API_VERSION?: unknown };
+    try { return { version: assertAgentMemVersion(metadata, AGENT_MEM_RANGE, { min: exported.HOST_API_MIN, version: exported.HOST_API_VERSION }), valid: true, reason: undefined }; }
+    catch (error) { return { version: actual, valid: false, reason: (error as Error).message }; }
+  } catch (error) { return { version: "unknown", valid: false, reason: `the loaded agent-mem could not be attested: ${(error as Error).message}` }; }
 })();
 export const AGENT_MEM_VERSION = loadedAgentMem.version;
 function assertLoadedAgentMem(): void {
-  if (!loadedAgentMem.valid) throw new Error(`the loaded agent-mem ${AGENT_MEM_VERSION} is not a plain release inside the declared patch range ${AGENT_MEM_RANGE}; reinstall it with \`bun install --frozen-lockfile\`, or raise the range in package.json with a compatibility review`);
+  if (!loadedAgentMem.valid) throw new Error(loadedAgentMem.reason ?? `the loaded agent-mem ${AGENT_MEM_VERSION} is not usable`);
 }
+/** #1611: why the loaded agent-mem is refused (version or host API, loaded and supported ranges, next step); undefined when it is usable. */
+export const AGENT_MEM_REFUSAL: string | undefined = loadedAgentMem.valid ? undefined : loadedAgentMem.reason;
 export const MEMORY_PROFILE_UNAVAILABLE = "memory profile unavailable; inspect the selector and generation state, run ahub memory profile-check; use amem migrate --deactivate only to stop using the selected generation";
 const UNAVAILABLE = MEMORY_PROFILE_UNAVAILABLE;
 /** agent-mem#15 T2: a split marker that is not active (captured, malformed) is never read as an empty or legacy store. */
