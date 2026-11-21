@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
-import type { Facts } from "./facts.ts";
+import { MAX_RECEIPTS_PER_PEER, type Facts } from "./facts.ts";
+import { MAX_OBSERVATIONS } from "./supervision-rules.ts";
 import { classifyShellWrite } from "./task-shell-command.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 
@@ -36,8 +37,14 @@ export function editGuard(input: { root: string; peer: string; task: number; tur
     write(file: string): boolean | undefined {
       current(); const arm = input.arm(), path = name(file); let hash: string;
       try { hash = digest(readFileSync(file)); } catch (error) {
-        if (arm === "occ_guard" || arm === "combined_guard") throw new PreEffectToolRefusal("edit guard cannot read the current file; inspect and re-read before retrying");
-        return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? true : undefined;
+        const code = (error as NodeJS.ErrnoException)?.code;
+        current();
+        if (code === "ENOENT") return true;
+        if (arm === "occ_guard" || arm === "combined_guard") {
+          const cause = typeof code === "string" && /^[A-Z][A-Z0-9_]{0,31}$/.test(code) ? code : "unavailable";
+          throw new PreEffectToolRefusal(`edit guard cannot read the current file (${cause}); inspect it before retrying`);
+        }
+        return undefined;
       }
       current();
       const receipt = input.facts.readReceipt(input.peer, input.task, path);
@@ -70,19 +77,19 @@ export class EditEvidence {
     if (!row || row.revision !== revision) {
       row = { revision, unverified: 0, unknownShell: 0, failed: false, cascading: new Set() };
       this.rows.delete(task); this.rows.set(task, row);
-      while (this.rows.size > 100) this.rows.delete(this.rows.keys().next().value as number);
+      while (this.rows.size > MAX_OBSERVATIONS) this.rows.delete(this.rows.keys().next().value as number);
     }
     return row;
   }
-  unknownShell(task: number, revision: string): void { const row = this.row(task, revision); row.unknownShell = Math.min(256, row.unknownShell + 1); }
+  unknownShell(task: number, revision: string): void { const row = this.row(task, revision); row.unknownShell = Math.min(MAX_RECEIPTS_PER_PEER, row.unknownShell + 1); }
   check(task: number, revision: string, result: "failed" | "passed"): void {
     const row = this.row(task, revision); row.failed = result === "failed"; row.cascading.clear();
   }
   diagnosticRead(task: number, revision: string): void { const row = this.row(task, revision); row.failed = false; row.cascading.clear(); }
   write(task: number, revision: string, file: string, unverified: boolean): void {
     const row = this.row(task, revision);
-    if (unverified) row.unverified = Math.min(256, row.unverified + 1);
-    if (row.failed && row.cascading.size < 256) row.cascading.add(createHash("sha256").update(file).digest("hex"));
+    if (unverified) row.unverified = Math.min(MAX_RECEIPTS_PER_PEER, row.unverified + 1);
+    if (row.failed && row.cascading.size < MAX_RECEIPTS_PER_PEER) row.cascading.add(createHash("sha256").update(file).digest("hex"));
   }
   snapshot(task: number, revision: string) {
     const row = this.rows.get(task);

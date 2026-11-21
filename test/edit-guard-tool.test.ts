@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTool, type ToolContext } from "../src/local/tools.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
+import { realPath } from "../src/hub/project.ts";
 
 test("host guard sees full reads and can refuse before file mutation", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "edit-guard-"));
@@ -90,5 +91,25 @@ test("edit enforcement is ignored in tracked config and accepted in untracked lo
     expect(loadConfig(cwd).edit_governance?.arm).toBe("baseline");
     writeFileSync(join(cwd, ".agenthub", "config.local.json"), value);
     expect(loadConfig(cwd).edit_governance?.arm).toBe("route_guard");
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("OCC permits creating absent files and refuses existing unread files", async () => {
+  const { editGuard } = await import("../src/hub/edit-guard.ts");
+  const cwd = realPath(mkdtempSync(join(tmpdir(), "edit-guard-create-")));
+  try {
+    writeFileSync(join(cwd, "existing.txt"), "before");
+    const facts = { recordRead: () => {}, readReceipt: () => undefined };
+    for (const arm of ["occ_guard", "combined_guard"] as const) {
+      const guard = editGuard({ root: cwd, peer: "local", task: 1, turn: "one", ownerEpoch: "one", arm: () => arm, current: () => true, facts: facts as never });
+      const ctx: ToolContext = { cwd, deny: [], sandboxProfile: "", permit: async () => true, send: () => "sent", editGuard: guard };
+      expect(await runTool("write", JSON.stringify({ path: `${arm}.txt`, content: "created" }), ctx)).toContain(`wrote ${arm}.txt`);
+      expect(readFileSync(join(cwd, `${arm}.txt`), "utf8")).toBe("created");
+      expect(await runTool("write", JSON.stringify({ path: "existing.txt", content: "changed" }), ctx)).toContain("blind or stale");
+      expect(readFileSync(join(cwd, "existing.txt"), "utf8")).toBe("before");
+      const directory = join(cwd, "directory");
+      if (!existsSync(directory)) mkdirSync(directory);
+      expect(() => guard.write(directory)).toThrow("EISDIR");
+    }
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

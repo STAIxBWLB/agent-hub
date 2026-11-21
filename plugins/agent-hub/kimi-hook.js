@@ -10238,7 +10238,8 @@ async function runTool(name, rawArgs, ctx) {
         const from = Math.max(1, Number(a.offset) || 1);
         const out = lines.slice(from - 1, from - 1 + (Number(a.limit) || 2000)).map((l, i) => `${from + i}	${l}`).join(`
 `);
-        ctx.editGuard?.read(file, bytes, a.offset === undefined && a.limit === undefined && lines.length <= 2000 && out.length <= OUTPUT_CAP);
+        ctx.editGuard?.read(file, bytes, a.offset === undefined && a.limit === undefined && out.split(`
+`).length === lines.length && out.length <= OUTPUT_CAP);
         return out.length > OUTPUT_CAP ? `${out.slice(0, OUTPUT_CAP)}
 (truncated: read again with offset/limit)` : out;
       }
@@ -19624,7 +19625,7 @@ var init_local_worker = __esm(() => {
             }
             const taskToolName = name.replace(/^mcp__[^ ]+__/, "");
             const reviewNoteWrite = taskToolName === "hub_remember" || taskToolName === "hub_task_propose";
-            const toolRun = () => this.probeConfinement && !["read", "write", "edit"].includes(name) ? Promise.resolve(formatProbeToolRefusal(new ProbeToolRefusal("tool_unavailable"))) : reviewScope.excluded && reviewNoteWrite ? Promise.resolve("error: anchored review in this batch; save notes in a later turn") : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
+            const toolRun = () => this.probeConfinement && !["read", "write", "edit"].includes(name) ? Promise.resolve(formatProbeToolRefusal(new ProbeToolRefusal("tool_unavailable"))) : reviewScope.excluded && reviewNoteWrite ? Promise.resolve("error: anchored review in this batch; save notes in a later turn") : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, this.probeConfinement ? ctx : this.toolContext(envs, turnSignal, !!policy?.pii, reply, policy?.task));
             const probe = this.probeSession;
             const running = probe ? (async () => {
               try {

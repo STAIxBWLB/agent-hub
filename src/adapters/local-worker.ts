@@ -523,7 +523,7 @@ export class LocalPeer extends BasePeer {
             ? Promise.resolve("error: anchored review in this batch; save notes in a later turn")
             : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool
               ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e: Error) => `error: ${e.message}`)
-              : runTool(name, call.function.arguments, ctx);
+              : runTool(name, call.function.arguments, this.probeConfinement ? ctx : this.toolContext(envs, turnSignal, !!policy?.pii, reply, policy?.task));
           const probe = this.probeSession;
           const running = probe ? (async () => {
             try {

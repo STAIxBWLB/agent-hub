@@ -98,3 +98,36 @@ test("Pi route guard refuses before its bridge executes a classified write", asy
     expect((await call("write", { path: "a.txt", content: "after" }, "write")).text).toContain("wrote a.txt");
   } finally { board?.close(); person?.close(); await daemon?.stop(); rmSync(cwd, { recursive: true, force: true }); }
 });
+
+test("local resolves the guard again after accepting in the same turn", async () => {
+  const cwd = realPath(mkdtempSync(join(tmpdir(), "edit-accept-daemon-"))), stateDir = join(cwd, "state");
+  const previous = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "fixture-key";
+  mkdirSync(join(cwd, ".agenthub")); writeFileSync(join(cwd, ".agenthub", "routing.toml"), '[local]\nfixed_model="vllm/test"\n');
+  const model = startFakeModelServer({ key: "fixture-key", models: ["vllm/test"], script: body => {
+    if (!body.messages.some(message => String(message.content).includes("exercise accept"))) return { content: "no action" };
+    const results = body.messages.filter(message => message.role === "tool");
+    if (!results.length) return { tool_calls: [toolCall("hub_task_accept", { id: 1 })] };
+    if (results.length === 1) return { tool_calls: [toolCall("bash", { command: "echo changed > a.txt" })] };
+    return { content: "finished" };
+  } });
+  let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, person: ControlClient | undefined;
+  try {
+    daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, unattended: true,
+      config: { ...DEFAULT_CONFIG, batch_ms: 0, edit_governance: { arm: "route_guard" }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, omniroute: { urls: [model.url], access_hosts: [] } } });
+    person = await ControlClient.connect(stateDir, { role: "console" });
+    expect((await person.request({ t: "start", peer: "local", args: { model: "vllm/test" } })).ok).toBe(true);
+    expect((await person.request({ t: "task", op: "hub_task_propose", args: { title: "accept fixture", class: "summarize" } })).ok).toBe(true);
+    const assigned = await person.request({ t: "task", op: "task_assign", args: { id: 1, peer: "local", role: "owner" } }); expect(assigned.ok, JSON.stringify(assigned)).toBe(true);
+    const peer = daemon.bus.peers.get("local")!; for (let i = 0; i < 100 && peer.state === "busy"; i++) await Bun.sleep(10);
+    await peer.deliver([newEnvelope("user", "exercise accept", { refs: { task: "1" }, to: ["local"] })]);
+    for (let i = 0; i < 300 && !model.requests.some(request => request.body.messages.filter((message: { role: string }) => message.role === "tool").length >= 2); i++) await Bun.sleep(10);
+    const request = model.requests.findLast(item => item.body.messages.filter((message: { role: string }) => message.role === "tool").length >= 2);
+    expect(request).toBeDefined(); const results = request!.body.messages.filter((message: { role: string; content?: unknown }) => message.role === "tool");
+    expect(String(results[0]!.content)).toContain("in_progress"); expect(String(results[1]!.content)).toContain("shell write refused");
+    expect(existsSync(join(cwd, "a.txt"))).toBe(false);
+  } finally {
+    person?.close(); await daemon?.stop(); model.stop();
+    if (previous === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = previous;
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

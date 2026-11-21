@@ -132,7 +132,7 @@ A role on the task is not the authority to run what the proposal names. Acceptin
 | Codex and ACP native tools | `unavailable` | A pre-effect hub deny is not guaranteed |
 | External tree-only peers | `unavailable` | No pre-effect tool stream |
 
-Route enforcement refuses a shell command only when `classifyShellWrite` proves a write. `unknown` is observed but does not become a refusal. OCC checks the current hash immediately before an admitted write and refuses a blind or stale receipt at check time with the current SHA-256 and a re-read instruction. The local tool and native hook are best-effort: another process can change the file after the check, so the check is not atomic against concurrent writers. The Design 1.2 0444 worktree and `ahub-edit` isolation is the upgrade path and is outside this change.
+Route enforcement refuses a shell command only when `classifyShellWrite` proves a write. `unknown` is observed but does not become a refusal. OCC checks the current hash immediately before an admitted write and refuses a blind or stale receipt at check time with the current SHA-256 and a re-read instruction. An absent target may be created; other read errors refuse with a bounded cause. The local tool and native hook are best-effort: another process can change the file after the check, so the check is not atomic against concurrent writers. The Design 1.2 0444 worktree and `ahub-edit` isolation is the upgrade path and is outside this change.
 
 The edit observations bind to the task's current owner revision, retain only bounded counts and in-memory file identifiers, and never persist a per-read or per-edit event. Shadow mode does not send a worker turn; advisory mode uses the existing proposal path.
 

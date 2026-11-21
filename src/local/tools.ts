@@ -279,7 +279,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         const lines = bytes.toString("utf8").split("\n");
         const from = Math.max(1, Number(a.offset) || 1);
         const out = lines.slice(from - 1, from - 1 + (Number(a.limit) || 2000)).map((l, i) => `${from + i}\t${l}`).join("\n");
-        ctx.editGuard?.read(file, bytes, a.offset === undefined && a.limit === undefined && lines.length <= 2000 && out.length <= OUTPUT_CAP);
+        ctx.editGuard?.read(file, bytes, a.offset === undefined && a.limit === undefined && out.split("\n").length === lines.length && out.length <= OUTPUT_CAP);
         return out.length > OUTPUT_CAP ? `${out.slice(0, OUTPUT_CAP)}\n(truncated: read again with offset/limit)` : out;
       }
       case "write": {
