@@ -23,5 +23,6 @@ const positive = (value: unknown): value is number => typeof value === "number" 
 
 /** Whether the package's host API constants are valid positive integers (MIN <= VERSION) and their range intersects the supported one. */
 export function agentMemHostApiOk(min: unknown, version: unknown, supported: readonly [number, number] = AGENT_MEM_HOST_API_RANGE): boolean {
-  return positive(min) && positive(version) && min <= version && min <= supported[1] && version >= supported[0];
+  const [lowest, highest] = supported;
+  return positive(min) && positive(version) && min <= version && min <= highest && version >= lowest;
 }
