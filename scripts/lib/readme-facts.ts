@@ -21,7 +21,7 @@ export function factValues(sources: FactSources): { facts: Record<string, string
   let pkg: { version?: string; engines?: { bun?: string }; dependencies?: Record<string, string> };
   try { pkg = JSON.parse(sources.packageJson); } catch { return { error: "package.json is not valid JSON" }; }
   const floor = /^>=\s*(\d+\.\d+\.\d+)$/.exec(pkg.engines?.bun ?? "")?.[1], memoryPin = pkg.dependencies?.["@staix/agent-mem"];
-  if (!floor || !memoryPin || !pkg.version) return { error: "package.json needs a version, engines.bun as `>=x.y.z` and an exact @staix/agent-mem dependency" };
+  if (!floor || !memoryPin || !pkg.version) return { error: "package.json needs a version, engines.bun as `>=x.y.z` and an @staix/agent-mem dependency (the declared patch range)" };
   return { facts: {
     "bun-floor": floor,
     "bun-pinned": sources.bunVersion.trim(),

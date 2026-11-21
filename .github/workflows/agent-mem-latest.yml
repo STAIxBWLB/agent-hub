@@ -1,0 +1,84 @@
+name: agent-mem-latest
+
+# #1605: package.json declares agent-mem as a patch range (`~X.Y.Z`), so a plain patch release reaches users without a hub
+# release. This canary resolves the newest in-range patch from the registry (never the lockfile) and runs the memory-surface
+# gate against it, so a bad patch shows up soon after it is published. It writes neither the manifest nor the lockfile: the
+# patch is installed beside them, and a guard step fails the job if either file changed. Nothing is committed.
+#
+# `scripts/check.sh` is the full CI gate but cannot run here: its first step is `bun install --frozen-lockfile`, which would
+# reinstall the declared floor and undo the resolved patch (and rewriting the manifest to avoid that would write the lock).
+on:
+  schedule:
+    - cron: "43 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-mem-latest
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  resolve:
+    name: resolve the newest in-range patch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      newer: ${{ steps.resolve.outputs.newer }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Resolve from the registry, never the lockfile
+        id: resolve
+        run: node scripts/agent-mem-latest.mjs
+
+  gate:
+    name: gate on the newest in-range patch
+    needs: resolve
+    # A dispatch runs even when the floor is already the newest patch, so the job can be exercised on demand.
+    if: needs.resolve.outputs.newer == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Install the resolved patch without writing the manifest or the lockfile
+        env:
+          LATEST: ${{ needs.resolve.outputs.version }}
+        run: bun add --no-save "@staix/agent-mem@$LATEST"
+      - name: Prove package.json and bun.lock were not written
+        run: |
+          git diff --exit-code -- package.json bun.lock
+          test -z "$(git status --porcelain -- package.json bun.lock)" || { git status --porcelain -- package.json bun.lock; exit 1; }
+      - name: Confirm the resolved patch is the one installed
+        env:
+          LATEST: ${{ needs.resolve.outputs.version }}
+        run: |
+          installed=$(bun -e 'console.log(JSON.parse(require("node:fs").readFileSync("node_modules/@staix/agent-mem/package.json", "utf8")).version)')
+          test "$installed" = "$LATEST" || { echo "installed agent-mem $installed, resolved $LATEST"; exit 1; }
+      - name: Memory-surface gate (types, store, profile, recovery, doctor, range rules)
+        run: |
+          bun x tsc --noEmit
+          bun test test/memory.test.ts test/memory-store.test.ts test/memory-parity.test.ts \
+            test/memory-profile.test.ts test/memory-profile-daemon.test.ts \
+            test/conductor-recovery-package.test.ts test/recovery-package-memory.test.ts \
+            test/doctor-model-aliases.test.ts test/npm-pin.test.ts

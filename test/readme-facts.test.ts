@@ -57,5 +57,7 @@ test("strict mode fails a missing listed file; tolerant mode (release-prepare in
 
 test("factValues says why a package.json cannot give the facts", () => {
   expect(factValues({ packageJson: pkg("0.34.1"), bunVersion: "1.4.2" })).toMatchObject({ facts: { "bun-floor": "1.4.2", "agent-mem-pin": "0.22.1" } });
+  // #1605: the declared dependency is a patch range, rendered as declared.
+  expect(factValues({ packageJson: pkg("0.34.1", ">=1.4.2", "~0.32.1"), bunVersion: "1.4.2" })).toMatchObject({ facts: { "agent-mem-pin": "~0.32.1" } });
   expect("error" in factValues({ packageJson: pkg("0.34.1", "^1.4.2"), bunVersion: "1.4.2" })).toBe(true);
 });

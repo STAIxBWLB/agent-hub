@@ -13672,7 +13672,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.4"
     },
     dependencies: {
-      "@staix/agent-mem": "0.32.0"
+      "@staix/agent-mem": "~0.32.1"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -13859,6 +13859,12 @@ var init_research_evidence = __esm(() => {
 var init_review_comments = __esm(() => {
   init_envelope();
   init_review_anchor();
+});
+
+// node_modules/@staix/agent-mem/src/memory/recap-scratch.ts
+var RECAP_SCRATCH;
+var init_recap_scratch = __esm(() => {
+  RECAP_SCRATCH = Symbol("recap scratch without search");
 });
 
 // node_modules/@staix/agent-mem/src/memory/screen.ts
@@ -14691,6 +14697,7 @@ var init_reader_lease = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/store.ts
 var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP, curatedDepth, curatedPending;
 var init_store = __esm(() => {
+  init_recap_scratch();
   init_brief_curated();
   init_curated_cache_state();
   init_sync_placement_guard();
@@ -14770,6 +14777,7 @@ var init_gc = __esm(() => {
 
 // node_modules/@staix/agent-mem/src/memory/curated-read.ts
 var init_curated_read = __esm(() => {
+  init_recap_scratch();
   init_store();
   init_shard();
 });
