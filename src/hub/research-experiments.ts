@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { looksSecret } from "@staix/agent-mem";
 import { canonicalJson } from "./packs.ts";
+import { latestTaskRecords, type TaskRecord } from "./research.ts";
+import { isModelEvidence } from "./events.ts";
+import { safeModelLabel } from "../omniroute/usage.ts";
 import { parseAttemptReceipt, runnerSealing, type AttemptReceiptV1 } from "./research-runner.ts";
 import { parseDeliverableClaims, parseDeliverableRecords, deliverableId, DELIVERABLE_LIMITS, type DeliverableClaim, type DeliverableRecord } from "./deliverables.ts";
 
@@ -471,4 +474,133 @@ export function protocolApprovalBindingMatches(protocol: ExperimentProtocolContr
     const record = object(binding, undefined, "approval");
     return record.protocolHash === hash && record.evaluatorHash === evaluator;
   } catch { return false; }
+}
+
+/** #1556 T4: these labels describe preregistered groups; this module never selects or starts an arm. */
+export const EDIT_EXPERIMENT_ARMS = ["baseline", "soft_guidance", "route_guard", "occ_guard", "combined_guard"] as const;
+export type EditExperimentArm = (typeof EDIT_EXPERIMENT_ARMS)[number];
+export interface EditRates {
+  arm: EditExperimentArm | null;
+  tasks: number;
+  editTotal: number | null;
+  shellTotal: number | null;
+  editBlindOrStale: number | null;
+  shellBlindOrStale: number | null;
+  p: number | null;
+  bE: number | null;
+  bS: number | null;
+  B: number | null;
+  dBdp: number | null;
+  dBdbS: number | null;
+}
+
+/** A null, malformed, overflowed or missing count remains unknown; it is never silently omitted or made zero. */
+export function editRates(blocks: readonly (import("./research-record.ts").EditGovernanceBlock | undefined)[]): EditRates {
+  const sum = (pick: (block: import("./research-record.ts").EditGovernanceBlock) => unknown): number | null => {
+    if (!blocks.length) return null;
+    let total = 0;
+    for (const block of blocks) {
+      if (!block) return null;
+      const value = pick(block);
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || !Number.isSafeInteger(total + value)) return null;
+      total += value;
+    }
+    return total;
+  };
+  const arms = new Set(blocks.map(block => block?.policyArm));
+  const only = arms.size === 1 ? [...arms][0] : undefined;
+  const arm = typeof only === "string" && (EDIT_EXPERIMENT_ARMS as readonly string[]).includes(only) ? only as EditExperimentArm : null;
+  const e = sum(block => block.editTool?.total), s = sum(block => block.shellRoute?.total);
+  const eb = sum(block => block.editTool?.blindOrStale), sb = sum(block => block.shellRoute?.blindOrStale);
+  const unattributed = sum(block => block.unattributedTreeWrites);
+  const gradeComplete = (route: "editTool" | "shellRoute") => blocks.every(block => {
+    const counts = block?.[route];
+    if (!counts) return false;
+    const values = [counts.total, counts.verifiedFullRead, counts.partialReadOnly, counts.blindOrStale];
+    if (values.some(value => typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) return false;
+    const graded = counts.verifiedFullRead! + counts.partialReadOnly! + counts.blindOrStale!;
+    return Number.isSafeInteger(graded) && graded === counts.total;
+  });
+  const total = e !== null && s !== null && Number.isSafeInteger(e + s) ? e + s : null;
+  const p = unattributed === 0 && total !== null && total > 0 ? s! / total : null;
+  const bE = unattributed === 0 && gradeComplete("editTool") && e !== null && e > 0 && eb !== null && eb <= e ? eb / e : null;
+  const bS = unattributed === 0 && gradeComplete("shellRoute") && s !== null && s > 0 && sb !== null && sb <= s ? sb / s : null;
+  const B = p !== null && bE !== null && bS !== null && unattributed === 0 ? (1 - p) * bE + p * bS : null;
+  return { arm, tasks: blocks.length, editTotal: e, shellTotal: s, editBlindOrStale: eb, shellBlindOrStale: sb,
+    p, bE, bS, B, dBdp: bE !== null && bS !== null ? bS - bE : null, dBdbS: p };
+}
+
+/** Descriptive 2x2 contrast; callers must separately establish a comparable experimental design. */
+export function editFactorial(baseline: EditRates, route: EditRates, occ: EditRates, combined: EditRates) {
+  if (baseline.arm !== "baseline" || route.arm !== "route_guard" || occ.arm !== "occ_guard" || combined.arm !== "combined_guard" || [baseline.B, route.B, occ.B, combined.B].some(value => value === null || !Number.isFinite(value))) return { routeReduction: null, occReduction: null, combinedReduction: null, subAdditive: null };
+  const routeReduction = baseline.B! - route.B!, occReduction = baseline.B! - occ.B!, combinedReduction = baseline.B! - combined.B!;
+  return { routeReduction, occReduction, combinedReduction, subAdditive: combinedReduction < routeReduction + occReduction };
+}
+
+/** Group only rows with unambiguous owner, model and family; ambiguous/private rows are counted, never guessed or duplicated. */
+export function groupEditRates(records: readonly TaskRecord[], familyOf: (peer: string) => string | undefined) {
+  const groups = new Map<string, { family: string; ownerModel: string; taskClass: string; arm: EditExperimentArm; modelEvidence: Set<string>; blocks: import("./research-record.ts").EditGovernanceBlock[] }>();
+  let withheld = 0, unknown = 0;
+  for (const record of latestTaskRecords(records)) {
+    if (record.pii !== false) { withheld++; continue; }
+    const owners = Array.isArray(record.owners) ? [...new Set(record.owners)] : [], models = Array.isArray(record.ownerModels) ? record.ownerModels : [], block = record.edits;
+    let family: string | undefined;
+    try { family = owners.length === 1 && typeof owners[0] === "string" ? familyOf(owners[0]) : undefined; } catch { /* unavailable family is unknown */ }
+    const model = models[0], safeFamily = safeModelLabel(family), safeModel = safeModelLabel(model?.model), safeClass = safeModelLabel(record.class);
+    if (!safeFamily || safeFamily.toLowerCase() === "unknown" || models.length !== 1 || !safeModel || safeModel.toLowerCase() === "unknown" || !isModelEvidence(model?.evidence) || !safeClass || !block || !(EDIT_EXPERIMENT_ARMS as readonly string[]).includes(block.policyArm)) { unknown++; continue; }
+    const arm = block.policyArm as EditExperimentArm, key = JSON.stringify([safeFamily, safeModel, safeClass, arm]);
+    let group = groups.get(key);
+    if (!group) { group = { family: safeFamily, ownerModel: safeModel, taskClass: safeClass, arm, modelEvidence: new Set(), blocks: [] }; groups.set(key, group); }
+    group.modelEvidence.add(model!.evidence); group.blocks.push(block);
+  }
+  return { groups: [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, group]) => ({ family: group.family, ownerModel: group.ownerModel, taskClass: group.taskClass, armEvidence: "last_observed" as const, modelEvidence: [...group.modelEvidence].sort(), ...editRates(group.blocks) })), withheld, unknown };
+}
+
+/** One externally evidenced component total over an identical set of task identities. */
+export interface EditCostComponent { amount: number; unit: string; tasks: readonly string[]; evidence: string }
+export interface VerifiedSuccesses { tasks: readonly string[]; evidence: string }
+export interface EditSuccessCost { unit: string; verifiedSuccesses: number; execution: number; verification: number; rework: number; human: number; total: number }
+
+/** No TaskRecord aggregate is converted to cost: all four same-unit component totals and a verified-success set are required. */
+export function editSuccessCost(costs: { execution?: EditCostComponent; verification?: EditCostComponent; rework?: EditCostComponent; human?: EditCostComponent }, verified: VerifiedSuccesses | undefined): EditSuccessCost | null {
+  const components = [costs.execution, costs.verification, costs.rework, costs.human];
+  const validText = (value: unknown): value is string => typeof value === "string" && !!value.trim() && value === value.trim();
+  const taskSet = (value: unknown): string[] | undefined => {
+    if (!Array.isArray(value) || !value.length || value.some(item => !validText(item)) || new Set(value).size !== value.length) return undefined;
+    return [...value].sort();
+  };
+  const success = taskSet(verified?.tasks);
+  if (!success || !validText(verified?.evidence)) return null;
+  let scope: string[] | undefined, unit: string | undefined;
+  for (const component of components) {
+    if (!component || !Number.isFinite(component.amount) || component.amount < 0 || !validText(component.unit) || !validText(component.evidence)) return null;
+    const tasks = taskSet(component.tasks); if (!tasks) return null;
+    if (scope && (scope.length !== tasks.length || scope.some((task, index) => task !== tasks[index])) || unit !== undefined && unit !== component.unit) return null;
+    scope = tasks; unit = component.unit;
+  }
+  if (!scope || !unit) return null;
+  const inScope = new Set(scope);
+  if (success.some(task => !inScope.has(task))) return null;
+  const [execution, verification, rework, human] = components.map(component => component!.amount / success.length);
+  const total = execution! + verification! + rework! + human!;
+  if (!Number.isFinite(total)) return null;
+  return { unit, verifiedSuccesses: success.length, execution: execution!, verification: verification!, rework: rework!, human: human!, total };
+}
+
+/** Descriptive net-benefit arithmetic only; costs, deltas and penalties are supplied by the caller, never inferred. */
+export function editMarginalBenefit(rates: EditRates, input: { reworkCost: number | null; deltaP: number | null; deltaBE: number | null; deltaBS: number | null; routePenalty: number | null; occPenalty: number | null }) {
+  const finite = (value: number | null): value is number => value !== null && Number.isFinite(value);
+  const cost = finite(input.reworkCost) && input.reworkCost >= 0 ? input.reworkCost : null;
+  const route = cost !== null && finite(rates.dBdp) && finite(input.deltaP) && finite(input.routePenalty) && input.routePenalty >= 0
+    ? cost * rates.dBdp * input.deltaP - input.routePenalty : null;
+  const occ = cost !== null && finite(rates.p) && rates.p >= 0 && rates.p <= 1 && finite(input.deltaBE) && finite(input.deltaBS) && finite(input.occPenalty) && input.occPenalty >= 0
+    ? cost * (rates.p * input.deltaBS + (1 - rates.p) * input.deltaBE) - input.occPenalty : null;
+  return { route: route !== null && Number.isFinite(route) ? route : null, occ: occ !== null && Number.isFinite(occ) ? occ : null };
+}
+
+/** A grouped contrast never combines different family, model or task-class identities. */
+export function editFactorialGroup(baseline: ReturnType<typeof groupEditRates>["groups"][number], route: ReturnType<typeof groupEditRates>["groups"][number], occ: ReturnType<typeof groupEditRates>["groups"][number], combined: ReturnType<typeof groupEditRates>["groups"][number]) {
+  const identity = (row: typeof baseline) => JSON.stringify([row.family, row.ownerModel, row.taskClass]);
+  if ([route, occ, combined].some(row => identity(row) !== identity(baseline))) return { routeReduction: null, occReduction: null, combinedReduction: null, subAdditive: null };
+  return editFactorial(baseline, route, occ, combined);
 }

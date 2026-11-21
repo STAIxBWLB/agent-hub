@@ -13,7 +13,7 @@ export const QUALITY_SCHEMA = "agent-hub.research-quality/v1";
 /** A quota gap is a silence between two readings of one peer longer than this. */
 export const QUOTA_GAP_MS = 60 * 60 * 1000;
 
-export interface FieldCoverage { n: number; unknown: number }
+export interface FieldCoverage { n: number; unknown: number; value?: null }
 export interface QuotaCoverage { readings: number; gaps: number; gapMs: number; stalenessP95Ms: number | null; clock: { event: number; measured: number } }
 export interface OutcomeCounts { approved: number; cancelled: number; firstPass: number; changesRequested: number }
 export interface QualityReport {
@@ -78,6 +78,8 @@ export function buildResearchQuality(records: readonly ResearchRecord[], events:
       note(name, value);
     }
   }
+  // Dataset records have no evidenced cost components. Keep the aggregate unknown and count coverage per v2 task.
+  fields["edits.costPerVerifiedSuccess"] = { n: v2.length, unknown: v2.length, value: null };
   const windowEvents = events.filter(e => {
     const measured = e.type === "quota" && typeof e.measuredAt === "string" ? Date.parse(e.measuredAt) : NaN;
     const t = Number.isFinite(measured) ? measured : Date.parse(e.at);

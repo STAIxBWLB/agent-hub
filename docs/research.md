@@ -103,6 +103,17 @@ delivery is created no later than it is updated), and treats the journal as unkn
 
 When a write's pre-image is unavailable, its route total remains known but all three read-grade fields are null. A task mixing observability kinds has unknown route totals instead of partial counts. A tree-write or post-edit total is null when any contributing turn lacks that evidence.
 
+### Edit-governance factorial analysis
+
+`groupEditRates` reads the latest task records and groups only an unambiguous single owner, owner model, family and recorded arm. Private records are withheld; missing or ambiguous identity and unknown arms are counted as unknown. `policyArm` is the last recorded turn arm, not proof that all turns used that arm; model evidence grades remain visible.
+
+The five labels are `baseline`, `soft_guidance`, `route_guard`, `occ_guard` and `combined_guard`. For each group, `p = S / (E + S)`, `b_E = E_blind_or_stale / E`, `b_S = S_blind_or_stale / S`, and `B = (1-p)b_E + p b_S`. Partial reads are reported separately and are not silently added to blind or stale. The sensitivities are `b_S - b_E` and `p`. Missing counts, invalid counts, a zero denominator, or unknown or nonzero unattributed tree writes make the affected result null, never zero.
+
+`editFactorial` compares baseline, route, OCC and combined rates as descriptive arithmetic; `editFactorialGroup` also requires the same family, owner model and task class on all four groups. Neither result establishes causal comparability; a separately preregistered and evidenced design is needed. `editMarginalBenefit` computes the declared formula only from caller-supplied costs, deltas and penalties and never selects a live arm.
+
+`C_success` stays unknown until a later spec defines measured, unit-consistent cost components; `quality.json` reports `fields["edits.costPerVerifiedSuccess"]` as null and counts every v2 task as unknown. `editSuccessCost` accepts caller-supplied component totals only when execution, verification, rework and human costs have separate evidence, the same unit and identical task sets, and the caller supplies an evidenced nonempty verified-success subset. These are declared inputs, not a host verification; aggregate TaskRecord tokens or time are never substituted.
+
+
 The record reads the board through a read-only handle (`readEvidence`): titles, details, plans, refs and notes are never
 decoded, and the journal's envelope bodies are never read.
 
