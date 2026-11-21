@@ -1390,7 +1390,6 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const selectedTask = s.panel === 3 ? data[at] : undefined;
     const holders = selectedTask && (selectedTask.planner !== undefined || selectedTask.plannerReason !== undefined)
       ? fieldLines((["planner", "owner", "reviewer"] as const).map((role): [string, unknown] => [role, taskHolderText(selectedTask, role)]), columns, now).flat() : [];
-    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : s.panel === 7 ? height - 2 - taskLines.length : height - (s.panel === 3 ? 2 + holders.length : s.panel === 1 && s.versions ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
     const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
     const cellRows = head ? data.map((row, i) => cells(s, row, i === at, now, stages)) : [];
     const rowsOf = head ? s.panel === 7 ? optionalTable(head, cellRows, columns, USAGE_DROP) : s.panel === 1 ? optionalTable(head, cellRows, columns) : s.panel === 3 && s.backlogView ? optionalTable(head, cellRows, columns, ["AGE", "CLASS", "DEPS", "PRI"]) : table(head, cellRows, columns) : undefined;
@@ -1425,6 +1424,9 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
       }
       lines.push(fitLine(parts, columns));
     }
+    // #1607: the row window is what is left after the lines already above the table (panel notes), its header and what
+    // follows it, so the selected row is never cut off by the body height.
+    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - lines.length - 1 - (s.panel === 3 ? holders.length : s.panel === 7 ? taskLines.length : 0)); const start = Math.max(0, at - capacity + 1);
     lines.push(fitLine([span("  "), ...(rowsOf?.[0] ?? [span(`peer ${s.peerFilter ?? "all"}  kind ${s.kindFilter ?? "all"}`, "info")])], columns));
     for (let i = start; i < Math.min(data.length, start + capacity); i++) {
       const selected = i === at;

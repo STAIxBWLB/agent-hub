@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Open or attach a verified GitHub PR for a managed worktree at task completion (Refs #1549, hub task 1019).
+- The console keeps the selected row on screen in the Settings panel: the row window now leaves room for the notes above the table (#1607, hub task 1049).
 
 ## 0.45.0
 
