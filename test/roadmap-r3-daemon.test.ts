@@ -134,7 +134,7 @@ test("decompose is the planner's model call over the wire: an ordinary agent and
   const denied = await f.op(f.ordinary, "hub_roadmap_decompose", { id: m.id });
   expect(denied.ok).toBe(false); expect(String(denied.error)).toMatch(/planner|conductor|person/);
   const extra = await f.op(f.planner, "hub_roadmap_decompose", { id: m.id, repo: "o/r" });
-  expect(extra.ok).toBe(false); expect(String(extra.error)).toContain("roadmap decompose takes a milestone id only");
+  expect(extra.ok).toBe(false); expect(String(extra.error)).toContain("roadmap decompose takes a milestone id and an optional part number");
   const human = await f.cli(["roadmap", "decompose", String(m.id)]);
   expect(human.code, human.err).toBe(0);
   expect(human.out).toContain(`Milestone ${m.id} decomposition`);

@@ -16043,7 +16043,7 @@ var init_considered_findings = __esm(() => {
 });
 
 // src/hub/board.ts
-var SURVEY_STORE_BYTES, GUIDANCE_VARIANT_SELECT, HOST_MERGE_ADOPTION, HOST_SPEC_ACCEPTANCE_CARRY, EXECUTION_REFERENCE_SELECT, CLASSES2, SPEC_ACCEPTANCE_FIELD_BYTES, SPEC_ACCEPTANCE_TOTAL_BYTES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
+var SURVEY_STORE_BYTES, GUIDANCE_VARIANT_SELECT, HOST_MERGE_ADOPTION, HOST_SPEC_ACCEPTANCE_CARRY, HOST_ROADMAP_DRAFT, EXECUTION_REFERENCE_SELECT, CLASSES2, SPEC_ACCEPTANCE_FIELD_BYTES, SPEC_ACCEPTANCE_TOTAL_BYTES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
   init_tool_refusal();
   init_guidance_variants();
@@ -16076,6 +16076,7 @@ var init_board = __esm(() => {
       CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN 1 ELSE 0 END AS valid_withdrawn_by`;
   HOST_MERGE_ADOPTION = Symbol("host merge adoption");
   HOST_SPEC_ACCEPTANCE_CARRY = Symbol("host spec acceptance carry");
+  HOST_ROADMAP_DRAFT = Symbol("host roadmap acceptance draft");
   EXECUTION_REFERENCE_SELECT = `SELECT
   CASE WHEN length(CAST(id AS BLOB))=64 THEN id END AS id,
   CASE WHEN length(CAST(project_id AS BLOB)) BETWEEN 1 AND 256 THEN project_id END AS project_id,
@@ -18963,7 +18964,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_roadmap_check", "Read roadmap drift findings and unknown evidence. Private tasks stay withheld; no writes are made.", {}),
     tool2("hub_roadmap_unplaced", "Read the open GitHub issues, open board tasks and active/draft specs that no live milestone places, each with why. Private tasks are a count only. partial: true means the GitHub read stopped early or a list was cut, so the lists are a lower bound; unavailable names evidence that could not be read. Read only: no write, no model call. Optional repo is owner/name.", { repo: { type: "string", maxLength: MILESTONE_LIMITS.issue } }),
     tool2("hub_roadmap_triage", "Ask the hub's model to suggest a milestone (or a new one) for unplaced work. Each suggestion cites the milestone and item words it matched and is saved as a pending model answer; nothing is linked until hub_roadmap_edit accept. Configured planner or unique conductor only. list: true reads the pending public suggestions without a model call and is open to any agent.", { repo: { type: "string", maxLength: MILESTONE_LIMITS.issue }, list: { type: "boolean" } }),
-    tool2("hub_roadmap_decompose", "Ask the hub's model to decompose one milestone into parts, from its outcome, the specs it links and the issues it links. Each part cites linked ids and says whether it needs a spec issue or goes straight to a task; the answer is saved as a pending model answer and nothing is linked, intaken or published. Configured planner or unique conductor only. On refusal inspect hub_roadmap_show and correct the named input.", { id: { type: "integer", minimum: 1 } }, ["id"]),
+    tool2("hub_roadmap_decompose", "Ask the hub's model to decompose one milestone into parts, from its outcome, the specs it links and the issues it links. Each part cites linked ids and says whether it needs a spec issue or goes straight to a task; the answer is saved as a pending model answer and nothing is linked, intaken or published. Pass accept with one part's number to hold that part as an intake draft instead: it is linked to the milestone, carries the part's spec-issue or task kind, and is offered to nobody until the person releases it with ahub intake approve. Configured planner or unique conductor only. On refusal inspect hub_roadmap_show and correct the named input.", { id: { type: "integer", minimum: 1 }, accept: { type: "integer", minimum: 1 } }, ["id"]),
     tool2("hub_roadmap_edit", "Create or change a milestone. Configured planner or unique conductor only; done/dropped are person-only. new/edit take fields; edit also needs the current revision. Link kinds are spec/issue/task/release; issue refs are owner/repo#N. accept applies exactly one pending triage suggestion through link (creating its proposed milestone first); reject drops it. No GitHub write, task assignment or model call. On refusal inspect hub_roadmap_show and correct the named input.", {
       op: { type: "string", enum: ["new", "edit", "link", "unlink", "order", "state", "accept", "reject"] },
       id: { type: "integer", minimum: 1 },

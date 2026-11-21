@@ -1,6 +1,6 @@
 import { requireConductor } from "./conductor.ts";
 import { managedTaskPullRequest } from "./task-pr.ts";
-import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind, type DecomposePart, type MilestoneDecomposition } from "./roadmap.ts";
+import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind, type DecomposePart, type DecomposeIntake, type MilestoneDecomposition } from "./roadmap.ts";
 import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
 import { readMirrorSnapshot, planRoadmapMirror, recoverMirrorBinding } from "./roadmap-sync.ts";
 import { roadmapExport } from "./roadmap-export.ts";
@@ -113,7 +113,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type NoteInput, type Scope, type Tier } from "@staix/agent-mem";
-import { HOST_SPEC_ACCEPTANCE_CARRY, HOST_MERGE_ADOPTION, parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type SpecAcceptanceCandidate, type SpecAcceptanceCommit, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
+import { HOST_SPEC_ACCEPTANCE_CARRY, HOST_MERGE_ADOPTION, HOST_ROADMAP_DRAFT, parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type SpecAcceptanceCandidate, type SpecAcceptanceCommit, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -854,6 +854,8 @@ export class Tasks {
   private readonly planReviewRequests = new Map<number, string>();
   private readonly repositories: TaskRepositories;
   private readonly incomingBacklog = new Set<number>();
+  /** One accept attempt per (answer, part), so two concurrent accepts of one part make one draft (#1480 R2 part 2). */
+  private readonly decompositionAccepts = new Map<string, Promise<unknown>>();
   private readonly plannerBacklog = new Map<PeerId, Set<number>>();
   private readonly plannerBlockedQueue = new Map<PeerId, string>();
   private readonly knownPlanners = new Set<PeerId>();
@@ -3920,6 +3922,81 @@ export class Tasks {
     return done(kept, dropped, saved, null);
   }
 
+  /**
+   * R2 (#1480) part 2: accept one proposed part as a held intake draft. The draft is the existing intake hold (`draft` and
+   * `backlog`): nothing offers, pulls or routes it until the person approves it with `ahub intake approve`, and this path grants
+   * no new release authority. It carries the milestone link and the part's `spec`/`task` kind, each part is accepted on its own,
+   * and a second accept of the same part returns the draft the first one made. The reply is a public view, so a private draft
+   * reads `[withheld]` and no notice repeats the part's words. One accept per part runs at a time: a concurrent caller waits for
+   * the attempt in flight and then reads the accept row, so two accepts of one part cannot make two drafts.
+   */
+  async roadmapDecomposePart(by: PeerId, rawId: unknown, rawPart: unknown): Promise<{ milestone: number; part: number; intake: DecomposeIntake; task: Record<string, unknown>; created: boolean }> {
+    const current = this.roadmapWriteAuthority(by);
+    const id = this.roadmapParsed(() => milestoneId(rawId)), part = this.roadmapParsed(() => milestoneId(rawPart));
+    const view = this.milestoneShow(by, id);
+    current();
+    if (view.title === "[withheld]" || view.outcome === "[withheld]") throw new PreEffectToolRefusal("milestone text is not cleared for public planning; remove private content before accepting a part");
+    const pending = this.d.board.pendingDecomposition(id);
+    if (!pending) throw new PreEffectToolRefusal(`milestone ${id} has no pending decomposition; run ahub roadmap decompose ${id} first`);
+    if (part > pending.parts.length) throw new PreEffectToolRefusal(`milestone ${id} holds ${pending.parts.length} proposed part${pending.parts.length === 1 ? "" : "s"}; run ahub roadmap decompose ${id} to read them again`);
+    const chosen = pending.parts[part - 1]!;
+    // A retry reads the draft the first accept made, and records the link again if an interrupted tail lost it.
+    const earlier = this.roadmapAcceptedPart(by, id, pending.id, part);
+    if (earlier) return earlier;
+    const taskClass = CLASSES.includes(chosen.class as TaskClass) ? chosen.class as TaskClass : undefined;
+    if (!taskClass) throw new PreEffectToolRefusal(`part ${part} names no hub task class; run ahub roadmap decompose ${id} to replace the answer`);
+    // A milestone settled while its answer was pending refuses here, before any write. The same check runs again where the link
+    // is written, and there it is best-effort: the draft is durable by then.
+    this.roadmapCurrent(id);
+    current();
+    // One accept per part: a concurrent caller of the same part waits for the attempt in flight and then reads the accept row.
+    const key = `${pending.id}:${part}`, running = this.decompositionAccepts.get(key);
+    if (running) {
+      await running.catch(() => undefined);
+      const after = this.roadmapAcceptedPart(by, id, pending.id, part);
+      if (after) return after;
+      if (this.d.board.pendingDecomposition(id)?.id !== pending.id) throw new PreEffectToolRefusal(`milestone ${id} has a newer decomposition answer; run ahub roadmap decompose ${id} to read it again`);
+    }
+    const attempt = this.acceptDecompositionPartOnce(by, id, part, pending, chosen, taskClass);
+    this.decompositionAccepts.set(key, attempt);
+    try { return await attempt; } finally { if (this.decompositionAccepts.get(key) === attempt) this.decompositionAccepts.delete(key); }
+  }
+
+  /** The accept row's own draft, while that task exists: the retry's answer, with the milestone link recorded again. */
+  private roadmapAcceptedPart(by: PeerId, id: number, decomposition: number, part: number): { milestone: number; part: number; intake: DecomposeIntake; task: Record<string, unknown>; created: boolean } | undefined {
+    const accepted = this.d.board.decompositionAccept(decomposition, part), earlier = accepted ? this.d.board.get(accepted.task) : undefined;
+    if (!accepted || !earlier) return undefined;
+    // Idempotent, so a missing link heals here; a milestone settled since refuses that as a notice, never as the caller's refusal.
+    this.releaseNotice(`task #${earlier.id}: milestone ${id} part ${part} accepted without its milestone link`, () => {
+      const milestone = this.roadmapCurrent(id);
+      this.d.board.linkMilestone(id, "task", String(earlier.id), by, milestone.revision, this.d.now?.() ?? Date.now());
+    });
+    return { milestone: id, part, intake: accepted.intake, task: this.publicView(earlier), created: false };
+  }
+
+  /** One accept attempt: the durable draft, then a tail that records the hold and never refuses the caller. */
+  private async acceptDecompositionPartOnce(by: PeerId, id: number, part: number, pending: MilestoneDecomposition, chosen: DecomposePart, taskClass: TaskClass): Promise<{ milestone: number; part: number; intake: DecomposeIntake; task: Record<string, unknown>; created: boolean }> {
+    const draft = await this.propose(by, { [HOST_ROADMAP_DRAFT]: true, title: chosen.title, detail: this.decompositionDraftDetail(chosen, id, part, pending.parts.length), class: taskClass, backlog: true, draft: true });
+    // The task and its hold are saved, so nothing below may fail the caller: a planner is not told about a held draft, and the
+    // accept row, the milestone link and the notice are best-effort in that order.
+    this.incomingBacklog.delete(draft.id);
+    this.releaseNotice(`task #${draft.id}: milestone ${id} part ${part} accepted without its accept record`, () => {
+      this.d.board.acceptDecompositionPart({ decomposition: pending.id, milestone: id, part, task: draft.id, intake: chosen.intake }, by, this.d.now?.() ?? Date.now());
+    });
+    this.releaseNotice(`task #${draft.id}: milestone ${id} part ${part} accepted without its milestone link`, () => {
+      const milestone = this.roadmapCurrent(id);
+      this.d.board.linkMilestone(id, "task", String(draft.id), by, milestone.revision, this.d.now?.() ?? Date.now());
+    });
+    this.releaseNotice(`task #${draft.id}: milestone ${id} part ${part} accepted as a held intake draft`);
+    return { milestone: id, part, intake: chosen.intake, task: this.publicView(this.d.board.get(draft.id) ?? draft), created: true };
+  }
+
+  /** The held draft's detail: the part's own words, then the one line a person reads before releasing it. */
+  private decompositionDraftDetail(part: DecomposePart, milestone: number, index: number, total: number): string {
+    const kind = part.intake === "spec" ? "needs its own spec issue before implementation" : "a mechanical chore that goes straight to a task";
+    return [part.detail, `Milestone ${milestone} part ${index} of ${total}: ${kind}. Cites: ${part.cites.join(", ")}.`, `Held until released: ahub intake approve`].join("\n\n");
+  }
+
   /** Apply one suggestion through R1's own writers. A "new milestone" suggestion creates it first; a retry never creates a second. */
   async roadmapAccept(by: PeerId, rawId: unknown): Promise<{ suggestion: MilestoneSuggestion; milestone: MilestoneView }> {
     const current = this.roadmapWriteAuthority(by);
@@ -4494,7 +4571,7 @@ export class Tasks {
     return updated; // a failed readback may follow a durable release write
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; needs_network?: unknown; needs_worktree?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined, hostCreatedHook?: (task: Task) => void): Promise<Task> {
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; needs_network?: unknown; needs_worktree?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown; [HOST_ROADMAP_DRAFT]?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined, hostCreatedHook?: (task: Task) => void): Promise<Task> {
     const requestCheck = this.requestCheck(by, fence);
     const plan = cleanPlan(input.plan, this.d.profileData ?? this.d.profile ?? "dev", (this.d.sdlc?.config().mode ?? "off") !== "off");
     this.validatePlanSources(plan);
@@ -4503,7 +4580,13 @@ export class Tasks {
     if (external && (!this.personOrConductor(by) || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
     const backlog = input.backlog === true;
-    if (input.draft !== undefined && (input.draft !== true || !backlog || by !== USER)) throw new PreEffectToolRefusal("only the person's intake stages a backlog draft");
+    if (input.draft === true && input[HOST_ROADMAP_DRAFT] === true) {
+      // R2 part 2 (#1480): a part the planner or the conductor accepted is held exactly like the person's intake draft. The
+      // capability is a host Symbol, so no tool argument can stage a hidden draft, and the caller is rechecked here as well.
+      if (!backlog) throw new PreEffectToolRefusal("a held roadmap draft is backlog work");
+      if (by !== USER && (!this.d.bus.isRostered(by) || !this.isConfiguredPlanner(by) && !this.configuredManualConductor(by)))
+        throw new PreEffectToolRefusal("a held roadmap draft needs the configured planner or the unique conductor; ask the person to accept the part with ahub roadmap decompose --accept");
+    } else if (input.draft !== undefined && (input.draft !== true || !backlog || by !== USER)) throw new PreEffectToolRefusal("only the person's intake stages a backlog draft");
     const claiming = !backlog && input.owner === by;
     if (claiming) {
       this.acceptanceCapacity({ id: -1, owner: by, state: "proposed" });
