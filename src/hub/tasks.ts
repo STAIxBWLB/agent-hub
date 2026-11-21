@@ -856,6 +856,8 @@ export class Tasks {
   private readonly incomingBacklog = new Set<number>();
   /** One accept attempt per (answer, part), so two concurrent accepts of one part make one draft (#1480 R2 part 2). */
   private readonly decompositionAccepts = new Map<string, Promise<unknown>>();
+  /** One apply per milestone while it creates issues, so a retried call cannot POST every planned issue twice (#1480 R2 part 3). */
+  private readonly roadmapPublishes = new Set<number>();
   private readonly plannerBacklog = new Map<PeerId, Set<number>>();
   private readonly plannerBlockedQueue = new Map<PeerId, string>();
   private readonly knownPlanners = new Set<PeerId>();
@@ -4047,33 +4049,42 @@ export class Tasks {
     if (!input.apply) return reply;
     if (input.confirm !== fingerprint) throw new PreEffectToolRefusal(`roadmap publish preview changed; run ahub roadmap decompose ${id} --publish and retry with --confirm ${fingerprint}`);
     current(); this.roadmapApplyAuthority(by); if (this.roadmapRepository() !== repo) throw new PreEffectToolRefusal("roadmap GitHub origin changed; preview the publish again");
-    const creating = planned.parts.filter(row => row.action === "create"), created = reply.created;
-    for (const [index, call] of planned.calls.entries()) {
-      const row = creating[index]!, accept = held.get(row.task)!;
-      const refused = `roadmap publish was refused for milestone ${id} part ${row.part}; the draft stays held and no issue was linked. Inspect ${repo} before retrying`;
-      let result: Awaited<ReturnType<SdlcGh>>;
-      try { result = await this.roadmapGh()(call, 10_000, undefined, 64 * 1024); }
-      catch { throw new Error(`roadmap publish was not confirmed for milestone ${id} part ${row.part}; the draft stays held and no issue was linked. Inspect ${repo} before retrying`); }
-      if (result.code !== 0 || Buffer.byteLength(result.stdout) > 64 * 1024) throw new Error(refused);
-      let issue: number;
-      try {
-        const made = JSON.parse(result.stdout) as Record<string, unknown>;
-        issue = milestoneId(made.number);
-        if (made.title !== call.find(value => value.startsWith("title="))?.slice(6)
-            || typeof made.html_url !== "string" || made.html_url.toLowerCase() !== `https://github.com/${repo}/issues/${issue}`) throw new Error("mismatch");
-      } catch { throw new Error(`roadmap publish created an issue for milestone ${id} part ${row.part} but its answer was not confirmed; inspect ${repo} before retrying`); }
-      // The issue exists, so nothing below may refuse the caller: the publish record and the milestone link are best effort.
-      this.releaseNotice(`milestone ${id} part ${row.part}: issue ${repo}#${issue} created without its publish record`, () => {
-        this.d.board.recordDecompositionPublish({ decomposition: accept.decomposition, milestone: id, part: row.part, issue }, by, this.d.now?.() ?? Date.now());
-      });
-      this.releaseNotice(`milestone ${id} part ${row.part}: issue ${repo}#${issue} created without its milestone link`, () => {
-        const milestone = this.roadmapCurrent(id);
-        this.d.board.linkMilestone(id, "issue", `${repo}#${issue}`, by, milestone.revision, this.d.now?.() ?? Date.now());
-      });
-      created.push({ part: row.part, task: row.task, issue });
-    }
-    reply.applied = true;
-    return reply;
+    // A retried call whose first attempt is still creating must not POST every planned issue again: `INSERT OR IGNORE` would keep
+    // the first publish row and GitHub would keep both issues. One apply per milestone, refused with the next step it can take.
+    if (this.roadmapPublishes.has(id))
+      throw new PreEffectToolRefusal(`a publish for milestone ${id} is already running; wait for it to finish and run ahub roadmap decompose ${id} --publish again`);
+    this.roadmapPublishes.add(id);
+    try {
+      const creating = planned.parts.filter(row => row.action === "create"), created = reply.created;
+      for (const [index, call] of planned.calls.entries()) {
+        const row = creating[index]!, accept = held.get(row.task)!;
+        // A part an earlier attempt already recorded has its issue: never POST it a second time.
+        if (this.d.board.decompositionPublish(accept.decomposition, row.part) !== undefined) continue;
+        const refused = `roadmap publish was refused for milestone ${id} part ${row.part}; the draft stays held and no issue was linked. Inspect ${repo} before retrying`;
+        let result: Awaited<ReturnType<SdlcGh>>;
+        try { result = await this.roadmapGh()(call, 10_000, undefined, 64 * 1024); }
+        catch { throw new Error(`roadmap publish was not confirmed for milestone ${id} part ${row.part}; the draft stays held and no issue was linked. Inspect ${repo} before retrying`); }
+        if (result.code !== 0 || Buffer.byteLength(result.stdout) > 64 * 1024) throw new Error(refused);
+        let issue: number;
+        try {
+          const made = JSON.parse(result.stdout) as Record<string, unknown>;
+          issue = milestoneId(made.number);
+          if (made.title !== call.find(value => value.startsWith("title="))?.slice(6)
+              || typeof made.html_url !== "string" || made.html_url.toLowerCase() !== `https://github.com/${repo}/issues/${issue}`) throw new Error("mismatch");
+        } catch { throw new Error(`roadmap publish created an issue for milestone ${id} part ${row.part} but its answer was not confirmed; inspect ${repo} before retrying`); }
+        // The issue exists, so nothing below may refuse the caller: the publish record and the milestone link are best effort.
+        this.releaseNotice(`milestone ${id} part ${row.part}: issue ${repo}#${issue} created without its publish record`, () => {
+          this.d.board.recordDecompositionPublish({ decomposition: accept.decomposition, milestone: id, part: row.part, issue }, by, this.d.now?.() ?? Date.now());
+        });
+        this.releaseNotice(`milestone ${id} part ${row.part}: issue ${repo}#${issue} created without its milestone link`, () => {
+          const milestone = this.roadmapCurrent(id);
+          this.d.board.linkMilestone(id, "issue", `${repo}#${issue}`, by, milestone.revision, this.d.now?.() ?? Date.now());
+        });
+        created.push({ part: row.part, task: row.task, issue });
+      }
+      reply.applied = true;
+      return reply;
+    } finally { this.roadmapPublishes.delete(id); }
   }
 
   /** Apply one suggestion through R1's own writers. A "new milestone" suggestion creates it first; a retry never creates a second. */

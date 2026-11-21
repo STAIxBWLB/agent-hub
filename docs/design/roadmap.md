@@ -203,7 +203,10 @@ marker, built by the pure `planPartPublish` (`src/hub/roadmap-decompose.ts`). Th
 The preview returns every planned `gh` argv and a fingerprint over the repository, the milestone, the GitHub milestone and those
 calls. `--apply --confirm <fingerprint>` runs that exact plan and is admitted only through the existing `github_write` gate
 (`Tasks.roadmapApplyAuthority`: the person, or the unique configured conductor with `roadmap.github_write = "conductor"`), the
-same gate `ahub roadmap sync` uses. Each created issue is recorded in `milestone_decomposition_publishes` and added to the
+same gate `ahub roadmap sync` uses. One apply runs per milestone at a time: a second apply that overlaps a running one (a tool
+call that timed out and was retried with the same arguments) is refused with the cause and the next step, and each create
+re-reads the publish record first, so a part an earlier attempt already recorded is never POSTed again. Each created issue is
+recorded in `milestone_decomposition_publishes` and added to the
 milestone as an `issue` link through R1's own `linkMilestone`, so `ahub roadmap sync` keeps it in the GitHub milestone
 instead of detaching it. When the mirror has a binding for the milestone, the create itself carries the R4 membership field
 (`milestoneMembershipField`, the one construction `planRoadmapMirror` also uses), so the issue joins the GitHub milestone in the

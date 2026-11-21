@@ -275,11 +275,12 @@ test("two concurrent accepts of one part make one draft and one accept row (AC2)
 
 // R2 (#1480) part 3, AC3: the preview writes nothing, apply creates one issue per spec part behind the gate, and a private part is never published.
 /** A `gh` that answers the one create this path makes, so a test can see every call and the issue numbers it handed back. */
-function publishGh(state: { fail?: boolean; garbage?: boolean } = {}) {
+function publishGh(state: { fail?: boolean; garbage?: boolean; hold?: () => Promise<void> } = {}) {
   const calls: string[][] = [];
   const run = async (args: string[]) => {
     calls.push(args);
     if (args[0] === "api" && args[1] === "repos/example/repo/issues" && args.includes("POST")) {
+      if (state.hold) await state.hold();
       if (state.fail) return { code: 1, stdout: "" };
       const index = calls.filter(call => call.includes("POST")).length, title = args.find(value => value.startsWith("title="))!.slice(6);
       return { code: 0, stdout: state.garbage ? "not json" : JSON.stringify({ number: 40 + index, title, html_url: `https://github.com/example/repo/issues/${40 + index}` }) };
@@ -374,6 +375,30 @@ test("with the gate, apply creates one issue per spec part and links it through 
   const again = await f.tasks.roadmapDecomposePublish("claude", m.id, { apply: true, confirm: after.fingerprint });
   expect(again.created).toEqual([]);
   expect(posts(gh.calls)).toHaveLength(2);
+});
+
+test("two applies of one milestone that overlap create one issue per spec part (AC3)", async () => {
+  // A create that takes a moment, so the second apply starts while the first is still between its POSTs: the timed-out tool
+  // call retried with the same arguments. Both are awaited, so a run without the guard would finish and POST twice per part.
+  const gh = publishGh({ hold: async () => { await Bun.sleep(20); } });
+  const f = fixture(undefined, { gh: gh.run, roadmap: { github_write: "conductor" } });
+  const m = milestone(f), answer = f.board.addDecomposition({ milestone: m.id, parts: [heldPart(), heldPart("Rewrite the docs")] }, "hub", 2000);
+  await f.tasks.roadmapDecomposePart("kimi", m.id, 1);
+  await f.tasks.roadmapDecomposePart("kimi", m.id, 2);
+  const preview = await f.tasks.roadmapDecomposePublish("kimi", m.id);
+  expect(preview.calls).toHaveLength(2);
+  const [first, second] = await Promise.allSettled([
+    f.tasks.roadmapDecomposePublish("claude", m.id, { apply: true, confirm: preview.fingerprint }),
+    f.tasks.roadmapDecomposePublish("claude", m.id, { apply: true, confirm: preview.fingerprint }),
+  ]);
+  expect([first.status, second.status]).toEqual(["fulfilled", "rejected"]);
+  expect(String((second as PromiseRejectedResult).reason)).toContain("already running");
+  expect((first as PromiseFulfilledResult<{ created: { part: number }[] }>).value.created.map(row => row.part)).toEqual([1, 2]);
+  // One POST per spec part, one publish row each and one link each: the duplicate never reached GitHub.
+  expect(posts(gh.calls)).toHaveLength(2);
+  expect(f.board.decompositionPublish(answer.id, 1)).toBe(41);
+  expect(f.board.decompositionPublish(answer.id, 2)).toBe(42);
+  expect(f.board.milestoneLinks(m.id).filter(link => link.kind === "issue").map(link => link.ref)).toEqual(["example/repo#41", "example/repo#42"]);
 });
 
 test("a private part is never published and is only counted (AC3)", async () => {

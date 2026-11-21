@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Publish a held milestone-decomposition part as a GitHub issue: `ahub roadmap decompose <id> --publish` prints the spec issues and tasks it would create and writes nothing, and `--apply --confirm <fingerprint>` creates one issue per held `spec` part behind `roadmap.github_write`, joining the milestone through the same membership field the opt-in mirror uses. A second apply creates nothing, a `task` part and a released draft get no issue, a private part is never published, and a refused `gh` call leaves the draft held with nothing linked (Refs #1480, hub task 1052).
+- Publish a held milestone-decomposition part as a GitHub issue: `ahub roadmap decompose <id> --publish` prints the spec issues and tasks it would create and writes nothing, and `--apply --confirm <fingerprint>` creates one issue per held `spec` part behind `roadmap.github_write`, joining the milestone through the same membership field the opt-in mirror uses. A second apply creates nothing, a second apply that overlaps a running one is refused instead of creating the same issues twice, a `task` part and a released draft get no issue, a private part is never published, and a refused `gh` call leaves the draft held with nothing linked (Refs #1480, hub task 1052).
 
 ## 0.45.0
 
