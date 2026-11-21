@@ -854,6 +854,8 @@ export class Tasks {
   private readonly planReviewRequests = new Map<number, string>();
   private readonly repositories: TaskRepositories;
   private readonly incomingBacklog = new Set<number>();
+  /** One accept attempt per (answer, part), so two concurrent accepts of one part make one draft (#1480 R2 part 2). */
+  private readonly decompositionAccepts = new Map<string, Promise<unknown>>();
   private readonly plannerBacklog = new Map<PeerId, Set<number>>();
   private readonly plannerBlockedQueue = new Map<PeerId, string>();
   private readonly knownPlanners = new Set<PeerId>();
@@ -3925,7 +3927,8 @@ export class Tasks {
    * `backlog`): nothing offers, pulls or routes it until the person approves it with `ahub intake approve`, and this path grants
    * no new release authority. It carries the milestone link and the part's `spec`/`task` kind, each part is accepted on its own,
    * and a second accept of the same part returns the draft the first one made. The reply is a public view, so a private draft
-   * reads `[withheld]` and no notice repeats the part's words.
+   * reads `[withheld]` and no notice repeats the part's words. One accept per part runs at a time: a concurrent caller waits for
+   * the attempt in flight and then reads the accept row, so two accepts of one part cannot make two drafts.
    */
   async roadmapDecomposePart(by: PeerId, rawId: unknown, rawPart: unknown): Promise<{ milestone: number; part: number; intake: DecomposeIntake; task: Record<string, unknown>; created: boolean }> {
     const current = this.roadmapWriteAuthority(by);
@@ -3937,19 +3940,53 @@ export class Tasks {
     if (!pending) throw new PreEffectToolRefusal(`milestone ${id} has no pending decomposition; run ahub roadmap decompose ${id} first`);
     if (part > pending.parts.length) throw new PreEffectToolRefusal(`milestone ${id} holds ${pending.parts.length} proposed part${pending.parts.length === 1 ? "" : "s"}; run ahub roadmap decompose ${id} to read them again`);
     const chosen = pending.parts[part - 1]!;
-    // A retry reads the draft the first accept made. An accepted row whose task is gone is a new draft, never a silent success.
-    const accepted = this.d.board.decompositionAccept(pending.id, part), earlier = accepted ? this.d.board.get(accepted.task) : undefined;
-    if (accepted && earlier) return { milestone: id, part, intake: accepted.intake, task: this.publicView(earlier), created: false };
+    // A retry reads the draft the first accept made, and records the link again if an interrupted tail lost it.
+    const earlier = this.roadmapAcceptedPart(by, id, pending.id, part);
+    if (earlier) return earlier;
     const taskClass = CLASSES.includes(chosen.class as TaskClass) ? chosen.class as TaskClass : undefined;
     if (!taskClass) throw new PreEffectToolRefusal(`part ${part} names no hub task class; run ahub roadmap decompose ${id} to replace the answer`);
+    // A milestone settled while its answer was pending refuses here, before any write. The same check runs again where the link
+    // is written, and there it is best-effort: the draft is durable by then.
+    this.roadmapCurrent(id);
     current();
+    // One accept per part: a concurrent caller of the same part waits for the attempt in flight and then reads the accept row.
+    const key = `${pending.id}:${part}`, running = this.decompositionAccepts.get(key);
+    if (running) {
+      await running.catch(() => undefined);
+      const after = this.roadmapAcceptedPart(by, id, pending.id, part);
+      if (after) return after;
+      if (this.d.board.pendingDecomposition(id)?.id !== pending.id) throw new PreEffectToolRefusal(`milestone ${id} has a newer decomposition answer; run ahub roadmap decompose ${id} to read it again`);
+    }
+    const attempt = this.acceptDecompositionPartOnce(by, id, part, pending, chosen, taskClass);
+    this.decompositionAccepts.set(key, attempt);
+    try { return await attempt; } finally { if (this.decompositionAccepts.get(key) === attempt) this.decompositionAccepts.delete(key); }
+  }
+
+  /** The accept row's own draft, while that task exists: the retry's answer, with the milestone link recorded again. */
+  private roadmapAcceptedPart(by: PeerId, id: number, decomposition: number, part: number): { milestone: number; part: number; intake: DecomposeIntake; task: Record<string, unknown>; created: boolean } | undefined {
+    const accepted = this.d.board.decompositionAccept(decomposition, part), earlier = accepted ? this.d.board.get(accepted.task) : undefined;
+    if (!accepted || !earlier) return undefined;
+    // Idempotent, so a missing link heals here; a milestone settled since refuses that as a notice, never as the caller's refusal.
+    this.releaseNotice(`task #${earlier.id}: milestone ${id} part ${part} accepted without its milestone link`, () => {
+      const milestone = this.roadmapCurrent(id);
+      this.d.board.linkMilestone(id, "task", String(earlier.id), by, milestone.revision, this.d.now?.() ?? Date.now());
+    });
+    return { milestone: id, part, intake: accepted.intake, task: this.publicView(earlier), created: false };
+  }
+
+  /** One accept attempt: the durable draft, then a tail that records the hold and never refuses the caller. */
+  private async acceptDecompositionPartOnce(by: PeerId, id: number, part: number, pending: MilestoneDecomposition, chosen: DecomposePart, taskClass: TaskClass): Promise<{ milestone: number; part: number; intake: DecomposeIntake; task: Record<string, unknown>; created: boolean }> {
     const draft = await this.propose(by, { [HOST_ROADMAP_DRAFT]: true, title: chosen.title, detail: this.decompositionDraftDetail(chosen, id, part, pending.parts.length), class: taskClass, backlog: true, draft: true });
     // The task and its hold are saved, so nothing below may fail the caller: a planner is not told about a held draft, and the
     // accept row, the milestone link and the notice are best-effort in that order.
     this.incomingBacklog.delete(draft.id);
-    this.d.board.acceptDecompositionPart({ decomposition: pending.id, milestone: id, part, task: draft.id, intake: chosen.intake }, by, this.d.now?.() ?? Date.now());
-    const milestone = this.roadmapCurrent(id);
-    this.d.board.linkMilestone(id, "task", String(draft.id), by, milestone.revision, this.d.now?.() ?? Date.now());
+    this.releaseNotice(`task #${draft.id}: milestone ${id} part ${part} accepted without its accept record`, () => {
+      this.d.board.acceptDecompositionPart({ decomposition: pending.id, milestone: id, part, task: draft.id, intake: chosen.intake }, by, this.d.now?.() ?? Date.now());
+    });
+    this.releaseNotice(`task #${draft.id}: milestone ${id} part ${part} accepted without its milestone link`, () => {
+      const milestone = this.roadmapCurrent(id);
+      this.d.board.linkMilestone(id, "task", String(draft.id), by, milestone.revision, this.d.now?.() ?? Date.now());
+    });
     this.releaseNotice(`task #${draft.id}: milestone ${id} part ${part} accepted as a held intake draft`);
     return { milestone: id, part, intake: chosen.intake, task: this.publicView(this.d.board.get(draft.id) ?? draft), created: true };
   }
