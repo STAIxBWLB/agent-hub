@@ -20,6 +20,8 @@ export interface QualityReport {
   schema: typeof QUALITY_SCHEMA;
   window: { since: string | null; until: string | null };
   records: number;
+  /** Dataset records contain no evidenced, unit-consistent cost components, so this aggregate remains unknown. */
+  editGovernance: { costPerVerifiedSuccess: null; reason: "cost_components_unavailable" };
   /** Per v2 field: how many records carry a value and how many are unknown (null or absent). Blocks count per leaf. */
   fields: Record<string, FieldCoverage>;
   /** Quota readings per peer family: how many, the gaps over an hour, the 95th percentile of the time between readings, and where the reading's time came from. */
@@ -133,7 +135,7 @@ export function buildResearchQuality(records: readonly ResearchRecord[], events:
   return {
     schema: QUALITY_SCHEMA,
     window: { since: window.since !== undefined ? new Date(window.since).toISOString() : null, until: window.until !== undefined && Number.isFinite(window.until) ? new Date(window.until).toISOString() : null },
-    records: tasks.length, fields: Object.fromEntries(Object.entries(fields).sort(([a], [b]) => a.localeCompare(b))),
+    records: tasks.length, editGovernance: { costPerVerifiedSuccess: null, reason: "cost_components_unavailable" }, fields: Object.fromEntries(Object.entries(fields).sort(([a], [b]) => a.localeCompare(b))),
     quota: Object.fromEntries(Object.entries(quotaOut).sort(([a], [b]) => a.localeCompare(b))), budget, outcomes,
     events: { present: Object.fromEntries(Object.entries(present).sort(([a], [b]) => a.localeCompare(b))), absent: EXPECTED_EVENTS.filter(type => !(type in present)), preface, checkpoints: checkpoints && { total: checkpoints.total, byFieldCount: sortedRecord(checkpoints.byFieldCount), byField: sortedRecord(checkpoints.byField) } },
     tokenAttribution: { total: tokenTotal, share: { delivery: share(attribution.delivery!), single_open: share(attribution.single_open!), unattributed: share(attribution.unattributed!) } },
