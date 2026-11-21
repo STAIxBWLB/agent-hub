@@ -5,8 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { hubHome, realPath } from "../hub/project.ts";
 import { Registry } from "../hub/registry.ts";
-import { AGENT_MEM_HOST_API_RANGE, agentMemHostApiOk, agentMemVersionInRange } from "../hub/agent-mem-range.ts";
-import { isAgentMemFloorRange } from "../../scripts/lib/agent-mem-range.mjs";
+import { AGENT_MEM_HOST_API_RANGE, agentMemHostApiOk, agentMemVersionInRange, isAgentMemFloorRange, readHostApiConstants } from "../hub/agent-mem-range.ts";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
 export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string; pipeExitGraceMs?: number }) => Promise<CommandResult>;
@@ -71,9 +70,9 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
           // #1611: a floor-form package also needs a host API the hub supports, read from the staged package's own platform module.
           let text = "";
           try { text = readFileSync(join(dir, "src/memory/platform.ts"), "utf8"); } catch { /* missing constants refuse below */ }
-          const min = /export const HOST_API_MIN = (\d+)/.exec(text)?.[1], top = /export const HOST_API_VERSION = (\d+)/.exec(text)?.[1];
-          if (!agentMemHostApiOk(min === undefined ? undefined : Number(min), top === undefined ? undefined : Number(top)))
-            throw new Error(`memory runtime host API ${min ?? "missing"}..${top ?? "missing"} does not intersect the supported ${AGENT_MEM_HOST_API_RANGE[0]}..${AGENT_MEM_HOST_API_RANGE[1]}`);
+          const host = readHostApiConstants(text);
+          if (!agentMemHostApiOk(host.min, host.version))
+            throw new Error(`memory runtime host API ${host.min ?? "missing"}..${host.version ?? "missing"} does not intersect the supported ${AGENT_MEM_HOST_API_RANGE[0]}..${AGENT_MEM_HOST_API_RANGE[1]}`);
         }
         if (!accepted || Object.keys(memory.dependencies ?? {}).length) throw new Error("memory runtime dependency identity/version mismatch");
         return realPath(dir);

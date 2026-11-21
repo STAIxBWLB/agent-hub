@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { packEntry } from "../scripts/lib/npm-pack-shape.mjs";
+import { isAgentMemFloorRange as srcFloorRange } from "../src/hub/agent-mem-range.ts";
 import { isAgentMemFloorRange, isAgentMemPatchRange, newestInRange } from "../scripts/lib/agent-mem-range.mjs";
 
 // #1257: CI parses `npm pack --json` (scripts/check-package.mjs) on an npm pinned in check.yml, the version release.yml publishes with.
@@ -34,6 +35,8 @@ test("#1611 the memory core declares only the floor range >=X.Y.Z <M.0.0 (floor 
     ">=0.33.0 <=1.0.0", ">=0.33 <1.0.0", ">=0.33.0-rc.1 <1.0.0", ">= 0.33.0 <1.0.0", ">=0.33.0  <1.0.0", ">=1.0.0 <1.0.0", ">=1.2.3 <3.0.0", "", undefined, null, 3]) {
     expect(isAgentMemFloorRange(bad), String(bad)).toBe(false);
   }
+  // src carries its own copy (a preserved source has no scripts/); both must answer alike.
+  for (const value of [">=0.33.0 <1.0.0", ">=1.2.3 <2.0.0", ">=0.33.0 <0.34.0", ">=0.32.1 <1.0.0", "~0.33.0", "", undefined, 3]) expect(srcFloorRange(value), String(value)).toBe(isAgentMemFloorRange(value));
   expect(isAgentMemFloorRange(JSON.parse(read("package.json")).dependencies["@staix/agent-mem"])).toBe(true);
   expect(isAgentMemPatchRange("~0.32.1")).toBe(true);
 });
