@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Board } from "../src/hub/board.ts";
+import { Board, HOST_ROADMAP_DRAFT } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
@@ -29,12 +29,12 @@ function fixture(model?: (system: string, user: string) => Promise<string | unde
   const board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const roles: Record<string, string[]> = { claude: ["conductor"], kimi: ["planner"], codex: ["implementer"] };
-  const control = { private: false, screening: false, prompts: [] as { system: string; user: string }[], specs: undefined as undefined | { specs: Spec[]; errors: number; truncated: boolean } };
+  const control = { private: false, screening: false, screenLabel: "clear" as "clear" | "pii", notices: [] as string[], prompts: [] as { system: string; user: string }[], specs: undefined as undefined | { specs: Spec[]; errors: number; truncated: boolean } };
   const routing = loadRouting(cwd);
-  const tasks = new Tasks({ board, bus, cwd, project: "roadmap-decompose", repository: "example/repo", roles, notify: () => {},
+  const tasks = new Tasks({ board, bus, cwd, project: "roadmap-decompose", repository: "example/repo", roles, notify: (line: string) => { control.notices.push(line); },
     routing: () => ({ ...routing, signals: { ...routing.signals, pii_screen: control.screening ? "local" : "off" }, constraints: { ...routing.constraints, pii: "local_only" } }),
     privateTurn: () => control.private, operational: by => by === "claude", piiPaths: opts.piiPaths ?? [],
-    piiScreen: async () => ({ label: "clear", ms: 0 }),
+    piiScreen: async () => ({ label: control.screenLabel, ms: 0 }),
     specsList: () => { if (!control.specs) throw new Error("specs are off"); return control.specs; },
     roadmapModel: model ? (system, user) => { control.prompts.push({ system, user }); return model(system, user); } : undefined,
     specsRead: action => action === "check" ? { specCount: 0, errors: 0, warnings: 0, stale: 0, truncated: false, freshness: [], items: [] } : { specs: [], errors: 0, truncated: false, items: [] },
@@ -158,4 +158,71 @@ test("an ordinary agent, a private turn, a milestone with nothing linked and a m
   expect(await noModel.tasks.roadmapDecompose("kimi", bare.id, fakeGh({ issues: [issueRow(1)] }))).toMatchObject({ saved: null, unavailable: expect.stringContaining("no hub model is configured") });
   await expect(f.tasks.roadmapDecompose("kimi", 999, fakeGh({ issues: [issueRow(1)] }))).rejects.toThrow("does not exist");
   expect(f.board.decompositions()).toEqual([]); expect(noModel.board.decompositions()).toEqual([]);
+});
+
+// R2 (#1480) part 2, AC2: accepting one part holds the existing intake draft. No model call is made on this path.
+const heldPart = (title = "Split the export surface", intake: "spec" | "task" = "spec") =>
+  ({ title, detail: `What ${title} changes and how it is verified`, class: "implement", intake, cites: ["example/repo#1"] });
+
+test("accepting a part holds exactly one intake draft linked to the milestone, and a repeat returns it (AC2)", async () => {
+  const f = fixture();
+  const m = milestone(f), answer = f.board.addDecomposition({ milestone: m.id, parts: [heldPart(), heldPart("Drop the legacy flag", "task")] }, "hub", 2000);
+  const first = await f.tasks.roadmapDecomposePart("kimi", m.id, 1);
+  expect(first).toMatchObject({ milestone: m.id, part: 1, intake: "spec", created: true });
+  const draft = f.board.get(Number(first.task.id))!;
+  // The existing hold, not a new state: a backlog draft with no owner and no reservation, so nothing offers or pulls it.
+  expect(draft).toMatchObject({ state: "backlog", draft: true, owner: null, title: "Split the export surface" });
+  expect(draft.reserved ?? null).toBeNull();
+  expect(draft.detail).toContain("needs its own spec issue before implementation");
+  expect(draft.detail).toContain("Milestone " + m.id + " part 1 of 2");
+  // The milestone link is the one R1's own writer makes, and the part's kind is recorded beside the draft.
+  expect(f.board.milestoneLinks(m.id).filter(link => link.kind === "task").map(link => link.ref)).toEqual([String(draft.id)]);
+  expect(f.board.decompositionAccept(answer.id, 1)).toMatchObject({ milestone: m.id, part: 1, task: draft.id, intake: "spec" });
+  expect(first.task.title).toBe("Split the export surface");
+  // The same part again is the same draft: no second task, no second link.
+  const again = await f.tasks.roadmapDecomposePart("kimi", m.id, 1);
+  expect(again).toMatchObject({ created: false, part: 1, intake: "spec" });
+  expect(Number(again.task.id)).toBe(draft.id);
+  expect(f.board.list()).toHaveLength(1);
+  expect(f.board.milestoneLinks(m.id).filter(link => link.kind === "task")).toHaveLength(1);
+  // Each part is accepted on its own.
+  expect(await f.tasks.roadmapDecomposePart("kimi", m.id, 2)).toMatchObject({ created: true, intake: "task" });
+  expect(f.board.list()).toHaveLength(2);
+  // The reply is one notice naming the draft and its part, never the part's text, and the answer stays one pending row.
+  expect(f.control.notices.some(line => line.includes(`task #${draft.id}: milestone ${m.id} part 1 accepted as a held intake draft`))).toBe(true);
+  expect(f.board.decompositions("pending")).toHaveLength(1);
+});
+
+test("accepting refuses before any write with no pending answer, a part outside it, or an ordinary agent (AC2)", async () => {
+  const f = fixture();
+  const m = milestone(f);
+  await expect(f.tasks.roadmapDecomposePart("kimi", m.id, 1)).rejects.toThrow("no pending decomposition");
+  f.board.addDecomposition({ milestone: m.id, parts: [heldPart()] }, "hub", 2000);
+  await expect(f.tasks.roadmapDecomposePart("kimi", m.id, 2)).rejects.toThrow("holds 1 proposed part");
+  await expect(f.tasks.roadmapDecomposePart("kimi", m.id, 0)).rejects.toThrow("roadmap id");
+  await expect(f.tasks.roadmapDecomposePart("codex", m.id, 1)).rejects.toThrow("planner");
+  f.control.private = true;
+  await expect(f.tasks.roadmapDecomposePart("kimi", m.id, 1)).rejects.toThrow("private");
+  f.control.private = false;
+  // The capability is rechecked where the draft gate is: an agent that is not the planner stages no held draft, whatever it passes.
+  await expect(f.tasks.propose("codex", { [HOST_ROADMAP_DRAFT]: true, title: "Hidden draft", class: "implement", backlog: true, draft: true })).rejects.toThrow("configured planner");
+  await expect(f.tasks.propose("codex", { title: "Hidden draft", class: "implement", backlog: true, draft: true })).rejects.toThrow("only the person's intake");
+  expect(f.board.list()).toEqual([]);
+  expect(f.board.decompositionAccept(1, 1)).toBeUndefined();
+});
+
+test("a part the screen refuses is held privately, and neither the reply nor the notice repeats its words (AC2)", async () => {
+  const f = fixture();
+  const m = milestone(f);
+  f.board.addDecomposition({ milestone: m.id, parts: [{ title: "Private rollup notes", detail: "Rewrite the private rollup by hand", class: "implement", intake: "spec", cites: ["example/repo#1"] }] }, "hub", 2000);
+  f.control.screening = true; f.control.screenLabel = "pii";
+  const accepted = await f.tasks.roadmapDecomposePart("kimi", m.id, 1);
+  expect(accepted.task.title).toBe("[pii]");
+  expect(accepted.task.detail).toBe("[pii]");
+  const draft = f.board.get(Number(accepted.task.id))!;
+  expect(f.tasks.publicTitle(draft)).toBe(`#${draft.id} [pii]`);
+  // The held row keeps the text for the person who releases it; only what the accept returns and says is redacted.
+  expect(draft.title).toBe("Private rollup notes");
+  expect("Private rollup notes").not.toBe(accepted.task.title);
+  for (const line of f.control.notices) expect(line).not.toContain("Private rollup");
 });

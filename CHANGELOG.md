@@ -8,6 +8,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Open or attach a verified GitHub PR for a managed worktree at task completion (Refs #1549, hub task 1019).
 - The console keeps the selected row on screen in the Settings panel: the row window now leaves room for the notes above the table (#1607, hub task 1049).
 - Propose the parts of a roadmap milestone: `ahub roadmap decompose <id>` and `hub_roadmap_decompose {id}` ask the hub's model how one milestone decomposes, reading only its public title and outcome, the goal or architecture specs it links and the issues it links. A part is kept only when it cites an id the model was shown and says whether it needs its own spec issue or goes straight to a task, and the answer is saved as a pending model answer; nothing is intaken, linked or published (Refs #1480, hub task 1050).
+- Accept one proposed part of a milestone decomposition as a held intake draft: `ahub roadmap decompose <id> --accept <part>` and `hub_roadmap_decompose {id, accept}` create a backlog draft linked to the milestone that carries the part's `spec`/`task` kind, so nothing offers, pulls or routes it until the person releases it with `ahub intake approve`. Each part is accepted on its own, accepting the same part twice returns the draft the first accept made, and the reply is a public view, so a part the screen refuses is held privately and reads `[pii]` (Refs #1480, hub task 1051).
 
 ## 0.45.0
 

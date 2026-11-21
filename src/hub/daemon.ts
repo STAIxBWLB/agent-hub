@@ -6143,8 +6143,8 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "repo" && key !== "list") || a.list !== undefined && typeof a.list !== "boolean") throw new PreEffectToolRefusal("roadmap triage takes an optional repo and list true or false; use ahub roadmap triage");
         return JSON.stringify(a.list === true ? { suggestions: tasks.milestoneSuggestions(by, "pending") } : await tasks.roadmapTriage(by, { repo: a.repo }));
       case "hub_roadmap_decompose":
-        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "id")) throw new PreEffectToolRefusal("roadmap decompose takes a milestone id only; use ahub roadmap decompose <id>");
-        return JSON.stringify(await tasks.roadmapDecompose(by, a.id));
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "id" && key !== "accept")) throw new PreEffectToolRefusal("roadmap decompose takes a milestone id and an optional part number; use ahub roadmap decompose <id> [--accept <n>]");
+        return JSON.stringify(a.accept === undefined ? await tasks.roadmapDecompose(by, a.id) : await tasks.roadmapDecomposePart(by, a.id, a.accept));
       case "hub_roadmap_edit": {
         const fields: Record<string, readonly string[]> = { new: ["op", "fields"], edit: ["op", "id", "revision", "fields"], link: ["op", "id", "kind", "ref"], unlink: ["op", "id", "kind", "ref"], order: ["op", "id", "order"], state: ["op", "id", "state"], accept: ["op", "suggestion"], reject: ["op", "suggestion"] };
         if (!a || typeof a !== "object" || Array.isArray(a) || typeof a.op !== "string" || !Object.hasOwn(fields, a.op)) throw new PreEffectToolRefusal("unknown roadmap operation; use new, edit, link, unlink, order, state, accept or reject with hub_roadmap_edit");

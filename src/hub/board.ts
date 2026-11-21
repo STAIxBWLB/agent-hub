@@ -20,7 +20,7 @@ import type { Database } from "./db-schema.ts";
 import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
-import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, githubRepo, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry, type MilestoneSuggestion, type SuggestionItemKind, type SuggestionState, type DecomposePart, type DecompositionState, type MilestoneDecomposition } from "./roadmap.ts";
+import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, githubRepo, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry, type MilestoneSuggestion, type SuggestionItemKind, type SuggestionState, type DecomposePart, type DecomposeIntake, type DecompositionState, type MilestoneDecomposition, type DecompositionAccept } from "./roadmap.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { AuditFinding, AuditProfile, AuditUnit } from "./security-audit.ts";
 import type { ReviewFinding } from "./review-findings.ts";
@@ -72,6 +72,11 @@ const GUIDANCE_VARIANT_SELECT = `SELECT CASE WHEN typeof(id)='text' AND length(C
 export const HOST_MERGE_ADOPTION = Symbol("host merge adoption");
 /** Internal publication capability, independent of the person-only acceptance API. */
 export const HOST_SPEC_ACCEPTANCE_CARRY = Symbol("host spec acceptance carry");
+/**
+ * Internal capability for R2 part 2 (#1480): the draft `roadmapDecomposePart` stages for an accepted part is held exactly like the
+ * person's intake draft. A Symbol cannot arrive in a tool argument, so no caller can stage a hidden draft through it.
+ */
+export const HOST_ROADMAP_DRAFT = Symbol("host roadmap acceptance draft");
 export interface SpecAcceptanceCommit { source: number; cancellationRevision: number; acceptance: SpecAcceptance; }
 
 export interface ResearchCampaignRecord {
@@ -654,6 +659,11 @@ export class Board {
       id INTEGER PRIMARY KEY AUTOINCREMENT, milestone INTEGER NOT NULL, parts TEXT NOT NULL,
       state TEXT NOT NULL, by TEXT NOT NULL, created INTEGER NOT NULL, settled INTEGER, settled_by TEXT)`);
     this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS milestone_decompositions_pending ON milestone_decompositions(milestone) WHERE state='pending'");
+    // R2 part 2 (#1480): which parts of a pending answer are already held as intake drafts. Keyed by the answer and the part's
+    // 1-based position, so accepting the same part twice finds this row instead of making a second draft.
+    this.db.run(`CREATE TABLE IF NOT EXISTS milestone_decomposition_accepts (
+      decomposition INTEGER NOT NULL, milestone INTEGER NOT NULL, part INTEGER NOT NULL, task INTEGER NOT NULL,
+      intake TEXT NOT NULL, by TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(decomposition,part))`);
 
     this.db.run(`CREATE TABLE IF NOT EXISTS research_campaigns (
       id TEXT NOT NULL, project TEXT NOT NULL, parent_task_id INTEGER NOT NULL, revision INTEGER NOT NULL,
@@ -3085,6 +3095,29 @@ export class Board {
     return rows.map(parseDecomposition);
   }
 
+  /** R2 part 2: the answer an accept reads its parts from. A superseded one is not pending, so an accept cannot land on it. */
+  pendingDecomposition(milestone: number): MilestoneDecomposition | undefined {
+    const row = this.db.query("SELECT * FROM milestone_decompositions WHERE milestone=? AND state='pending'").get(milestoneId(milestone)) as Record<string, unknown> | null;
+    return row ? parseDecomposition(row) : undefined;
+  }
+
+  /** R2 part 2: the draft one part already made, if it was accepted before. */
+  decompositionAccept(decomposition: number, part: number): DecompositionAccept | undefined {
+    const row = this.db.query("SELECT * FROM milestone_decomposition_accepts WHERE decomposition=? AND part=?").get(milestoneId(decomposition), milestoneId(part)) as Record<string, unknown> | null;
+    return row ? parseDecompositionAccept(row) : undefined;
+  }
+
+  /**
+   * R2 part 2: record that a part is held as a draft. The insert is ignored on a repeated accept, so the row that already names
+   * the first draft is the one a retry reads, and no second draft is ever keyed here.
+   */
+  acceptDecompositionPart(row: { decomposition: number; milestone: number; part: number; task: number; intake: DecomposeIntake }, by: string, now = Date.now()): DecompositionAccept {
+    const actor = milestoneActor(by), at = milestoneId(now);
+    this.db.query("INSERT OR IGNORE INTO milestone_decomposition_accepts(decomposition,milestone,part,task,intake,by,at) VALUES(?,?,?,?,?,?,?)")
+      .run(milestoneId(row.decomposition), milestoneId(row.milestone), milestoneId(row.part), milestoneId(row.task), row.intake, actor, at);
+    return this.decompositionAccept(row.decomposition, row.part)!;
+  }
+
   /** Compare-and-set from pending: a second settle of the same suggestion changes nothing. */
   settleSuggestion(id: number, state: "accepted" | "rejected" | "superseded", by: string, now = Date.now()): MilestoneSuggestion {
     const actor = milestoneActor(by), at = milestoneId(now);
@@ -3307,6 +3340,11 @@ function parseDecomposition(row: Record<string, unknown>): MilestoneDecompositio
   return { id: milestoneId(row.id), milestone: milestoneId(row.milestone), parts: JSON.parse(String(row.parts)) as DecomposePart[],
     state: row.state as DecompositionState, by: milestoneActor(row.by), created: milestoneId(row.created),
     settled: row.settled == null ? null : milestoneId(row.settled), settledBy: row.settled_by == null ? null : milestoneActor(row.settled_by) };
+}
+
+function parseDecompositionAccept(row: Record<string, unknown>): DecompositionAccept {
+  return { decomposition: milestoneId(row.decomposition), milestone: milestoneId(row.milestone), part: milestoneId(row.part), task: milestoneId(row.task),
+    intake: row.intake as DecomposeIntake, by: milestoneActor(row.by), at: milestoneId(row.at) };
 }
 
 function parseRelease(row: Record<string, unknown>): Release {

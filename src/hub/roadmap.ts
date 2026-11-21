@@ -157,3 +157,11 @@ export interface MilestoneDecomposition {
   id: number; milestone: number; parts: DecomposePart[]; state: DecompositionState;
   by: string; created: number; settled: number | null; settledBy: string | null;
 }
+
+/**
+ * R2 part 2 (#1480): one proposed part accepted as a held intake draft. Keyed by the pending row it came from and the part's
+ * 1-based position, so a second accept of the same part finds this row instead of making a second draft.
+ */
+export interface DecompositionAccept {
+  decomposition: number; milestone: number; part: number; task: number; intake: DecomposeIntake; by: string; at: number;
+}
