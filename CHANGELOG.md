@@ -6,8 +6,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Add `turn_end.edits` (closed counts of edit-tool and shell-route writes graded by read receipts, only on mutating turns with `research.enabled`) and a text-free `edits` block on research records v2, reported per leaf by `quality.json` with null (never 0) on tree-only surfaces (Refs #1556, hub task 1006).
 
+- Exact-pin the first-party agent-mem dependency to 0.32.0, from 0.30.0 (hub task 1042). The 0.31.0 additions stay outside the paths this hub reads (the `held` placement realm outcome and the classified agent-marked CLI read causes), and its sync result shape and `SYNC_FAILURE_CAUSES` are unchanged. The 0.32.0 CLI changes also reach nothing here: the hub's one `amem` call previews `amem setup <tool> --json` and parses the answer with `JSON.parse`, so 2-space `--json` indentation and usage errors exiting 2 read the same, and it writes no capture hook or `amem ingest` call of its own, so piped ingest printing human text and the `amem_work_state_read` per-call policy snapshot change nothing it runs. `amem list`, `show` and `graph` keep byte parity and storage is unchanged.
 - Check roadmap drift, preview an opt-in GitHub milestone mirror, and export validated public roadmap files (Refs #1482, hub task 951).
-
+- Take the recovery driver's attachment-wait poll slice from the clock object it already accepts for `now` and `sleep`, defaulting to the same 1 s so no production timer or deadline moves, and let the `#489` deadline tests poll at 10 s: `test/upgrade-runtime.test.ts` drops from 126 s to 57 s on macOS with every 600, 650, 700 and 900 s assertion unchanged. The other four files of the ten-file table are left with measured per-file reasons (Refs #1578, hub task 1044).
 - Report Pi prompt context occupancy and session model in headless and TUI modes, and bind verified TUI sessions to Record capture (Refs #1549).
 
 - Read merged PR CI costs from complete branch-scoped evidence when GitHub omits run-to-PR links, including first-pass status and full-gate and macOS shard counts (Refs #1579, Refs #1555, hub task 1032).
