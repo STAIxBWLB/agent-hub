@@ -10,6 +10,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 
 | Feature | State here | Measured by |
 | --- | --- | --- |
+| Edit governance guards (#1556 T3) | off by default; fixture coverage, available after release and restart | inspect edit guard availability and text-free evidence counts; compare shadow and advisory proposals and check outcomes |
 | Sandboxed package-manager caches (#1549 T3 partial) | source and isolated macOS fixture coverage; active after release and restart | offline Bun and npm installs use per-command writable caches and leave a temporary home untouched; caller overrides and host-wrapper parity are tested; sandboxed reader-lease identity remains open |
 | External merge cost and scan diagnostics (#1555 AC2, #1579) | source and fixture coverage; branch-scoped CI cost readback is available here after release and restart, with live post-upgrade verification pending | compare known `first_pass_check`, CI-at-merge, full-gate and macOS-shard sample counts in `ahub sdlc metrics` after a merged PR; compare per-source unknown scan counts in `ahub sdlc status` |
 | Quota event sampling (#1555 AC4) | source and fixture coverage; active here after release and restart | compare recorded quota row rate and research-quality gap duration across the upgrade |

@@ -70,7 +70,7 @@ export interface LocalOptions {
   turnId?: () => string | undefined;
   onApprovalStop?: (reason: string) => void;
   onTool?: (observation: ToolObservation, task?: string) => void;
-  tools: { docRead?: DocReadPort; webFetch?: WebFetchPort; deny: string[]; permit: ToolContext["permit"]; shellExecutionCheck?: ToolContext["shellExecutionCheck"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
+  tools: { docRead?: DocReadPort; webFetch?: WebFetchPort; deny: string[]; permit: ToolContext["permit"]; shellExecutionCheck?: ToolContext["shellExecutionCheck"]; editGuard?: (task: string | undefined, current: () => boolean) => ToolContext["editGuard"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean; signal?: AbortSignal }) => Promise<string>;
@@ -523,7 +523,7 @@ export class LocalPeer extends BasePeer {
             ? Promise.resolve("error: anchored review in this batch; save notes in a later turn")
             : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool
               ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e: Error) => `error: ${e.message}`)
-              : runTool(name, call.function.arguments, ctx);
+              : runTool(name, call.function.arguments, this.probeConfinement ? ctx : this.toolContext(envs, turnSignal, !!policy?.pii, reply, policy?.task));
           const probe = this.probeSession;
           const running = probe ? (async () => {
             try {
@@ -566,6 +566,7 @@ export class LocalPeer extends BasePeer {
       ...(this.opts.tools.docRead ? { docRead: { ...this.opts.tools.docRead, pii } } : {}),
       ...(this.opts.tools.webFetch ? { webFetch: { ...this.opts.tools.webFetch, pii } } : {}),
       cwd: this.opts.cwd,
+      ...(this.opts.tools.editGuard && !probe ? { editGuard: this.opts.tools.editGuard(task, () => !turnSignal.aborted && executionGeneration === this.turn) } : {}),
       deny: this.opts.tools.deny,
       readOnly: this.opts.tools.readOnly,
       ...(probe ? { probe: { root: probe.workspace.root, writableRoots: probe.workspace.allowedWrites,
