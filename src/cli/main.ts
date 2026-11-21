@@ -123,7 +123,7 @@ import { runSpecs, runSpecsStamp } from "./specs.ts";
 import { confirmTidy, planTidy, realTidyGit, rowsFromReply, type TidyGit } from "./worktree-tidy.ts";
 import { renderTidyPreview, renderTidyResult, renderWorktrees } from "./worktrees-output.ts";
 import { formatMemoryStaleAnchors } from "../hub/memory-stale-anchors.ts";
-import { AGENT_MEM_VERSION, assertAgentMemVersion, memoryIndexExists, selectedMemoryProfile } from "../hub/memory-profile.ts";
+import { AGENT_MEM_REFUSAL, AGENT_MEM_VERSION, memoryIndexExists, selectedMemoryProfile } from "../hub/memory-profile.ts";
 import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
 import { addonReport, appendRecords, closedAtOf, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
@@ -3444,9 +3444,8 @@ const commands: Record<string, () => Promise<void> | void> = {
         row(mlx.state === "ready" || mlx.state === "stopped", "pi mlx", `${mlx.state}${mlx.model ? ` (${mlx.model})` : ""}${mlx.lastError ? `: ${mlx.lastError}` : ""}`);
       }
 
-      let memoryLibraryReady = false;
-      try { assertAgentMemVersion({ name: "@staix/agent-mem", version: AGENT_MEM_VERSION }); memoryLibraryReady = true; } catch { /* report the failed range check without opening a store */ }
-      row(memoryLibraryReady, "memory library", memoryLibraryReady ? `amem ${AGENT_MEM_VERSION}; in-process, no claude-mem worker` : "installed amem is not a plain release inside the declared range with a supported host API; run bun install --frozen-lockfile, or raise the range with a compatibility review");
+      const memoryLibraryReady = AGENT_MEM_REFUSAL === undefined;
+      row(memoryLibraryReady, "memory library", memoryLibraryReady ? `amem ${AGENT_MEM_VERSION}; in-process, no claude-mem worker` : AGENT_MEM_REFUSAL!);
       // #1008: memory capture is agent-mem's own setup state, read as structured data (`amem setup <tool> --json`, a preview that writes nothing), never dotfiles text. The caller's
       // identity is NOT scrubbed: agent-mem screens a plan for an agent, and a refusal reads as unknown here instead of being laundered into a person's answer.
       for (const tool of DOCTOR_MEMORY_CAPTURE_PEERS) {

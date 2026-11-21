@@ -42,14 +42,16 @@ const loadedAgentMem = (() => {
       ? (metadata as { version: string }).version : "unknown";
     // Read through the namespace, never a named import: a package without the constants must refuse with a cause, not fail at module link.
     const exported = agentMemExports as unknown as { HOST_API_MIN?: unknown; HOST_API_VERSION?: unknown };
-    try { return { version: assertAgentMemVersion(metadata, AGENT_MEM_RANGE, { min: exported.HOST_API_MIN, version: exported.HOST_API_VERSION }), valid: true }; }
-    catch { return { version: actual, valid: false }; }
-  } catch { return { version: "unknown", valid: false }; }
+    try { return { version: assertAgentMemVersion(metadata, AGENT_MEM_RANGE, { min: exported.HOST_API_MIN, version: exported.HOST_API_VERSION }), valid: true, reason: undefined }; }
+    catch (error) { return { version: actual, valid: false, reason: (error as Error).message }; }
+  } catch (error) { return { version: "unknown", valid: false, reason: `the loaded agent-mem could not be attested: ${(error as Error).message}` }; }
 })();
 export const AGENT_MEM_VERSION = loadedAgentMem.version;
 function assertLoadedAgentMem(): void {
-  if (!loadedAgentMem.valid) throw new Error(`the loaded agent-mem ${AGENT_MEM_VERSION} is not a plain release inside the declared range ${AGENT_MEM_RANGE} with a supported host API; reinstall it with \`bun install --frozen-lockfile\`, or raise the range in package.json with a compatibility review`);
+  if (!loadedAgentMem.valid) throw new Error(loadedAgentMem.reason ?? `the loaded agent-mem ${AGENT_MEM_VERSION} is not usable`);
 }
+/** #1611: why the loaded agent-mem is refused (version or host API, loaded and supported ranges, next step); undefined when it is usable. */
+export const AGENT_MEM_REFUSAL: string | undefined = loadedAgentMem.valid ? undefined : loadedAgentMem.reason;
 export const MEMORY_PROFILE_UNAVAILABLE = "memory profile unavailable; inspect the selector and generation state, run ahub memory profile-check; use amem migrate --deactivate only to stop using the selected generation";
 const UNAVAILABLE = MEMORY_PROFILE_UNAVAILABLE;
 /** agent-mem#15 T2: a split marker that is not active (captured, malformed) is never read as an empty or legacy store. */

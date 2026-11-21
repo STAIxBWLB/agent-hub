@@ -1,5 +1,5 @@
 // #1605/#1611: the declared runtime dependency of the first-party memory core. A floor range (`>=X.Y.Z <M.0.0`) lets a plain release
-// release reach users without a hub release; a new minor stays a reviewed raise, so `^`, `*`, `x`, compound ranges and
+// release reach users without a hub release (the hub host API check, not the version, decides compatibility), so `^`, `*`, `x`, compound ranges and
 // prereleases are refused. Plain Node: scripts/check-package.mjs and scripts/agent-mem-latest.mjs run without Bun.
 export function isAgentMemPatchRange(value) {
   return typeof value === 'string' && /^~\d+\.\d+\.\d+$/.test(value);

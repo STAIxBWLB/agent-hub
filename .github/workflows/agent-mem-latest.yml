@@ -1,7 +1,7 @@
 name: agent-mem-latest
 
 # #1605: package.json declares agent-mem as a range (`>=X.Y.Z <M.0.0`), so a plain release reaches users without a hub
-# release. This canary resolves the newest in-range patch from the registry (never the lockfile) and runs the memory-surface
+# release. This canary resolves the newest in-range release from the registry (never the lockfile) and runs the memory-surface
 # gate against it, so a bad patch shows up soon after it is published. It writes neither the manifest nor the lockfile: the
 # patch is installed beside them, and a guard step fails the job if either file changed. Nothing is committed.
 #
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   resolve:
-    name: resolve the newest in-range patch
+    name: resolve the newest in-range release
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -42,7 +42,7 @@ jobs:
         run: node scripts/agent-mem-latest.mjs
 
   gate:
-    name: gate on the newest in-range patch
+    name: gate on the newest in-range release
     needs: resolve
     # A dispatch runs even when the floor is already the newest patch, so the job can be exercised on demand.
     if: needs.resolve.outputs.newer == 'true' || github.event_name == 'workflow_dispatch'

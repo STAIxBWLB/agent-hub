@@ -23,6 +23,8 @@ function fixture() {
   mkdirSync(join(memory, "src"), { recursive: true }); mkdirSync(join(memory, "bin"));
   writeFileSync(join(memory, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: memoryVersion, exports: "./src/index.ts" }));
   writeFileSync(join(memory, "src/index.ts"), "export const fixture = true;\n");
+  mkdirSync(join(memory, "src/memory"));
+  writeFileSync(join(memory, "src/memory/platform.ts"), "export const HOST_API_VERSION = 1 as const;\nexport const HOST_API_MIN = 1 as const;\n");
   writeFileSync(join(memory, "bin/amem.js"), "// fixture CLI\n");
   for (const name of ["README.md", "LICENSE"]) writeFileSync(join(memory, name), "fixture\n");
   const stage = () => stageRelease(version, integrity, async (args) => {

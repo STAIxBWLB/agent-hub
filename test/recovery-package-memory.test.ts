@@ -112,3 +112,26 @@ test("a cached release never resolves a deleted dependency from an ancestor chec
   expect(child.exitCode).toBe(1);
   expect(child.stderr.toString()).toContain("memory runtime dependency is unavailable");
 });
+
+function setHostApi(dependency: string, min: string | undefined, version: string | undefined) {
+  const file = join(dependency, "src/memory/platform.ts");
+  const text = readFileSync(file, "utf8").replace(/export const HOST_API_VERSION = \d+ as const;\n?/, version ? `export const HOST_API_VERSION = ${version} as const;\n` : "").replace(/export const HOST_API_MIN = \d+ as const;\n?/, min ? `export const HOST_API_MIN = ${min} as const;\n` : "");
+  writeFileSync(file, text);
+}
+
+test("#1611 a floor-form staged package needs a host API that intersects the supported range", () => {
+  const good = fixture();
+  expect(packageDigest(good.root)).toBeTypeOf("string");
+  const missing = fixture(); setHostApi(missing.dependency, undefined, undefined);
+  expect(() => packageDigest(missing.root)).toThrow("host API missing..missing");
+  const far = fixture(); setHostApi(far.dependency, "2", "3");
+  expect(() => packageDigest(far.root)).toThrow("host API 2..3 does not intersect the supported 1..1");
+});
+
+test("#1611 a legacy ~ staged package keeps its check with no host API requirement", () => {
+  const f = fixture(), manifest = join(f.dependency, "package.json"), published = JSON.parse(readFileSync(manifest, "utf8"));
+  writeFileSync(manifest, JSON.stringify({ ...published, version: "0.32.1" }));
+  setHostApi(f.dependency, undefined, undefined);
+  writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { "@staix/agent-mem": "~0.32.1" } }));
+  expect(packageDigest(f.root)).toBeTypeOf("string");
+});
