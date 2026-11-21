@@ -13,15 +13,18 @@ import type { DeliverableRecord } from "./deliverables.ts";
  */
 
 export const SUPERVISION_RULES = ["repeated_failure", "deliverable_invalidated_check", "declared_overlap_without_integration"] as const;
-export type SupervisionRuleId = (typeof SUPERVISION_RULES)[number];
+/** Additive edit rules are evaluated only when a host supplies edit evidence. */
+export const EDIT_SUPERVISION_RULES = ["unverified_shell_write", "cascading_edit_after_failed_check"] as const;
+export const ALL_SUPERVISION_RULES = [...SUPERVISION_RULES, ...EDIT_SUPERVISION_RULES] as const;
+export type SupervisionRuleId = (typeof ALL_SUPERVISION_RULES)[number];
 /** Bump one rule when its trigger, refs or reason codes change meaning: a stored observation names the version it was made under. */
-export const SUPERVISION_RULE_VERSION: Readonly<Record<SupervisionRuleId, number>> = { repeated_failure: 1, deliverable_invalidated_check: 2, declared_overlap_without_integration: 1 };
+export const SUPERVISION_RULE_VERSION: Readonly<Record<SupervisionRuleId, number>> = { repeated_failure: 1, deliverable_invalidated_check: 2, declared_overlap_without_integration: 1, unverified_shell_write: 1, cascading_edit_after_failed_check: 1 };
 
 /** The existing hub operation an observation names. T1 names one; nothing in this module runs it. */
 export const SUPERVISION_ACTIONS = ["escalate", "recheck", "request_integration"] as const;
 export type SupervisionAction = (typeof SUPERVISION_ACTIONS)[number];
 /** Closed reason codes: an observation says why it fired in a token, never in prose. */
-export const SUPERVISION_REASONS = ["repeated_failure", "stale_check", "unintegrated_overlap"] as const;
+export const SUPERVISION_REASONS = ["repeated_failure", "stale_check", "unintegrated_overlap", "unverified_shell_write", "cascading_edit_after_failed_check"] as const;
 export type SupervisionReasonCode = (typeof SUPERVISION_REASONS)[number];
 /** Why a rule could not decide for one task and revision. A gap is not a trigger and never a zero. */
 export const SUPERVISION_GAPS = ["no-history", "no-deliverable-measurement", "history-truncated"] as const;
@@ -96,10 +99,14 @@ export interface SupervisionEvaluation {
   evaluated: EvaluatedRevision[];
 }
 
+/** Text-free, in-memory edit evidence bound to an owner revision. */
+export interface EditRevisionFact { task: number; revision: string; unverified: number; cascading: number }
+
 export interface SupervisionFacts {
   tasks: readonly TaskRevisionFacts[];
   deliverables?: readonly DeliverableMeasurementFact[];
   overlaps?: readonly DeclaredOverlapFact[];
+  edits?: readonly EditRevisionFact[];
 }
 
 /** Records one rule reads from one revision. A longer revision is read as a prefix and the observation says `truncated`. */
@@ -286,6 +293,22 @@ export function evaluateSupervision(facts: SupervisionFacts): SupervisionEvaluat
     if (!side.limits.truncated) continue;
     if (!repeated.length) gaps.push(gapOf("repeated_failure", side.task.id, side.revision, "history-truncated"));
     if (!check.observation && !check.gap) gaps.push(gapOf("deliverable_invalidated_check", side.task.id, side.revision, "history-truncated"));
+  }
+  for (const edit of facts.edits ?? []) {
+    const side = sides.get(edit.task);
+    if (!side || isClosedTaskState(side.task.state) || side.revision !== edit.revision) continue;
+    const rules = [
+      { rule: "unverified_shell_write" as const, count: edit.unverified },
+      { rule: "cascading_edit_after_failed_check" as const, count: edit.cascading },
+    ];
+    for (const item of rules) {
+      if (!Number.isSafeInteger(item.count) || item.count < 0) continue;
+      evaluated.push({ rule: item.rule, task: side.task.id, revision: side.revision });
+      if (side.limits.truncated) { gaps.push(gapOf(item.rule, side.task.id, side.revision, "history-truncated")); continue; }
+      if (item.count < REPEAT_FLOOR) continue;
+      observations.push({ rule: item.rule, version: SUPERVISION_RULE_VERSION[item.rule], task: side.task.id, revision: side.revision,
+        trigger: item.rule, refs: [], limits: side.limits, action: "recheck", reason: item.rule });
+    }
   }
   for (const overlap of facts.overlaps ?? []) {
     const pair = unintegratedOverlap(overlap, sides);

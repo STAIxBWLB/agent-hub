@@ -90,6 +90,12 @@ export interface FactsOptions {
   deny?: string[];
   /** Configured private paths are never read or shown as automatic facts. */
   privatePath?: (path: string) => boolean;
+  /** Optional host-only edit evidence; callbacks never decide whether a tool ran. */
+  onEdit?: (peer: PeerId, file: string, route: "edit" | "shell", grade: 1 | 2 | 3 | undefined) => void;
+  onDiagnosticRead?: (peer: PeerId) => void;
+  onUnknownShell?: (peer: PeerId) => void;
+  /** Active public task for edit evidence when no turn-free cohort exists. */
+  editTask?: (peer: PeerId) => number | undefined;
   /** Bounded machine-local projection; absent retains raw/binary behavior. */
   projection?: (file: string) => import("./text-projection.ts").ProjectedText | undefined;
 }
@@ -142,7 +148,7 @@ export interface Offered {
 }
 
 export const MAX_RECEIPTS_PER_PEER = 256;
-export interface ReadReceipt { sha256: string; scope: "full" | "partial"; at: number; turnId: string }
+export interface ReadReceipt { sha256: string; scope: "full" | "partial"; at: number; turnId: string; ownerEpoch?: string }
 
 export class Facts {
   private readonly latest = new Map<string, Version>();
@@ -325,7 +331,7 @@ export class Facts {
   /** Grade one write of `path` for `peer`: 1 verified full read, 2 partial read only, 3 blind or stale, undefined when the pre-image is unknown (counted in the total only, never guessed). */
   private grade(peer: PeerId, path: string, pre: string | undefined): 1 | 2 | 3 | undefined {
     if (pre === undefined) return undefined;
-    const task = this.o.scope(peer)?.task?.id;
+    const task = this.o.editTask?.(peer) ?? this.o.scope(peer)?.task?.id;
     const r = task === undefined ? undefined : this.readReceipt(peer, task, path);
     if (!r) return 3;
     if (createHash("sha256").update(pre).digest("hex") !== r.sha256) return 3;
@@ -355,6 +361,7 @@ export class Facts {
     const was = this.sessions.get(peer);
     this.sessions.set(peer, id);
     if (was === undefined || was === id) return;
+    this.receipts.delete(peer);
     this.accepted.delete(peer);
     this.plansAccepted.delete(peer);
     this.offers.delete(peer);
@@ -607,6 +614,7 @@ export class Facts {
     const version = file ? this.observe(file) : undefined;
     if (toolUseId) {
       const shell = tool === "Bash" && typeof input.command === "string" ? classifyShellWrite(input.command) : undefined;
+      if (shell?.kind === "unknown") try { this.o.onUnknownShell?.(peer); } catch { /* observation only */ }
       const targets = shell?.kind === "write" ? shell.targets.flatMap(target => { const name = this.rel(target); return name ? [{ file: name, version: this.observe(name) }] : []; }) : [];
       this.before.set(toolUseId, { peer, ...(file ? { file } : {}), ...(version ? { version } : {}), ...(targets.length ? { shell: targets } : {}) });
       if (this.before.size > 256) this.before.delete(this.before.keys().next().value as string);
@@ -629,18 +637,22 @@ export class Facts {
         this.wrote(peer, file);
         const expected = !pre.version.projected && this.latest.get(file)?.hash === pre.version.hash ? applyEdit(pre.version.text, tool, input) : undefined;
         const version = this.observe(file, expected === undefined ? undefined : { peer, expected: sha1(expected) });
-        if (pre.peer === peer && expected !== undefined && sha1(expected) === version.hash && version.hash !== pre.version.hash) this.count(peer, "e", this.grade(peer, file, pre.version.text));
+        if (pre.peer === peer && expected !== undefined && sha1(expected) === version.hash && version.hash !== pre.version.hash) {
+          const grade = this.grade(peer, file, pre.version.text); this.count(peer, "e", grade);
+          try { this.o.onEdit?.(peer, file, "edit", grade); } catch { /* observation cannot change a tool result */ }
+        }
         const last = this.transitions.get(file)?.at(-1);
         if (last?.seq === version.seq && last.by === peer && this.view(peer).get(file)?.hash === pre.version.hash) this.view(peer).set(file, version);
         return this.observeAll();
       }
       if (tool === "Read") {
         // #1556 T1: a read receipt per (peer, task, path), memory only. Unknown text (large or unreadable file) records nothing, never a guess.
-        const task = this.o.scope(peer)?.task?.id;
+        const task = this.o.editTask?.(peer) ?? this.o.scope(peer)?.task?.id;
         if (task !== undefined && pre.version.text !== undefined) {
           this.recordRead(peer, task, file, { sha256: createHash("sha256").update(pre.version.text).digest("hex"), scope: input.offset === undefined && input.limit === undefined && readWhole(pre.version.text) ? "full" : "partial", turnId: toolUseId ?? "" });
         }
         const version = this.observe(file);
+        if (pre.version.text !== undefined && version.hash === pre.version.hash && input.offset === undefined && input.limit === undefined && readWhole(pre.version.text)) try { this.o.onDiagnosticRead?.(peer); } catch { /* observation only */ }
         // Only a whole read of an unchanged file says what the peer saw: no offset or limit, and nothing Read cuts.
         if (!pre.version.projected && version.hash === pre.version.hash && input.offset === undefined && input.limit === undefined && readWhole(pre.version.text)) this.view(peer).set(file, version);
         return this.observeAll();
@@ -648,7 +660,10 @@ export class Facts {
     }
     if (tool === "Bash" && pre?.peer === peer && pre.shell) {
       // Count each observed file modification, not a command that may touch several files or no file.
-      for (const target of pre.shell) if (this.load(target.file).hash !== target.version.hash) this.count(peer, "s", this.grade(peer, target.file, target.version.text));
+      for (const target of pre.shell) if (this.load(target.file).hash !== target.version.hash) {
+        const grade = this.grade(peer, target.file, target.version.text); this.count(peer, "s", grade);
+        try { this.o.onEdit?.(peer, target.file, "shell", grade); } catch { /* observation only */ }
+      }
     }
     this.observeAll();
   }
@@ -675,7 +690,10 @@ export class Facts {
         this.wrote(peer, file);
         const now = this.load(file);
         const matches = was && !was.projected && !now.projected ? codexEffect(was.text, now, change, (a, b) => this.diff(a, b)) : false;
-        if (matches && was && was.hash !== now.hash) this.count(peer, "e", this.grade(peer, file, was.text), "stream");
+        if (matches && was && was.hash !== now.hash) {
+          const grade = this.grade(peer, file, was.text); this.count(peer, "e", grade, "stream");
+          try { this.o.onEdit?.(peer, file, "edit", grade); } catch { /* observation only */ }
+        }
         const version = this.observe(file, matches ? { peer, expected: now.hash } : undefined);
         const last = this.transitions.get(file)?.at(-1);
         if (was && last?.seq === version.seq && last.by === peer && this.view(peer).get(file)?.hash === was.hash) this.view(peer).set(file, version);

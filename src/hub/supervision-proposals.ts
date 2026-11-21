@@ -243,6 +243,7 @@ export class SupervisionProposals {
   async observe(task: number): Promise<SupervisionProposal[]> {
     if (this.ports.isPrivate(task)) return [];
     const facts = await this.ports.facts(task);
+    if (this.ports.isPrivate(task)) return [];
     const side = facts.tasks.find((candidate) => candidate.id === task);
     if (!side) return [];
     const at = this.ports.now(), evaluation = evaluateSupervision(facts);
@@ -252,7 +253,11 @@ export class SupervisionProposals {
     const reading = evaluation.observations.filter((observation) => observation.task === task && !observation.limits.truncated);
     if (!clipped) {
       const fresh = new Set(reading.map(proposalKey));
-      const stale = this.store.pendingFor(task).filter((proposal) => !fresh.has(proposal.key)).map((proposal) => proposal.id);
+      const covered = new Set(evaluation.evaluated.filter((entry) => entry.task === task).map((entry) => `${entry.rule}:${entry.revision}`));
+      const stale = this.store.pendingFor(task).filter((proposal) => {
+        const editRule = proposal.rule === "unverified_shell_write" || proposal.rule === "cascading_edit_after_failed_check";
+        return !fresh.has(proposal.key) && (!editRule || proposal.revision !== taskRevision(side).revision || covered.has(`${proposal.rule}:${proposal.revision}`));
+      }).map((proposal) => proposal.id);
       if (stale.length) this.store.expire(stale, "hub", at);
     }
     const added: SupervisionProposal[] = [];
@@ -330,7 +335,10 @@ export class SupervisionProposals {
     if (taskRevision(side).revision !== proposal.revision) return this.stale(proposal, "the task moved to another revision");
     if (this.ports.generation(proposal.task) !== proposal.generation) return this.stale(proposal, "the native session it was read under was replaced");
     // Recheck the input identity immediately before any effect: the same reading has to still hold now.
-    if (!evaluateSupervision(facts).observations.some((observation) => proposalKey(observation) === proposal.key)) return this.stale(proposal, "the reading changed: new input replaced this proposal");
+    const reading = evaluateSupervision(facts);
+    if ((proposal.rule === "unverified_shell_write" || proposal.rule === "cascading_edit_after_failed_check")
+      && !reading.evaluated.some(entry => entry.task === proposal.task && entry.rule === proposal.rule && entry.revision === proposal.revision)) return { ok: false, error: "edit evidence unavailable; the proposal stays pending" };
+    if (!reading.observations.some((observation) => proposalKey(observation) === proposal.key)) return this.stale(proposal, "the reading changed: new input replaced this proposal");
     if (this.ports.held(proposal.task)) return { ok: false, error: "the owner has a needs_review delivery; resolve it before acting on this proposal" };
     // Authority is read again after the await: the board can move while the facts are being read, and a role or a
     // session that went away in that window must not run anything.

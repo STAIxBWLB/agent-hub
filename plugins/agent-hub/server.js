@@ -10214,11 +10214,13 @@ async function runTool(name, rawArgs, ctx) {
         const file = guardPath(ctx, String(a.path), "read");
         if (statSync4(file).size > 5000000)
           return "error: file is larger than 5 MB; use bash (head, grep, sed -n) to look at parts of it";
-        const lines = readFileSync7(file, "utf8").split(`
+        const bytes = readFileSync7(file);
+        const lines = bytes.toString("utf8").split(`
 `);
         const from = Math.max(1, Number(a.offset) || 1);
         const out = lines.slice(from - 1, from - 1 + (Number(a.limit) || 2000)).map((l, i) => `${from + i}	${l}`).join(`
 `);
+        ctx.editGuard?.read(file, bytes, a.offset === undefined && a.limit === undefined && lines.length <= 2000 && out.length <= OUTPUT_CAP);
         return out.length > OUTPUT_CAP ? `${out.slice(0, OUTPUT_CAP)}
 (truncated: read again with offset/limit)` : out;
       }
@@ -10248,8 +10250,12 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
           if (guardPath(ctx, String(a.path), "write") !== approvedTarget)
             return formatProbeToolRefusal(new ProbeToolRefusal("target_changed"));
         }
+        const unverified = ctx.editGuard?.write(file);
         mkdirSync9(dirname12(file), { recursive: true });
         writeFileSync8(file, content);
+        try {
+          ctx.editGuard?.written(file, unverified);
+        } catch {}
         return `wrote ${a.path}`;
       }
       case "edit": {
@@ -10285,7 +10291,11 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
           if (guardPath(ctx, String(a.path), "write") !== approvedTarget || readFileSync7(file, "utf8") !== text)
             return formatProbeToolRefusal(new ProbeToolRefusal("target_changed"));
         }
+        const unverified = ctx.editGuard?.write(file);
         writeFileSync8(file, replacement);
+        try {
+          ctx.editGuard?.written(file, unverified);
+        } catch {}
         return `edited ${a.path}`;
       }
       case "bash": {
@@ -10314,7 +10324,11 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
           if (attempt)
             return "error: read-only shell proof remained unstable; no command was executed";
         }
+        const observedShell = ctx.editGuard?.shell(command);
         const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}, ...ctx.signal ? { signal: ctx.signal } : {} });
+        try {
+          observedShell?.();
+        } catch {}
         try {
           ctx.onProcessExit?.(res.code);
         } catch {}
@@ -19656,6 +19670,7 @@ var init_local_worker = __esm(() => {
         ...this.opts.tools.docRead ? { docRead: { ...this.opts.tools.docRead, pii } } : {},
         ...this.opts.tools.webFetch ? { webFetch: { ...this.opts.tools.webFetch, pii } } : {},
         cwd: this.opts.cwd,
+        ...this.opts.tools.editGuard && !probe ? { editGuard: this.opts.tools.editGuard(task, () => !turnSignal.aborted && executionGeneration === this.turn) } : {},
         deny: this.opts.tools.deny,
         readOnly: this.opts.tools.readOnly,
         ...probe ? { probe: {
@@ -31260,7 +31275,7 @@ var MACHINE_LOCAL = [
   "corpus.paths",
   "invocation"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "roadmap.github_mirror", "roadmap.github_write", "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "edit_governance.arm", "roadmap.github_mirror", "roadmap.github_write", "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;

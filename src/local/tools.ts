@@ -100,6 +100,8 @@ export interface ToolContext {
   permit: (title: string, tool?: string, signal?: AbortSignal, canonicalTarget?: string, observe?: ApprovalObserver, originalPath?: string, input?: unknown, policy?: ShellPermitPolicy) => Promise<ToolApproval>;
   /** Host-only synchronous recheck, immediately before a shell process can be spawned. */
   shellExecutionCheck?: (input: unknown) => ShellExecutionCheck;
+  /** Host-owned guard: absent unless an admitted edit policy is active. */
+  editGuard?: { read(file: string, bytes: Buffer, full: boolean): void; write(file: string): boolean | undefined; written(file: string, unverified: boolean | undefined): void; shell(command: string): (() => void) | undefined };
   /** #515: present only when the project opted in (`local.doc_read`), so `doc_read` exists for this worker and nothing else gets it. `pii`: this turn is a PII task turn. */
   docRead?: DocReadPort & { pii: boolean };
   /** #515b: present only when the project opted in (`local.web_fetch.allow` names a host), so `web_fetch` exists for this worker and nothing else gets it. `pii`: this turn is a PII task turn, for which it is refused. */
@@ -273,9 +275,11 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
       case "read": {
         const file = guardPath(ctx, String(a.path), "read");
         if (statSync(file).size > 5_000_000) return "error: file is larger than 5 MB; use bash (head, grep, sed -n) to look at parts of it";
-        const lines = readFileSync(file, "utf8").split("\n");
+        const bytes = readFileSync(file);
+        const lines = bytes.toString("utf8").split("\n");
         const from = Math.max(1, Number(a.offset) || 1);
         const out = lines.slice(from - 1, from - 1 + (Number(a.limit) || 2000)).map((l, i) => `${from + i}\t${l}`).join("\n");
+        ctx.editGuard?.read(file, bytes, a.offset === undefined && a.limit === undefined && lines.length <= 2000 && out.length <= OUTPUT_CAP);
         return out.length > OUTPUT_CAP ? `${out.slice(0, OUTPUT_CAP)}\n(truncated: read again with offset/limit)` : out;
       }
       case "write": {
@@ -296,8 +300,11 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
           if (ctx.signal?.aborted) return formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped"));
           if (guardPath(ctx, String(a.path), "write") !== approvedTarget) return formatProbeToolRefusal(new ProbeToolRefusal("target_changed"));
         }
+        // ponytail: another process can write between this check and the write; Design 1.2 0444/ahub-edit isolation is the upgrade.
+        const unverified = ctx.editGuard?.write(file);
         mkdirSync(dirname(file), { recursive: true });
         writeFileSync(file, content);
+        try { ctx.editGuard?.written(file, unverified); } catch { /* evidence cannot undo a completed write */ }
         return `wrote ${a.path}`;
       }
       case "edit": {
@@ -324,7 +331,10 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
           if (ctx.signal?.aborted) return formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped"));
           if (guardPath(ctx, String(a.path), "write") !== approvedTarget || readFileSync(file, "utf8") !== text) return formatProbeToolRefusal(new ProbeToolRefusal("target_changed"));
         }
+        // ponytail: another process can write between this check and the write; Design 1.2 0444/ahub-edit isolation is the upgrade.
+        const unverified = ctx.editGuard?.write(file);
         writeFileSync(file, replacement);
+        try { ctx.editGuard?.written(file, unverified); } catch { /* evidence cannot undo a completed write */ }
         return `edited ${a.path}`;
       }
       case "bash": {
@@ -343,7 +353,9 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
           if(check==="valid")break;
           if(attempt)return "error: read-only shell proof remained unstable; no command was executed";
         }
+        const observedShell = ctx.editGuard?.shell(command);
         const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+        try { observedShell?.(); } catch { /* optional observation cannot change an executed command result */ }
         try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
         return `${res.output}\n(exit ${res.code})`;
       }

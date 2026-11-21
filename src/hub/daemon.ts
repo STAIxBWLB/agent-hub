@@ -247,6 +247,7 @@ import { projectChain } from "@staix/agent-mem";
 import { recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
 import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
+import { EditEvidence, editGuard, parseEditGovernance, type EditGuardArm } from "./edit-guard.ts";
 import { crashPlan, lossNotice, openCrashNotices, readSessions, removeSessions, writeSessions, type CrashNotice, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
@@ -326,6 +327,7 @@ export interface HubConfig {
   conductor: { feed: "own" | "all" | "off"; approval_wait_s: number };
   /** #1221 T2: what the supervision queue may do. `off` evaluates nothing, `shadow` stores bounded proposals with no inbox row or notice, `advisory` may also show a pending one in the console inbox. Machine-local and off by default. */
   supervision: { mode: "off" | "shadow" | "advisory" };
+  edit_governance?: { arm: EditGuardArm };
   budget: BudgetConfig;
   context: ContextConfig;
   inference: InferenceConfig;
@@ -409,6 +411,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   roles: DEFAULT_ROLES,
   conductor: { feed: "own", approval_wait_s: 30 },
   supervision: { mode: "off" },
+  edit_governance: { arm: "baseline" },
   budget: DEFAULT_BUDGET,
   context: DEFAULT_CONTEXT,
   model_relay: { cooldown_failures: MODEL_COOLDOWN_FAILURES_SETTING.defaultValue, cooldown_s: MODEL_COOLDOWN_SETTING.defaultValue, cooldown_cap_s: MODEL_COOLDOWN_CAP_SETTING.defaultValue, terminal_history_limit: MODEL_TERMINAL_HISTORY_SETTING.defaultValue },
@@ -614,6 +617,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     for (const key of ["jcode_home", "jcode_provider_profile"]) if (file[key] !== undefined && typeof file[key] !== "string") throw new Error(`${key} must be a string`);
     if (file.qwen_cmd !== undefined && (!Array.isArray(file.qwen_cmd) || !file.qwen_cmd.length || file.qwen_cmd.some((word: unknown) => typeof word !== "string" || !word))) throw new Error("qwen_cmd must be a nonempty executable argv");
     actionPolicyConfig(file.action_policy);
+    if (file.edit_governance !== undefined) parseEditGovernance(file.edit_governance);
     instructionProtection(file.protect_instruction_files);
     permissionDefaults(file.permission_modes, instances, adapterCatalog); // malformed declarations fail even when trust would drop them
     peerStartConfig(file.peers, instances, adapterCatalog);
@@ -641,6 +645,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
       const existingNotices = notices.filter(notice => !notice.startsWith("release in .agenthub/config.local.json ignored:"));
       if (existingNotices.length) ignored.push(existingNotices.join("; "));
     }
+    if (file.edit_governance && !Object.keys(file.edit_governance).length) delete file.edit_governance;
     // Release policy is read directly from the candidate commit by the S6 host reader, never runtime config.
     delete file.release;
     if (hasRunners) file.research.runners = parseResearchRunners(runnerDeclarations);
@@ -701,6 +706,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     ...(file.pii !== undefined ? { pii: { paths: policyPaths(file.pii.paths, "pii.paths") } } : {}),
     ...(file.data !== undefined ? { data: { readonly: policyPaths(file.data.readonly, "data.readonly") } } : {}),
     action_policy: actionPolicyConfig(file.action_policy),
+    ...(file.edit_governance !== undefined ? { edit_governance: parseEditGovernance(file.edit_governance) } : {}),
     permission_modes: { ...instancePermissions, ...permissionDefaults(file.permission_modes, instances, adapterCatalog) },
     protect_instruction_files: instructionProtection(file.protect_instruction_files),
     permission_default_sources: appliedPermissionSources,
@@ -3317,6 +3323,7 @@ export async function startDaemon(opts: DaemonOptions) {
     run: (proposal, actor) => runSupervisionProposal(proposal, actor),
     now: () => Date.now(),
   });
+  const editEvidence = new EditEvidence();
   /** The bounded fact set one proposal reads: the task, its declared overlap partners, and its own measurement. */
   async function proposalFacts(task: number): Promise<SupervisionFacts> {
     const row = board.get(task);
@@ -3328,6 +3335,7 @@ export async function startDaemon(opts: DaemonOptions) {
       overlaps: partners.map((other) => ({ task: row.id, other })),
     };
     const side = facts.tasks[0]!;
+    if (!tasks.isPii(row)) { const edits = editEvidence.snapshot(row.id, taskRevision(side).revision); if (edits) facts.edits = [edits]; }
     const window = side.history.slice(taskRevision(side).from);
     // Hashing is only owed when this revision recorded a check pass over delivered ids; otherwise the rule says so itself.
     if (!tasks.isPii(row) && window.some((entry) => entry.event === "check passed") && window.some((entry) => (entry.deliverables?.length ?? 0) > 0)) {
@@ -3340,6 +3348,8 @@ export async function startDaemon(opts: DaemonOptions) {
         }];
       }
     }
+    const latest = board.get(task);
+    if (!latest || latest.owner !== row.owner || latest.state !== row.state || latest.history.length !== row.history.length || tasks.isPii(latest) || latest.owner && reviewObserverHeld(latest.owner)) return { tasks: [] };
     return facts;
   }
   /**
@@ -3365,13 +3375,20 @@ export async function startDaemon(opts: DaemonOptions) {
     const other = proposal.action === "request_integration" && partner ? Number(partner.slice("task:".length)) : undefined;
     const stale = proposal.refs.filter((ref) => ref.startsWith("deliverable:")).join(", ");
     const body = proposal.action === "recheck"
-      ? `Task #${proposal.task}: supervision recheck. The files delivered before the recorded check pass changed since then${stale ? ` (${stale})` : ""}. Run the check again and re-file hub_task_done with its result.`
+      ? proposal.rule === "unverified_shell_write" ? `Task #${proposal.task}: supervision recheck. Unverified writes exceeded the observation threshold. Re-read affected files and run the relevant check.`
+        : proposal.rule === "cascading_edit_after_failed_check" ? `Task #${proposal.task}: supervision recheck. Further distinct edits followed a failed check without a diagnostic read. Inspect the failure and run the relevant check.`
+        : `Task #${proposal.task}: supervision recheck. The files delivered before the recorded check pass changed since then${stale ? ` (${stale})` : ""}. Run the check again and re-file hub_task_done with its result.`
       : `Task #${proposal.task}: supervision integration. #${proposal.task} and #${other ?? "?"} declared overlapping work, both owners accepted, and no integration is recorded since. Land the integration, or record why the overlap does not need one.`;
     const told = tasks.supervisionNotice(proposal.task, other, body);
     return told.sent.length ? { outcome: "ran", detail: `notice to ${told.sent.join(", ")}` } : { outcome: "refused", detail: told.refused ?? "no owner to tell" };
   }
   /** `off` evaluates nothing; `shadow` stores bounded proposals with no console row or notice; `advisory` may show one. */
-  const supervisionMode = () => config.supervision?.mode ?? "off";
+  let evidenceMode = config.supervision?.mode ?? "off";
+  const supervisionMode = () => {
+    const mode = config.supervision?.mode ?? "off";
+    if (mode !== evidenceMode) { editEvidence.reset(); evidenceMode = mode; }
+    return mode;
+  };
   /** What a tool result and the inbox show: codes and ids only, never a title, a note or a path. */
   const proposalView = (proposal: SupervisionProposal) => ({
     id: proposal.id, task: proposal.task, rule: proposal.rule, version: proposal.version, revision: proposal.revision, trigger: proposal.trigger,
@@ -3430,7 +3447,31 @@ export async function startDaemon(opts: DaemonOptions) {
   const factsRepo = repoOf(opts.cwd);
   const repositoryFacts = !!factsRepo || profileName(config.profile) === "dev";
   if (!factsRepo) log(repositoryFacts ? "project has no Git or shadow repository; snapshots/undo and Git directory facts are unavailable; dev named-file facts remain (opt in with ahub init --shadow)" : "project has no Git or shadow repository; facts, snapshots and undo are off (opt in with ahub init --shadow)");
-  const facts: Facts = new Facts({ root: opts.cwd, repo: factsRepo, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => repositoryFacts ? (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)) : undefined, peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny, privatePath: path => matchesPolicy(opts.cwd, path, config.pii?.paths ?? []), projection: file => projections.project(file) });
+  const editFactTask = (peer: PeerId) => {
+    if (turns.get(peer)?.private || reviewObserverHeld(peer)) return undefined;
+    const id = turns.get(peer)?.attribution.task, row = id === undefined ? undefined : board.get(id);
+    return row && row.owner === peer && row.state === "in_progress" && !tasks.isPii(row) ? row : undefined;
+  };
+  const editFactPorts = {
+    editTask: (peer: PeerId) => supervisionMode() === "off" ? undefined : editFactTask(peer)?.id,
+    onEdit: (peer: PeerId, file: string, route: "edit" | "shell", grade: 1 | 2 | 3 | undefined) => {
+      if (supervisionMode() === "off") return;
+      const row = editFactTask(peer); if (!row) return;
+      editEvidence.write(row.id, taskRevision({ history: row.history }).revision, file, route === "shell" || grade === 3);
+      proposeObserved(row.id);
+    },
+    onUnknownShell: (peer: PeerId) => {
+      if (supervisionMode() === "off") return;
+      const row = editFactTask(peer); if (!row) return;
+      editEvidence.unknownShell(row.id, taskRevision({ history: row.history }).revision); proposeObserved(row.id);
+    },
+    onDiagnosticRead: (peer: PeerId) => {
+      if (supervisionMode() === "off") return;
+      const row = editFactTask(peer); if (!row) return;
+      editEvidence.diagnosticRead(row.id, taskRevision({ history: row.history }).revision); proposeObserved(row.id);
+    },
+  };
+  const facts: Facts = new Facts({ ...editFactPorts, root: opts.cwd, repo: factsRepo, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => repositoryFacts ? (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)) : undefined, peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny, privatePath: path => matchesPolicy(opts.cwd, path, config.pii?.paths ?? []), projection: file => projections.project(file) });
   const worktreeFacts = new Map<string, Facts>();
   const worktreeProjections = new Map<string, TextProjections>();
   const executionRoot = (peer: string) => {
@@ -3454,13 +3495,34 @@ export async function startDaemon(opts: DaemonOptions) {
     let store = worktreeFacts.get(peer);
     if (!store) {
       const projection = projectionsFor(peer);
-      store = new Facts({ root, repo: repoFor(peer), tmp: join(nativeStateDir(peer), "facts"), instance: `${instanceId.slice(0, 8)}-${peer}`,
+      store = new Facts({ ...editFactPorts, root, repo: repoFor(peer), tmp: join(nativeStateDir(peer), "facts"), instance: `${instanceId.slice(0, 8)}-${peer}`,
         scope: id => scopes.has(id) ? scopes.get(id) : scopes.set(id, tasks.factScope(id)).get(id),
         peers: () => [...bus.peers.keys()].filter(id => executionRoot(id) === root), nameable: tasks.nameable, deny: config.local.deny,
         privatePath: path => matchesPolicy(root, path, config.pii?.paths ?? []), projection: file => projection.project(file) });
       worktreeFacts.set(peer, store);
     }
     return store;
+  };
+  const editGuardFor = (peer: PeerId, taskText: string | undefined, turnCurrent: () => boolean) => {
+    const id = Number(taskText), row = Number.isSafeInteger(id) && id > 0 ? board.get(id) : undefined;
+    if (!row || row.owner !== peer || row.state !== "in_progress" || tasks.isPii(row) || turns.get(peer)?.private || reviewObserverHeld(peer)) return undefined;
+    const root = executionRoot(peer), revision = taskRevision({ history: row.history }).revision;
+    const current = () => {
+      const fresh = board.get(id);
+      return turnCurrent() && !stopping && !recoveryActive() && executionRoot(peer) === root && !!fresh && fresh.owner === peer
+        && fresh.state === "in_progress" && !tasks.isPii(fresh) && !turns.get(peer)?.private && !reviewObserverHeld(peer)
+        && taskRevision({ history: fresh.history }).revision === revision;
+    };
+    const arm = () => config.edit_governance?.arm ?? "baseline";
+    const guard = editGuard({ root, peer, task: id, turn: turns.get(peer)?.id ?? "", ownerEpoch: revision,
+      arm, current, facts: factsFor(peer), evidence: editEvidence, revision, changed: () => proposeObserved(id), observeShell: () => supervisionMode() !== "off" });
+    // Observation is best-effort in baseline; it must never introduce a refusal in the existing tool path.
+    return {
+      read: (...args: Parameters<typeof guard.read>) => { const mode = supervisionMode(); if (arm() !== "baseline") guard.read(...args); else if (mode !== "off") try { guard.read(...args); } catch { /* observation only */ } },
+      write: (...args: Parameters<typeof guard.write>) => { const mode = supervisionMode(); if (arm() !== "baseline") return guard.write(...args); if (mode !== "off") try { return guard.write(...args); } catch { /* observation only */ } return undefined; },
+      written: (...args: Parameters<typeof guard.written>) => { if (supervisionMode() !== "off") guard.written(...args); },
+      shell: (...args: Parameters<typeof guard.shell>) => { const mode = supervisionMode(); if (arm() !== "baseline") return guard.shell(...args); if (mode !== "off") try { return guard.shell(...args); } catch { /* observation only */ } return undefined; },
+    };
   };
   const progress = new ProgressObserver({
     tasks: () => board.list(),
@@ -3500,6 +3562,8 @@ export async function startDaemon(opts: DaemonOptions) {
     factsWereOn = on;
     return on;
   };
+  const editObservationOn = (peer: PeerId): boolean => supervisionMode() !== "off" && !turns.get(peer)?.private && !reviewObserverHeld(peer)
+    && !board.list().some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
   /** Peers whose context path is verified in their current native session: a readback found an offered fact there. */
   const capable = new Set<PeerId>();
   const probes = new Map<PeerId, number>();
@@ -3685,7 +3749,13 @@ export async function startDaemon(opts: DaemonOptions) {
     turnFreeNow = undefined;
     scopes = new Map();
     progress.prune();
-    if (t.state === "approved" || t.state === "cancelled") { facts.closeTask(t.id); for (const store of worktreeFacts.values()) store.closeTask(t.id); } // #1556 T1: receipts end with the task
+    const editRevision = taskRevision({ history: t.history }).revision;
+    if (supervisionMode() !== "off" && !tasks.isPii(t) && !(t.owner && reviewObserverHeld(t.owner))) {
+      if (h.event === "check failed" || h.event === "check run failed") editEvidence.check(t.id, editRevision, "failed");
+      if (h.event === "check passed" || h.event === "check run passed") editEvidence.check(t.id, editRevision, "passed");
+    }
+    if (t.state === "approved" || t.state === "cancelled") editEvidence.close(t.id);
+    if (t.state === "approved" || t.state === "cancelled" || ["accepted", "assigned", "reassigned", "unassigned", "escalated", "reopened"].includes(h.event)) { facts.closeTask(t.id); for (const store of worktreeFacts.values()) store.closeTask(t.id); } // #1556 T1: receipts end with the task or its owner episode
     // #1555 AC6: touches rows and check output tails end with the task, once per close (a reopened task can close again), not on every later note.
     if (t.state === "approved" || t.state === "cancelled") { if (!compactedTasks.has(t.id)) { compactedTasks.add(t.id); compactClosedTask(t.id); } } else compactedTasks.delete(t.id);
     factsOn(); // a PII task opening or closing switches tracking at once, not at the next boundary (issue #108)
@@ -7590,6 +7660,16 @@ export async function startDaemon(opts: DaemonOptions) {
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
     actionPolicyInfo: Object.fromEntries(peerIds.map(id => { const e = actionEnforcement(id); return [id, actionBudgets.status(id, e.enforced, e.reason)]; })),
+    ...(config.edit_governance?.arm && config.edit_governance.arm !== "baseline" ? { editGuardInfo: Object.fromEntries(peerIds.map(id => {
+      const definition = definitionOf(id), port = definition?.start.daemonPort, turn = turns.get(id);
+      const eligible = isFixedBuiltinDefinition(definition) && (port === "local-worker" || port === "pi-rpc") && actionEnforcement(id).enforced
+        && !!turn && !turn.private && !reviewObserverHeld(id) && board.list("in_progress").some(task => task.id === turn.attribution.task && task.owner === id && !tasks.isPii(task));
+      return [id, { arm: config.edit_governance!.arm, availability: eligible ? "admitted" : "unavailable", ...(eligible ? {} : { fallback: "unknown", reason: "awaiting_review_evidence" }) }];
+    })) } : {}),
+    ...(supervisionMode() !== "off" ? { editEvidenceInfo: Object.fromEntries(peerIds.map(id => {
+      const row = editFactTask(id), evidence = row && editEvidence.snapshot(row.id, taskRevision({ history: row.history }).revision);
+      return [id, evidence ? { unverified: evidence.unverified, unknownShell: evidence.unknownShell, cascading: evidence.cascading } : { state: "unknown" }];
+    })) } : {}),
     roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id), ...roleVisibility(id), ...(config.roles[id]?.includes("planner") ? { planner: plannerSource } : {}) }])),
     planner: { peers: plannerPeers(), source: plannerSource },
     // #1411 T2: the review settings routing reads when no reviewer can run (assign() decides; `ahub roles` only reports them).
@@ -8951,7 +9031,10 @@ export async function startDaemon(opts: DaemonOptions) {
         onItem: (item, nativeTurn) => {
           const observation = normalizeCodexObservation(item);
           if (nativeTurn && observation) observeProgress(peer, { ...observation, turn: nativeTurn });
-          if (!factsOn()) return;
+          if (!factsOn()) {
+            if (editObservationOn(peer) && item.type === "fileChange") { factSession(peer, codex.thread); factsFor(peer).codexItem(peer, item); }
+            return;
+          }
           factSession(peer, codex.thread);
           if (item.type === "userMessage") {
             const text = JSON.stringify(item.content ?? "");
@@ -9136,6 +9219,7 @@ export async function startDaemon(opts: DaemonOptions) {
             const output = TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name) ? await (name === "hub_ask" && signal ? invocationRequestSignal.run({ signal, current: () => !signal.aborted }, () => taskOp(peer, name, raw as Record<string, unknown>, true)) : taskOp(peer, name, raw as Record<string, unknown>, true)) : await runTool(name, JSON.stringify(raw), { ...ctx, signal,
               sandboxEnv: applyTurnAttribution(ctx.sandboxEnv ?? {}, humanBash ? { trigger: "manual" } : turnAttribution(attributionEnvs, { task: attributionTask === undefined ? undefined : Number(attributionTask), scheduled: scheduledTask })) as Record<string, string>,
               ...(humanBash ? { onProcessExit: (code: number | null) => { exitCode = code; } } : {}),
+              ...(!humanBash ? { editGuard: editGuardFor(peer, attributionTask, () => !signal?.aborted && context?.isCurrent?.() !== false && bus.peers.get(peer) === pi) } : {}),
               shellExecutionCheck: input => signal?.aborted || context?.isCurrent?.() === false || bus.peers.get(peer) !== pi ? "aborted" : humanBash ? "valid" : shellProofs.check(input),
               permit: async (title, tool, toolSignal, path, _observe, originalPath, input, policy) => {
                 const picked = humanBash ? (toolSignal?.aborted || context?.isCurrent() !== true ? "aborted" : true) : await piPermit(title, tool ?? name, toolSignal, path, context?.isCurrent, context?.onApproval, originalPath, input, policy);
@@ -9366,6 +9450,7 @@ export async function startDaemon(opts: DaemonOptions) {
         onTool: (observation, task) => observeProgress(peer, observation, task),
         fixedModel: args.model ?? routing.local.fixed_model,
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, readOnly: config.data?.readonly, permit, shellExecutionCheck: input => shellProofs.check(input),
+          editGuard: (task, current) => editGuardFor(peer, task, () => current() && bus.peers.get(peer) === local),
           // #515: `doc_read` exists only when the project opted in. The projections are this worker's execution root's (the hub's own facts and review use the same ones).
           // #515b: `web_fetch` exists only when the project listed a host. A PII turn is refused inside the tool, so the port carries no PII logic of its own.
           ...(webEgress ? { webFetch: { allow: webAllow, proxyUrl: () => webEgress?.url, ...(opts.webFetchTransport ? { fetch: opts.webFetchTransport } : {}) } } : {}),
@@ -12554,7 +12639,14 @@ export async function startDaemon(opts: DaemonOptions) {
             if (phase === "pre") activeAt.set(peer, Date.now());
             queueMicrotask(() => tally(peer)); // after this call's own work below
           }
-          if (!factsOn()) return void reply({ t: "facts", ok: true, ...permissionReply });
+          if (!factsOn()) {
+            if (nativeClaude && editObservationOn(peer) && !reviewCaptureExcluded(tool, JSON.stringify(input ?? {}))) {
+              factSession(peer, sessionId);
+              if (phase === "pre") factsFor(peer).preTool(peer, toolUseId, tool, input);
+              if (phase === "post") factsFor(peer).postTool(peer, toolUseId, tool, input);
+            }
+            return void reply({ t: "facts", ok: true, ...permissionReply });
+          }
           if (definitionOf(peer)?.transport === "claude-channel" && phase === "pre" && !reviewCaptureExcluded(tool, JSON.stringify(input ?? {}))) observeProgress(peer, normalizeClaudeObservation(tool, input));
           factSession(peer, sessionId);
           const transcript = claudeTranscript(sessionId, msg.transcriptPath, peer);

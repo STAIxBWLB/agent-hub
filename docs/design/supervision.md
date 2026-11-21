@@ -27,11 +27,12 @@ The module is `src/hub/supervision-rules.ts` for the reading and `src/hub/superv
 
 ## Facts the rules may read
 
-One evaluation takes three fact sets, all authored by the hub, never by a peer or a model:
+One evaluation takes four fact sets, all authored by the hub, never by a peer or a model:
 
 - **task revisions**: an id, a state and the task's structured history (event name, time, check key, plan revision, `evidenceOnly`, `noWrites` and delivered record ids). A note, a withheld body, a review finding or a transcript is not in the fact type and cannot be reached from it.
 - **deliverable measurement**: the hub's own `deliverableStatus` reading per task: whether it measured the files, and which delivered ids it now reads as changed or missing. Ids and states, never a file body.
 - **declared overlap**: the hub's own `overlapHits` rows, one row per unordered pair.
+- **edit evidence**: bounded in-memory counts for the current owner revision, without paths or content. Missing coverage stays unknown.
 
 Nothing is read from a private task, a cloud observer or a native transcript, and the module imports no board write, bus, daemon, peer or memory module. A source-string test in `test/supervision-rules.test.ts` fails if a clock, a timer, an emit path, `process.env` or one of those imports appears, so the purity is proven mechanically and not only asserted.
 
@@ -50,6 +51,10 @@ Each rule has an id, a version, one reason code and one suggested existing actio
 **`deliverable_invalidated_check` (version 2, reason `stale_check`, action `recheck`).** The revision recorded a completion check pass or an isolated `check run passed` and delivered at least one record, and the hub's own measurement now reads one of those delivered ids as changed or missing. Trigger: `check:<ids>`; refs: the check record and the stale deliverable ids. A delivered id is the only thing that can be stale: a file the hub measured but that this revision never delivered is not evidence about it. If the hub did not measure the files, the rule cannot decide and reports the gap `no-deliverable-measurement` instead of a clean reading.
 
 **`declared_overlap_without_integration` (version 1, reason `unintegrated_overlap`, action `request_integration`).** A declared pair whose both sides have accepted their current revision, with no integration request, landed integration or recorded integration failure after either acceptance, and with neither side closed. Persistence is record-based, never elapsed time. Trigger: `overlap:<low>:<high>`, bound to the pair's lower task id so naming the pair in either direction is the same observation; refs: the other task and both acceptance records.
+
+**`unverified_shell_write` (version 1, action `recheck`).** At least two observed shell-route or blind/stale edits in the current owner revision. A shell command whose target or effect cannot be observed is counted separately as unknown and does not assert a write.
+
+**`cascading_edit_after_failed_check` (version 1, action `recheck`).** At least two distinct observed files changed after a check failed, without an intervening observed full read or passing check. A full read is a conservative observable proxy for a diagnostic read; an unobservable read cannot clear the evidence.
 
 Ordinary progress triggers nothing: a passing check, an unequal pair of failures, a cleared streak, an evidence-only rejection, a closed task, a pair that recorded one integration attempt. Elapsed silence is never a trigger by itself: no rule reads a clock, and a record set read two days later reads identically.
 
@@ -115,6 +120,21 @@ A role on the task is not the authority to run what the proposal names. Acceptin
 | `MAX_PROPOSALS_PER_REVISION` | 3 | proposals one task revision gets, decisions included |
 | `MAX_PROPOSAL_ROWS` | 400 | terminal rows kept for dedupe and history; past it the oldest terminal row goes and a pending row is never pruned |
 | `MAX_PROPOSAL_READ` | 50 | proposals one read returns, pending first |
+
+## Edit governance arms
+
+`edit_governance.arm` is machine-local and defaults to `baseline`. The opt-in `route_guard`, `occ_guard` and `combined_guard` arms act only where the hub proves a pre-effect tool boundary. The hub-owned local and Pi tools are admitted while their current task, owner and native turn remain valid. Native Claude, Codex and ACP report `unavailable`: their paths do not provide a hub-owned pre-effect deny under the current security contract. These surfaces use existing exact-head PR, plan conformance and check evidence at done and review time. This is detection, not prevention; missing PR or matching-check evidence remains `unknown`. Uncommitted worktree state is outside this fallback.
+
+| Surface | Enforcement | Reason |
+| --- | --- | --- |
+| Hub-owned local and Pi tools | `admitted` while current task and turn are verified | The hub owns the tool transaction |
+| Native Claude | `unavailable` | The managed hook never denies |
+| Codex and ACP native tools | `unavailable` | A pre-effect hub deny is not guaranteed |
+| External tree-only peers | `unavailable` | No pre-effect tool stream |
+
+Route enforcement refuses a shell command only when `classifyShellWrite` proves a write. `unknown` is observed but does not become a refusal. OCC checks the current hash immediately before an admitted write and refuses a blind or stale receipt at check time with the current SHA-256 and a re-read instruction. The local tool and native hook are best-effort: another process can change the file after the check, so the check is not atomic against concurrent writers. The Design 1.2 0444 worktree and `ahub-edit` isolation is the upgrade path and is outside this change.
+
+The edit observations bind to the task's current owner revision, retain only bounded counts and in-memory file identifiers, and never persist a per-read or per-edit event. Shadow mode does not send a worker turn; advisory mode uses the existing proposal path.
 
 ## Deliberately outside this contract
 
