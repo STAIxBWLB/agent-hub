@@ -66,6 +66,23 @@ test("#439 Settings render stays bounded in the minimum panel size", () => {
   const lines = renderConsole(state, 80, 24); expect(lines).toHaveLength(24); for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
 });
 
+test("#1607 the selected Settings row stays on screen below one or two info lines and the restart notes", () => {
+  const rows = Array.from({ length: 60 }, (_, i) => ({ ...row, key: `tasks.k${String(i).padStart(2, "0")}`, restartReason: undefined, note: undefined, label: "short" }));
+  const long = "a note long enough to wrap onto a second line of the eighty-column console ".repeat(2);
+  const cases: Record<string, unknown>[] = [{}, { settingsRows: rows.map(r => ({ ...r, note: long })) }, { pendingRestart: [{ key: row.key, reason: "restart" }], retainedConfig: [{ key: "a.b", reason: "refused" }] }];
+  for (const extra of cases) for (const at of [30, 59]) {
+    const state: any = { ...initialConsoleState(true), panel: 6, settingsRows: rows, settingsKnown: true, ...extra, selection: at };
+    const lines = renderConsole(state, 80, 24);
+    expect(lines).toHaveLength(24);
+    expect(lines.some(line => line.startsWith("> ") && line.includes(`tasks.k${at}`))).toBe(true);
+  }
+});
+
+test("#1607 the selected task stays on screen at the end of a long Tasks list", () => {
+  const tasks = Array.from({ length: 60 }, (_, i) => ({ id: 100 + i, state: "proposed", title: `task ${100 + i}`, class: "implement", created: Date.now(), updated: Date.now(), history: [] }));
+  const state: any = { ...initialConsoleState(true), panel: 3, tasks, tasksKnown: true, selection: 59 };
+  expect(renderConsole(state, 80, 24).some(line => line.startsWith("> ") && line.includes("159"))).toBe(true);
+});
 
 test("#439 console submits a fractional sweep duration as a number", async () => {
   const f = fixture(undefined, { ...row, key: "task_sweep.interval_s", type: "number", value: 300, fileValue: 300, applies: "live" });
