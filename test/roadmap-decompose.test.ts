@@ -226,3 +226,44 @@ test("a part the screen refuses is held privately, and neither the reply nor the
   expect("Private rollup notes").not.toBe(accepted.task.title);
   for (const line of f.control.notices) expect(line).not.toContain("Private rollup");
 });
+
+test("a milestone settled between the answer and the accept refuses before any write (AC2)", async () => {
+  const f = fixture();
+  const m = milestone(f), answer = f.board.addDecomposition({ milestone: m.id, parts: [heldPart()] }, "hub", 2000);
+  // The person settles the milestone while its answer is still pending, so the accept is a refusal, not a write.
+  f.tasks.milestoneState("user", m.id, "done");
+  await expect(f.tasks.roadmapDecomposePart("kimi", m.id, 1)).rejects.toThrow("settled milestone");
+  expect(f.board.list()).toEqual([]);
+  expect(f.board.decompositionAccept(answer.id, 1)).toBeUndefined();
+  expect(f.board.milestoneLinks(m.id).filter(link => link.kind === "task")).toEqual([]);
+  expect(f.board.decompositions("pending")).toHaveLength(1);
+});
+
+test("the retry path records a milestone link an interrupted tail lost (AC2)", async () => {
+  const f = fixture();
+  const m = milestone(f);
+  f.board.addDecomposition({ milestone: m.id, parts: [heldPart()] }, "hub", 2000);
+  const first = await f.tasks.roadmapDecomposePart("kimi", m.id, 1);
+  const draft = f.board.get(Number(first.task.id))!;
+  // A tail that lost its link leaves the draft and its accept row behind; the retry reads that draft and heals the link.
+  f.tasks.milestoneUnlink("kimi", m.id, "task", String(draft.id));
+  expect(f.board.milestoneLinks(m.id).filter(link => link.kind === "task")).toEqual([]);
+  const again = await f.tasks.roadmapDecomposePart("kimi", m.id, 1);
+  expect(again).toMatchObject({ created: false });
+  expect(Number(again.task.id)).toBe(draft.id);
+  expect(f.board.milestoneLinks(m.id).filter(link => link.kind === "task").map(link => link.ref)).toEqual([String(draft.id)]);
+  expect(f.board.list()).toHaveLength(1);
+});
+
+test("two concurrent accepts of one part make one draft and one accept row (AC2)", async () => {
+  const f = fixture();
+  const m = milestone(f), answer = f.board.addDecomposition({ milestone: m.id, parts: [heldPart()] }, "hub", 2000);
+  // Screening makes the proposal await, which is where a second accept would otherwise read no accept row and make its own draft.
+  f.control.screening = true; f.control.screenLabel = "clear";
+  const [one, two] = await Promise.all([f.tasks.roadmapDecomposePart("kimi", m.id, 1), f.tasks.roadmapDecomposePart("kimi", m.id, 1)]);
+  expect(Number(two.task.id)).toBe(Number(one.task.id));
+  expect([one.created, two.created].filter(Boolean)).toHaveLength(1);
+  expect(f.board.list()).toHaveLength(1);
+  expect(f.board.decompositionAccept(answer.id, 1)).toMatchObject({ task: Number(one.task.id) });
+  expect(f.board.milestoneLinks(m.id).filter(link => link.kind === "task")).toHaveLength(1);
+});
