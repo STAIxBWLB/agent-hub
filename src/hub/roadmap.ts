@@ -113,6 +113,14 @@ export function milestoneHistory(raw: unknown): MilestoneHistoryEntry[] {
   });
 }
 
+/**
+ * R4 (#1482) and R2 part 3 (#1480): the one typed GitHub milestone-membership field. `planRoadmapMirror` attaches an existing
+ * issue with it and a decomposition publish carries it on the issue it creates, so both reach GitHub through one construction.
+ */
+export function milestoneMembershipField(milestone: number): [string, string] {
+  return ["-F", `milestone=${milestoneId(milestone)}`];
+}
+
 /** R3: a qualified GitHub repository, lower-cased the way issue refs are. */
 export function githubRepo(raw: unknown): string {
   if (typeof raw !== "string" || raw.length > MILESTONE_LIMITS.issue || !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(raw)) throw new Error("roadmap repo needs owner/name");

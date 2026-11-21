@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Publish a held milestone-decomposition part as a GitHub issue: `ahub roadmap decompose <id> --publish` prints the spec issues and tasks it would create and writes nothing, and `--apply --confirm <fingerprint>` creates one issue per held `spec` part behind `roadmap.github_write`, joining the milestone through the same membership field the opt-in mirror uses. A second apply creates nothing, a `task` part and a released draft get no issue, a private part is never published, and a refused `gh` call leaves the draft held with nothing linked (Refs #1480, hub task 1052).
+
 ## 0.45.0
 
 - Release N-1 for 0.45.x is published 0.44.0, with exact agent-mem 0.30.0 and control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.0. The isolated compatibility fixture covers old clients and plugins against the new daemon and new clients and plugins against the old daemon; it does not prove live-agent, rollback, or shared-home compatibility. The protocol window and CLI forms are unchanged. This release declares agent-mem `>=0.33.0 <1.0.0`, resolved to 0.33.0 by the lockfile, and does not automatically raise the memory home or sync format floor; compatibility after a person raises a floor requires separate verification.

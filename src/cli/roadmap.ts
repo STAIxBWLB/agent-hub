@@ -10,7 +10,7 @@ export const ROADMAP_FORMS = {
   order: "order <id> <n>", state: "state <id> <proposed|planned|active|done|dropped>",
   unplaced: "unplaced [--repo <owner/name>] [--json]",
   triage: "triage [--repo <owner/name>] [--list] [--json]",
-  decompose: "decompose <id> [--accept <part>] [--json]",
+  decompose: "decompose <id> [--accept <part>] [--publish [--apply --confirm <fingerprint>]] [--json]",
   accept: "accept <suggestion>", reject: "reject <suggestion>",
   importGithub: "import-github [--repo <owner/name>] [--apply] [--json]",
   check: "check [--json]", sync: "sync [--apply --confirm <fingerprint>] [--json]",
@@ -51,13 +51,22 @@ function integer(value: string | undefined, zero = false): number {
 }
 
 function parseR3(command: string, rest: readonly string[], jsonSeen: boolean): RoadmapArgs {
-  let json = jsonSeen, list = false, apply = false, repo: string | undefined, accept: number | undefined;
+  let json = jsonSeen, list = false, apply = false, repo: string | undefined, accept: number | undefined, publish = false, confirm: string | undefined;
   const operands: string[] = [];
   for (let at = 0; at < rest.length; at++) {
     const word = rest[at]!;
     if (word === "--json") { if (json) return usage("duplicate roadmap --json flag"); json = true; continue; }
     if (word === "--list" && command === "triage") { if (list) return usage("duplicate roadmap --list flag"); list = true; continue; }
     if (word === "--apply" && command === "import-github") { if (apply) return usage("duplicate roadmap --apply flag"); apply = true; continue; }
+    if (word === "--publish" && command === "decompose") { if (publish) return usage("duplicate roadmap --publish flag"); publish = true; continue; }
+    if (word === "--apply" && command === "decompose") { if (apply) return usage("duplicate roadmap --apply flag"); apply = true; continue; }
+    if ((word === "--confirm" || word.startsWith("--confirm=")) && command === "decompose") {
+      if (confirm !== undefined) return usage("duplicate roadmap --confirm option");
+      const value = word === "--confirm" ? rest[++at] : word.slice("--confirm=".length);
+      if (!value || !/^[a-f0-9]{64}$/.test(value)) return usage("roadmap confirmation needs a full fingerprint");
+      confirm = value;
+      continue;
+    }
     if ((word === "--accept" || word.startsWith("--accept=")) && command === "decompose") {
       if (accept !== undefined) return usage("duplicate roadmap --accept option");
       const value = word === "--accept" ? rest[++at] : word.slice("--accept=".length);
@@ -75,13 +84,18 @@ function parseR3(command: string, rest: readonly string[], jsonSeen: boolean): R
     operands.push(word);
   }
   if (json && !R3_JSON.includes(command)) return usage(`roadmap ${command} has no --json form`);
+  if (command === "decompose") {
+    if ((apply || confirm !== undefined) && !publish) return usage("roadmap decompose apply needs its --publish preview");
+    if (apply !== (confirm !== undefined)) return usage("roadmap decompose --apply needs its preview fingerprint");
+    if (publish && accept !== undefined) return usage("roadmap decompose takes --accept <part> or --publish, not both");
+  }
   if (command === "accept" || command === "reject") {
     if (operands.length !== 1) return usage(`roadmap ${command} needs one suggestion id`);
     return { op: "hub_roadmap_edit", args: { op: command, suggestion: integer(operands[0]) }, json };
   }
   if (command === "decompose") {
     if (operands.length !== 1) return usage("roadmap decompose needs one milestone id");
-    return { op: "hub_roadmap_decompose", args: { id: integer(operands[0]), ...(accept === undefined ? {} : { accept }) }, json };
+    return { op: "hub_roadmap_decompose", args: { id: integer(operands[0]), ...(accept === undefined ? {} : { accept }), ...(publish ? { publish: true } : {}), ...(apply ? { apply: true, confirm } : {}) }, json };
   }
   if (operands.length) return usage(`roadmap ${command} takes no operands`);
   const base = repo === undefined ? {} : { repo };
@@ -202,6 +216,26 @@ export function renderRoadmap(input: unknown, width = 80): string {
     names(view.findings, finding => `  Rule ${count(finding.rule)}, milestone ${finding.milestone === null ? "none" : count(finding.milestone)}: ${text(finding.cause)}; ${list(finding.items).map(text).join(", ")}. Next: ${text(finding.remedy)}`);
     if (view.unknown.length) add(`Unknown evidence for rules: ${view.unknown.map(count).join(", ")}`);
     if (view.truncated === true) add("More findings exist; narrow the roadmap before relying on this list.");
+    return lines.join("\n");
+  }
+  if (view.publish === true && Array.isArray(view.parts)) {
+    add(`Milestone ${count(view.milestone)} publish preview (${text(view.repo)})`);
+    for (const value of list(view.parts)) {
+      const part = row(value), issue = part.issue === null || part.issue === undefined ? null : `${text(view.repo)}#${count(part.issue)}`;
+      const action = part.action === "create" ? "a spec issue would be created"
+        : part.action === "published" ? `already published as ${issue}`
+        : part.action === "task" ? `goes straight to its held task ${count(part.task)}, so no issue`
+        : "released already, so this hold publishes nothing";
+      add(`  part ${count(part.part)} (${part.intake === "spec" ? "needs its own spec issue" : "straight to a task"}): ${action}`);
+    }
+    if (!list(view.parts).length && !Number(view.skippedPrivate) && !Number(view.skippedUnknown)) add("This milestone holds no accepted part to publish.");
+    if (Number(view.skippedPrivate) > 0) add(`Private parts skipped: ${count(view.skippedPrivate)}; a private part is never published.`);
+    if (Number(view.skippedUnknown) > 0) add(`Parts with no stored text: ${count(view.skippedUnknown)}; run ahub roadmap decompose ${count(view.milestone)} to propose them again.`);
+    for (const call of list(view.calls)) if (Array.isArray(call)) add(`  gh ${call.map(value => `'${String(value).replaceAll("'", "'\\''")}'`).join(" ")}`);
+    if (view.githubMilestone === null || view.githubMilestone === undefined) add("No GitHub milestone is bound to this roadmap milestone, so a created issue joins none; run ahub roadmap sync first.");
+    else add(`Each created issue joins GitHub milestone ${count(view.githubMilestone)}.`);
+    if (view.applied === true) add(`Created ${count(list(view.created).length)} issue${list(view.created).length === 1 ? "" : "s"}; the drafts stay held until ahub intake approve.`);
+    else add(`Apply this exact preview: ahub roadmap decompose ${count(view.milestone)} --publish --apply --confirm ${text(view.fingerprint)}`);
     return lines.join("\n");
   }
   if (Array.isArray(view.calls) && typeof view.fingerprint === "string") {

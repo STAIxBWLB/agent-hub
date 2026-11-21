@@ -1,6 +1,6 @@
 import { requireConductor } from "./conductor.ts";
 import { managedTaskPullRequest } from "./task-pr.ts";
-import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind, type DecomposePart, type DecomposeIntake, type MilestoneDecomposition } from "./roadmap.ts";
+import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind, type DecomposePart, type DecomposeIntake, type MilestoneDecomposition, type DecompositionAccept } from "./roadmap.ts";
 import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
 import { readMirrorSnapshot, planRoadmapMirror, recoverMirrorBinding } from "./roadmap-sync.ts";
 import { roadmapExport } from "./roadmap-export.ts";
@@ -8,7 +8,7 @@ import { checkRoadmap, type DriftMilestone, type RoadmapDrift } from "./roadmap-
 import type { RoadmapConfig } from "./roadmap.ts";
 import { computeUnplaced, withTree, type ReadyToClose, type TreeRollup, type UnplacedResult } from "./roadmap-unplaced.ts";
 import { buildTriagePrompt, parseTriage, TRIAGE_BATCH, type TriageItem } from "./roadmap-triage.ts";
-import { buildDecomposePrompt, parseDecomposition, DECOMPOSE_ITEMS, DECOMPOSE_PATHS, type DecomposeItem } from "./roadmap-decompose.ts";
+import { buildDecomposePrompt, parseDecomposition, planPartPublish, DECOMPOSE_ITEMS, DECOMPOSE_PATHS, type DecomposeItem, type PublishDraft, type PublishPlanPart } from "./roadmap-decompose.ts";
 import { pathCandidates } from "@staix/agent-mem";
 import { renderGuidanceVariantV1 } from "./guidance-variants.ts";
 import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-probe-store.ts";
@@ -3995,6 +3995,85 @@ export class Tasks {
   private decompositionDraftDetail(part: DecomposePart, milestone: number, index: number, total: number): string {
     const kind = part.intake === "spec" ? "needs its own spec issue before implementation" : "a mechanical chore that goes straight to a task";
     return [part.detail, `Milestone ${milestone} part ${index} of ${total}: ${kind}. Cites: ${part.cites.join(", ")}.`, `Held until released: ahub intake approve`].join("\n\n");
+  }
+
+  /**
+   * R2 (#1480) part 3: publish the milestone's held drafts to GitHub. `--publish` plans one issue per held `spec` part from a
+   * complete reading of the holds and writes nothing; apply creates each issue through one gh call and links it to the
+   * milestone: R1's own `issue` link, and the R4 membership field the create carries when the mirror has a binding, so this
+   * path adds no second link. A `task` part is its own held draft, a released draft is no longer the hold's work, a private part
+   * is only counted, and a refused or unconfirmed call leaves the draft held and names the failure.
+   */
+  async roadmapDecomposePublish(by: PeerId, rawId: unknown, input: { apply?: boolean; confirm?: string } = {}): Promise<{
+    milestone: number; repo: string; githubMilestone: number | null; parts: PublishPlanPart[]; calls: string[][];
+    skippedPrivate: number; skippedUnknown: number; fingerprint: string; applied: boolean; created: { part: number; task: number; issue: number }[];
+  }> {
+    const current = this.roadmapWriteAuthority(by);
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => key !== "apply" && key !== "confirm")
+        || input.apply !== undefined && typeof input.apply !== "boolean"
+        || input.confirm !== undefined && (typeof input.confirm !== "string" || !/^[a-f0-9]{64}$/.test(input.confirm)))
+      throw new PreEffectToolRefusal("invalid roadmap publish options; preview with ahub roadmap decompose <id> --publish before applying");
+    if (input.apply && input.confirm === undefined) throw new PreEffectToolRefusal("roadmap decompose --apply needs its preview fingerprint; preview with ahub roadmap decompose <id> --publish first");
+    if (input.apply) this.roadmapApplyAuthority(by);
+    const id = this.roadmapParsed(() => milestoneId(rawId)), view = this.milestoneShow(by, id);
+    if (view.title === "[withheld]" || view.outcome === "[withheld]") throw new PreEffectToolRefusal("milestone text is not cleared for public planning; remove private content before publishing a part");
+    // A milestone settled while its drafts are held refuses here, before any read of GitHub or any write.
+    this.roadmapCurrent(id);
+    current();
+    const repo = this.roadmapRepository(), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const };
+    // The GitHub milestone comes from the mirror binding, never from an argument; with the mirror off nothing is attached.
+    const githubMilestone = config.github_mirror ? this.d.board.mirrorMilestone(repo, id) ?? null : null;
+    const drafts: PublishDraft[] = [], held = new Map<number, DecompositionAccept>();
+    let skippedPrivate = 0, skippedUnknown = 0;
+    for (const accept of this.d.board.decompositionAcceptsFor(id)) {
+      const task = this.d.board.get(accept.task);
+      if (!task) continue;
+      const part = this.d.board.decomposition(accept.decomposition)?.parts[accept.part - 1];
+      // Without the answer a part's own words are gone; the draft stays held and the preview says to propose the parts again.
+      const text = part ? [part.title, part.detail, ...part.cites].join("\n") : "";
+      let privatePart = true;
+      try { privatePart = this.isPii(task) || !part || !this.publicMetadataText(text); } catch { privatePart = true; }
+      if (part && !privatePart && this.screenOn()) { const label = (await this.screenCall(text)).label; current(); privatePart = label !== "clear"; }
+      if (!part) { skippedUnknown++; continue; }
+      if (privatePart) { skippedPrivate++; continue; }
+      held.set(task.id, accept);
+      drafts.push({ part: accept.part, task: task.id, intake: accept.intake, title: part.title, detail: part.detail, cites: part.cites,
+        published: this.d.board.decompositionPublish(accept.decomposition, accept.part) ?? null,
+        hold: task.draft === true && task.state === "backlog" ? "held" : "released" });
+    }
+    const planned = planPartPublish({ project: this.d.project, repo, milestone: id, githubMilestone, parts: drafts });
+    const fingerprint = createHash("sha256").update(JSON.stringify({ repo, milestone: id, githubMilestone, calls: planned.calls })).digest("hex");
+    const reply = { milestone: id, repo, githubMilestone, ...planned, skippedPrivate, skippedUnknown, fingerprint, applied: false as boolean, created: [] as { part: number; task: number; issue: number }[] };
+    if (!input.apply) return reply;
+    if (input.confirm !== fingerprint) throw new PreEffectToolRefusal(`roadmap publish preview changed; run ahub roadmap decompose ${id} --publish and retry with --confirm ${fingerprint}`);
+    current(); this.roadmapApplyAuthority(by); if (this.roadmapRepository() !== repo) throw new PreEffectToolRefusal("roadmap GitHub origin changed; preview the publish again");
+    const creating = planned.parts.filter(row => row.action === "create"), created = reply.created;
+    for (const [index, call] of planned.calls.entries()) {
+      const row = creating[index]!, accept = held.get(row.task)!;
+      const refused = `roadmap publish was refused for milestone ${id} part ${row.part}; the draft stays held and no issue was linked. Inspect ${repo} before retrying`;
+      let result: Awaited<ReturnType<SdlcGh>>;
+      try { result = await this.roadmapGh()(call, 10_000, undefined, 64 * 1024); }
+      catch { throw new Error(`roadmap publish was not confirmed for milestone ${id} part ${row.part}; the draft stays held and no issue was linked. Inspect ${repo} before retrying`); }
+      if (result.code !== 0 || Buffer.byteLength(result.stdout) > 64 * 1024) throw new Error(refused);
+      let issue: number;
+      try {
+        const made = JSON.parse(result.stdout) as Record<string, unknown>;
+        issue = milestoneId(made.number);
+        if (made.title !== call.find(value => value.startsWith("title="))?.slice(6)
+            || typeof made.html_url !== "string" || made.html_url.toLowerCase() !== `https://github.com/${repo}/issues/${issue}`) throw new Error("mismatch");
+      } catch { throw new Error(`roadmap publish created an issue for milestone ${id} part ${row.part} but its answer was not confirmed; inspect ${repo} before retrying`); }
+      // The issue exists, so nothing below may refuse the caller: the publish record and the milestone link are best effort.
+      this.releaseNotice(`milestone ${id} part ${row.part}: issue ${repo}#${issue} created without its publish record`, () => {
+        this.d.board.recordDecompositionPublish({ decomposition: accept.decomposition, milestone: id, part: row.part, issue }, by, this.d.now?.() ?? Date.now());
+      });
+      this.releaseNotice(`milestone ${id} part ${row.part}: issue ${repo}#${issue} created without its milestone link`, () => {
+        const milestone = this.roadmapCurrent(id);
+        this.d.board.linkMilestone(id, "issue", `${repo}#${issue}`, by, milestone.revision, this.d.now?.() ?? Date.now());
+      });
+      created.push({ part: row.part, task: row.task, issue });
+    }
+    reply.applied = true;
+    return reply;
   }
 
   /** Apply one suggestion through R1's own writers. A "new milestone" suggestion creates it first; a retry never creates a second. */

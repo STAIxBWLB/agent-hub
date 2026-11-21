@@ -6212,9 +6212,14 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_roadmap_triage":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "repo" && key !== "list") || a.list !== undefined && typeof a.list !== "boolean") throw new PreEffectToolRefusal("roadmap triage takes an optional repo and list true or false; use ahub roadmap triage");
         return JSON.stringify(a.list === true ? { suggestions: tasks.milestoneSuggestions(by, "pending") } : await tasks.roadmapTriage(by, { repo: a.repo }));
-      case "hub_roadmap_decompose":
-        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "id" && key !== "accept")) throw new PreEffectToolRefusal("roadmap decompose takes a milestone id and an optional part number; use ahub roadmap decompose <id> [--accept <n>]");
+      case "hub_roadmap_decompose": {
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["id", "accept", "publish", "apply", "confirm"].includes(key))) throw new PreEffectToolRefusal("roadmap decompose takes a milestone id, an optional part number, or a publish preview; use ahub roadmap decompose <id> [--accept <n> | --publish [--apply --confirm <fingerprint>]]");
+        if (a.publish !== undefined && a.publish !== true) throw new PreEffectToolRefusal("roadmap decompose publish needs publish true; use ahub roadmap decompose <id> --publish");
+        if (a.publish === true && a.accept !== undefined) throw new PreEffectToolRefusal("roadmap decompose takes --accept <part> or --publish, not both");
+        if ((a.apply !== undefined || a.confirm !== undefined) && a.publish !== true) throw new PreEffectToolRefusal("roadmap decompose apply needs its publish preview; use ahub roadmap decompose <id> --publish first");
+        if (a.publish === true) return JSON.stringify(await tasks.roadmapDecomposePublish(by, a.id, { ...(a.apply === undefined ? {} : { apply: a.apply }), ...(a.confirm === undefined ? {} : { confirm: a.confirm }) }));
         return JSON.stringify(a.accept === undefined ? await tasks.roadmapDecompose(by, a.id) : await tasks.roadmapDecomposePart(by, a.id, a.accept));
+      }
       case "hub_roadmap_edit": {
         const fields: Record<string, readonly string[]> = { new: ["op", "fields"], edit: ["op", "id", "revision", "fields"], link: ["op", "id", "kind", "ref"], unlink: ["op", "id", "kind", "ref"], order: ["op", "id", "order"], state: ["op", "id", "state"], accept: ["op", "suggestion"], reject: ["op", "suggestion"] };
         if (!a || typeof a !== "object" || Array.isArray(a) || typeof a.op !== "string" || !Object.hasOwn(fields, a.op)) throw new PreEffectToolRefusal("unknown roadmap operation; use new, edit, link, unlink, order, state, accept or reject with hub_roadmap_edit");

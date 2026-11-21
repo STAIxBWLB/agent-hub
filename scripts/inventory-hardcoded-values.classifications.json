@@ -2223,6 +2223,7 @@
   "src/hub/roadmap-decompose.ts:DECOMPOSE_ITEM_CHARS:constant:DECOMPOSE_ITEM_CHARS=300#0": "safety floor",
   "src/hub/roadmap-decompose.ts:DECOMPOSE_OUTCOME_CHARS:constant:DECOMPOSE_OUTCOME_CHARS=2000#0": "safety floor",
   "src/hub/roadmap-decompose.ts:DECOMPOSE_PATHS:constant:DECOMPOSE_PATHS=6#0": "safety floor",
+  "src/hub/roadmap-decompose.ts:PART_ISSUE_TITLE_CHARS:constant:PART_ISSUE_TITLE_CHARS=256#0": "contract",
   "src/hub/roadmap-decompose.ts:parseDecomposition:inline:rows.slice=2#0": "safety floor",
   "src/hub/roadmap-export.ts:roadmapExport:inline:toUpperCase=0#0": "contract",
   "src/hub/roadmap-sync.ts:<anonymous>:inline:row.title.length > 300=300#0": "safety floor",

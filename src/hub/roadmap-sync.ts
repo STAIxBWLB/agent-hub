@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { githubRepo, milestoneId } from "./roadmap.ts";
+import { githubRepo, milestoneId, milestoneMembershipField } from "./roadmap.ts";
 import type { SdlcGh } from "./sdlc.ts";
 
 export interface MirrorIssue { number: number; milestone: number | null }
@@ -87,7 +87,7 @@ export function planRoadmapMirror(repoInput: string, desired: MirrorDesired, rem
       seen.add(id);
       if (issue.milestone !== null) milestoneId(issue.milestone);
       if (desiredIds.has(id) && issue.milestone !== number)
-        calls.push(["api", `repos/${repo}/issues/${id}`, "--hostname", "github.com", "--method", "PATCH", "-F", `milestone=${number}`]);
+        calls.push(["api", `repos/${repo}/issues/${id}`, "--hostname", "github.com", "--method", "PATCH", ...milestoneMembershipField(number)]);
       else if (!desiredIds.has(id) && issue.milestone === number)
         calls.push(["api", `repos/${repo}/issues/${id}`, "--hostname", "github.com", "--method", "PATCH", "-F", "milestone=null"]);
     }
