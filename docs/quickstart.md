@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.44.0
+bun add -g github:STAIxBWLB/agent-hub#v0.45.0
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -53,6 +53,12 @@ A project whose hub is stopped is upgraded without starting it: `ahub upgrade
 --to <version>` in it only retargets its runtime selection, and `ahub upgrade
 --all-stopped --to <version>` does that for every stopped project at once
 (`--dry-run` lists each one first).
+
+## Upgrading to 0.45.0
+
+The memory library moves to agent-mem 0.32.0; no memory home or sync format floor is raised automatically. An ACP peer (headless Kimi, Qwen, Jcode) now keeps a turn with a silent open tool call alive for up to 60 minutes instead of 30, so a long gate wait no longer cancels it; a value you set in `adapter_timing.acp_tool_ceiling_min` is kept, and the setting now accepts up to 120. When the ceiling does cancel a Jcode turn, `hub.log` says so and names the restart and queue commands. `events.jsonl` and `hub.log` now rotate by size (`docs/events.md` "Rotation"): a script of your own that reads `events.jsonl` directly should read the `events.jsonl.<offset>` segments before the live file. With `research.enabled`, research records gain a text-free `edits` block. `ahub roadmap check`, `sync` and `export` are new; nothing writes to GitHub unless you apply with a confirmation fingerprint.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.45.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.44.0
 
