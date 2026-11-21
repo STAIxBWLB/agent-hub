@@ -31696,6 +31696,9 @@ init_db_schema();
 init_hub_tools();
 init_envelope();
 
+// src/hub/github-import.ts
+init_sdlc();
+
 // src/hub/tasks.ts
 init_roadmap();
 
@@ -31831,9 +31834,6 @@ OWNER_TOOL_EFFECTS.add("hub_survey_report");
 OWNER_TOOL_EFFECTS.add("hub_roadmap_edit");
 OWNER_TOOL_EFFECTS.add("hub_roadmap_triage");
 
-// src/hub/github-import.ts
-init_sdlc();
-
 // src/hub/tasks.ts
 init_planning();
 
@@ -31956,6 +31956,7 @@ QUIET_EVENTS.add("wait recorded");
 QUIET_EVENTS.add("shell branch bound");
 var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
 var GROOM_FYI_WINDOW_MS = 10 * 60000;
+var MANAGED_HANDOFF = Symbol("managed worktree handoff");
 
 // src/hub/conductor.ts
 init_tool_refusal();
