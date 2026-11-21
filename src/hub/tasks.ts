@@ -1,4 +1,5 @@
 import { requireConductor } from "./conductor.ts";
+import { managedTaskPullRequest } from "./task-pr.ts";
 import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind } from "./roadmap.ts";
 import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
 import { readMirrorSnapshot, planRoadmapMirror, recoverMirrorBinding } from "./roadmap-sync.ts";
@@ -575,7 +576,9 @@ export interface ExperimentView { attempts: ExperimentAttemptView[]; counts: { a
 interface ExperimentContext { task: Task; campaign: ResearchCampaignRecord; private: boolean; key: string; fence: ExperimentWriteFence }
 interface CompletionRefresh { revision: number; commit: string; state: "in_review" | "approved" }
 interface RefileHeadGuard { recorded?: string }
-interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
+interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string }; managedRevision?: number }
+const MANAGED_HANDOFF = Symbol("managed worktree handoff");
+type ManagedHandoffRefs = TaskRefs & { [MANAGED_HANDOFF]?: { task: number; owner: PeerId; revision: number; commit: string; branch: string; repo?: string; pr?: number } };
 
 /** What one live check of a task's files says as a whole (#317): `unchanged` only when EVERY file measured unchanged. A change outranks a missing file, which outranks one the hub could not read. */
 export type DeliverableResult = "changed" | "missing" | "unknown" | "unchanged";
@@ -6910,13 +6913,14 @@ export class Tasks {
    * counts) and the staged PR only while the done's effective commit and branch are still the ones it was read for.
    */
   private withLink(task: Task, link: IdentityLink | undefined, refs?: TaskRefs): Task {
-    if ((this.d.sdlc?.config().mode ?? "off") === "off" || this.isPii(task)) return task;
+    if (this.isPii(task) || (this.d.sdlc?.config().mode ?? "off") === "off" && link?.managedRevision === undefined) return task;
+    if (link?.managedRevision !== undefined && task.history.length !== link.managedRevision) throw new PreEffectToolRefusal("managed handoff changed; inspect the task and GitHub before retrying");
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     let issue: { repo: string; issue: number } | undefined;
-    if (!task.sdlc?.issue) { try { issue = this.planIssueIdentity(task); } catch { issue = undefined; } }
+    if ((this.d.sdlc?.config().mode ?? "off") !== "off" && !task.sdlc?.issue) { try { issue = this.planIssueIdentity(task); } catch { issue = undefined; } }
     const commit = refs?.commit ?? task.refs.commit, branch = refs?.branch ?? task.refs.branch;
-    const repository = task.sdlc?.repo ?? task.refs.repo ?? this.d.repository;
-    const pr = link && !task.sdlc?.pr && repository?.toLowerCase() === link.repo.toLowerCase() && link.basis.commit === commit && (commit !== undefined || link.basis.branch === branch) ? link : undefined;
+    const repository = task.sdlc?.repo ?? task.refs.repo ?? this.d.repository ?? (link?.managedRevision !== undefined ? link.repo : undefined);
+    const pr = link && !task.sdlc?.pr && repository?.toLowerCase() === link.repo.toLowerCase() && link.basis.commit === commit && (link.managedRevision !== undefined ? link.basis.branch === branch : commit !== undefined || link.basis.branch === branch) ? link : undefined;
     let next = task.sdlc;
     if (issue) next = linkedReceipt(next, issue, config) ?? next;
     if (pr) next = linkedReceipt(next, { repo: pr.repo, pr: pr.pr }, config) ?? next;
@@ -8970,10 +8974,42 @@ export class Tasks {
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
     if (this.isPii(task) || !port.describe(by, task.id)) return undefined;
-    const result = await port.commitAndPush({ peer: by, task: task.id, title: task.title });
-    if (!result.ok) throw new PreEffectToolRefusal(`hub_task_done for task #${task.id}: ${result.reason}`);
+    const requestCheck = this.requestCheck(by), revision = task.history.length;
+    const current = () => {
+      try {
+        requestCheck(); const row = this.d.board.get(task.id);
+        return !!row && row.created === task.created && row.owner === by && row.state === task.state && row.history.length === revision
+          && !this.isPii(row) && !this.d.privateTurn?.(by) && !this.observerExcluded(by) && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError && !!port.describe(by, task.id);
+      } catch { return false; }
+    };
+    if (!current()) throw new PreEffectToolRefusal("managed handoff authority unavailable; inspect the task and retry hub_task_done");
+    const result = await port.commitAndPush({ peer: by, task: task.id, title: task.title, current });
+    if (!result.ok) {
+      const message = `hub_task_done for task #${task.id}: ${result.reason}`;
+      if (result.uncertain) throw new Error(message);
+      throw new PreEffectToolRefusal(message);
+    }
+    const stillCurrent = () => { if (!current()) throw new Error("managed handoff authority changed after the commit; inspect the task and GitHub before retrying"); };
+    stillCurrent();
     if (result.note) this.doneNotes.set(task.id, result.note);
-    return { ...cleanRefs(refs), commit: result.commit, branch: result.branch };
+    let repo: string | undefined, pr: number | undefined;
+    if (result.pushed && !task.sdlc?.pr) {
+      repo = githubOriginRepository(this.d.cwd);
+      const named = task.sdlc?.repo ?? task.refs.repo;
+      if (!repo || named && named.toLowerCase() !== repo || this.d.repository && this.d.repository.toLowerCase() !== repo) throw new Error("managed branch was pushed but the project GitHub origin is unavailable or changed; inspect the origin and retry hub_task_done");
+      let issue: { repo: string; issue: number } | undefined;
+      try { issue = this.planIssueIdentity(task); } catch { throw new Error("managed branch was pushed but its issue identity is ambiguous; inspect the task before retrying hub_task_done"); }
+      if (issue && issue.repo.toLowerCase() !== repo) throw new Error("managed branch was pushed but the spec issue belongs to another repository; inspect the task before retrying hub_task_done");
+      if (!this.publicMetadataText(JSON.stringify({ repo, branch: result.branch, ...(issue ? { issue: issue.issue } : {}) }))) throw new Error("managed branch was pushed but PR identity is not public; inspect the task before retrying hub_task_done");
+      const verifiedRepo = repo;
+      const authority = () => { stillCurrent(); if (githubOriginRepository(this.d.cwd) !== verifiedRepo) throw new Error("managed origin changed after the push; inspect GitHub before retrying"); };
+      try { pr = await managedTaskPullRequest({ repo, branch: result.branch, commit: result.commit, task: task.id, ...(this.publicMetadataText(task.title) ? { title: task.title } : {}), ...(issue ? { issue: issue.issue } : {}), current: authority }, this.d.sdlc?.gh ?? sdlcGh); }
+      catch (error) { throw new Error(`managed branch was pushed; ${error instanceof Error && this.publicMetadataText(error.message) ? error.message : "PR outcome is unavailable; inspect GitHub before retrying hub_task_done"}`); }
+      authority();
+    }
+    const handed: ManagedHandoffRefs = { ...cleanRefs(refs), commit: result.commit, branch: result.branch };
+    Object.defineProperty(handed, MANAGED_HANDOFF, { value: { task: task.id, owner: by, revision, commit: result.commit, branch: result.branch, ...(repo && pr ? { repo, pr } : {}) } });
+    return handed;
   }
 
   /** Commit the managed owner worktree for a check and bind its exact head through the board. */
@@ -9203,6 +9239,14 @@ export class Tasks {
   }
 
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown, specAck?: unknown, resolved?: unknown): Promise<Task> {
+    try { return await this.doneWithHandoff(by, id, summary, refs, deliverables, specAck, resolved); }
+    catch (error) {
+      if ((refs as ManagedHandoffRefs | undefined)?.[MANAGED_HANDOFF] && error instanceof PreEffectToolRefusal) throw new Error(`managed worktree was committed before completion was refused: ${error.message}; inspect the task and GitHub before retrying hub_task_done`);
+      throw error;
+    }
+  }
+
+  private async doneWithHandoff(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown, specAck?: unknown, resolved?: unknown): Promise<Task> {
     const observerExcluded = this.observerExcluded(by);
     const requestCheck = this.requestCheck(by);
     const initial = this.need(id, false, true);
@@ -9247,12 +9291,32 @@ export class Tasks {
       task = valid();
     }
     // #694: stage the identities the hub can verify; the gates read them, and only the admitted done persists them.
-    const link = this.d.sdlc && this.d.sdlc.config().mode !== "off" ? await this.identityLink(task, refs) : undefined;
-    const current = () => this.stagedSpec(by, this.withLink(valid(), link, refs), specCarry);
+    const handoff = (refs as ManagedHandoffRefs | undefined)?.[MANAGED_HANDOFF];
+    const link: IdentityLink | undefined = handoff?.repo && handoff.pr ? { repo: handoff.repo, pr: handoff.pr, basis: { commit: handoff.commit, branch: handoff.branch }, managedRevision: handoff.revision } : !handoff && this.d.sdlc && this.d.sdlc.config().mode !== "off" ? await this.identityLink(task, refs) : undefined;
+    let managedRevision = handoff?.revision;
+    const stageHandoff = (row: Task) => {
+      let staged = row;
+      if (handoff) {
+        if (handoff.task !== staged.id || handoff.owner !== by || managedRevision !== staged.history.length || handoff.commit !== cleanRefs(refs).commit || handoff.branch !== cleanRefs(refs).branch || this.isPii(staged) || this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("managed handoff changed; inspect the task and GitHub before retrying");
+        if (handoff.repo && handoff.pr && !staged.sdlc?.pr) {
+          const receipt = linkedReceipt(staged.sdlc, { repo: handoff.repo, pr: handoff.pr }, this.d.sdlc?.config() ?? sdlcConfig(undefined));
+          if (!receipt) throw new PreEffectToolRefusal("managed PR repository no longer matches the task; inspect GitHub before retrying");
+          staged = { ...staged, sdlc: receipt };
+        }
+      }
+      return staged;
+    };
+    const ownWrite = (...args: Parameters<Board["update"]>) => {
+      current();
+      const row = write(...args);
+      if (handoff) { managedRevision = row.history.length; if (link) link.managedRevision = managedRevision; }
+      return row;
+    };
+    const current = () => stageHandoff(this.stagedSpec(by, this.withLink(valid(), link, refs), specCarry));
     task = current();
     let reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review", undefined, undefined, refileHead); task = current(); }
-    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.stagedSpec(by, this.withLink(this.completionDraft(staged, draft), link, refs), specCarry), !task.reviewer, refileHead) : undefined;
+    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => stageHandoff(this.stagedSpec(by, this.withLink(this.completionDraft(staged, draft), link, refs), specCarry)), !task.reviewer, refileHead) : undefined;
     task = current();
     if (refileHead && (this.d.sdlc?.config().mode ?? "off") === "off") {
       const currentHead = await this.currentPrHeadForReview(task, current);
@@ -9283,8 +9347,8 @@ export class Tasks {
       if (r.action === "request") return write(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
       if (r.action === "unresolved") {
         this.d.notify(`task ${this.publicTitle(task)}: turn-free integration unresolved after ${MAX_REQUESTS} requests (${r.why}); its done is recorded, check the overlapping work by hand`);
-        task = this.withLink(write(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
-      } else if (r.integrated) task = this.withLink(write(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
+        task = this.withLink(ownWrite(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
+      } else if (r.integrated) task = this.withLink(ownWrite(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
     } else if (cohort?.held.size && !this.isPii(task)) {
       // No integration step for this member (silence lifted, a PII task open): the notices the silence held stand in
       // for it (issue #107, AC4).
@@ -9292,7 +9356,7 @@ export class Tasks {
       if (evidence && by === USER) this.d.notify(`task ${this.publicTitle(task)} done by the console; overlapping work finished meanwhile:\n${evidence}`);
       else if (evidence) this.doneNotes.set(task.id, `Overlapping work finished while you worked (no turn-free integration step ran):\n${evidence}`);
     }
-    if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(write(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
+    if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(ownWrite(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
     if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh, specInspection, false, resolvedReviewComments, reviewObserverTurn);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
