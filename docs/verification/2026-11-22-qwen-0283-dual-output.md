@@ -28,4 +28,6 @@ Both runs confirmed owned native group stops and joined drains; protected state,
 
 The control and candidate Q2 result SHA-256 values are `0a43f9610f4027250460dccc945db2674fc10122ae08172bcb7bf5ba880d8e83` and `5cbdc9e02c177d4f1a6be2507b119c8a56d47ead30a777d89745766fe2950380`; their Q3/Q5/Q6/Q7 result hashes are `9d6004c5a1869834b468a05e354247a8a1e316b537d1340517b2656592ab4ce6` and `da92e130d92bd168c14472dfdd5b3a5278f57f87a0b9e963909da3473e398220`.
 
+After rebase onto the release, both versions repeated Q2 and Q3/Q5/Q6/Q7 successfully on source head `f73a4e697d4426d5ef08c3bd52780117084eaa1b`. The control and candidate Q2 records hash to `efe26d3fc8ffc1698003f36242fa7455a5f8954b4a345ec9acf6d8085e36448a` and `69cef0a200d61b3e06464b96a95ab19ffc021aaa4183e241455706b23d33de8e`; the repeated Q3/Q5/Q6/Q7 records hash to `4a7f256c45bbf7e7d99552d7b98fbf081d29062a9c8bc89569db367c749e14c7` and `e5dd241af4bded726343fd22eb309710ea4a21ee1f163df8293dc320947f8a46`.
+
 Real accounts and model inference, production TUI use, Linux, lifetime containment and Q4 external stop remain unverified. No machine trust or global installation was changed.
