@@ -3746,7 +3746,10 @@ deadline once, and a deadline after a told result ends silently (#540). Cancelle
 attempts and a draft PR's deferred `check (macos-latest)` are pending to this watcher,
 not failures; it keeps watching for a replacement run. After `gh pr ready`, an older
 macOS aggregate failure stays pending while a newer same-workflow macOS shard is queued
-or running (#1490). If GitHub returns multiple
+or running (#1490). Review admission accepts this repository's draft head when Ubuntu,
+seeded guards and the other required checks pass and the failed macOS aggregate's
+exact-head job proves its draft-deferral step was the only failure (#1576); merge
+still needs the full macOS gate. If GitHub returns multiple
 rows for one check, the hub uses an older-run filter only when workflow identity and
 start times identify one unique latest run; ambiguous duplicates cannot establish a
 pass (#1527). On the result the owner and the reviewer each get one
@@ -6174,9 +6177,12 @@ and outcome, the goal or architecture specs it links and the issues it links. Ea
 proposed part cites an id it was shown and says whether it needs its own spec
 issue or goes straight to a task; an answer that cites nothing it was shown is
 dropped whole. The kept parts are saved as one pending model answer per milestone,
-so a second run supersedes the first. Nothing is intaken, linked or published, and
-no part becomes a task or a spec issue in this part. See the [decomposition
-contract](design/roadmap.md#decomposition-r2).
+so a second run supersedes the first. Proposing intakes, links and publishes nothing.
+`ahub roadmap decompose <id> --accept <part>` holds one proposed part as a backlog
+intake draft linked to the milestone, carrying its spec or task kind; nothing offers,
+pulls or routes it until the person releases it with `ahub intake approve`, and
+accepting the same part again returns the same draft. No part becomes a spec issue on
+GitHub. See the [decomposition contract](design/roadmap.md#decomposition-r2).
 
 ## Planning and phased releases (#263)
 
@@ -7408,7 +7414,7 @@ Corrupt or unreadable provenance stays unknown and held. The status next step di
 
 A ready memory profile does not prove a successful sync. Read the separate automatic-sync result and timestamp in `ahub status` or Memory. It resets to not run after daemon restart; it is not a machine-global record of manual CLI attempts. Missing remote configuration (shared v1, generation and sharded homes alike) is the neutral `not-configured` state; an interrupted/stopped attempt is neutral `stopped`. Both keep their safe next step and produce no failure log under `quietSyncError`.
 
-For policy-declined rows, a person or an agent shell runs `ahub memory declined --json` to inspect IDs and safe rule categories, never note text. The agent-mem 0.32.1 public `inspectSyncPolicy` API bounds physical outbound inspection for shared-v1 and generation profiles. A complete result supplies the declined IDs and rules; `complete:false` means the scan is unavailable, stale or over its diagnostic bound, not zero declined rows. The command stays read-only and rechecks its profile binding. No migration or policy edit is performed automatically.
+For policy-declined rows, a person or an agent shell runs `ahub memory declined --json` to inspect IDs and safe rule categories, never note text. The agent-mem public `inspectSyncPolicy` API (0.32.1 and later) bounds physical outbound inspection for shared-v1 and generation profiles. A complete result supplies the declined IDs and rules; `complete:false` means the scan is unavailable, stale or over its diagnostic bound, not zero declined rows. The command stays read-only and rechecks its profile binding. No migration or policy edit is performed automatically.
 
 The hub projects verified withheld/exported counts when a trusted SDK sync returns a successful placement result. That projection is covered by an injected-result fixture, not an activated-store sync. Agent-mem requires a fresh `placementAttestation` even for an already active v3 store; since 0.35.0 the daemon builds one with the package's own `createPlacementAttestation` on every sync pass and supplies no writer facts of its own, so no attestation is fabricated. A refused attestation is the closed cause `writer` in status, the dashboard and the log: its category, its cause class (`missing`, `changed`, `unavailable`) and the next step (repair the amem install and its host pin, then a person runs `amem migrate --sync-placement --dry-run`). An in-place agent-mem patch upgrade inside the declared range turns the writer proof to `changed` the same way, because placement records each writer's installed version and file hash, and it stays that way until a person re-runs `amem migrate --sync-placement --dry-run`. Activation remains a person-run action. A nonzero withheld count in a successful result is not a transport failure and does not mean those rows were deleted, rewritten or published. Inspect the IDs and rules before deliberately changing any source or approved policy; a forget operation does not remove its original text from physical history.
 
