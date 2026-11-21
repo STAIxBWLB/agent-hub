@@ -87,7 +87,7 @@ export function editGovernanceBlock(turns: readonly TurnEdits[] | undefined): Ed
   return {
     observability, policyArm: arm ?? "unknown",
     editTool: seen ? { total: et, verifiedFullRead: editGradesKnown ? ef : null, partialReadOnly: editGradesKnown ? ep : null, blindOrStale: editGradesKnown ? eb : null, occRejected: eo } : null,
-    shellRoute: seen ? { total: st, verifiedFullRead: shellGradesKnown ? sf : null, partialReadOnly: shellGradesKnown ? sp : null, blindOrStale: shellGradesKnown ? sb : null, blockedByGuard: sg } : null,
+    shellRoute: observability === "hook_and_tree" ? { total: st, verifiedFullRead: shellGradesKnown ? sf : null, partialReadOnly: shellGradesKnown ? sp : null, blindOrStale: shellGradesKnown ? sb : null, blockedByGuard: sg } : null,
     unattributedTreeWrites: sum(t => t.u),
     postEdit: { editsWhileCheckFailing: sum(t => t.fe), revertedWrites: sum(t => t.rev) },
   };

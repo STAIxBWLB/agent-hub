@@ -324,10 +324,10 @@ export class Facts {
   private readonly tally = new Map<PeerId, { obs: "hook" | "stream"; e: EditCounts; s: EditCounts }>();
   /** Grade one write of `path` for `peer`: 1 verified full read, 2 partial read only, 3 blind or stale, undefined when the pre-image is unknown (counted in the total only, never guessed). */
   private grade(peer: PeerId, path: string, pre: string | undefined): 1 | 2 | 3 | undefined {
+    if (pre === undefined) return undefined;
     const task = this.o.scope(peer)?.task?.id;
     const r = task === undefined ? undefined : this.readReceipt(peer, task, path);
     if (!r) return 3;
-    if (pre === undefined) return undefined;
     if (createHash("sha256").update(pre).digest("hex") !== r.sha256) return 3;
     return r.scope === "full" ? 1 : 2;
   }

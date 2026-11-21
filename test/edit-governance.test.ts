@@ -106,3 +106,36 @@ test("no-op hook calls do not report edits and a verified Codex patch reports st
     expect(facts.takeEdits("codex")).toEqual({ obs: "stream", e: [1, 0, 0, 1, 0] });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a Codex stream patch and shell modification leave the unobserved shell route unknown", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-edit-shell-"));
+  try {
+    const file = join(root, "a.txt"); writeFileSync(file, "one\ntwo\n");
+    const facts = new Facts({ root, tmp: join(root, ".t"), instance: "t", scope: () => ({ task: { id: 7 } }) as never, peers: () => ["codex"], nameable: () => true } as never);
+    facts.preTool("codex", "r", "Read", { file_path: file });
+    writeFileSync(file, "one\nTWO\n");
+    facts.codexItem("codex", { type: "fileChange", status: "completed", changes: [{ path: file, kind: { type: "update" }, diff: "@@ -1,2 +1,2 @@\n one\n-two\n+TWO" }] });
+    writeFileSync(file, "shell modification\n");
+    facts.codexItem("codex", { type: "commandExecution", status: "completed", commandActions: [{ type: "unknown", command: "sed -i s/TWO/shell/ a.txt" }] });
+    const edits = facts.takeEdits("codex")!;
+    expect(edits.obs).toBe("stream"); expect(edits.e?.[0]).toBe(1);
+    const record = rec(life(9, [turn(9, { edits })]))[0]!;
+    expect(record.edits?.shellRoute).toBeNull();
+    expect(buildResearchQuality([record], []).fields["edits.shellRoute.total"]).toEqual({ n: 1, unknown: 1 });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a write with a large unreadable pre-image has an unknown grade even without a receipt", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-edit-large-"));
+  try {
+    const file = join(root, "large.txt"); writeFileSync(file, "x".repeat(256 * 1024 + 1));
+    const facts = new Facts({ root, tmp: join(root, ".t"), instance: "t", scope: () => ({ task: { id: 7 } }) as never, peers: () => ["codex"], nameable: () => true } as never);
+    const input = { file_path: file, content: "replacement" };
+    facts.preTool("codex", "w", "Write", input); writeFileSync(file, input.content); facts.postTool("codex", "w", "Write", input);
+    const edits = facts.takeEdits("codex")!;
+    expect(edits.e).toEqual([1, 0, 0, 0, 0]);
+    const record = rec(life(10, [turn(10, { edits })]))[0]!;
+    expect(record.edits?.editTool).toMatchObject({ total: 1, blindOrStale: null, verifiedFullRead: null, partialReadOnly: null });
+    expect(buildResearchQuality([record], []).fields["edits.editTool.blindOrStale"]).toEqual({ n: 1, unknown: 1 });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
