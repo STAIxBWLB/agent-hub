@@ -87,7 +87,7 @@ const inputLines = (r: Rig) => readFileSync(join(r.dir, "input.jsonl"), "utf8").
 const answered = (r: Rig, n: number, id = "allow") => { r.settle.get(String(n))!(id); };
 
 test("the dual-output exact versions stay separate from the headless ACP contract", () => {
-  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0", "0.27.1"]);
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0", "0.27.1", "0.28.3"]);
   expect("line" in COMPAT["qwen-dual"]).toBe(false);
   for (const version of ["0.26.1", "0.27.0", "0.27.1"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(true);
   for (const version of ["0.25.0", "0.26.9", "0.27.2", "0.28.0"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(false);
