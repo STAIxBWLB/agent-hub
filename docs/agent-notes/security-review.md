@@ -40,7 +40,7 @@ Scope: the security pass of a review (`REVIEW.md`), and any change under `src/lo
 - When reviewing Pi dependency preparation, also check the Pi dependencies rule in `docs/agent-notes/adapters.md` and the Pi prepared dependencies section in `docs/security.md`.
 - Workflow actions are pinned by commit SHA with the version in a comment; `test/workflow-pins.test.ts` refuses a tag. Workflow `permissions` stay at the minimum each job needs (`.github/workflows/`).
 - The dependency volume key covers everything that decides `node_modules` (`dependencyKey` in `src/hub/check-runner.ts`); a manifest with an install lifecycle script is refused, never keyed. Never add `--ignore-scripts` or a writable shared cache to make a run pass.
-- Runtime dependencies stay at zero third-party packages; `@staix/agent-mem` stays on a declared patch range (`~X.Y.Z`), so a plain in-range patch ships without a hub change and a new minor needs a reviewed raise.
+- Runtime dependencies stay at zero third-party packages; `@staix/agent-mem` stays on a declared range (`>=X.Y.Z <M.0.0`, floor 0.33.0 or later), so a plain in-range release with a supported host API ships without a hub change and a new major needs a reviewed raise.
 - Publishing happens only in the tag workflow through trusted publishing; the guarded tag (`scripts/release-tag.ts`) needs the person's consent. A change that adds a token, a second publish path or a way around the consent check is Important.
 
 ## A security audit turn

@@ -3446,7 +3446,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
       let memoryLibraryReady = false;
       try { assertAgentMemVersion({ name: "@staix/agent-mem", version: AGENT_MEM_VERSION }); memoryLibraryReady = true; } catch { /* report the failed range check without opening a store */ }
-      row(memoryLibraryReady, "memory library", memoryLibraryReady ? `amem ${AGENT_MEM_VERSION}; in-process, no claude-mem worker` : "installed amem is not a plain release inside the declared patch range; run bun install --frozen-lockfile, or raise the range with a compatibility review");
+      row(memoryLibraryReady, "memory library", memoryLibraryReady ? `amem ${AGENT_MEM_VERSION}; in-process, no claude-mem worker` : "installed amem is not a plain release inside the declared range with a supported host API; run bun install --frozen-lockfile, or raise the range with a compatibility review");
       // #1008: memory capture is agent-mem's own setup state, read as structured data (`amem setup <tool> --json`, a preview that writes nothing), never dotfiles text. The caller's
       // identity is NOT scrubbed: agent-mem screens a plan for an agent, and a refusal reads as unknown here instead of being laundered into a person's answer.
       for (const tool of DOCTOR_MEMORY_CAPTURE_PEERS) {

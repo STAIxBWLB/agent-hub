@@ -13705,7 +13705,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.4"
     },
     dependencies: {
-      "@staix/agent-mem": "~0.32.1"
+      "@staix/agent-mem": ">=0.33.0 <1.0.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -15930,6 +15930,7 @@ var init_sync_placement_writer_context = __esm(() => {
 
 // node_modules/@staix/agent-mem/src/index.ts
 var init_src = __esm(() => {
+  init_platform();
   init_cli_attribution();
   init_search_fts();
   init_platform();

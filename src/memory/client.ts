@@ -149,7 +149,7 @@ export class MemoryClient {
     });
   }
   async health(): Promise<{ ok: boolean; version?: string }> {
-    // #1605: the dependency is a patch range, so report the attested loaded release rather than a range as a version.
+    // #1605: the dependency is a range, so report the attested loaded release rather than a range as a version.
     return this.run(() => ({ ok: true, version: AGENT_MEM_VERSION })) ?? { ok: false };
   }
 }

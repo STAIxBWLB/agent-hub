@@ -1,6 +1,6 @@
 name: agent-mem-latest
 
-# #1605: package.json declares agent-mem as a patch range (`~X.Y.Z`), so a plain patch release reaches users without a hub
+# #1605: package.json declares agent-mem as a range (`>=X.Y.Z <M.0.0`), so a plain release reaches users without a hub
 # release. This canary resolves the newest in-range patch from the registry (never the lockfile) and runs the memory-surface
 # gate against it, so a bad patch shows up soon after it is published. It writes neither the manifest nor the lockfile: the
 # patch is installed beside them, and a guard step fails the job if either file changed. Nothing is committed.

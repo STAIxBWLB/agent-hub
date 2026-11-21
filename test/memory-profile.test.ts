@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, candidateTargetRevision, migrate } from "@staix/agent-mem";
 import { realPath } from "../src/hub/project.ts";
-import { AGENT_MEM_RANGE } from "../src/hub/agent-mem-range.ts";
+import { AGENT_MEM_HOST_API_RANGE, AGENT_MEM_RANGE, agentMemHostApiOk } from "../src/hub/agent-mem-range.ts";
 import {
   AGENT_MEM_VERSION, MEMORY_PROFILE_UNAVAILABLE, assertAgentMemVersion, bindProfileMemory, MemoryProfileBinding, openProfileCandidates, openProfileMemory, selectedMemoryProfile,
 } from "../src/hub/memory-profile.ts";
@@ -98,20 +98,37 @@ test("binding an injected store uses its direct canonical home and rejects misma
 });
 
 
-test("loaded core attestation accepts a plain release inside the declared patch range and refuses everything else", () => {
+test("loaded core attestation accepts a plain release inside the declared range and refuses everything else", () => {
   const installed = JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve("@staix/agent-mem")), "utf8")).version as string;
-  const [major, minor, patch] = AGENT_MEM_RANGE.slice(1).split(".").map(Number) as [number, number, number];
+  const match = /^>=(\d+)\.(\d+)\.(\d+) <(\d+)\.0\.0$/.exec(AGENT_MEM_RANGE);
+  expect(match, AGENT_MEM_RANGE).not.toBeNull();
+  const [major, minor, patch] = [Number(match![1]), Number(match![2]), Number(match![3])];
   const floor = `${major}.${minor}.${patch}`;
-  expect(AGENT_MEM_RANGE).toMatch(/^~\d+\.\d+\.\d+$/);
   expect(AGENT_MEM_VERSION).toBe(installed);
-  expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: floor })).toBe(floor);
-  expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: `${major}.${minor}.${patch + 1}` })).toBe(`${major}.${minor}.${patch + 1}`);
+  for (const ok of [floor, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major}.${minor + 7}.3`]) {
+    expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: ok }), ok).toBe(ok);
+  }
   const below = patch > 0 ? `${major}.${minor}.${patch - 1}` : `${major}.${minor - 1}.9`;
-  for (const metadata of [undefined, {}, { name: "@staix/agent-mem", version: below }, { name: "@staix/agent-mem", version: `${major}.${minor + 1}.0` },
+  for (const metadata of [undefined, {}, { name: "@staix/agent-mem", version: below }, { name: "@staix/agent-mem", version: `${major + 1}.0.0` },
     { name: "@staix/agent-mem", version: `${floor}-beta.1` }, { name: "@staix/agent-mem", version: `${major}.${minor}` },
     { name: "foreign-package", version: floor }, { name: "@staix/agent-mem", version: "unknown" }]) {
-    expect(() => assertAgentMemVersion(metadata)).toThrow(/declared patch range/);
+    expect(() => assertAgentMemVersion(metadata)).toThrow(/declared range/);
   }
+});
+
+test("host API constants must be positive integers, MIN <= VERSION, and intersect the supported range", () => {
+  const meta = { name: "@staix/agent-mem", version: AGENT_MEM_VERSION };
+  const [lo, hi] = AGENT_MEM_HOST_API_RANGE;
+  expect(assertAgentMemVersion(meta, AGENT_MEM_RANGE, { min: lo, version: hi })).toBe(AGENT_MEM_VERSION);
+  expect(assertAgentMemVersion(meta, AGENT_MEM_RANGE, { min: lo, version: hi + 5 })).toBe(AGENT_MEM_VERSION);
+  for (const bad of [{}, { min: lo }, { version: hi }, { min: 0, version: hi }, { min: lo, version: 1.5 }, { min: "1", version: "1" },
+    { min: hi + 2, version: hi + 1 }, { min: hi + 1, version: hi + 1 }, { min: -1, version: -1 }, { min: null, version: undefined }]) {
+    expect(() => assertAgentMemVersion(meta, AGENT_MEM_RANGE, bad), JSON.stringify(bad)).toThrow(/host API/);
+  }
+  expect(agentMemHostApiOk(1, 1, [1, 1])).toBe(true);
+  expect(agentMemHostApiOk(2, 3, [1, 1])).toBe(false);
+  expect(agentMemHostApiOk(1, 3, [2, 2])).toBe(true);
+  expect(agentMemHostApiOk(1, 1, [2, 2])).toBe(false);
 });
 
 test("memoryIndexExists accepts the package's versioned index file names and nothing else (agent-mem 0.25.0 renamed index.db to index-v4.db)", async () => {
