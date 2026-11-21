@@ -4,6 +4,13 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.45.0
+
+- Release N-1 for 0.45.x is published 0.44.0, with exact agent-mem 0.30.0 and control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.0. The isolated compatibility fixture covers old clients and plugins against the new daemon and new clients and plugins against the old daemon; it does not prove live-agent, rollback, or shared-home compatibility. The protocol window and CLI forms are unchanged. This release pins agent-mem 0.32.0 and does not automatically raise the memory home or sync format floor; compatibility after a person raises a floor requires separate verification.
+
+- Move the external project mentions from the README to `docs/influences.md` (#1589).
+- Shorten two slow test files without loosening what they assert: the hang-watch gate fixtures are trimmed, with the measured reason `memory-store` cannot be halved (#1594), and a checkpoint test waits out the expiry its fixture already shortens (Refs #1578, #1595).
+
 - Add `turn_end.edits` (closed counts of edit-tool and shell-route writes graded by read receipts, only on mutating turns with `research.enabled`) and a text-free `edits` block on research records v2, reported per leaf by `quality.json` with null (never 0) on tree-only surfaces (Refs #1556, hub task 1006).
 
 - Exact-pin the first-party agent-mem dependency to 0.32.0, from 0.30.0 (hub task 1042). The 0.31.0 additions stay outside the paths this hub reads (the `held` placement realm outcome and the classified agent-marked CLI read causes), and its sync result shape and `SYNC_FAILURE_CAUSES` are unchanged. The 0.32.0 CLI changes also reach nothing here: the hub's one `amem` call previews `amem setup <tool> --json` and parses the answer with `JSON.parse`, so 2-space `--json` indentation and usage errors exiting 2 read the same, and it writes no capture hook or `amem ingest` call of its own, so piped ingest printing human text and the `amem_work_state_read` per-call policy snapshot change nothing it runs. `amem list`, `show` and `graph` keep byte parity and storage is unchanged.

@@ -1211,7 +1211,7 @@ operation cannot confirm startup.
 Each completed daemon startup writes one `startup timings ms:` line to `hub.log`,
 with fixed phase names and durations; the span before `task_runtime` carries
 the sub-phases `task_checks`, `task_ports`, `task_board` and `task_recovery`
-(#1445), and its board reads cover open tasks only. `task_checks` no longer waits for the first check-runner probe (about 8 s over ssh to a remote runner): startup waits for it at most 500 ms, `ahub status` reports the runner as unavailable with `runner probe in progress` until it settles, and `check_run` joins the same single probe. The three event-seed consumers share one
+(#1445), and its board reads cover open tasks only. The work after readiness is split into one boundary per step (`post_ready_handoff`, `_queue`, `_watch`, `_reconcile`, `_goals`, `_leases`, `_crash`, `_pi`, `_drift`, #1591), so a slow start names the step that held control replies. `task_checks` no longer waits for the first check-runner probe (about 8 s over ssh to a remote runner): startup waits for it at most 500 ms, `ahub status` reports the runner as unavailable with `runner probe in progress` until it settles, and `check_run` joins the same single probe. The three event-seed consumers share one
 lossless streaming pass; abandoned snapshot bodies are not read for startup.
 The [startup receipt](verification/2026-11-07-daemon-startup-1232.md) separates
 seed I/O from bounded usage-rollup I/O and records the isolated measurements.
@@ -1873,7 +1873,10 @@ delivery. A delivery or answer is not a task completion receipt.
 
 The hub writes structured events to `.agenthub/state/events.jsonl` alongside
 `hub.log` (schema: `docs/events.md`). They carry ids, routing, sizes, states and
-token counts, never message bodies or task titles.
+token counts, never message bodies or task titles. Both rotate by size (#1546):
+`events.jsonl` in 64 MiB segments with three kept (longer while an open task may
+need one) and `hub.log` at 16 MiB with two kept; every reader reads the segments
+before the live file, so rotation loses no input (`docs/events.md` "Rotation").
 
 ```bash
 ahub report --since 7d          # turns, busy time and tokens per peer, messages, overlaps, task events
@@ -3532,9 +3535,10 @@ them automatically.
 
 For an ACP peer (headless Kimi, Qwen, Jcode) a tool call that was announced and
 has not completed or failed counts as running work, not silence: the inactivity
-watchdog (`watchdog_ms`) keeps the turn alive up to a 30 min tool ceiling (never
-below `watchdog_ms`) since the peer's last output, then cancels the turn as
-before and logs which open tool call was silent (#542).
+watchdog (`watchdog_ms`) keeps the turn alive up to the open-tool ceiling
+(`adapter_timing.acp_tool_ceiling_min`, default 60 min since #1601, never below
+`watchdog_ms`) since the peer's last output, then cancels the turn as before and
+logs which open tool call was silent (#542).
 
 After the inactivity watchdog cancels a Codex turn, a late acceptance, answer or
 completion from that turn is dropped and never reaches a later audience; its
@@ -6610,7 +6614,7 @@ Default-branch capture runs only at daemon startup when a Claude implementer is 
 
 Project Git retains the core policy that clears credential.helper and core.askpass; an HTTPS push needing those helpers may fail, rather than importing credentials or relaxing that policy. Task branch/config proof reads are bounded synchronous reads (1.5 seconds per reader); slow or unknown evidence asks. The existing sandbox profile discovery is also synchronous; moving it to an asynchronous inventory proof with a shared deadline remains a follow-up. The nonce is visible in a permission response, so it proves a bounded grant rather than native-dispatch provenance.
 
-The [native permission receipt](verification/2026-10-23-headless-claude-permissions.md) covers Claude Code 2.1.309, and the [2.1.310 receipt](verification/2026-10-26-claude-implementer-2.1.310.md) repeats it on 2.1.310 (with 2.1.309 as a control), and the [2.1.314 receipt](verification/2026-10-31-claude-implementer-2.1.314.md) repeats it and the host-wrapper procedure on 2.1.314 (with 2.1.310 as a control), and the [2.1.316 receipt](verification/2026-10-31-claude-implementer-2.1.316.md) repeats both on 2.1.316 (with 2.1.314 as a control), and the [2.1.318 receipt](verification/2026-11-05-claude-implementer-2.1.318.md) repeats both on 2.1.318 (with 2.1.316 as a control), and the [2.1.319 receipt](verification/2026-11-06-claude-implementer-2.1.319.md) repeats both on 2.1.319 (with 2.1.318 as a control), and the [2.1.322 receipt](verification/2026-11-10-claude-implementer-2.1.322.md) repeats both on 2.1.322 (with 2.1.319 as a control), and the [2.1.323 receipt](verification/2026-11-13-claude-implementer-2.1.323.md) repeats both on 2.1.323 (with 2.1.322 as a control), each with a deterministic loopback fixture and no real account/model call. It is not sandbox proof or a runtime receipt gate. The real account/model/person interaction remains a separate live leg.
+The [native permission receipt](verification/2026-10-23-headless-claude-permissions.md) covers Claude Code 2.1.309, and the [2.1.310 receipt](verification/2026-10-26-claude-implementer-2.1.310.md) repeats it on 2.1.310 (with 2.1.309 as a control), and the [2.1.314 receipt](verification/2026-10-31-claude-implementer-2.1.314.md) repeats it and the host-wrapper procedure on 2.1.314 (with 2.1.310 as a control), and the [2.1.316 receipt](verification/2026-10-31-claude-implementer-2.1.316.md) repeats both on 2.1.316 (with 2.1.314 as a control), and the [2.1.318 receipt](verification/2026-11-05-claude-implementer-2.1.318.md) repeats both on 2.1.318 (with 2.1.316 as a control), and the [2.1.319 receipt](verification/2026-11-06-claude-implementer-2.1.319.md) repeats both on 2.1.319 (with 2.1.318 as a control), and the [2.1.322 receipt](verification/2026-11-10-claude-implementer-2.1.322.md) repeats both on 2.1.322 (with 2.1.319 as a control), the [2.1.323 receipt](verification/2026-11-13-claude-implementer-2.1.323.md) repeats both on 2.1.323 (with 2.1.322 as a control), and the [2.1.328](verification/2026-11-19-claude-implementer-2.1.328.md) and [2.1.329](verification/2026-11-20-claude-implementer-2.1.329.md) receipts repeat both on those versions (each with 2.1.323 as a control), each with a deterministic loopback fixture and no real account/model call. It is not sandbox proof or a runtime receipt gate. The real account/model/person interaction remains a separate live leg.
 
 A headless Claude reviewer is run by the hub instead (task 223): declare
 `"claude-review": { "kind": "claude", "roles": ["reviewer"], "start_mode": "headless" }`
