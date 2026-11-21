@@ -3,12 +3,14 @@ import { classifyPeerCommand, cliCommandLabel, liveTestRefusal } from "../src/cl
 import { ROADMAP_FORMS, parseRoadmapArgs, renderRoadmap } from "../src/cli/roadmap.ts";
 
 // R3 (#1481): argv for the bottom-up commands. Parsing refuses before any connection, and authority is closed per form.
-test("unplaced, triage, accept, reject and import-github parse to their closed ops", () => {
+test("unplaced, triage, decompose, accept, reject and import-github parse to their closed ops", () => {
   expect(parseRoadmapArgs(["unplaced"])).toEqual({ op: "hub_roadmap_unplaced", args: {}, json: false });
   expect(parseRoadmapArgs(["unplaced", "--repo", "Example/Repo", "--json"])).toEqual({ op: "hub_roadmap_unplaced", args: { repo: "example/repo" }, json: true });
   expect(parseRoadmapArgs(["--json", "unplaced", "--repo=o/r"]).args).toEqual({ repo: "o/r" });
   expect(parseRoadmapArgs(["triage"])).toEqual({ op: "hub_roadmap_triage", args: {}, json: false });
   expect(parseRoadmapArgs(["triage", "--list", "--repo", "o/r"]).args).toEqual({ repo: "o/r", list: true });
+  expect(parseRoadmapArgs(["decompose", "4"])).toEqual({ op: "hub_roadmap_decompose", args: { id: 4 }, json: false });
+  expect(parseRoadmapArgs(["--json", "decompose", "4"])).toEqual({ op: "hub_roadmap_decompose", args: { id: 4 }, json: true });
   expect(parseRoadmapArgs(["accept", "12"])).toEqual({ op: "hub_roadmap_edit", args: { op: "accept", suggestion: 12 }, json: false });
   expect(parseRoadmapArgs(["reject", "3"]).args).toEqual({ op: "reject", suggestion: 3 });
   expect(parseRoadmapArgs(["import-github"])).toEqual({ op: "roadmap_import_github", args: {}, json: false });
@@ -20,6 +22,7 @@ test("the new commands refuse unknown, duplicate, misplaced and malformed input 
     ["unplaced", "extra"], ["unplaced", "--repo"], ["unplaced", "--repo", "not a repo"], ["unplaced", "--repo", "-x/y"], ["unplaced", "--repo", "o/r", "--repo", "o/r"],
     ["unplaced", "--apply"], ["unplaced", "--list"], ["unplaced", "--json", "--json"],
     ["triage", "--apply"], ["triage", "--list", "--list"], ["triage", "7"],
+    ["decompose"], ["decompose", "0"], ["decompose", "01"], ["decompose", "x"], ["decompose", "1", "2"], ["decompose", "--repo", "o/r"], ["decompose", "1", "--list"],
     ["accept"], ["accept", "0"], ["accept", "01"], ["accept", "x"], ["accept", "1", "2"], ["accept", "1", "--json"], ["accept", "--repo", "o/r"],
     ["reject"], ["reject", "-1"], ["reject", "1", "--list"],
     ["import-github", "--list"], ["import-github", "--apply", "--apply"], ["import-github", "2"], ["import-github", "--unknown"],
@@ -32,11 +35,11 @@ test("import-github is the person's alone, and the delegated forms are refused (
     expect(classifyPeerCommand("roadmap", argv)).toBe("console");
     expect(liveTestRefusal("roadmap", argv)).toBe(true);
   }
-  // Triage, accept and reject are the planner's tools, so an agent shell keeps its peer identity; live-test cannot delegate any write.
-  for (const sub of ["unplaced", "triage", "accept", "reject"]) expect(classifyPeerCommand("roadmap", [sub, "1"])).toBe("allowed");
-  for (const sub of ["triage", "accept", "reject"]) expect(liveTestRefusal("roadmap", [sub, "1"])).toBe(true);
+  // Triage, decompose, accept and reject are the planner's tools, so an agent shell keeps its peer identity; live-test cannot delegate any write.
+  for (const sub of ["unplaced", "triage", "decompose", "accept", "reject"]) expect(classifyPeerCommand("roadmap", [sub, "1"])).toBe("allowed");
+  for (const sub of ["triage", "decompose", "accept", "reject"]) expect(liveTestRefusal("roadmap", [sub, "1"])).toBe(true);
   expect(liveTestRefusal("roadmap", ["unplaced"])).toBe(true);
-  for (const sub of ["unplaced", "triage", "accept", "reject", "import-github"]) {
+  for (const sub of ["unplaced", "triage", "decompose", "accept", "reject", "import-github"]) {
     const canary = "PRIVATE_ARGUMENT_CANARY";
     expect(cliCommandLabel("roadmap", [sub, canary])).toBe(`roadmap ${sub}`);
     expect(cliCommandLabel("roadmap", ["--json", sub, canary])).toBe(`roadmap ${sub}`);
@@ -44,7 +47,7 @@ test("import-github is the person's alone, and the delegated forms are refused (
 });
 
 test("every new form is listed in the usage text", () => {
-  for (const form of [ROADMAP_FORMS.unplaced, ROADMAP_FORMS.triage, ROADMAP_FORMS.accept, ROADMAP_FORMS.reject, ROADMAP_FORMS.importGithub]) expect(form.length).toBeGreaterThan(5);
+  for (const form of [ROADMAP_FORMS.unplaced, ROADMAP_FORMS.triage, ROADMAP_FORMS.decompose, ROADMAP_FORMS.accept, ROADMAP_FORMS.reject, ROADMAP_FORMS.importGithub]) expect(form.length).toBeGreaterThan(5);
   expect(() => parseRoadmapArgs(["nonsense"])).toThrow(ROADMAP_FORMS.importGithub);
 });
 
@@ -76,6 +79,24 @@ test("triage renders the cited words and the exact accept and reject commands, a
   expect(out).toContain("1 model answer dropped as unsupported");
   expect(renderRoadmap({ suggestions: [] })).toContain("Nothing is linked until you run ahub roadmap accept");
   expect(renderRoadmap({ asked: 0, dropped: 0, unavailable: "no hub model is configured for roadmap triage", suggestions: [] })).toContain("Triage unavailable: no hub model");
+});
+
+test("decompose renders each part with its intake decision, its cites and the pending answer, and never claims a write", () => {
+  const payload = { milestone: 4, dropped: 1, unavailable: null, saved: { id: 9, milestone: 4, state: "pending" }, parts: [
+    { title: "Split the export surface", detail: "Move rendering behind one seam", class: "implement", intake: "spec", cites: ["agent-hub-architecture", "o/r#5"] },
+    { title: "Drop the legacy flag", detail: "Remove --legacy and its tests", class: "bulk_edit", intake: "task", cites: ["o/r#5"] },
+  ] };
+  const out = renderRoadmap(payload, 200);
+  expect(out).toContain("Milestone 4 decomposition");
+  expect(out).toContain("2 parts saved as pending model answer 9; nothing is intaken, linked or published.");
+  expect(out).toContain("Split the export surface -> needs its own spec issue (implement)");
+  expect(out).toContain("cites: agent-hub-architecture, o/r#5");
+  expect(out).toContain("Drop the legacy flag -> goes straight to a task (bulk_edit)");
+  expect(out).toContain("Dropped 1 model part");
+  expect(() => JSON.parse(out)).toThrow();
+  expect(renderRoadmap(payload).split("\n").every(line => Bun.stringWidth(line) <= 80)).toBe(true);
+  expect(renderRoadmap({ milestone: 4, dropped: 0, saved: null, unavailable: "the milestone links no spec or issue to decompose from", parts: [] }))
+    .toContain("Decompose unavailable: the milestone links no spec or issue to decompose from");
 });
 
 test("import-github renders a dry run with how to apply, and an applied run with counts and withheld milestones", () => {

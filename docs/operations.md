@@ -6166,6 +6166,18 @@ proposed milestones and link open issues. Imports are idempotent, partial reads
 are marked, and nothing is written back to GitHub. See the [bottom-up placement
 contract](design/roadmap.md#bottom-up-placement-r3).
 
+### Decomposition (R2)
+
+`ahub roadmap decompose <id>` asks the configured planner or unique conductor's
+hub model how one milestone decomposes, reading only the milestone's public title
+and outcome, the goal or architecture specs it links and the issues it links. Each
+proposed part cites an id it was shown and says whether it needs its own spec
+issue or goes straight to a task; an answer that cites nothing it was shown is
+dropped whole. The kept parts are saved as one pending model answer per milestone,
+so a second run supersedes the first. Nothing is intaken, linked or published, and
+no part becomes a task or a spec issue in this part. See the [decomposition
+contract](design/roadmap.md#decomposition-r2).
+
 ## Planning and phased releases (#263)
 
 Use `ahub backlog list` to read public staged work (a table by rank with the reserved owner, dependencies and cut titles, then a count by reserved owner; `--full` and piped output keep whole titles and `--json` prints the raw listing), then `ahub backlog plan <id>

@@ -41,6 +41,7 @@ const OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub
 OWNER_TOOL_EFFECTS.add("hub_survey_report");
 OWNER_TOOL_EFFECTS.add("hub_roadmap_edit");
 OWNER_TOOL_EFFECTS.add("hub_roadmap_triage");
+OWNER_TOOL_EFFECTS.add("hub_roadmap_decompose");
 /** A read does not prove progress; failed/pending mutations are handled conservatively by the host. */
 export function ownerToolEffect(op: string, input: Record<string, unknown> | undefined): boolean {
   if (op === "hub_survey_report" && input?.show === true) return false;

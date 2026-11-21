@@ -10,6 +10,7 @@ paths:
   - src/hub/roadmap-view.ts
   - src/hub/roadmap-unplaced.ts
   - src/hub/roadmap-triage.ts
+  - src/hub/roadmap-decompose.ts
   - src/hub/roadmap-check.ts
   - src/hub/roadmap-sync.ts
   - src/hub/roadmap-export.ts
@@ -32,6 +33,7 @@ paths:
   - test/roadmap-recovery.test.ts
   - test/roadmap-unplaced.test.ts
   - test/roadmap-triage-tasks.test.ts
+  - test/roadmap-decompose.test.ts
   - test/roadmap-r3-cli.test.ts
   - test/roadmap-r3-daemon.test.ts
   - test/roadmap-check.test.ts
@@ -50,9 +52,12 @@ R1 implements [#1479](https://github.com/STAIxBWLB/agent-hub/issues/1479) of the
 the source of truth. R1 adds no GitHub writes, roadmap model calls, export,
 automatic task assignment, dashboard or console UI. R3 ([#1481](https://github.com/STAIxBWLB/agent-hub/issues/1481),
 "Bottom-up placement" below) adds the first roadmap model call and read-only GitHub
-reads, and still adds no GitHub write.
+reads; R2 part 1 ([#1480](https://github.com/STAIxBWLB/agent-hub/issues/1480), "Decomposition" below)
+adds a second model call over the same read-only path. Neither adds a GitHub write.
 
-R1 adds no generation, triage or decomposition call; those belong to R2 and R3.
+R1 adds no generation, triage or decomposition call; those belong to R2 and R3. R2
+part 1 is the read-only proposal only: nothing is intaken, linked or published, and
+accepting a part or writing to GitHub is a later part.
 The existing mandatory privacy screen on planner-written text stays exactly as
 `Tasks.newRelease` applies it, including on milestone title and outcome. It fails
 closed where newRelease does and is never bypassed.
@@ -148,6 +153,33 @@ state requires the roadmap capability on a controlled recovery target and adds
 its ordered row/link digest to integrity. Empty databases retain the existing
 format floor and integrity shape; the additive tables do not advance the database
 format marker.
+
+## Decomposition (R2)
+
+R2 turns a milestone into the parts of work that deliver it. Part 1 is the read-only proposal: nothing is intaken, linked,
+proposed as a task or published, and it changes no board row except the saved model answer.
+
+**Proposal.** `ahub roadmap decompose <id> [--json]` and `hub_roadmap_decompose {id}` (configured planner or unique conductor,
+never during a PII or private turn) ask the hub's model how one milestone decomposes. The model sees that milestone's own title
+and outcome and what the milestone already links: the summaries of its `goal` and `architecture` specs (or, when it links neither
+type, of whatever spec types it links) and its linked issue refs with the titles from one bounded `readGitHubIssuePages` read.
+Every spec id, title, path and issue title must pass `publicMetadataText` first: a spec that fails is not offered at all, an issue
+title that fails or cannot be read is offered by its ref alone, and a milestone whose own title or outcome is withheld refuses
+before any model call. The prompt asks for one JSON array of at most eight and at least one part in the `hub_backlog_split` parts
+schema (`title`, `detail`, `class`) plus `needs_spec` (true: a feature or behaviour change that needs its own spec issue; false: a
+mechanical chore that goes straight to a task) and `cites`.
+
+**Reader and storage.** `parseDecomposition` (`src/hub/roadmap-decompose.ts`) keeps a part only when its title and detail are
+bounded, its `class` is a `hub_task_propose` class, `needs_spec` is a boolean and at least one cite names an id the model was
+shown; the answer is capped at eight parts and a repeated title is dropped. `intake` records the `needs_spec` decision as `spec`
+or `task`. Each kept part is screened again at the write and stored as a pending row of `milestone_decompositions`, attributed to
+`hub` as a model's answer. One pending row per milestone, so a newer run supersedes the older one in the same transaction, and
+settled rows keep the newest 200. An answer that cites nothing it was shown saves nothing and is reported in `dropped`. No model,
+a dead one, or a milestone that links nothing to decompose from reports `unavailable`, never a silent empty result. No other path
+reads the table: accepting a part is R2 part 2 and the GitHub write is part 3.
+
+`milestone_decompositions` is additive and outside the roadmap integrity digest like a suggestion: a lost answer is asked for
+again, and no recovery format changes.
 
 ## Bottom-up placement (R3)
 

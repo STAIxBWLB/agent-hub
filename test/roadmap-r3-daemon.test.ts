@@ -117,6 +117,32 @@ test("triage, accept and reject are the planner's and conductor's; an ordinary a
   expect(cliAccept.code).not.toBe(0);
 }, 30_000);
 
+test("decompose is the planner's model call over the wire: an ordinary agent and extra arguments are refused, and the CLI renders it", async () => {
+  const f = await fixture();
+  const m = f.board.newMilestone({ title: "Export surface", outcome: "People can export the roadmap", state: "active" }, "kimi", 1000);
+  f.board.linkMilestone(m.id, "issue", "example/repo#1", "kimi", m.revision);
+  // This test daemon has inference off, so the answer is named unavailable instead of being invented or saved.
+  const reply = await f.op(f.planner, "hub_roadmap_decompose", { id: m.id });
+  expect(reply.ok, String(reply.error)).toBe(true);
+  const view = JSON.parse(reply.text);
+  expect(view).toMatchObject({ milestone: m.id, parts: [], saved: null, unavailable: expect.stringContaining("no answer") });
+  // A stored answer is a pending hub-attributed row, and having one links nothing: the milestone keeps its one link and the board no task.
+  const stored = f.board.addDecomposition({ milestone: m.id, parts: [{ title: "Split export", detail: "One seam", class: "implement", intake: "spec", cites: ["example/repo#1"] }] }, "hub", 2000)!;
+  expect(f.board.decomposition(stored.id)).toMatchObject({ state: "pending", by: "hub" });
+  expect(f.board.milestoneLinks().map(link => [link.kind, link.ref])).toEqual([["issue", "example/repo#1"]]);
+  expect(f.board.list()).toEqual([]);
+  const denied = await f.op(f.ordinary, "hub_roadmap_decompose", { id: m.id });
+  expect(denied.ok).toBe(false); expect(String(denied.error)).toMatch(/planner|conductor|person/);
+  const extra = await f.op(f.planner, "hub_roadmap_decompose", { id: m.id, repo: "o/r" });
+  expect(extra.ok).toBe(false); expect(String(extra.error)).toContain("roadmap decompose takes a milestone id only");
+  const human = await f.cli(["roadmap", "decompose", String(m.id)]);
+  expect(human.code, human.err).toBe(0);
+  expect(human.out).toContain(`Milestone ${m.id} decomposition`);
+  expect(human.out).toContain("Decompose unavailable: the hub model gave no answer");
+  const machine = await f.cli(["roadmap", "decompose", String(m.id), "--json"], { AGENTHUB_PEER_ID: "codex" });
+  expect(machine.code).not.toBe(0);
+}, 30_000);
+
 test("import-github is a console op: no agent and no conductor reaches it; the person's dry run writes nothing and apply is idempotent (AC4)", async () => {
   const f = await fixture();
   for (const client of [f.planner, f.conductor, f.ordinary]) {
@@ -145,9 +171,9 @@ test("the new read tool reaches read-only peers, the write-capable ones do not, 
   const f = await fixture();
   expect(DAEMON_FEATURES).toContain("roadmap");
   const all = projectToolList(TASK_TOOLS).map(tool => tool.name), readOnly = projectToolList(TASK_TOOLS, true).map(tool => tool.name);
-  for (const name of ["hub_roadmap_unplaced", "hub_roadmap_triage"]) expect(all).toContain(name);
+  for (const name of ["hub_roadmap_unplaced", "hub_roadmap_triage", "hub_roadmap_decompose"]) expect(all).toContain(name);
   expect(readOnly).toContain("hub_roadmap_unplaced");
-  for (const name of ["hub_roadmap_triage", "hub_roadmap_edit"]) expect(readOnly).not.toContain(name);
+  for (const name of ["hub_roadmap_triage", "hub_roadmap_decompose", "hub_roadmap_edit"]) expect(readOnly).not.toContain(name);
   // A read-only peer's control op for the new read is admitted, and its write-capable twin is refused.
   const ro = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex", projectRoot: f.cwd });
   try { expect((await f.op(ro, "hub_roadmap_unplaced", {})).ok).toBe(true); } finally { ro.close(); }

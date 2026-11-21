@@ -1,6 +1,6 @@
 import { requireConductor } from "./conductor.ts";
 import { managedTaskPullRequest } from "./task-pr.ts";
-import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind } from "./roadmap.ts";
+import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind, type DecomposePart, type MilestoneDecomposition } from "./roadmap.ts";
 import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
 import { readMirrorSnapshot, planRoadmapMirror, recoverMirrorBinding } from "./roadmap-sync.ts";
 import { roadmapExport } from "./roadmap-export.ts";
@@ -8,6 +8,7 @@ import { checkRoadmap, type DriftMilestone, type RoadmapDrift } from "./roadmap-
 import type { RoadmapConfig } from "./roadmap.ts";
 import { computeUnplaced, withTree, type ReadyToClose, type TreeRollup, type UnplacedResult } from "./roadmap-unplaced.ts";
 import { buildTriagePrompt, parseTriage, TRIAGE_BATCH, type TriageItem } from "./roadmap-triage.ts";
+import { buildDecomposePrompt, parseDecomposition, DECOMPOSE_ITEMS, DECOMPOSE_PATHS, type DecomposeItem } from "./roadmap-decompose.ts";
 import { pathCandidates } from "@staix/agent-mem";
 import { renderGuidanceVariantV1 } from "./guidance-variants.ts";
 import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-probe-store.ts";
@@ -237,7 +238,7 @@ export interface TasksDeps {
   /** Explicit, read-only inspection remains available when task notices are disabled. */
   specsRead?: (action: "check" | "covers", paths: readonly string[]) => SpecsCheckReport | SpecsCoverReport;
   /** R3 (#1481): spec ids with their status, for the unplaced list. Absent or throwing is "unavailable", never "no specs". */
-  specsList?: () => { specs: { id: string; title: string; status: string | null }[]; errors: number; truncated: boolean };
+  specsList?: () => { specs: { id: string; title: string; status: string | null; type?: string; paths?: string[] }[]; errors: number; truncated: boolean };
   /** R3 (#1481): the model for triage. Absent, off or failing is no suggestion; it carries no authority and links nothing. */
   roadmapModel?: (system: string, user: string, allowed: () => boolean) => Promise<string | undefined>;
   /** R3 (#1481): host-only `gh` runner for the roadmap's read-only issue and milestone reads (tests); production uses `sdlc.gh`. */
@@ -3864,6 +3865,59 @@ export class Tasks {
       if (made) saved.push(made);
     }
     return done(saved, parsed.dropped + parsed.suggestions.length - saved.length, null);
+  }
+
+  /**
+   * R2 (#1480) part 1: ask the hub's model how one milestone decomposes. The model sees only the milestone's public text, the
+   * specs it links and the issues it links; each part must cite an id it was shown, and the answer is saved as a hub-attributed
+   * model answer. Nothing is intaken, linked, published or accepted here.
+   */
+  async roadmapDecompose(by: PeerId, rawId: unknown, run?: SdlcGh): Promise<{ milestone: number; parts: DecomposePart[]; dropped: number; saved: MilestoneDecomposition | null; unavailable: string | null }> {
+    const current = this.roadmapWriteAuthority(by);
+    const id = this.roadmapParsed(() => milestoneId(rawId)), view = this.milestoneShow(by, id);
+    current();
+    if (view.title === "[withheld]" || view.outcome === "[withheld]") throw new PreEffectToolRefusal("milestone text is not cleared for public planning; remove private content before ahub roadmap decompose");
+    const done = (parts: DecomposePart[], dropped: number, saved: MilestoneDecomposition | null, unavailable: string | null) => ({ milestone: id, parts, dropped, saved, unavailable });
+    const publicText = (value: string): boolean => { try { return this.publicMetadataText(value); } catch { return false; } };
+    let rows: { id: string; title: string; status: string | null; type?: string; paths?: string[] }[] | undefined;
+    try { const list = this.d.specsList?.(); if (list && !list.truncated && list.errors === 0) rows = list.specs; } catch { rows = undefined; }
+    const linked = new Set(view.specs.map(row => row.id));
+    // Every field that enters the prompt passes the same public screen R3's unplaced list uses; a spec that fails it is not
+    // offered at all, exactly as an unplaced spec is dropped from triage.
+    const summaries = (rows ?? []).filter(row => linked.has(row.id)
+      && [row.id, row.title, ...(row.type ? [row.type] : []), ...(row.status ? [row.status] : []), ...(row.paths ?? []).slice(0, DECOMPOSE_PATHS)].every(publicText));
+    // The milestone's own context is the goal and architecture specs it links; when it links only other types, those are its context.
+    const top = summaries.filter(row => row.type === "goal" || row.type === "architecture");
+    const specs: DecomposeItem[] = (top.length ? top : summaries).map(row => ({ ref: row.id, label: `spec ${row.id}`,
+      text: `${row.title} (${row.type || "spec"}${row.status ? `, ${row.status}` : ""})${row.paths?.length ? ` covers: ${row.paths.slice(0, DECOMPOSE_PATHS).join(", ")}` : ""}` }));
+    // Titles for linked issues come from the same bounded page read R3 uses. A ref outside that repository, an unreadable
+    // page, or a title the public screen refuses still offers its id with no text, so a part can cite it; the milestone's own
+    // links are the only source of refs.
+    const refs = view.issues.map(row => row.ref), first = refs.length ? /^([^#]+)#[1-9][0-9]*$/.exec(refs[0]!)![1]! : undefined;
+    const titles = new Map<string, string>();
+    if (first !== undefined) {
+      try { const page = await readGitHubIssuePages({ repo: first }, this.roadmapGh(run)); current(); for (const row of page.rows) if (publicText(row.title)) titles.set(`${page.repo}#${row.number}`, row.title); }
+      catch { /* unavailable titles are not an empty list: the ref is still offered */ }
+    }
+    const issues: DecomposeItem[] = refs.map(ref => ({ ref, label: `issue ${ref}`, text: titles.get(ref) ?? "" }));
+    if (!specs.length && !issues.length) return done([], 0, null, "the milestone links no spec or issue to decompose from");
+    if (!this.d.roadmapModel) return done([], 0, null, "no hub model is configured for roadmap decompose");
+    const prompt = buildDecomposePrompt({ milestone: { id, title: view.title, outcome: view.outcome }, specs: specs.slice(0, DECOMPOSE_ITEMS), issues: issues.slice(0, DECOMPOSE_ITEMS) });
+    const answer = await this.d.roadmapModel(prompt.system, prompt.user, () => { try { current(); return true; } catch { return false; } });
+    current();
+    if (!answer) return done([], 0, null, "the hub model gave no answer; retry ahub roadmap decompose later");
+    const parsed = parseDecomposition(answer, prompt), kept: DecomposePart[] = [];
+    for (const part of parsed.parts) {
+      // Re-screen at the write, exactly as triage does: what is stored is public planning text only.
+      const text = [part.title, part.detail, ...part.cites].join("\n");
+      if (!this.publicMetadataText(text)) continue;
+      if (this.screenOn() && (await this.screenCall(text)).label !== "clear") continue;
+      current(); kept.push(part);
+    }
+    const dropped = parsed.dropped + parsed.parts.length - kept.length;
+    if (!kept.length) return done([], dropped, null, null);
+    const saved = this.d.board.addDecomposition({ milestone: id, parts: kept }, HUB, this.d.now?.() ?? Date.now());
+    return done(kept, dropped, saved, null);
   }
 
   /** Apply one suggestion through R1's own writers. A "new milestone" suggestion creates it first; a retry never creates a second. */

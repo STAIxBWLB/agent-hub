@@ -228,7 +228,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
 export function cliCommandLabel(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): string {
   if (command === "roadmap") {
     const sub = args[0] === "--json" ? args[1] : args[0];
-    return ["list", "show", "new", "edit", "link", "unlink", "order", "state", "unplaced", "triage", "accept", "reject", "import-github", "check", "sync", "export"].includes(sub ?? "") ? `roadmap ${sub}` : "roadmap";
+    return ["list", "show", "new", "edit", "link", "unlink", "order", "state", "unplaced", "triage", "decompose", "accept", "reject", "import-github", "check", "sync", "export"].includes(sub ?? "") ? `roadmap ${sub}` : "roadmap";
   }
   if (command === "sdlc" && args[0] === "configure") return "sdlc configure";
   if (command === "sdlc" && args[0] === "survey") return ["start", "show"].includes(args[1] ?? "") ? `sdlc survey ${args[1]}` : "sdlc survey";
