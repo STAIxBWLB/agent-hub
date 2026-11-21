@@ -23,6 +23,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Read only the slice of `events.jsonl` a closing task needs when the live research writer builds its record, with the same row as `ahub research backfill` (Refs #1555, hub task 1003).
 - Cache the memory sync policy version on the profile fence's stat tuple and stop asking the store for `bridgeStatus` there, so an unchanged home costs a stat per fence check instead of a full shard re-read (Refs #1545, hub task 1028).
 - Allow a hub-managed worktree to be committed and checked before task handoff (Refs #1549, hub task 1018).
+- Raise the ACP open-tool ceiling's default from the legacy 30 minutes to 60, and its cap to 120, because this repository's own instructions expect a gate run to wait up to 50 minutes (`dot remote verify --wait 50m`); a tool call that reports no progress for that long still ends the turn, and per-poll rearming and the watchdog floor are unchanged. A turn the ceiling cancels now names its cause: hub.log gets the ceiling and its minutes for a configured kind whose native diagnostics stay withheld, and a private turn's tool titles stay withheld with them (Refs #1601, hub task 1046).
 
 ## 0.44.0
 

@@ -5052,7 +5052,7 @@ var init_acp = __esm(() => {
   init_model_token();
   init_acp_session_model();
   init_native_capabilities();
-  TOOL_CEILING_MS = 30 * 60000;
+  TOOL_CEILING_MS = 60 * 60000;
   managedLaunches = new WeakMap;
   RpcTimeoutError = class RpcTimeoutError extends Error {
   };
@@ -5715,6 +5715,9 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
           this.touch(Math.min(this.watchdogMs, remaining));
           return;
         }
+        try {
+          this.opts.onToolCeiling?.({ ceilingMs: ceiling });
+        } catch {}
         try {
           this.activityPrivate ||= this.opts.isPrivateTurn?.() === true;
         } catch {

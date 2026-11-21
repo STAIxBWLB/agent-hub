@@ -81,7 +81,7 @@ import { buildReviewBrief, withCodeSymbols } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
-import { JcodeOptionMismatch, JcodeTuiRefusal, isJcodePeer, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
+import { JcodeOptionMismatch, JcodeTuiRefusal, isJcodePeer, jcodeToolCeilingCause, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
 import { VERSION_REFUSAL, configuredCommands, describe, isCompatId } from "../adapters/compat.ts";
 import { agentVersionsAsync, type AgentVersionRow } from "../cli/agents.ts";
 import { driftedAgents, noticeDrift, type DriftedAgent } from "./agent-drift.ts";
@@ -8745,6 +8745,9 @@ export async function startDaemon(opts: DaemonOptions) {
         toolCeilingMs: adapterTiming.acpToolCeilingMs(), activityBatchMs: adapterTiming.acpActivityBatchMs(), steerTimeoutMs: adapterTiming.jcodeSteerTimeoutMs(),
         tuiHintContext: () => ({ tui: startMode(peer) === "tui", afterCrash: crashReported }),
         preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld"),
+        // #1601: the one cause a configured kind may name in hub.log, because the line above replaces every adapter log of this peer.
+        // The sentence comes from the kind's own module and carries the ceiling's minutes and the recovery command, never a tool title.
+        onToolCeiling: ({ ceilingMs }) => log(jcodeToolCeilingCause(ceilingMs)),
         // #801: Jcode 0.99.1's usage_update is `{ used, size }`, the live session's context occupancy: a context reading bound to the adapter's own session id, never a tokens event
         // or a quota window. An invalid shape reports a null reading (unknown, not the previous value).
         onUsageDiagnostic: (observation, sessionId) => {

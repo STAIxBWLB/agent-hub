@@ -2845,7 +2845,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Routing | `recovery.control_timeout_s` (30-300 seconds, default 30) | `config.local.json` | next use; the next control request of the recovery coordinator to a hub reads it |
 | Routing | `recovery.shutdown_wait_s` (30-300 seconds, default 30) | `config.local.json` | next use; the next wait for a committed source to stop reads it once, at its start |
 | Routing | `recovery.terminal_idle_wait_s` (30-600 seconds, default 120) | `config.local.json` | next use; the next wait for a terminal to go idle before it is closed reads it |
-| Start | `adapter_timing.acp_tool_ceiling_min` (1-30 minutes, default 30) | `config.local.json` | next use; a new ACP launch captures it; effective ceiling is at least the watchdog |
+| Start | `adapter_timing.acp_tool_ceiling_min` (1-120 minutes, default 60) | `config.local.json` | next use; a new ACP launch captures it; effective ceiling is at least the watchdog |
 | Start | `adapter_timing.acp_activity_batch_ms` (10-50 ms, default 50) | `config.local.json` | next use; a new ACP launch captures its activity batch delay; pending flushes are unchanged |
 | Start | `adapter_timing.jcode_steer_timeout_s` (5-60 seconds, default 5) | `config.local.json` | next use; a new Jcode launch captures one total native steer deadline |
 | Routing | `model_relay.cooldown_failures` (1-100, default 3) | `config.local.json` | restart; consecutive transport/startup failures before cooling an alias |
@@ -2962,9 +2962,15 @@ primitive option values for Kimi/generic ACP and Jcode, including Jcode's inheri
 ACP options. An accepted edit leaves active tool ceilings, pending activity
 flushes and native steer deadlines unchanged until a new peer starts.
 
-The open-tool ceiling defaults to the legacy 30 minutes, can only tighten, and
-remains `max(watchdogMs, configured ceiling)` with remaining-only rearming. The
-activity delay defaults to the legacy 50 ms and never exceeds that buffer window;
+The open-tool ceiling defaults to 60 minutes, because this repository's own
+instructions expect a gate run to wait up to 50 (`dot remote verify --wait 50m`);
+it can be tightened or raised, and remains `max(watchdogMs, configured ceiling)`
+with remaining-only rearming, so a tool call that reports no progress for those
+minutes still ends the turn. A turn the ceiling cancels names its cause: hub.log
+gets the ceiling and its minutes for a configured kind whose own native
+diagnostics stay withheld, and a private turn's tool titles stay withheld with them.
+
+The activity delay defaults to the legacy 50 ms and never exceeds that buffer window;
 its 4096-character threshold and privacy handling stay fixed. Jcode's default
 5-second steer deadline can only rise, and one absolute timer covers all native
 phases; pre-send refusals and post-send uncertainty retain their existing fences.
