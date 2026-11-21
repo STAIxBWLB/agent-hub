@@ -132,3 +132,28 @@ export interface MilestoneSuggestion {
   citeMilestone: string | null; citeItem: string;
   state: SuggestionState; by: string; created: number; settled: number | null; settledBy: string | null;
 }
+
+/**
+ * R2 (#1480): a model-written decomposition of one milestone. Advisory data like a suggestion: it is stored apart from the
+ * roadmap, no accept path links anything from part 1, and a later intake reads it by id.
+ */
+export const DECOMPOSE_INTAKES = ["spec", "task"] as const;
+export const DECOMPOSITION_STATES = ["pending", "accepted", "rejected", "superseded"] as const;
+export const DECOMPOSE_LIMITS = Object.freeze({ parts: 8, title: 300, detail: 1200, cites: 16 });
+export type DecomposeIntake = typeof DECOMPOSE_INTAKES[number];
+export type DecompositionState = typeof DECOMPOSITION_STATES[number];
+export interface DecomposePart {
+  title: string;
+  /** What the part changes and how it is verified. */
+  detail: string;
+  /** A hub task class, named `class` as a `hub_backlog_split` part names it. */
+  class: string;
+  /** `spec`: the part changes behaviour and needs its own spec issue; `task`: a mechanical chore that goes straight to a task. */
+  intake: DecomposeIntake;
+  /** Ids copied from what the model was shown: linked spec ids and issue refs. */
+  cites: string[];
+}
+export interface MilestoneDecomposition {
+  id: number; milestone: number; parts: DecomposePart[]; state: DecompositionState;
+  by: string; created: number; settled: number | null; settledBy: string | null;
+}

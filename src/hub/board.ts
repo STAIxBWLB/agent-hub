@@ -20,7 +20,7 @@ import type { Database } from "./db-schema.ts";
 import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
-import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, githubRepo, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry, type MilestoneSuggestion, type SuggestionItemKind, type SuggestionState } from "./roadmap.ts";
+import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, githubRepo, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry, type MilestoneSuggestion, type SuggestionItemKind, type SuggestionState, type DecomposePart, type DecompositionState, type MilestoneDecomposition } from "./roadmap.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { AuditFinding, AuditProfile, AuditUnit } from "./security-audit.ts";
 import type { ReviewFinding } from "./review-findings.ts";
@@ -648,6 +648,12 @@ export class Board {
     this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS milestone_suggestions_pending ON milestone_suggestions(kind,ref) WHERE state='pending'");
     this.db.run(`CREATE TABLE IF NOT EXISTS milestone_imports (
       repo TEXT NOT NULL, number INTEGER NOT NULL, milestone INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(repo,number))`);
+    // R2 (#1480): model-written decompositions, additive and outside the roadmap integrity digest like a suggestion: a lost
+    // answer is asked for again, and one pending answer per milestone is the newest run.
+    this.db.run(`CREATE TABLE IF NOT EXISTS milestone_decompositions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, milestone INTEGER NOT NULL, parts TEXT NOT NULL,
+      state TEXT NOT NULL, by TEXT NOT NULL, created INTEGER NOT NULL, settled INTEGER, settled_by TEXT)`);
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS milestone_decompositions_pending ON milestone_decompositions(milestone) WHERE state='pending'");
 
     this.db.run(`CREATE TABLE IF NOT EXISTS research_campaigns (
       id TEXT NOT NULL, project TEXT NOT NULL, parent_task_id INTEGER NOT NULL, revision INTEGER NOT NULL,
@@ -3056,6 +3062,29 @@ export class Board {
     this.db.query("UPDATE milestone_suggestions SET created_milestone=? WHERE id=? AND state='pending' AND created_milestone IS NULL").run(milestoneId(milestone), milestoneId(id));
   }
 
+  /** R2: one pending decomposition per milestone. A newer answer supersedes the older one in the same transaction, never doubles it. */
+  addDecomposition(row: { milestone: number; parts: DecomposePart[] }, by: string, now = Date.now()): MilestoneDecomposition {
+    const actor = milestoneActor(by), at = milestoneId(now), milestone = milestoneId(row.milestone);
+    return this.db.transaction(() => {
+      this.db.query("UPDATE milestone_decompositions SET state='superseded', settled=?, settled_by=? WHERE milestone=? AND state='pending'").run(at, actor, milestone);
+      const inserted = this.db.query("INSERT INTO milestone_decompositions(milestone,parts,state,by,created) VALUES(?,?,'pending',?,?)").run(milestone, JSON.stringify(row.parts), actor, at);
+      // Settled rows are history, not storage: keep the newest 200.
+      this.db.query("DELETE FROM milestone_decompositions WHERE state<>'pending' AND id NOT IN (SELECT id FROM milestone_decompositions WHERE state<>'pending' ORDER BY id DESC LIMIT 200)").run();
+      return this.decomposition(Number(inserted.lastInsertRowid))!;
+    })();
+  }
+
+  decomposition(id: number): MilestoneDecomposition | undefined {
+    milestoneId(id);
+    const row = this.db.query("SELECT * FROM milestone_decompositions WHERE id=?").get(id) as Record<string, unknown> | null;
+    return row ? parseDecomposition(row) : undefined;
+  }
+
+  decompositions(state?: DecompositionState): MilestoneDecomposition[] {
+    const rows = (state === undefined ? this.db.query("SELECT * FROM milestone_decompositions ORDER BY id").all() : this.db.query("SELECT * FROM milestone_decompositions WHERE state=? ORDER BY id").all(state)) as Record<string, unknown>[];
+    return rows.map(parseDecomposition);
+  }
+
   /** Compare-and-set from pending: a second settle of the same suggestion changes nothing. */
   settleSuggestion(id: number, state: "accepted" | "rejected" | "superseded", by: string, now = Date.now()): MilestoneSuggestion {
     const actor = milestoneActor(by), at = milestoneId(now);
@@ -3271,6 +3300,12 @@ function parseSuggestion(row: Record<string, unknown>): MilestoneSuggestion {
   return { id: milestoneId(row.id), kind: row.kind as SuggestionItemKind, ref: String(row.ref), milestone: row.milestone == null ? null : milestoneId(row.milestone),
     proposal: row.proposal == null ? null : JSON.parse(String(row.proposal)) as { title: string; outcome: string }, citeMilestone: row.cite_milestone == null ? null : String(row.cite_milestone),
     citeItem: String(row.cite_item), state: row.state as SuggestionState, by: milestoneActor(row.by), created: milestoneId(row.created),
+    settled: row.settled == null ? null : milestoneId(row.settled), settledBy: row.settled_by == null ? null : milestoneActor(row.settled_by) };
+}
+
+function parseDecomposition(row: Record<string, unknown>): MilestoneDecomposition {
+  return { id: milestoneId(row.id), milestone: milestoneId(row.milestone), parts: JSON.parse(String(row.parts)) as DecomposePart[],
+    state: row.state as DecompositionState, by: milestoneActor(row.by), created: milestoneId(row.created),
     settled: row.settled == null ? null : milestoneId(row.settled), settledBy: row.settled_by == null ? null : milestoneActor(row.settled_by) };
 }
 

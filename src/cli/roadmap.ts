@@ -10,6 +10,7 @@ export const ROADMAP_FORMS = {
   order: "order <id> <n>", state: "state <id> <proposed|planned|active|done|dropped>",
   unplaced: "unplaced [--repo <owner/name>] [--json]",
   triage: "triage [--repo <owner/name>] [--list] [--json]",
+  decompose: "decompose <id> [--json]",
   accept: "accept <suggestion>", reject: "reject <suggestion>",
   importGithub: "import-github [--repo <owner/name>] [--apply] [--json]",
   check: "check [--json]", sync: "sync [--apply --confirm <fingerprint>] [--json]",
@@ -17,14 +18,14 @@ export const ROADMAP_FORMS = {
 } as const;
 export const ROADMAP_USAGE = `usage: ${Object.values(ROADMAP_FORMS).map(form => `ahub roadmap ${form}`).join(" | ")}`;
 export interface RoadmapArgs {
-  op: "hub_roadmap_list" | "hub_roadmap_show" | "hub_roadmap_check" | "hub_roadmap_edit" | "hub_roadmap_unplaced" | "hub_roadmap_triage" | "roadmap_import_github" | "roadmap_sync" | "roadmap_sync_apply" | "roadmap_export" | "roadmap_export_apply";
+  op: "hub_roadmap_list" | "hub_roadmap_show" | "hub_roadmap_check" | "hub_roadmap_edit" | "hub_roadmap_unplaced" | "hub_roadmap_triage" | "hub_roadmap_decompose" | "roadmap_import_github" | "roadmap_sync" | "roadmap_sync_apply" | "roadmap_export" | "roadmap_export_apply";
   args: Record<string, unknown>;
   json: boolean;
   write?: boolean;
 }
 /** R3 commands: their flags are not milestone fields, so they are parsed apart from new/edit. */
-const R3_COMMANDS = ["unplaced", "triage", "accept", "reject", "import-github"];
-const R3_JSON = ["unplaced", "triage", "import-github"];
+const R3_COMMANDS = ["unplaced", "triage", "decompose", "accept", "reject", "import-github"];
+const R3_JSON = ["unplaced", "triage", "decompose", "import-github"];
 const fieldFlags = ["title", "outcome", "horizon", "order", "target", "parent"];
 const usage = (message: string): never => { throw new Error(`${message}; ${ROADMAP_USAGE}`); };
 
@@ -71,6 +72,10 @@ function parseR3(command: string, rest: readonly string[], jsonSeen: boolean): R
   if (command === "accept" || command === "reject") {
     if (operands.length !== 1) return usage(`roadmap ${command} needs one suggestion id`);
     return { op: "hub_roadmap_edit", args: { op: command, suggestion: integer(operands[0]) }, json };
+  }
+  if (command === "decompose") {
+    if (operands.length !== 1) return usage("roadmap decompose needs one milestone id");
+    return { op: "hub_roadmap_decompose", args: { id: integer(operands[0]) }, json };
   }
   if (operands.length) return usage(`roadmap ${command} takes no operands`);
   const base = repo === undefined ? {} : { repo };
@@ -219,6 +224,21 @@ export function renderRoadmap(input: unknown, width = 80): string {
     add(`Specs (${view.specs.length}${Number(row(view.more).specs) > 0 ? `, ${count(row(view.more).specs)} more` : ""})`);
     names(view.specs, spec => `  ${text(spec.id)}: ${text(spec.title)} (${text(spec.status)})\n    why: ${text(spec.reason)}`);
     add(`Private tasks counted, not listed: ${count(view.privateTasks)}`);
+    return lines.join("\n");
+  }
+  if (Array.isArray(view.parts) && typeof view.milestone === "number") {
+    add(`Milestone ${count(view.milestone)} decomposition`);
+    if (view.unavailable) add(`Decompose unavailable: ${text(view.unavailable)}`);
+    const saved = row(view.saved);
+    if (view.saved !== null && view.saved !== undefined) add(`${count(view.parts.length)} part${view.parts.length === 1 ? "" : "s"} saved as pending model answer ${count(saved.id)}; nothing is intaken, linked or published.`);
+    if (Number(view.dropped) > 0) add(`Dropped ${count(view.dropped)} model part${Number(view.dropped) === 1 ? "" : "s"} that cited nothing it was shown or did not fit the split schema.`);
+    for (const value of list(view.parts)) {
+      const part = row(value);
+      add(`  ${text(part.title)} -> ${part.intake === "spec" ? "needs its own spec issue" : "goes straight to a task"} (${text(part.class)})`);
+      add(`    cites: ${list(part.cites).map(text).join(", ")}`);
+      add(`    ${text(part.detail)}`);
+    }
+    if (!list(view.parts).length && !view.unavailable) add("The model proposed no part that cited an id it was shown.");
     return lines.join("\n");
   }
   if (Array.isArray(view.suggestions)) {

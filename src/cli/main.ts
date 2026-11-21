@@ -1718,7 +1718,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     let options;
     try { options = parseRoadmapArgs(args); } catch (error) { return fail(`${error instanceof Error ? error.message : "invalid roadmap arguments"}; see ahub help roadmap`); }
     // R3 (#1481): the GitHub reads and the model call each carry their own deadline, so these ops wait longer than the 30 s default.
-    const text = await taskOp(options.op, options.args, false, undefined, ["hub_roadmap_unplaced", "hub_roadmap_triage", "roadmap_import_github", "hub_roadmap_check", "roadmap_sync", "roadmap_sync_apply", "roadmap_export_apply"].includes(options.op) ? 60_000 : undefined);
+    const text = await taskOp(options.op, options.args, false, undefined, ["hub_roadmap_unplaced", "hub_roadmap_triage", "hub_roadmap_decompose", "roadmap_import_github", "hub_roadmap_check", "roadmap_sync", "roadmap_sync_apply", "roadmap_export_apply"].includes(options.op) ? 60_000 : undefined);
     if (options.write) {
       let rendered: { json: string; markdown: string };
       try { rendered = JSON.parse(text); const root = roadmapWorktree(cwd, invokedFrom), policy = loadConfig(cwd); writeRoadmap(root, rendered, { deny: policy.local.deny, readOnly: policy.data?.readonly ?? [], pii: policy.pii?.paths ?? [] }); }
