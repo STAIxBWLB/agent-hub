@@ -124,6 +124,7 @@ import { CompletionStore } from "./completions-store.ts";
 import { QuestionDesk } from "./question-desk.ts";
 import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
+import { roadmapConfig, type RoadmapConfig } from "./roadmap.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateRawConfig, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
@@ -319,6 +320,7 @@ export interface HubConfig {
   text_projection?: ProjectionConfig;
   /** #510: machine-local folders of plain notes the hub may index, read-only; vault folders are refused when the index reads them. */
   corpus: { paths: string[] };
+  roadmap?: RoadmapConfig;
   specs: SpecsConfig;
   catalog_roles?: Record<string, string[]>;
   conductor: { feed: "own" | "all" | "off"; approval_wait_s: number };
@@ -423,6 +425,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   schedules: [],
   folder_triggers: [],
   corpus: { paths: [] },
+  roadmap: roadmapConfig(undefined),
   specs: { ...DEFAULT_SPECS_CONFIG, roots: [] },
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
@@ -445,7 +448,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_roadmap_list", "hub_roadmap_show", "hub_roadmap_unplaced", "hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_evidence_read", "hub_status", "hub_specs", "hub_supervision_list"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_roadmap_list", "hub_roadmap_show", "hub_roadmap_check", "hub_roadmap_unplaced", "roadmap_sync", "roadmap_export", "hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_evidence_read", "hub_status", "hub_specs", "hub_supervision_list"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -597,6 +600,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     resolveProfile(file.profile, file.profile_overrides);
     projectionConfig(file.text_projection);
     corpusConfig(file.corpus);
+    roadmapConfig(file.roadmap);
     if (file.specs !== undefined) parseSpecsConfig(file.specs);
     queueBackpressurePolicy(file.tasks?.queue_backpressure);
     validateOperationalConfig(file);
@@ -724,6 +728,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     schedules: schedulesConfig(file.schedules),
     folder_triggers: foldersConfig(file.folder_triggers),
     corpus: corpusConfig(file.corpus),
+    roadmap: roadmapConfig(file.roadmap),
     specs: parseSpecsConfig(file.specs),
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "remote" ? "remote" : file.checks?.runner === "container" ? "container" : undefined,
       ...(file.checks?.remote !== undefined || file.checks?.runner === "remote" ? { remote: remoteRunnerConfig(file.checks?.remote) } : {}) },
@@ -3136,6 +3141,7 @@ export async function startDaemon(opts: DaemonOptions) {
     specsRead: (action, paths) => projectSpecs.read(action, paths),
     specsList: () => { const list = projectSpecs.list(); if (!list) throw new Error("specs are off"); return list; },
     ...(opts.roadmapGh ? { roadmapGh: opts.roadmapGh } : {}),
+    roadmapConfig: () => config.roadmap ?? roadmapConfig(undefined),
     // R3 (#1481): the hub's own model, public text only (the caller screened it), never PII and never trusted: Tasks parses and checks the answer.
     roadmapModel: (system, user, allowed) => inference ? inference.complete(system, user, 2000, { interactive: true, timeoutMs: 20_000, allowed }) : Promise.resolve(undefined),
     auditSource: gitAuditSource(opts.cwd), // #1403 A4
@@ -3654,6 +3660,22 @@ export async function startDaemon(opts: DaemonOptions) {
     void checkRunner.compactTask?.(task).catch(() => { log("check output retention pass failed; the files stay"); });
   };
   const compactedTasks = new Set<number>();
+  const roadmapStates = new Map(board.list().map(task => [task.id, task.state]));
+  const roadmapPending = new Set<number>(); let roadmapSweepAll = false, roadmapNoticePass: Promise<void> | undefined;
+  const queueRoadmapNotices = (id?: number) => {
+    if (stopping || recoveryActive() || config.conductor.feed === "off") return;
+    if (id === undefined) roadmapSweepAll = true; else roadmapPending.add(id);
+    if (roadmapNoticePass) return;
+    roadmapNoticePass = Promise.resolve().then(async () => {
+      while (!stopping && !recoveryActive() && (roadmapSweepAll || roadmapPending.size)) {
+        const all = roadmapSweepAll; roadmapSweepAll = false;
+        const ids = all ? [...new Set(tasks.milestoneList(HUB).flatMap(view => view.tasks.map(task => task.id)))] : [...roadmapPending];
+        roadmapPending.clear();
+        if (ids.length) await tasks.roadmapNotify(ids, (task, milestone, rule, marker) => !stopping && !recoveryActive() && supervision.roadmapFinding(task, milestone, rule, marker));
+      }
+    }).catch(() => { /* a later task change or sweep retries unavailable evidence */ }).finally(() => { roadmapNoticePass = undefined; });
+  };
+  startupCleanup.push(async () => { await roadmapNoticePass; });
   board.onChange = (t, h) => {
     tasks.reviewQuotaTaskChanged(t);
     if (!isClosedTaskState(t.state) && t.state !== "backlog") {
@@ -3684,6 +3706,8 @@ export async function startDaemon(opts: DaemonOptions) {
       }
     }
     supervision.taskChanged(t, h);
+    const previousRoadmapState = roadmapStates.get(t.id); roadmapStates.set(t.id, t.state);
+    if (previousRoadmapState !== t.state || ["merge result", "merge observed", "merged outside the hub"].includes(h.event)) queueRoadmapNotices(t.id);
     // #1221 T2: the rules read only after the board has the record; a mode that is off costs one string comparison.
     proposeObserved(t.id);
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
@@ -4898,6 +4922,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   let mergeReadbackPass: Promise<void> | undefined;
   const mergeReadbackTick = () => {
+    queueRoadmapNotices();
     if (!mergeReadbackPass) mergeReadbackPass = tasks.settleMergeReadbacks(Date.now()).catch(() => {}).finally(() => { mergeReadbackPass = undefined; });
   };
   const stopMergeReadbacks = opts.mergeReadbackTrigger?.(mergeReadbackTick);
@@ -6108,6 +6133,9 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_roadmap_show":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "id")) throw new PreEffectToolRefusal("roadmap show takes id only; use ahub roadmap show with a milestone id");
         return JSON.stringify(tasks.milestoneShow(by, a.id));
+      case "hub_roadmap_check":
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).length) throw new PreEffectToolRefusal("roadmap check takes no fields; use hub_roadmap_check with an empty object");
+        return JSON.stringify(await tasks.roadmapCheck(by));
       case "hub_roadmap_unplaced":
         if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "repo")) throw new PreEffectToolRefusal("roadmap unplaced takes an optional owner/name repo only; use ahub roadmap unplaced");
         return JSON.stringify(await tasks.roadmapUnplaced(by, { repo: a.repo }));
@@ -6380,6 +6408,10 @@ export async function startDaemon(opts: DaemonOptions) {
       if (a.revision !== undefined && (!Number.isSafeInteger(a.revision) || a.revision < 0)) throw new PreEffectToolRefusal("revision must be a nonnegative integer");
       return line(await tasks.unassign(a.id, by, true, a.role, a.revision));
     }
+    if (op === "roadmap_sync" || op === "roadmap_export") {
+      if (!a || typeof a !== "object" || Array.isArray(a) || Object.hasOwn(a, "apply") || Object.hasOwn(a, "confirm")) throw new PreEffectToolRefusal("roadmap preview accepts no apply or confirmation fields");
+      return JSON.stringify(op === "roadmap_sync" ? await tasks.roadmapSync(by, a) : await tasks.roadmapExport(by, a));
+    }
     if (by !== USER && !(Object.hasOwn(CONDUCTOR_TASK_OPS, op) && operationalContext.getStore()?.actor === by)) throw new Error(`${op} is a console command`);
     switch (op) {
       case "release_new":
@@ -6394,6 +6426,12 @@ export async function startDaemon(opts: DaemonOptions) {
       // R3 (#1481): not in CONDUCTOR_TASK_OPS on purpose: only the person imports GitHub milestones, and a dry run is the default.
       case "roadmap_import_github":
         return JSON.stringify(await tasks.roadmapImportGitHub(by, { repo: a.repo, apply: a.apply }));
+      case "roadmap_sync_apply":
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["apply", "confirm"].includes(key)) || a.apply !== true) throw new PreEffectToolRefusal("invalid roadmap sync operation; preview before applying");
+        return JSON.stringify(await tasks.roadmapSync(by, a));
+      case "roadmap_export_apply":
+        if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => !["issue", "apply", "confirm"].includes(key)) || a.apply !== true) throw new PreEffectToolRefusal("invalid roadmap export operation; preview before applying");
+        return JSON.stringify(await tasks.roadmapExport(by, a));
       case "release_show": {
         const release = a.id !== undefined ? (Number.isSafeInteger(a.id) && a.id > 0 ? board.release(a.id) : undefined) : board.releases().find(release => release.name === a.name);
         if (!release) throw new PreEffectToolRefusal("no such release");

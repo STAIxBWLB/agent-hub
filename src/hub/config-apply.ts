@@ -210,6 +210,7 @@ const schema: Record<string, Check> = {
   budget: block({ gate: number(0, 1), stale_min: timerMinutes, poll_min: timerMinutes, checkpoint_timeout_s: timerSeconds, kimi_tokens_5h: number(0), wait_max_min: number(0) }),
   context: block({ gate: number(0, 1), stale_min: timerMinutes, max_assignment_used: number(0, 1) }),
   supervision: block({ mode: words(["off", "shadow", "advisory"]) }),
+  roadmap: block({ github_mirror: bool, github_write: words(["off", "conductor"]) }),
   bus: block({ max_attempts: operationalNumberCheck("bus.max_attempts"), digest_max: operationalNumberCheck("bus.digest_max"), pull_budget_bytes: operationalNumberCheck("bus.pull_budget_bytes"), notes_kept: operationalNumberCheck("bus.notes_kept"), terminal_history_limit: operationalNumberCheck("bus.terminal_history_limit"), accepted_settle_ms: operationalNumberCheck("bus.accepted_settle_ms") }),
   adapter_timing: block({ acp_tool_ceiling_min: operationalNumberCheck("adapter_timing.acp_tool_ceiling_min"), acp_activity_batch_ms: operationalNumberCheck("adapter_timing.acp_activity_batch_ms"), jcode_steer_timeout_s: operationalNumberCheck("adapter_timing.jcode_steer_timeout_s") }),
   model_relay: block({ cooldown_failures: operationalNumberCheck("model_relay.cooldown_failures"), cooldown_s: operationalNumberCheck("model_relay.cooldown_s"), cooldown_cap_s: operationalNumberCheck("model_relay.cooldown_cap_s"), terminal_history_limit: operationalNumberCheck("model_relay.terminal_history_limit") }),
@@ -279,7 +280,7 @@ const restart: Record<string, string> = {
   checks: "Bounded runner and completion-check contracts are constructed together",
   pii: "Existing native sessions retain their startup privacy boundary", data: "Existing native sessions retain their startup read-only policy",
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
-  text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
+  text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", roadmap: "GitHub mirror authority is bound at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
 const live = new Set(["visuals", "action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "worktrees", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "questions", "pet", "specs", "supervision"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges", "memory.preface_unused_after"]);

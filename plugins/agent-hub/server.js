@@ -18884,6 +18884,7 @@ var init_hub_tools = __esm(() => {
   TASK_TOOLS = [
     tool2("hub_roadmap_list", "Read public milestones with computed task/issue/spec/train progress. Private work is a count only; unknown evidence stays unknown. Read only, with no GitHub or model call.", {}),
     tool2("hub_roadmap_show", "Read a milestone's public links, inherited membership and computed progress. Inspect this before editing and copy its current revision. Private tasks are counts only.", { id: { type: "integer", minimum: 1 } }, ["id"]),
+    tool2("hub_roadmap_check", "Read roadmap drift findings and unknown evidence. Private tasks stay withheld; no writes are made.", {}),
     tool2("hub_roadmap_unplaced", "Read the open GitHub issues, open board tasks and active/draft specs that no live milestone places, each with why. Private tasks are a count only. partial: true means the GitHub read stopped early or a list was cut, so the lists are a lower bound; unavailable names evidence that could not be read. Read only: no write, no model call. Optional repo is owner/name.", { repo: { type: "string", maxLength: MILESTONE_LIMITS.issue } }),
     tool2("hub_roadmap_triage", "Ask the hub's model to suggest a milestone (or a new one) for unplaced work. Each suggestion cites the milestone and item words it matched and is saved as a pending model answer; nothing is linked until hub_roadmap_edit accept. Configured planner or unique conductor only. list: true reads the pending public suggestions without a model call and is open to any agent.", { repo: { type: "string", maxLength: MILESTONE_LIMITS.issue }, list: { type: "boolean" } }),
     tool2("hub_roadmap_edit", "Create or change a milestone. Configured planner or unique conductor only; done/dropped are person-only. new/edit take fields; edit also needs the current revision. Link kinds are spec/issue/task/release; issue refs are owner/repo#N. accept applies exactly one pending triage suggestion through link (creating its proposed milestone first); reject drops it. No GitHub write, task assignment or model call. On refusal inspect hub_roadmap_show and correct the named input.", {
@@ -31197,7 +31198,7 @@ var MACHINE_LOCAL = [
   "corpus.paths",
   "invocation"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "roadmap.github_mirror", "roadmap.github_write", "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
@@ -31648,6 +31649,9 @@ init_roadmap();
 
 // src/hub/roadmap-view.ts
 init_envelope();
+
+// src/hub/roadmap-sync.ts
+init_roadmap();
 
 // src/hub/roadmap-unplaced.ts
 init_envelope();

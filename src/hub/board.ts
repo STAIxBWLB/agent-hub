@@ -20,7 +20,7 @@ import type { Database } from "./db-schema.ts";
 import { openHubDatabase, advanceHubDbSchema } from "./db-schema.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
-import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry, type MilestoneSuggestion, type SuggestionItemKind, type SuggestionState } from "./roadmap.ts";
+import { MILESTONE_HISTORY_LIMIT, parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneActor, milestoneHistory, milestoneLinkRef, githubRepo, type Milestone, type MilestoneInput, type MilestonePatch, type MilestoneLink, type MilestoneLinkKind, type MilestoneHistoryEntry, type MilestoneSuggestion, type SuggestionItemKind, type SuggestionState } from "./roadmap.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { AuditFinding, AuditProfile, AuditUnit } from "./security-audit.ts";
 import type { ReviewFinding } from "./review-findings.ts";
@@ -593,6 +593,7 @@ export class Board {
     this.db.run("CREATE INDEX IF NOT EXISTS tasks_human_reviews ON tasks(id) WHERE state='in_review' AND reviewer='user'");
     // #481 S7: one row per log-tier band breach episode already announced, so a restart never repeats the notice.
     this.db.run("CREATE TABLE IF NOT EXISTS band_notices (marker TEXT PRIMARY KEY, at INTEGER NOT NULL)");
+    this.db.run("CREATE TABLE IF NOT EXISTS roadmap_notices (marker TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     // #481 S7: one row per scheduled security scan. Counts only (no alert text); `total` is null when a named source could not be read completely.
     this.db.run("CREATE TABLE IF NOT EXISTS security_scans (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, repo TEXT NOT NULL, sources TEXT NOT NULL, counts TEXT NOT NULL, total INTEGER)");
     // #843 AC3: one row per (agent id, installed version, planner) already queued, so a restart never repeats it.
@@ -2612,6 +2613,15 @@ export class Board {
     if (!/^[a-z_]{1,64}:#[1-9][0-9]{0,9}:log$/.test(marker)) throw new Error("invalid band notice marker");
     return this.db.query("INSERT OR IGNORE INTO band_notices(marker, at) VALUES(?, ?)").run(marker, Date.now()).changes > 0;
   }
+
+  hasRoadmapNotice(marker: string): boolean {
+    if (!/^[a-f0-9]{64}$/.test(marker)) throw new Error("invalid roadmap notice marker");
+    return !!this.db.query("SELECT 1 FROM roadmap_notices WHERE marker=?").get(marker);
+  }
+  recordRoadmapNotice(marker: string): boolean {
+    if (!/^[a-f0-9]{64}$/.test(marker)) throw new Error("invalid roadmap notice marker");
+    return this.db.query("INSERT OR IGNORE INTO roadmap_notices(marker,at) VALUES(?,?)").run(marker, Date.now()).changes > 0;
+  }
   /** True when the (id, version, planner) marker was new and is now recorded; false when it was announced before. */
   recordAgentDriftNotice(marker: string): boolean {
     if (!/^[a-z][a-z0-9-]{0,31}:[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}@[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/.test(marker)) throw new Error("invalid agent drift marker");
@@ -3061,6 +3071,24 @@ export class Board {
   importedMilestone(repo: string, number: number): number | undefined {
     const row = this.db.query("SELECT milestone FROM milestone_imports WHERE repo=? AND number=?").get(repo.toLowerCase(), milestoneId(number)) as { milestone: number } | null;
     return row?.milestone;
+  }
+
+  /** R4 uses the same durable marks as R3 imports; conflicting legacy marks are never guessed. */
+  mirrorMilestone(repo: string, id: number): number | undefined {
+    const rows = this.db.query("SELECT number FROM milestone_imports WHERE repo=? AND milestone=? ORDER BY number LIMIT 2").all(githubRepo(repo), milestoneId(id)) as { number: number }[];
+    if (rows.length > 1) throw new PreEffectToolRefusal("roadmap milestone has conflicting GitHub bindings; inspect imports before syncing");
+    return rows[0]?.number;
+  }
+
+  bindMirrorMilestone(repo: string, id: number, number: number, now = Date.now()): void {
+    const key = githubRepo(repo), local = milestoneId(id), remote = milestoneId(number), at = milestoneId(now);
+    this.db.transaction(() => {
+      if (!this.milestone(local)) throw new PreEffectToolRefusal("roadmap milestone no longer exists; inspect ahub roadmap list");
+      const prior = this.mirrorMilestone(key, local), owner = this.importedMilestone(key, remote);
+      if (prior !== undefined && prior !== remote || owner !== undefined && owner !== local) throw new PreEffectToolRefusal("roadmap GitHub binding conflicts with an existing milestone; inspect imports before syncing");
+      if (prior === remote && owner === local) return;
+      this.db.query("INSERT INTO milestone_imports(repo,number,milestone,at) VALUES(?,?,?,?)").run(key, remote, local, at);
+    })();
   }
 
   /** One transaction: the milestone and its import mark exist together or not at all, so a repeat finds the mark. */

@@ -3,6 +3,13 @@ export const MILESTONE_STATES = ["proposed", "planned", "active", "done", "dropp
 export const MILESTONE_HORIZONS = ["now", "next", "later"] as const;
 export const MILESTONE_LINK_KINDS = ["spec", "issue", "task", "release"] as const;
 export const MILESTONE_HISTORY_LIMIT = 256;
+export interface RoadmapConfig { github_mirror: boolean; github_write: "off" | "conductor" }
+export function roadmapConfig(raw: unknown): RoadmapConfig {
+  if (raw === undefined) return { github_mirror: false, github_write: "off" };
+  const row = object(raw);
+  if (Object.keys(row).some(key => key !== "github_mirror" && key !== "github_write") || row.github_mirror !== undefined && typeof row.github_mirror !== "boolean" || row.github_write !== undefined && row.github_write !== "off" && row.github_write !== "conductor") throw new Error("roadmap config requires github_mirror boolean and github_write off or conductor");
+  return { github_mirror: row.github_mirror === true, github_write: row.github_write === "conductor" ? "conductor" : "off" };
+}
 export const MILESTONE_LIMITS = Object.freeze({ title: 300, outcome: 4000, spec: 160, issue: 300, actor: 64 });
 export type MilestoneState = typeof MILESTONE_STATES[number];
 export type MilestoneHorizon = typeof MILESTONE_HORIZONS[number];
