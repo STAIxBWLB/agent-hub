@@ -23,7 +23,7 @@ class Peer extends BasePeer {
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 
-async function rig(options: { pushed?: boolean; gh?: SdlcGh; mode?: "off" | "advise" } = {}) {
+async function rig(options: { pushed?: boolean; gh?: SdlcGh; mode?: "off" | "advise"; turnFree?: boolean } = {}) {
   const base = mkdtempSync(join(tmpdir(), "ahub-task-worktree-tasks-")); cleanup.push(() => rmSync(base, { recursive: true, force: true })); // registered before anything can throw
   const dir = realPath(base), cwd = join(dir, "project"), state = join(dir, "state");
   mkdirSync(cwd); mkdirSync(state); mkdirSync(join(cwd, ".agenthub"), { recursive: true });
@@ -46,6 +46,7 @@ async function rig(options: { pushed?: boolean; gh?: SdlcGh; mode?: "off" | "adv
   } : worktrees;
   const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles: { claude: ["planner"] }, routing: () => loadRouting(cwd), notify: line => notices.push(line), wipLimit: () => 5,
     ...(options.pushed ? { repository: "example/repo" } : {}), sdlc: { config: () => sdlcConfig({ mode: options.mode ?? "off" }), ...(options.gh ? { gh: options.gh } : {}) }, taskWorktree: port,
+    ...(options.turnFree ? { turnFree: () => true, capable: () => true, idle: () => false, treeHash: () => "same", integrationFacts: () => ({ id: "facts", text: "facts" }), factsCurrent: () => true } : {}),
     capabilities: () => ({ pi: { tests: true, spec: true, network: true, worktree: true }, codex: { tests: true, spec: true, network: true, worktree: true } }) });
   const offer = (owner: string, signals: string[] = ["needs_worktree"], cls: "implement" | "bulk_edit" | "test" | "summarize" | "triage" | "review" | "plan" = "implement") => { const row = board.propose("user", { title: "raise the pin", class: cls, signals: signals as any }); board.update(row.id, "user", "assigned", { owner }); return row; };
   return { cwd, state, board, tasks, worktrees, notices, git, offer, branches: () => git("for-each-ref", "--format=%(refname)", "refs/heads/task/") };
@@ -81,7 +82,9 @@ for (const mode of ["off", "advise"] as const) test(`managed pushed worktree ope
   expect(f.board.get(row.id)?.sdlc?.pr).toBeUndefined();
   const done = await f.tasks.done("pi", row.id, "finished", refs);
   expect(done.sdlc?.pr).toBe(32); expect(done.sdlc?.issue).toBe(7);
-  expect(calls.find(args => args[1] === "create")?.join(" ")).toContain("Refs #7");
+  const create = calls.find(args => args[1] === "create")!;
+  expect(create.join(" ")).toContain("Refs #7");
+  expect(create[create.indexOf("--title") + 1]).toBe("raise the pin");
 });
 
 test("an origin change after push refuses PR creation without recording an identity", async () => {
@@ -298,4 +301,24 @@ test("managed check refuses protected paths and revoked authority without record
   expect(f.board.get(row.id)?.refs.commit).toBeUndefined();
   await expect(f.tasks.worktreeForCheck("pi", row.id, () => false)).rejects.toThrow("check unavailable");
   expect(f.board.get(row.id)?.refs.commit).toBeUndefined();
+});
+
+test("last managed silent cohort member records its pushed PR after integration", async () => {
+  let f: Awaited<ReturnType<typeof rig>>;
+  const gh: SdlcGh = async () => ({ code: 0, stdout: JSON.stringify([{ number: 32, state: "OPEN", headRefName: "task/2-pi", headRefOid: f.git("rev-parse", "task/2-pi"), isDraft: false, isCrossRepository: false, headRepository: { nameWithOwner: "example/repo" } }]) });
+  f = await rig({ pushed: true, gh, turnFree: true });
+  const first = await f.tasks.propose("codex", { title: "first", class: "implement", owner: "codex", refs: { paths: ["a.txt"] } });
+  const second = await f.tasks.propose("pi", { title: "fix(pi): second", class: "implement", owner: "pi", refs: { paths: ["a.txt"] } });
+  await f.tasks.done("codex", first.id, "first done");
+  f.tasks.cohorts.turnEnded("codex");
+  writeFileSync(join(f.cwd, ".worktrees", `pi-${second.id}`, "a.txt"), "edited\n");
+  const firstRefs = await f.tasks.worktreeHandoff("pi", second.id, undefined);
+  expect((await f.tasks.done("pi", second.id, "checked", firstRefs)).history.at(-1)?.event).toBe("integration requested");
+  const now = Date.now; Date.now = () => now() + 3000;
+  try {
+    const refs = await f.tasks.worktreeHandoff("pi", second.id, undefined);
+    const done = await f.tasks.done("pi", second.id, "checked", refs);
+    expect(done.history.slice(-2).map(row => row.event)).toEqual(["integrated", "done"]);
+    expect(done.sdlc?.pr).toBe(32);
+  } finally { Date.now = now; }
 });

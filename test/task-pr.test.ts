@@ -19,7 +19,7 @@ function fake(initial: "missing" | "draft" | "ready" = "missing") {
 test("creates a draft and verifies the ready PR for the exact pushed head", async () => {
   const f = fake(); expect(await managedTaskPullRequest(input(), f.run)).toBe(32);
   const create = f.calls.find(args => args[1] === "create")!;
-  expect(create).toContain("--draft"); expect(create).toContain("github.com/example/repo"); expect(create[create.indexOf("--body") + 1]).toBe("hub task 12\n\nRefs #7");
+  expect(create[create.indexOf("--title") + 1]).toBe("hub task 12"); expect(create).toContain("--draft"); expect(create).toContain("github.com/example/repo"); expect(create[create.indexOf("--body") + 1]).toBe("hub task 12\n\nRefs #7");
   expect(f.calls.filter(args => args[1] === "ready")).toHaveLength(1);
   expect(f.calls.filter(args => args[1] === "list")).toHaveLength(3);
 });
@@ -61,4 +61,10 @@ test("a lost creation reply is recovered by lookup on the next attempt", async (
   };
   await expect(managedTaskPullRequest(input(), run)).rejects.toThrow("creation was not confirmed");
   expect(await managedTaskPullRequest(input(), run)).toBe(32); expect(creates).toBe(1);
+});
+
+test("uses the admitted public task title", async () => {
+  const f = fake(); await managedTaskPullRequest({ ...input(), title: "fix(pi): link PR" }, f.run);
+  const create = f.calls.find(args => args[1] === "create")!;
+  expect(create[create.indexOf("--title") + 1]).toBe("fix(pi): link PR");
 });

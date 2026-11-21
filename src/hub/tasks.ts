@@ -9003,7 +9003,7 @@ export class Tasks {
       if (!this.publicMetadataText(JSON.stringify({ repo, branch: result.branch, ...(issue ? { issue: issue.issue } : {}) }))) throw new Error("managed branch was pushed but PR identity is not public; inspect the task before retrying hub_task_done");
       const verifiedRepo = repo;
       const authority = () => { stillCurrent(); if (githubOriginRepository(this.d.cwd) !== verifiedRepo) throw new Error("managed origin changed after the push; inspect GitHub before retrying"); };
-      try { pr = await managedTaskPullRequest({ repo, branch: result.branch, commit: result.commit, task: task.id, ...(issue ? { issue: issue.issue } : {}), current: authority }, this.d.sdlc?.gh ?? sdlcGh); }
+      try { pr = await managedTaskPullRequest({ repo, branch: result.branch, commit: result.commit, task: task.id, ...(this.publicMetadataText(task.title) ? { title: task.title } : {}), ...(issue ? { issue: issue.issue } : {}), current: authority }, this.d.sdlc?.gh ?? sdlcGh); }
       catch (error) { throw new Error(`managed branch was pushed; ${error instanceof Error && this.publicMetadataText(error.message) ? error.message : "PR outcome is unavailable; inspect GitHub before retrying hub_task_done"}`); }
       authority();
     }
@@ -9293,10 +9293,11 @@ export class Tasks {
     // #694: stage the identities the hub can verify; the gates read them, and only the admitted done persists them.
     const handoff = (refs as ManagedHandoffRefs | undefined)?.[MANAGED_HANDOFF];
     const link: IdentityLink | undefined = handoff?.repo && handoff.pr ? { repo: handoff.repo, pr: handoff.pr, basis: { commit: handoff.commit, branch: handoff.branch }, managedRevision: handoff.revision } : !handoff && this.d.sdlc && this.d.sdlc.config().mode !== "off" ? await this.identityLink(task, refs) : undefined;
+    let managedRevision = handoff?.revision;
     const stageHandoff = (row: Task) => {
       let staged = row;
       if (handoff) {
-        if (handoff.task !== staged.id || handoff.owner !== by || handoff.revision !== staged.history.length || handoff.commit !== cleanRefs(refs).commit || handoff.branch !== cleanRefs(refs).branch || this.isPii(staged) || this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("managed handoff changed; inspect the task and GitHub before retrying");
+        if (handoff.task !== staged.id || handoff.owner !== by || managedRevision !== staged.history.length || handoff.commit !== cleanRefs(refs).commit || handoff.branch !== cleanRefs(refs).branch || this.isPii(staged) || this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("managed handoff changed; inspect the task and GitHub before retrying");
         if (handoff.repo && handoff.pr && !staged.sdlc?.pr) {
           const receipt = linkedReceipt(staged.sdlc, { repo: handoff.repo, pr: handoff.pr }, this.d.sdlc?.config() ?? sdlcConfig(undefined));
           if (!receipt) throw new PreEffectToolRefusal("managed PR repository no longer matches the task; inspect GitHub before retrying");
@@ -9304,6 +9305,12 @@ export class Tasks {
         }
       }
       return staged;
+    };
+    const ownWrite = (...args: Parameters<Board["update"]>) => {
+      current();
+      const row = write(...args);
+      if (handoff) { managedRevision = row.history.length; if (link) link.managedRevision = managedRevision; }
+      return row;
     };
     const current = () => stageHandoff(this.stagedSpec(by, this.withLink(valid(), link, refs), specCarry));
     task = current();
@@ -9340,8 +9347,8 @@ export class Tasks {
       if (r.action === "request") return write(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
       if (r.action === "unresolved") {
         this.d.notify(`task ${this.publicTitle(task)}: turn-free integration unresolved after ${MAX_REQUESTS} requests (${r.why}); its done is recorded, check the overlapping work by hand`);
-        task = this.withLink(write(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
-      } else if (r.integrated) task = this.withLink(write(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
+        task = this.withLink(ownWrite(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
+      } else if (r.integrated) task = this.withLink(ownWrite(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
     } else if (cohort?.held.size && !this.isPii(task)) {
       // No integration step for this member (silence lifted, a PII task open): the notices the silence held stand in
       // for it (issue #107, AC4).
@@ -9349,7 +9356,7 @@ export class Tasks {
       if (evidence && by === USER) this.d.notify(`task ${this.publicTitle(task)} done by the console; overlapping work finished meanwhile:\n${evidence}`);
       else if (evidence) this.doneNotes.set(task.id, `Overlapping work finished while you worked (no turn-free integration step ran):\n${evidence}`);
     }
-    if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(write(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
+    if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(ownWrite(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
     if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh, specInspection, false, resolvedReviewComments, reviewObserverTurn);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
