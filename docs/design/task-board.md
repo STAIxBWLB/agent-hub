@@ -481,6 +481,11 @@ COMPLETED with conclusion SUCCESS; a StatusContext must have state SUCCESS.
 Common normalization cannot turn malformed fresh proof into admission. The shared
 parser and cached evidence schema retain their existing contracts.
 
+The sole review and approval exception is this repository's proven draft macOS
+deferral: [SDLC readbacks](../sdlc.md#readbacks-and-presentation) specifies the
+exact-head job-step proof and the review blockers deferred until merge. It never
+counts as a full-gate success or relaxes guarded merge or identical-tree reuse.
+
 ## Reviewer quota waits (#1446)
 
 Automatic reviewer selection shares `review.gate` (default 0.8) across routing and explain using canonical-account projected headroom. Unknown/no-source readings skip by default (`review.unknown_quota = "skip"`). Explicit `pass` admits unknown readings but preserves the known numeric floor; an admitted unknown never participates in a quota wait. `review.gate = "off"` disables floor checks, unknown checks and every quota wait. Actual Budget/manual pauses and all other routing constraints remain binding. With a numeric gate, a quota-only exhausted pool may wait only when every declared candidate is actually paused or at the known floor and each has a known reset; other blockers prevent waiting. Persist task incarnation, opaque head/repo binding, first start and deadline in ordinary role history. The first `task_sweep.review_min` deadline is the sole hard cap; reset timestamps only wake a recheck (including Budget's existing reset plus 60-second grace), and later signals/restarts cannot extend the cap. Expiry or unknown under the skip policy returns to existing fallback. Head/private/close/stop changes cancel timers. Quota does not join the permanent per-head failure set. `review.max_minutes` defaults to 20; a child-specific generation fence and existing owned teardown produce a typed timeout without closing the task.

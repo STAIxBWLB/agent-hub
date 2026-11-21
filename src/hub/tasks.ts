@@ -8770,6 +8770,9 @@ export class Tasks {
     } else if (approvalHead && currentHead && currentHead !== approvalHead) throw this.reviewHeadMoveRefusal(task.id, approvalHead, currentHead);
     const integrity = publicTestIntegrity(receipt && evidence && !this.isPii(task) ? await readTestIntegrity(receipt, evidence, read) : this.unknownTestIntegrity(this.isPii(task)), this.publicMetadataText);
     const evalResult = receipt && !this.isPii(task) ? await readEvalFor(config, evidence, receipt.repo, read) : undefined;
+    const draftApproval = transition === "approval" && receipt?.repo && receipt.pr && evidence?.draft === true
+      && evidence.review !== "changes_requested" && approvalHead && evidence.head === approvalHead
+      ? await readReviewReadiness(receipt, approvalHead, read, requiredChecksFor(config, receipt.repo)) : undefined;
     const current = this.need(task.id, false, true);
     if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
     // Advise may continue on the current task, but evidence from its previous link cannot admit that task's review.
@@ -8780,7 +8783,12 @@ export class Tasks {
     // #481 S5: review entry keeps the eval gate's own blockers (its check, and in enforce its evidence gaps), like the premature-review rule does for the ordinary required checks.
     const evalNames = evalRequiredChecks(config, evidence).filter(name => !config.requiredChecks.includes(name));
     const evalBlocker = (blocker: string) => evalNames.some(name => blocker.startsWith(`required check ${name}:`)) || evalGapBlockers(status.evalGate).includes(blocker);
-    const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker) || blocker.startsWith("test integrity:") || evalBlocker(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
+    const approvalDeferral = draftApproval?.ready === true && draftApproval.draftApprovalEligible === true && evidence?.unresolved === 0;
+    const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker) || blocker.startsWith("test integrity:") || evalBlocker(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers.filter(blocker => !approvalDeferral || !(
+      blocker === "required check check (macos-latest): not successful on current head"
+      || blocker === "GitHub review approval missing or changes requested" && evidence?.review !== "changes_requested"
+      || blocker === "review requests pending or unknown" && evidence?.pendingReviews !== null
+    ));
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
     // #481 S5: the recorded pass rate and suite version ride the approval note; a code-only PR, an unconfigured gate or an unreported value records nothing.
     const gate = status.evalGate;
@@ -9930,6 +9938,7 @@ export class Tasks {
     const head = admission.head ?? this.reviewHead(task) ?? "unknown head";
     if (admission.ready) {
       const names = admission.checks?.length ? admission.checks.join(", ") : "the required checks";
+      if (admission.deferred?.length) return `Hub-verified at ${head}: required checks ${names} passed at this exact head; ${admission.deferred.join(", ")} deferred on draft; no bot review thread is waiting for a reply. Full CI is still required before merge.\n`;
       return `Hub-verified at ${head}: required checks ${names} passed at this exact head${admission.reusedRun !== undefined ? ` via identical-tree run ${admission.reusedRun}` : ""}; no bot review thread is waiting for a reply.\n`;
     }
     return `Hub-verified at ${head}: not ready: ${admission.blockers.join("; ")}.\n`;
@@ -9966,7 +9975,7 @@ export class Tasks {
     // #824: the hub's own exact-head CI evidence, from the admission this request already carries (no new gh call). Nothing here comes from the builder's summary or a recorded claim.
     const codeScoped = this.d.reviewScope?.(reviewer) === "code";
     const verified = codeScoped ? "" : this.hubVerifiedBlock(task, admission);
-    const ciPassed = admission?.ready === true && !this.isPii(task);
+    const ciPassed = admission?.ready === true && !admission.deferred?.length && !this.isPii(task);
     // #852 AC2: a code-scope reviewer's sandbox cannot run tests or read CI, so its Hub-verified and check lines are replaced by one fixed line.
     const checkResult = codeScoped ? CODE_SCOPE_LINE
       : check ? `Check result: ${(check.note ?? "").split("\n")[0]}`
