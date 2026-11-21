@@ -80,10 +80,15 @@ test("marginal benefit uses supplied costs and never chooses an arm", async () =
 
 test("dataset quality reports unavailable aggregate cost as unknown", async () => {
   const { buildResearchQuality } = await import("../src/hub/research-quality.ts");
-  expect(buildResearchQuality([], []).editGovernance).toEqual({ costPerVerifiedSuccess: null, reason: "cost_components_unavailable" });
+  expect(buildResearchQuality([], []).fields["edits.costPerVerifiedSuccess"]).toEqual({ n: 0, unknown: 0, value: null });
   const { buildDataset } = await import("../src/hub/research-dataset.ts");
   const dataset = buildDataset({ project: { id: "p", root: "/tmp/p", stateDir: "/tmp/p" }, records: [], events: [] }, { now: () => 0 });
-  expect(JSON.parse(JSON.stringify(dataset.quality)).editGovernance.costPerVerifiedSuccess).toBeNull();
+  expect(JSON.parse(JSON.stringify(dataset.quality)).fields["edits.costPerVerifiedSuccess"].value).toBeNull();
+  const { taskRecords } = await import("../src/hub/research.ts");
+  const { scenarioEvents, PROJECT } = await import("./helpers/research-fixture.ts");
+  const rows = taskRecords(scenarioEvents(), PROJECT, { version: "test", source: "backfill" });
+  const coverage = buildResearchQuality(rows, []).fields["edits.costPerVerifiedSuccess"]!;
+  expect(coverage.n).toBeGreaterThan(0); expect(coverage.unknown).toBe(coverage.n); expect(coverage.value).toBeNull();
 });
 
 test("factorial groups never compare different family, owner model or class", async () => {
