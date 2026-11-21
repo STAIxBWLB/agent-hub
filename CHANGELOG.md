@@ -5,7 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Check roadmap drift, preview an opt-in GitHub milestone mirror, and export validated public roadmap files (Refs #1482, hub task 951).
-
+- Take the recovery driver's attachment-wait poll slice from the clock object it already accepts for `now` and `sleep`, defaulting to the same 1 s so no production timer or deadline moves, and let the `#489` deadline tests poll at 10 s: `test/upgrade-runtime.test.ts` drops from 126 s to 57 s on macOS with every 600, 650, 700 and 900 s assertion unchanged. The other four files of the ten-file table are left with measured per-file reasons (Refs #1578, hub task 1044).
 - Report Pi prompt context occupancy and session model in headless and TUI modes, and bind verified TUI sessions to Record capture (Refs #1549).
 
 - Read merged PR CI costs from complete branch-scoped evidence when GitHub omits run-to-PR links, including first-pass status and full-gate and macOS shard counts (Refs #1579, Refs #1555, hub task 1032).

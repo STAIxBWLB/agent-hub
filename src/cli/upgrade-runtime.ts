@@ -485,7 +485,8 @@ export function preserveSource(plan: UpgradePlan, home = hubHome()): string {
 
 const unboundRecoveryInspection = inspectRecovery;
 
-export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: string, clock?: Pick<RecoveryDriver, "now" | "sleep">, conductorPeer?: string): RecoveryDriver {
+/** `clock.waitSliceMs` (#1578) is forwarded to the attachment wait as its poll slice, so a test can poll coarser; production passes nothing and keeps 1 s. */
+export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: string, clock?: Pick<RecoveryDriver, "now" | "sleep"> & { waitSliceMs?: number }, conductorPeer?: string): RecoveryDriver {
   let authorizedOperation: RecoveryOperation | undefined;
   const recoveryCurrent = async () => { if (conductorPeer) { if (!authorizedOperation) throw new FinalRefusal("conductor recovery authority unavailable"); await authorizeConductorOperation(authorizedOperation, conductorPeer); } };
   const inspectRecovery = (project: Project, features?: readonly string[], purpose?: "cleanup") => unboundRecoveryInspection(project, features, purpose, conductorPeer);
@@ -640,8 +641,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
     if (result.manualRequired) throw new Error(`${peer}: closing terminal ${retired.handle} of the stopped target's session was not verified; manual-required`);
     progress.terminals[key] = true; save();
   };
-  /** #414: an idle terminal is not an authenticated peer. Keep its receipt while waiting, including on resume. */
-  const awaitAttachment = async (planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, waiting: Extract<RestoreReceipt, { state: "waiting" }>, save: () => void, expectedSession: string | null = waiting.binding.sessionId): Promise<string> => {
+  /** #414: an idle terminal is not an authenticated peer. Keep its receipt while waiting, including on resume.
+   * #1578: `waitSliceMs` is the poll slice, 1 s in production. It is a parameter with a default, not the enclosing `clock`, because
+   * `test/upgrade-timing-failure.test.ts` runs this closure's own source in a sandbox that provides only named ports. Only a test
+   * passes a larger slice, so a 600 s deadline costs fewer polls; the last slice is still clamped to the remaining time. */
+  const awaitAttachment = async (planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, waiting: Extract<RestoreReceipt, { state: "waiting" }>, save: () => void, expectedSession: string | null = waiting.binding.sessionId, waitSliceMs = 1000): Promise<string> => {
     const saveTiming = () => {
       try { save(); }
       catch { console.warn("Recovery timing observation could not be saved; recovery continues"); }
@@ -686,7 +690,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           else { launchState = "older-instance"; olderHandle = evidence.handle; }
         } else if (evidence.state === "live" && evidence.session) {
           if (now() >= deadline) break;
-          await sleep(Math.min(1000, deadline - now()));
+          await sleep(Math.min(waitSliceMs, deadline - now()));
           continue;
         }
       }
@@ -704,7 +708,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         throw nativeFailure(planned, binding.peer, "launcher_unverified", `${binding.peer}: the chosen restoration launcher's identity cannot be verified (${launchState}); saved terminal retained; no terminal was created`, { handle: binding.handle, launcherState: launchState });
       }
       if (now() >= deadline) break;
-      await sleep(Math.min(1000, deadline - now()));
+      await sleep(Math.min(waitSliceMs, deadline - now()));
     }
     const terminal: NonNullable<ProjectProgress["attachmentTimeouts"]>[string]["terminal"] = { handle: binding.handle, incarnationId: binding.incarnationId, state: "unknown" };
     try {
@@ -973,7 +977,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           function awaitBound(waiting: Extract<RestoreReceipt, { state: "waiting" }> & { origin: "pending" }, expected: string | null): Promise<string>;
           function awaitBound(waiting: Extract<RestoreReceipt, { state: "waiting" }>, expected: string | null): Promise<string | undefined>;
           async function awaitBound(waiting: Extract<RestoreReceipt, { state: "waiting" }>, expected: string | null): Promise<string | undefined> {
-            try { return await awaitAttachment(planned, progress, op, waiting, save, expected); }
+            try { return await awaitAttachment(planned, progress, op, waiting, save, expected, clock?.waitSliceMs); }
             catch (error) {
               if (!(error instanceof AttachmentLauncherGone)) throw error;
               progress.terminals[key] = error.transition.next; save();
