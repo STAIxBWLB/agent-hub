@@ -184,11 +184,14 @@ position the proposal printed. Accepting creates the existing intake hold rather
 person reads before releasing it. The draft is linked to the milestone as a `task` link, and every board write goes through
 `Tasks`. `milestone_decomposition_accepts` keys each accepted part by its answer row and position, so accepting the same part
 twice returns the draft the first accept made and the board gains no row; a superseded answer is not pending, so an accept cannot
-land on it. An accept needs a pending answer and a part inside it, both refused before any write. Release stays the existing
-`ahub intake approve` by the person or the conductor acting for them, so no part reaches a peer before that approval and this
-command grants no release authority of its own. The reply and its notice carry the draft's id and the part's kind only: the result
-is a public view, so a part whose draft carries a PII signal reads `[withheld]` and no stored text is repeated. The GitHub write
-is part 3.
+land on it. An accept needs a pending answer and a part inside it, both refused before any write, and a milestone settled to
+`done` or `dropped` while the answer waits refuses there too. One accept of a part runs at a time, so two concurrent accepts of
+the same part make one draft and read the same task, and once the draft is saved the accept record, the link and the notice are
+best-effort: the caller is never refused after a board write, and a retry records a link an interrupted tail lost. Release stays
+the existing `ahub intake approve` by the person or the conductor acting for them, so no part reaches a peer before that approval
+and this command grants no release authority of its own. The reply and its notice carry the draft's id and the part's kind only:
+the result is a public view, so a part whose draft carries a PII signal reads `[withheld]` and no stored text is repeated. The
+GitHub write is part 3.
 
 `milestone_decompositions` is additive and outside the roadmap integrity digest like a suggestion: a lost answer is asked for
 again, and no recovery format changes. `milestone_decomposition_accepts` is additive the same way: a lost accept row files the
