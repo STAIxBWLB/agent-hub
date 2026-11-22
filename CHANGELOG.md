@@ -5,7 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Add Claude plugin skills for hub status, management, use and person-run commands, with a doctor check. Refs #1622.
-
+- Add a machine-local `jcode_mcp_allow` list (in `.agenthub/config.local.json`, per instance too, never settings-editable) of jcode MCP server names that `ahub doctor` accepts for the hub-owned jcode: allowed names read `ok` and are listed as allowed by the person, any other extra server still fails and is named, with the key as a hint, and an unreadable file still fails. Matching is by name only and launch is unchanged (Refs #1621, hub task 1056).
 - Publish a held milestone-decomposition part as a GitHub issue: `ahub roadmap decompose <id> --publish` prints the spec issues and tasks it would create and writes nothing, and `--apply --confirm <fingerprint>` creates one issue per held `spec` part behind `roadmap.github_write`, joining the milestone through the same membership field the opt-in mirror uses. A second apply creates nothing, a second apply that overlaps a running one is refused instead of creating the same issues twice, a `task` part and a released draft get no issue, a private part is never published, and a refused `gh` call leaves the draft held with nothing linked (Refs #1480, hub task 1052).
 
 ## 0.45.0

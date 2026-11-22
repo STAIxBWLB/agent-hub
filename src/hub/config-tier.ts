@@ -15,7 +15,7 @@ const UNSAFE = new Set(["__proto__", "constructor", "prototype"]);
 /** Instance fields that choose no executable and no home. */
 export const TIER2_INSTANCE_FIELDS = ["kind", "roles", "start_mode", "review_mode", "readOnly", "worktree", "permission_mode"] as const;
 /** Instance fields that choose a native home, account or model, or widen what a reviewer verdict may skip (`review_scope`, #852): tier 3 (#685). */
-export const TIER3_INSTANCE_FIELDS = ["jcode_home", "provider", "model", "provider_profile", "review_scope"] as const;
+export const TIER3_INSTANCE_FIELDS = ["jcode_home", "jcode_mcp_allow", "provider", "model", "provider_profile", "review_scope"] as const;
 /** Every NEVER_EDITABLE key except `instances`, which splits by field. */
 export const TIER3_PREFIXES: readonly string[] = NEVER_EDITABLE.filter(key => key !== "instances");
 const TIER2_BLOCKS: Readonly<Record<string, readonly string[]>> = {

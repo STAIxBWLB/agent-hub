@@ -19,11 +19,13 @@ export interface InstanceConfig {
   readOnly?: boolean;
   /** Jcode instances (#685): their own native data home, and optional model selection. A headless Claude implementer also takes `model` (#844). Machine-local, never editable from settings. */
   jcode_home?: string;
+  /** Names of jcode MCP servers `ahub doctor` accepts for this instance; absent inherits the top-level list (#1621). */
+  jcode_mcp_allow?: string[];
   provider?: string;
   model?: string;
   provider_profile?: string;
 }
-const JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile"] as const;
+const JCODE_FIELDS = ["jcode_home", "jcode_mcp_allow", "provider", "model", "provider_profile"] as const;
 /** At most this many extra Jcode instances per project (#685). */
 export const MAX_JCODE_INSTANCES = 8;
 /** A flag value jcode takes as one argv word: bounded, printable, no spaces. */
@@ -58,6 +60,12 @@ function roles(value: unknown, field: string): string[] {
   return out;
 }
 
+/** A jcode MCP allowlist (#1621): an array of nonempty, control-free names of at most 256 bytes, at most 64 of them. */
+export function mcpAllowNames(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.length > 64 || value.some(name => typeof name !== "string" || !name.trim() || Buffer.byteLength(name) > 256 || /\p{Cc}/u.test(name))) return fail(field, "must be an array of at most 64 nonempty control-free server names");
+  return [...value] as string[];
+}
+
 /** The Jcode-only fields of one declaration (#685). Only the validated values are copied; nothing is read twice. */
 function jcodeInstanceFields(entry: Record<string, PropertyDescriptor>, path: string): Partial<InstanceConfig> {
   const home: unknown = entry.jcode_home?.value;
@@ -70,6 +78,7 @@ function jcodeInstanceFields(entry: Record<string, PropertyDescriptor>, path: st
     if (!isNativeModelToken(word)) return fail(`${path}.${key}`, "must be one bounded printable word without spaces");
     out[key] = word;
   }
+  if (entry.jcode_mcp_allow) out.jcode_mcp_allow = mcpAllowNames(entry.jcode_mcp_allow.value, `${path}.jcode_mcp_allow`);
   if (entry.start_mode && entry.start_mode.value !== "headless") return fail(`${path}.start_mode`, "a Jcode instance starts headless");
   return out;
 }

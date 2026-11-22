@@ -1946,6 +1946,7 @@
   "src/hub/instance-execution.ts:GIT_OUTPUT_BYTES:constant:GIT_OUTPUT_BYTES=1024 * 1024#0": "safety floor",
   "src/hub/instances.ts:MAX_INSTANCES:constant:MAX_INSTANCES=64#0": "operational",
   "src/hub/instances.ts:MAX_JCODE_INSTANCES:constant:MAX_JCODE_INSTANCES=8#0": "operational",
+  "src/hub/instances.ts:mcpAllowNames:inline:value.length > 64=64#0": "safety floor",
   "src/hub/invocations.ts:<anonymous>:inline:chars.length > 200=200#0": "safety floor",
   "src/hub/kimi-usage.ts:FLOOR_SLACK_MS:constant:FLOOR_SLACK_MS=1000#0": "operational",
   "src/hub/kimi-usage.ts:FOLLOW_UP_DELAYS_MS:inline:FOLLOW_UP_DELAYS_MS=1000#0": "operational",
