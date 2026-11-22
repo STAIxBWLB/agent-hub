@@ -90,7 +90,7 @@ import { loadPacks } from "../hub/packs.ts";
 import { launcherPreview } from "./preview.ts";
 import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
 import { configureKimiMcp } from "./kimi-mcp.ts";
-import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
+import { hubSkillsPresent, nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { freeText, unknownOption, unknownOptionRefusal, withoutSeparator } from "./free-text.ts";
@@ -3378,8 +3378,11 @@ const commands: Record<string, () => Promise<void> | void> = {
           }
         } finally { hub.close(); }
       }
-      const plugin = pluginState(parseList<InstalledPlugin>(spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
+      const plugins = parseList<InstalledPlugin>(spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8" }).stdout ?? "");
+      const plugin = pluginState(plugins, join(import.meta.dir, "..", ".."));
       row(plugin.state === "current", DOCTOR_PLUGIN_PROBE.name, plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
+      const skillsPresent = hubSkillsPresent(plugins);
+      row(skillsPresent, "hub skills", skillsPresent ? "Claude plugin skills present" : `missing from Claude user plugin; repair: cd ${shellQuote(cwd)} && ${plugin.state === "missing" ? "ahub setup" : "claude plugin uninstall agent-hub@agent-hub --scope user && ahub setup"}`);
       let profileRegistry: Registry | undefined;
       try {
         profileRegistry = new Registry();
