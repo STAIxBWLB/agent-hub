@@ -124,7 +124,7 @@ import { CompletionStore } from "./completions-store.ts";
 import { QuestionDesk } from "./question-desk.ts";
 import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
-import { roadmapConfig, type RoadmapConfig } from "./roadmap.ts";
+import { roadmapConfig, type MilestoneLinkKind, type MilestoneState, type RoadmapConfig } from "./roadmap.ts";
 import { mcpAllowNames } from "./instances.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateRawConfig, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
@@ -10084,6 +10084,40 @@ export async function startDaemon(opts: DaemonOptions) {
     return view;
   }
 
+  // #1483 R5: the dashboard's roadmap view. The last drift check is kept in memory only, so a card can show a count
+  // without reading GitHub on the page's 1 s poll; `roadmap_check` is the one bounded read that fills it, and its
+  // absence reads as "not checked", never as zero findings.
+  let roadmapDrift: { at: number; findings: { rule: number; milestone: number | null; items: string[]; cause: string; remedy: string }[]; unknown: number[]; truncated?: true } | undefined;
+  /** A dashboard roadmap refusal is the only text the page may echo: a `PreEffectToolRefusal` sentence is canned and
+   * carries refs or an id, never task text. Anything else is reported without its message (the terminal has it). */
+  function roadmapRefusal(error: unknown): string {
+    return error instanceof PreEffectToolRefusal ? error.message : "roadmap action failed; see ahub ui in the terminal";
+  }
+  /** The revision the page rendered, checked before any write: a stale page is refused with its cause named. */
+  function roadmapFresh(rawId: unknown, rawRevision: unknown): number {
+    if (typeof rawId !== "number" || !Number.isSafeInteger(rawId) || rawId < 1) throw new PreEffectToolRefusal("roadmap milestone id is missing; reload the dashboard");
+    if (typeof rawRevision !== "number" || !Number.isSafeInteger(rawRevision) || rawRevision < 0) throw new PreEffectToolRefusal("roadmap revision is missing; reload the dashboard");
+    let current: number;
+    try { current = tasks.milestoneShow(USER, rawId).revision; } catch { throw new PreEffectToolRefusal("roadmap milestone is gone; reload the dashboard"); }
+    if (current !== rawRevision) throw new PreEffectToolRefusal("roadmap changed since this page loaded; reload the dashboard before editing");
+    return rawId;
+  }
+  /** One move renumbers its lane, so a card's `order` is its position and a drag and a Move button agree. */
+  function roadmapMove(id: number, horizon: string | undefined, order: number) {
+    const view = tasks.milestoneShow(USER, id), fields: Record<string, unknown> = { order };
+    if (horizon === "now" || horizon === "next" || horizon === "later") if (horizon !== view.horizon) fields.horizon = horizon;
+    if (Object.keys(fields).length) tasks.milestoneEdit(USER, id, view.revision, fields);
+    const lane = (fields.horizon === undefined ? view.horizon : fields.horizon) as string;
+    const others = tasks.milestoneList(USER).filter(row => row.id !== id && row.horizon === lane).sort((left, right) => left.order - right.order || left.id - right.id).map(row => row.id);
+    const at = Math.min(Math.max(order, 0), others.length);
+    for (const [index, cardId] of [...others.slice(0, at), id, ...others.slice(at)].entries())
+      if (tasks.milestoneShow(USER, cardId).order !== index) tasks.milestoneOrder(USER, cardId, index);
+  }
+  /** The dashboard's roadmap payload: the same public projection `ahub roadmap show` renders, plus who may act. */
+  function roadmapSnapshot(session?: DashboardSession) {
+    try { return { milestones: tasks.milestoneList(USER), person: session?.liveTest !== true }; }
+    catch { return { unavailable: true, person: false }; }
+  }
   async function uiMemorySnapshot(after: number, input?: Record<string, unknown>, session?: DashboardSession) {
     const query = input?.memory as Record<string, unknown> | undefined;
     const start = input?.view === "memory" && query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
@@ -10118,7 +10152,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return snapshot;
   }
-  function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
+  function uiSnapshot(after: number, input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
     const budgetNoteOf = new Map(budgetPeerNotes().map(note => [note.peer, note] as const));
@@ -10196,6 +10230,12 @@ export async function startDaemon(opts: DaemonOptions) {
       // #1144: source metadata only, including private records; never expose origins or stored text.
       sources: sourceRegistry.list().map(({ id, kind, bytes, sha256, added_at }) => ({ id, kind, bytes, hashPrefix: sha256.slice(0, 12), added_at })),
       releases: tasks.releaseList(USER),
+      // #1483 R5: the roadmap block is the read that computes spec freshness, so it rides only the view that shows it and
+      // never another view's 1 s poll. The board's Milestone filter reads the same rows here, and its placement is the
+      // explicit task link only (the projection above also places a task through the issue it came from).
+      ...(input?.view === "roadmap" ? { roadmap: { ...roadmapSnapshot(session), drift: roadmapDrift } } : {}),
+      milestones: board.milestones().map(row => ({ id: row.id, title: row.title, horizon: row.horizon, state: row.state, order: row.order })),
+      milestoneOfTask: Object.fromEntries(board.milestoneLinks().filter(link => link.kind === "task").map(link => [link.ref, link.milestone] as const)),
       // #335: each schedule's next run, ids and times only (a title or detail is task text). Absent when none is configured, so an older page and an unconfigured project see no change.
       ...(config.schedules.length ? { schedules: scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true) } : {}),
       boardLegend: Object.entries(peerView).map(([id, peer]) => ({
@@ -10233,7 +10273,7 @@ export async function startDaemon(opts: DaemonOptions) {
       questions: session?.liveTest ? [] : questionStore.list({ state: "open" }, 64).map(row => ({ set: row.set, peer: row.peer, created: row.created, private: row.private, questions: row.questions })),
       answeredQuestions: session?.liveTest ? [] : instructedQuestionViews(),
       // #1054 T6: unread results for the person's surfaces (the panel and the acon inbox), only for the Agents view the inbox and the Results section read.
-      ...(_input?.view === "agents" ? { results: resultsView(session) } : {}),
+      ...(input?.view === "agents" ? { results: resultsView(session) } : {}),
       events: uiEvents.filter((e) => e.seq > after),
       cursor: uiSequence,
       memorySync: memoryProfileStatus(true).sync,
@@ -10241,9 +10281,9 @@ export async function startDaemon(opts: DaemonOptions) {
       starts: startPlans(),
       roster: rosterView(),
       ...benchView(),
-      ...memoryView(_input?.memory),
-      usage: usageView(_input?.view === "agents"),
-      worktrees: worktreesView(_input?.view === "agents"),
+      ...memoryView(input?.memory),
+      usage: usageView(input?.view === "agents"),
+      worktrees: worktreesView(input?.view === "agents"),
     };
   }
 
@@ -11022,6 +11062,64 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: true, report };
     }
     switch (a.action) {
+      // #1483 R5: the dashboard's roadmap writes. Each one carries the revision the page rendered (checked by
+      // `roadmapFresh`), so a stale page is refused with its cause named instead of overwriting a newer edit.
+      case "roadmap_new":
+      case "roadmap_edit":
+      case "roadmap_link":
+      case "roadmap_unlink":
+      case "roadmap_move":
+      case "roadmap_state":
+      case "roadmap_accept":
+      case "roadmap_reject":
+      case "roadmap_check":
+      case "roadmap_unplaced":
+      case "roadmap_triage":
+        try {
+          switch (a.action) {
+            case "roadmap_new":
+              return { ok: true, milestone: await tasks.milestoneNew(USER, { title: a.title, outcome: a.outcome, ...(a.horizon === undefined ? {} : { horizon: a.horizon }), ...(a.target === undefined ? {} : { target: a.target }) }) };
+            case "roadmap_edit": {
+              const id = roadmapFresh(a.id, a.revision);
+              if (!a.fields || typeof a.fields !== "object" || Array.isArray(a.fields)) return bad;
+              return { ok: true, milestone: await tasks.milestoneEdit(USER, id, tasks.milestoneShow(USER, id).revision, a.fields) };
+            }
+            case "roadmap_link":
+            case "roadmap_unlink": {
+              if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roadmap changes" };
+              const id = roadmapFresh(a.id, a.revision);
+              if (typeof a.kind !== "string" || typeof a.ref !== "string") return bad;
+              const kind = a.kind as MilestoneLinkKind;
+              return { ok: true, milestone: a.action === "roadmap_link" ? tasks.milestoneLink(USER, id, kind, a.ref) : tasks.milestoneUnlink(USER, id, kind, a.ref) };
+            }
+            case "roadmap_move": {
+              if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roadmap changes" };
+              const id = roadmapFresh(a.id, a.revision);
+              if (typeof a.order !== "number" || !Number.isSafeInteger(a.order) || a.order < 0) return bad;
+              roadmapMove(id, typeof a.horizon === "string" ? a.horizon : undefined, a.order);
+              return { ok: true, milestones: tasks.milestoneList(USER) };
+            }
+            case "roadmap_state": {
+              if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roadmap changes" };
+              const id = roadmapFresh(a.id, a.revision);
+              if (typeof a.state !== "string") return bad;
+              return { ok: true, milestone: tasks.milestoneState(USER, id, a.state as MilestoneState) };
+            }
+            case "roadmap_accept":
+            case "roadmap_reject": {
+              if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roadmap changes" };
+              if (a.suggestion === undefined) return bad;
+              return a.action === "roadmap_accept" ? { ok: true, milestone: await tasks.roadmapAccept(USER, a.suggestion) } : { ok: true, rejected: await tasks.roadmapReject(USER, a.suggestion) };
+            }
+            case "roadmap_check":
+              roadmapDrift = { at: Date.now(), ...(await tasks.roadmapCheck(USER)) };
+              return { ok: true, drift: roadmapDrift };
+            case "roadmap_triage":
+              return { ok: true, suggestions: (await tasks.roadmapTriage(USER)).suggestions };
+            default:
+              return { ok: true, unplaced: await tasks.roadmapUnplaced(USER) };
+          }
+        } catch (error) { return { ok: false, error: roadmapRefusal(error) }; }
       case "intake": {
         if (session?.liveTest) return { ok: false, error: "live-test dashboard cannot write person-attributed content; use peer tools" };
         if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding mutations" };
