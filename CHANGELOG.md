@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Permit a no-manifest task claim verdict from an exact instructed receipt, with its task, slot and verdict bound to the person's command. Refs #1622.
 - Allow explicitly classified intent commands from a confirmed managed Claude instruction, with literal-id verdict checks and a ten-operation receipt bound. Refs #1622.
 - Record the agy 1.5.14 verification attempt: the CLI surface and tmux helper legs pass, the hooks leg shows 17 provider tool declarations (new `run_workflow` and `swarm`) against the pinned 15, and the launcher-nonce leg cannot run for lack of its original producers, so 1.5.14 stays unverified (`docs/verification/2026-11-22-agy-1.5.14.md`). Refs #888, hub task 1055.
 - Allow one classified exact hub command from a confirmed managed Claude instruction, with inherited IPC, user/peer provenance and person-only mode control. Refs #1622.

@@ -73,6 +73,8 @@ Exact instructed control is available to a managed Claude session through `/agen
 
 In intent mode the person writes the desired result after `/agent-hub:ahub`; the agent chooses a supported command and supplies its arguments to `ahub instructed run`. The daemon confirms the same session's receipt for each operation and admits at most ten operations before the receipt closes. A person verdict requires the item's literal id in the person's instruction; a claim verdict requires both task id and slot. These verdicts are an exception to reversibility and have no undo. The agent must perform only what the person requested. A fresh witness defaults to `intent`; retained `off` and `exact` choices remain in force. Spending, permission, trust, execution paths, irreversible deletion, release and merge, identity, PII tasks and private turns stay closed in intent mode. Free-text commands, file-backed claims, cross-project handoff, study approval and roadmap settlement remain closed pending the privacy, revocation and provenance work in hub task 1074.
 
+The no-manifest `task claim` verdict is also available in exact mode. The person types the task id, slot and verdict as part of the exact command; the daemon executes those same operands once. The `--manifest`, `--disposition`, `--model` and `--model-said` forms remain closed in exact mode.
+
 The transport probe found an inherited Unix socket on macOS. On Linux with Yama `ptrace_scope=1` and seccomp mode 2, another same-user process could not reopen the IPC socket via `/proc` (ENXIO), and `pidfd_getfd` was denied (EPERM). A same-user process able to debug or duplicate the socket, rewrite the managed transcript, or modify the installed hub package is outside this proof.
 
 
