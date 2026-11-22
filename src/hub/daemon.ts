@@ -10110,6 +10110,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const lane = (fields.horizon === undefined ? view.horizon : fields.horizon) as string;
     const others = tasks.milestoneList(USER).filter(row => row.id !== id && row.horizon === lane).sort((left, right) => left.order - right.order || left.id - right.id).map(row => row.id);
     const at = Math.min(Math.max(order, 0), others.length);
+    // ponytail: one write per card, so a failure partway leaves gaps in this lane's `order`; the next move renumbers it
+    // from scratch, and a board transaction is the upgrade if a gap ever has to survive without one.
     for (const [index, cardId] of [...others.slice(0, at), id, ...others.slice(at)].entries())
       if (tasks.milestoneShow(USER, cardId).order !== index) tasks.milestoneOrder(USER, cardId, index);
   }
@@ -11078,8 +11080,10 @@ export async function startDaemon(opts: DaemonOptions) {
         try {
           switch (a.action) {
             case "roadmap_new":
+              if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roadmap changes" };
               return { ok: true, milestone: await tasks.milestoneNew(USER, { title: a.title, outcome: a.outcome, ...(a.horizon === undefined ? {} : { horizon: a.horizon }), ...(a.target === undefined ? {} : { target: a.target }) }) };
             case "roadmap_edit": {
+              if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roadmap changes" };
               const id = roadmapFresh(a.id, a.revision);
               if (!a.fields || typeof a.fields !== "object" || Array.isArray(a.fields)) return bad;
               return { ok: true, milestone: await tasks.milestoneEdit(USER, id, tasks.milestoneShow(USER, id).revision, a.fields) };

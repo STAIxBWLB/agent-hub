@@ -3108,8 +3108,8 @@
     {
       "id": "board-overdue-cache-clock",
       "file": "src/ui/index.html",
-      "search": "releaseFilter,lanes,showAllDone,[...overdue]",
-      "replacement": "releaseFilter,lanes,showAllDone",
+      "search": "milestoneFilter,lanes,showAllDone,[...overdue]",
+      "replacement": "milestoneFilter,lanes,showAllDone",
       "testFile": "test/task-board-ui.test.ts",
       "testName": "cached board notices deadline crossings without rewriting unchanged cards (#378)"
     },
