@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { stablePackageRoot } from "../../cli/install-paths.ts";
@@ -6,6 +6,14 @@ import { realPath } from "../../hub/project.ts";
 import { VERSION } from "../../version.ts";
 
 export const PLUGIN = "agent-hub@agent-hub";
+export const HUB_SKILL_NAMES = ["ahub-status", "ahub-manage", "ahub-use", "ahub"] as const;
+
+export function hubSkillsPresent(plugins: InstalledPlugin[]): boolean {
+  const installed = plugins.find(plugin => plugin.id === PLUGIN && plugin.scope === "user");
+  return !!installed?.installPath && HUB_SKILL_NAMES.every(name =>
+    existsSync(join(installed.installPath!, "skills", name, "SKILL.md")));
+}
+
 export const CLAUDE_PLUGIN_INVENTORY = Object.freeze({
   plugins: Object.freeze(["claude", "plugin", "list", "--json"]),
   marketplaces: Object.freeze(["claude", "plugin", "marketplace", "list", "--json"]),

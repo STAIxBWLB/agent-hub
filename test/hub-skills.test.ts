@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hubSkillsPresent } from "../src/cli/setup.ts";
+import { HUB_SKILL_NAMES, hubSkillsPresent } from "../src/cli/setup.ts";
 
-const names = ["ahub-status", "ahub-manage", "ahub-use", "ahub"];
+const names = HUB_SKILL_NAMES;
 const root = join(import.meta.dir, "../plugins/agent-hub/skills");
 
 function personStepsValid(text: string): boolean {
@@ -12,13 +12,15 @@ function personStepsValid(text: string): boolean {
   return blocks.every(match => !/<[^>]+>/.test(match[1]!) && match[1]!.split("\n").every(line => line.startsWith("cd ")));
 }
 
-test("plugin skills have frontmatter and constrain person steps", () => {
+test("plugin skills declare person-step rules; the validator rejects invalid example blocks", () => {
   for (const name of names) {
     const text = readFileSync(join(root, name, "SKILL.md"), "utf8");
     expect(text).toMatch(new RegExp(`^---\\nname: ${name}\\ndescription: .+\\n`));
     expect(personStepsValid(text)).toBe(true);
     expect(text).toContain("code block");
     expect(text).toContain("success");
+    expect(text).toContain("actual");
+    expect(text).toContain("person");
     if (name === "ahub") expect(text).toContain("disable-model-invocation: true");
   }
   expect(personStepsValid("```sh\ncd /tmp && ahub task show <id>\n```" )).toBe(false);
@@ -43,7 +45,8 @@ test("Claude plugin skill presence uses its installed tree", () => {
 
 test("status guidance distinguishes CLI, daemon and the actual session server", () => {
   const text = readFileSync(join(root, "ahub-status", "SKILL.md"), "utf8");
-  for (const evidence of ["ahub version", "ahub status --json", "claude plugin list --json", "server.js", "process table", "plugin manifest", "before an upgrade", "ahub doctor --json", "ahub roster --json"]) expect(text).toContain(evidence);
+  for (const evidence of ["ahub version", "daemon `version`", "ahub status --json", "peerVersions.<peer>.ahubTools", "server process start time", "installation time", "older build", "unknown", "restart that Claude session", "hub launcher", "ahub doctor --json", "ahub roster --json"]) expect(text).toContain(evidence);
+  // test/hub-versions.test.ts checks status with a tools client older than VERSION.
 });
 
 test("doctor reports installed and missing Claude plugin skills", async () => {
@@ -53,7 +56,7 @@ test("doctor reports installed and missing Claude plugin skills", async () => {
     mkdirSync(bin); mkdirSync(home); mkdirSync(plugin);
     mkdirSync(join(dir, ".agenthub"));
     writeFileSync(join(dir, ".agenthub/config.json"), "{}");
-    const inventory = JSON.stringify([{ id: "agent-hub@agent-hub", scope: "user", version: "0.45.0", installPath: plugin }]);
+    const inventory = JSON.stringify([{ id: "agent-hub@agent-hub", scope: "user", version: "fixture", installPath: plugin }]);
     for (const name of ["bun", "claude", "codex", "kimi", "jcode", "qwen", "agy", "pi", "amem"]) {
       writeFileSync(join(bin, name), `#!/bin/sh\ncase "$1" in --version) echo fixture;; plugin) echo '${inventory}';; esac\n`, { mode: 0o755 });
     }
