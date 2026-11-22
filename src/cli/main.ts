@@ -357,7 +357,7 @@ try { process.chdir(cwd); } catch { fail(`project directory is unavailable: ${cw
 function outputOptions(source: readonly string[] = args) {
   const flags = source.filter(arg => arg.startsWith("--color="));
   if (flags.length > 1 || source.includes("--color")) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
-  const color = resolveColor(flags[0]?.slice("--color=".length), streamEnv(!!process.stdout.isTTY));
+  const color = resolveColor(flags[0]?.slice("--color=".length), streamEnv(!!process.stdout.isTTY), "ahub");
   if (color instanceof Error) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
   return { color: color === true, json: source.includes("--json"), full: source.includes("--full"), verbose: source.includes("--verbose"),
     columns: outputWidth({ isTTY: !!process.stdout.isTTY, columns: process.stdout.columns, COLUMNS: process.env.COLUMNS }) };
@@ -1107,7 +1107,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     else if (conductorPeer) retireConductorOperation(result, conductorPeer);
   },
   help: () => {
-    const color = resolveColor(undefined, streamEnv(!!process.stdout.isTTY)) === true;
+    const color = resolveColor(undefined, streamEnv(!!process.stdout.isTTY), "ahub") === true;
     const topic = asksHelp(args[0]) ? undefined : args[0];
     const text = topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.permission.genericAcp !== undefined
       ? configuredAcpHelp(topic) : renderHelp(process.stdout.columns ?? 80, color, topic, undefined, asciiMarkers(process.env, args.includes("--ascii")));
@@ -1347,7 +1347,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   console: async () => {
     if (args.some(arg => arg !== "--panels" && arg !== "--no-pet" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
-    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), streamEnv(!!process.stdin.isTTY && !!process.stdout.isTTY));
+    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), streamEnv(!!process.stdin.isTTY && !!process.stdout.isTTY), "ahub");
     if (color instanceof Error) return fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
     await runConsole({ client: await connect(), cwd, stateDir, liveTest, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color, installed: consoleInstalled() });
   },
@@ -1650,7 +1650,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const peer = args[0];
     if (typeof peer !== "string" || !peerDefinition(peer)?.capabilities?.watch) fail("usage: ahub watch kimi|qwen [--no-thoughts] [--color=auto|always|never]");
     if (args.slice(1).some(arg => arg !== "--no-thoughts" && !/^--color=(auto|always|never)$/.test(arg))) fail("unsupported watch option");
-    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice(8), streamEnv(!!process.stdout.isTTY));
+    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice(8), streamEnv(!!process.stdout.isTTY), "ahub");
     if (color instanceof Error) fail(color.message);
     const hub = await connect();
     const input = process.stdin;

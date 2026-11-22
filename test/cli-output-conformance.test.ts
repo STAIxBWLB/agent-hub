@@ -1,11 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Report as PackageReport, errorLine, errorSpans, lineSpans, paint as packagePaint, terminalText as packageText, wrap as packageWrap, wrapSpans as packageWrapSpans } from "@staix/cli-output";
+import { sanitize } from "../src/hub/envelope.ts";
 import { renderHelp } from "../src/cli/help.ts";
 import { PALETTE, Report, TONE_ROLE, paint } from "../src/cli/console-state.ts";
 import { errorLines, failureExitCode } from "../src/cli/error-format.ts";
-import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
+import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, SGR_RESET, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
 
 // CLI output standard v1 (docs/design/cli-output.md, #1484): the five conformance checks every CLI runs, the role and marker tables,
 // the color precedence per stream, and the guard that keeps raw SGR codes out of human-output code.
@@ -40,6 +43,80 @@ function sample(columns = 80, ascii = false): Report {
     .section("Checks").bullet("ok", "tools: git found").bullet("absent", "optional model not configured").bullet("unknown", "quota not reported")
     .summary({ failed: 1, warnings: 1, unknown: 1, ok: 3 });
 }
+
+const packageFixtures = join(dirname(dirname(fileURLToPath(import.meta.resolve("@staix/cli-output")))), "fixtures", "v1");
+
+test("published standard v1 fixtures match the hub and package", async () => {
+  const colors = await Bun.file(join(packageFixtures, "color.json")).json();
+  for (const fixture of colors) {
+    const value = resolveColor(fixture.flag, fixture.env, fixture.tool ?? "ahub");
+    if (fixture.expectedError !== undefined) expect(value).toEqual(new Error(fixture.expectedError));
+    else expect(value).toBe(fixture.expected);
+  }
+  const markers = await Bun.file(join(packageFixtures, "markers.json")).json();
+  for (const fixture of markers) {
+    expect(markerCell(fixture.name, false)).toBe(fixture.utf8);
+    expect(markerCell(fixture.name, true)).toBe(fixture.ascii);
+  }
+  const errors = await Bun.file(join(packageFixtures, "error-line.json")).json();
+  for (const fixture of errors) {
+    expect(errorLine(fixture.tool, fixture.what, fixture.why, fixture.options, fixture.columns)).toEqual(fixture.expected);
+    expect(errorSpans(fixture.tool, fixture.what, fixture.why, fixture.options, fixture.columns)).toEqual(fixture.spans);
+    expect(errorSpans(fixture.tool, fixture.what, fixture.why, fixture.options, fixture.columns).map(line => packagePaint(line, true))).toEqual(fixture.colored);
+    const message = `${fixture.what}${fixture.why ? `: ${fixture.why}` : ""}`;
+    expect(errorLines(message, fixture.options.next?.replaceAll(fixture.tool, "ahub"), fixture.options.tty, fixture.options.ascii ?? false)).toEqual(errorLine(fixture.tool, fixture.what, fixture.why, fixture.options).map((line: string) => line.replaceAll(fixture.tool, "ahub")));
+  }
+  const texts = await Bun.file(join(packageFixtures, "text.json")).json();
+  for (const fixture of texts) expect(packageText(fixture.input, fixture.options)).toBe(fixture.expected);
+  const wraps = await Bun.file(join(packageFixtures, "wrap.json")).json();
+  for (const fixture of wraps) expect(packageWrap(fixture.input, fixture.columns, fixture.hang)).toEqual(fixture.expected);
+  const spanWraps = await Bun.file(join(packageFixtures, "span-wrap.json")).json();
+  for (const fixture of spanWraps) {
+    const lines = packageWrapSpans(fixture.input, fixture.columns, fixture.hang);
+    expect(lines).toEqual(fixture.expected);
+    expect(lines.map(line => packagePaint(line, true, fixture.styles))).toEqual(fixture.colored);
+  }
+  const reports = readdirSync(join(packageFixtures, "report")).filter(name => name.endsWith(".json"));
+  expect(reports.length).toBeGreaterThan(0);
+  for (const file of reports) {
+    const fixture = await Bun.file(join(packageFixtures, "report", file)).json();
+    const fixtureSanitizer = fixture.input.sanitizer === "quote-headers" ? sanitize : fixture.input.sanitizer === "drop-cr" ? (text: string) => text.replace(/\r/g, "") : undefined;
+    const shared = new PackageReport(fixture.input.columns ?? undefined, fixture.input.ascii, { sanitize: fixtureSanitizer, styles: fixture.input.styles, ...fixture.input.reportOptions });
+    const local = new Report(fixture.input.columns ?? undefined, fixture.input.ascii);
+    let hasTable = false, hasWrappedCommand = false, packageOnly = !!fixture.input.sanitizer || !!fixture.input.styles || !!fixture.input.reportOptions;
+    for (const op of fixture.input.operations) {
+      switch (op.op) {
+        case "header": shared.header(op.tool, op.name, op.context); local.header(op.tool, op.name, op.context); break;
+        case "section": shared.section(op.name, op.count); local.section(op.name, op.count); break;
+        case "kv": shared.kv(op.rows, op.indent, op.options); if (op.options || op.indent) packageOnly = true; else local.kv(op.rows); break;
+        case "bullet": shared.bullet(op.marker, op.text, op.nested); local.bullet(op.marker, op.text, op.nested); break;
+        case "next": shared.next(op.command); local.next(op.command); if (file.startsWith("next-")) hasWrappedCommand = true; break;
+        // The hub table keeps its existing styled cells and geometry: STAIxBWLB/cli-output#30.
+        case "table": shared.table(op.head, op.rows, op.flexible, op.options); hasTable = true; break;
+        case "append": shared.append(op.lines); packageOnly = true; break;
+        case "line": shared.line(op.text); if (op.lines) expect(lineSpans(op.text, fixture.input.columns ?? undefined).map(line => packagePaint(line, false))).toEqual(op.lines); packageOnly = true; break;
+        case "summary": shared.summary(op.counts); local.summary(op.counts); break;
+        default: throw new Error(`unknown standard fixture operation ${op.op}`);
+      }
+    }
+    expect(shared.render(false)).toEqual(fixture.plain);
+    expect(shared.render(true)).toEqual(fixture.colored);
+    // The package fixture tests its wrapped default; the hub selects the unwrapped option.
+    if (!hasTable && !hasWrappedCommand && !packageOnly) { expect(local.render(false)).toEqual(fixture.plain); expect(local.render(true)).toEqual(fixture.colored); }
+    if (hasWrappedCommand) expect(local.render(false)).toHaveLength(1);
+  }
+});
+
+test("hub report keeps legacy command and sanitization behavior while using shared primitives", () => {
+  const command = "ahub " + "word ".repeat(20).trim();
+  expect(new Report(20).next(command).render(false)).toEqual([`    →  ${command}`]);
+  expect(new Report().note("a\rb").render(false)).toEqual(["  ab"]);
+  expect(new Report(16).note("--- from x --- from x").render(false)).toEqual(["  > --- from x", "  > --- from x"]);
+  const hub = new Report().header("ahub", "Check").section("Results").summary({ ok: 2 });
+  const shared = new PackageReport().header("ahub", "Check").section("Results").summary({ ok: 2 });
+  expect(hub.lines()).toEqual(shared.lines());
+  expect(paint([{ text: "peer", tone: "peerClaude" }], true)).toBe(PALETTE.peerClaude + "peer" + SGR_RESET);
+});
 
 describe("CLI output standard v1: roles", () => {
   test("the nine roles map to the normative ANSI codes, bold only on header, section and the status roles", () => {
@@ -106,17 +183,17 @@ describe("CLI output standard v1: color precedence, per stream", () => {
       // 6 otherwise
       [undefined, { ...pipe }, false], ["auto", { ...pipe, TERM: "xterm" }, false],
     ];
-    for (const [flag, env, want] of cases) expect(resolveColor(flag, env as never)).toBe(want);
+    for (const [flag, env, want] of cases) expect(resolveColor(flag, env as never, "ahub")).toBe(want);
   });
   test("an unknown flag value is a usage error", () => {
-    for (const flag of ["rainbow", "", "ALWAYS"]) expect(resolveColor(flag, tty)).toBeInstanceOf(Error);
+    for (const flag of ["rainbow", "", "ALWAYS"]) expect(resolveColor(flag, tty, "ahub")).toBeInstanceOf(Error);
   });
   test("each stream is decided on its own isTTY, with the same variables", () => {
     const env = { TERM: "xterm-256color" };
-    expect(resolveColor(undefined, streamEnv(true, env))).toBe(true);
-    expect(resolveColor(undefined, streamEnv(false, env))).toBe(false);
-    expect(resolveColor(undefined, streamEnv(false, { ...env, FORCE_COLOR: "1" }))).toBe(true);
-    expect(resolveColor(undefined, streamEnv(true, { ...env, NO_COLOR: "1" }))).toBe(false);
+    expect(resolveColor(undefined, streamEnv(true, env), "ahub")).toBe(true);
+    expect(resolveColor(undefined, streamEnv(false, env), "ahub")).toBe(false);
+    expect(resolveColor(undefined, streamEnv(false, { ...env, FORCE_COLOR: "1" }), "ahub")).toBe(true);
+    expect(resolveColor(undefined, streamEnv(true, { ...env, NO_COLOR: "1" }), "ahub")).toBe(false);
     expect(streamEnv(true, { TERM: "x", PATH: "/bin", FORCE_COLOR: "2", CLICOLOR: "0", CLICOLOR_FORCE: "1", NO_COLOR: "" })).toEqual({ isTTY: true, TERM: "x", NO_COLOR: "", FORCE_COLOR: "2", CLICOLOR: "0", CLICOLOR_FORCE: "1" });
   });
 });

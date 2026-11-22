@@ -276,8 +276,9 @@ function captureLayout(root: string): void {
   if (optionalInfo(join(root, "scripts"))) knownLayout(join(root, "scripts"), [], ["check-docs.mjs"]);
   const modules = join(root, "node_modules");
   if (optionalInfo(modules)) {
-    knownLayout(modules, ["@staix"], []); const scope = join(modules, "@staix"); knownLayout(scope, ["agent-mem"], []);
+    knownLayout(modules, ["@staix"], []); const scope = join(modules, "@staix"); knownLayout(scope, ["agent-mem"], [], ["cli-output"]);
     knownLayout(join(scope, "agent-mem"), ["src", "bin"], ["package.json", "README.md", "LICENSE"]);
+    if (optionalInfo(join(scope, "cli-output"))) knownLayout(join(scope, "cli-output"), ["src"], ["package.json", "README.md", "LICENSE"]);
   }
 }
 function verifyQuarantine(root: string, capture: Capture): void {

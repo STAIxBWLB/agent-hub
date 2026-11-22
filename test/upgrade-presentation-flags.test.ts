@@ -12,7 +12,7 @@ test("#466 recovery colour has exactly console precedence for TTY, pipes and env
     for (const env of [{}, { TERM: "dumb" }, { NO_COLOR: "1" }, { TERM: "dumb", NO_COLOR: "1" }]) {
       const environment = { isTTY, ...env };
       const parsed = readRecoveryPresentationFlags(flag ? [`--color=${flag}`] : [], environment, () => 1234);
-      expect(parsed.options.color).toBe(resolveColor(flag, environment));
+      expect(parsed.options.color).toBe(resolveColor(flag, environment, "ahub"));
       expect(parsed.options.now()).toBe(1234);
     }
   }

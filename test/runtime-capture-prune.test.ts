@@ -10,6 +10,7 @@ import { Registry, REGISTRY_DB_BUSY_TIMEOUT_MS } from "../src/hub/registry.ts";
 import { projectRuntimeFile, writeProjectRuntimeState } from "../src/hub/project-runtime-state.ts";
 import { planRuntimeCapturePrune, pruneRuntimeCaptures, retireTerminalReceipts, scheduleRuntimeCapturePrune, RETAINED_TERMINAL_RECEIPTS, RUNTIME_PRUNE_INTERVAL_MS, RUNTIME_PRUNE_MAX_BATCH } from "../src/hub/runtime-capture-prune.ts";
 import { stageCurrentRuntime } from "../src/cli/recovery-package.ts";
+import hubPackage from "../package.json";
 import { createOperation, planFingerprint, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { claimRunner, operationPath, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { runtimePruneHealth } from "../src/hub/runtime-prune-health.ts";
@@ -253,6 +254,17 @@ for (const name of ["README.md", "LICENSE", "CHANGELOG.md"] as const) {
     expect(readFileSync(join(capture.root, name, "arbitrary.txt"), "utf8")).toBe("unknown directory contents must remain\n");
   });
 }
+
+test("runtime pruning recognizes an exact output dependency without weakening layout checks", () => {
+  const f = fixture(), output = join(f.source, "node_modules/@staix/cli-output");
+  put(f.source, "package.json", JSON.stringify({ name: "@staix/agent-hub", version: VERSION, dependencies: { "@staix/agent-mem": CORE, "@staix/cli-output": hubPackage.dependencies["@staix/cli-output"] } }));
+  put(output, "package.json", JSON.stringify({ name: "@staix/cli-output", version: hubPackage.dependencies["@staix/cli-output"], main: "src/index.js" }));
+  put(output, "src/index.js", "export const fixture = true;\n"); put(output, "README.md", "fixture\n"); put(output, "LICENSE", "fixture\n");
+  const captured = stageCurrentRuntime(f.source, VERSION, f.home, f.registry);
+  expect(existsSync(join(captured.root, "node_modules/@staix/cli-output/src/index.js"))).toBe(true);
+  const result = pruneRuntimeCaptures(f.home, 0);
+  expect(result.deferred).toBeUndefined(); expect(result.removed).toEqual([captured.root]);
+});
 
 test("#610 first-party core metadata directories are not valid capture assets", () => {
   const f = fixture(), orphan = f.capture(), capture = f.capture();
