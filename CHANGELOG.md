@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Record the agy 1.5.14 verification attempt: the CLI surface and tmux helper legs pass, the hooks leg shows 17 provider tool declarations (new `run_workflow` and `swarm`) against the pinned 15, and the launcher-nonce leg cannot run for lack of its original producers, so 1.5.14 stays unverified (`docs/verification/2026-11-22-agy-1.5.14.md`). Refs #888, hub task 1055.
+- Allow one classified exact hub command from a confirmed managed Claude instruction, with inherited IPC, user/peer provenance and person-only mode control. Refs #1622.
 - Record hash-only pending Claude instruction evidence and confirm it against the bound native transcript; it grants no command authority. Refs #1622.
 - `ahub init` creates a separate hub-owned jcode home (only the hub entry, your `jcode_mcp_allow` servers and the hub skills; prints the `jcode login` step and sets `jcode_home` in `config.local.json` on the rerun after you log in; `--no-jcode-home` skips it), and `ahub roster add <peer>` shows a preflight and asks before adding (`--yes` without a terminal). Refs #1627, hub task 1073.
 - Add Claude plugin skills for hub status, management, use and person-run commands, with a doctor check. Refs #1622.

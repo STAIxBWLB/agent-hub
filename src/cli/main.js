@@ -6,6 +6,14 @@ if (!version || !(Number(version[1]) > 1 || (Number(version[1]) === 1 && (Number
   process.exit(1);
 }
 
+// An instructed child is confined to its inherited daemon IPC channel; a WebSocket cannot be substituted.
+if (process.env.AGENTHUB_INSTRUCTED_IPC !== undefined) {
+  const OriginalWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = class extends OriginalWebSocket {
+    constructor() { throw new Error("WebSocket unavailable in an instructed child"); }
+  };
+}
+
 // Shell completion asks on every Tab: answer from the help entries without loading the CLI (#603).
 if (process.argv[2] === "__complete") {
   const { completeWords } = await import("./completion.ts");

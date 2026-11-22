@@ -12132,6 +12132,19 @@ var init_reviewer_pool = __esm(() => {
   init_review_budget();
 });
 
+// src/cli/model.ts
+var init_model = __esm(() => {
+  init_model_token();
+});
+
+// src/hub/instructed-exact.ts
+import { AsyncLocalStorage } from "async_hooks";
+var instructedExecution;
+var init_instructed_exact = __esm(() => {
+  init_model();
+  instructedExecution = new AsyncLocalStorage;
+});
+
 // src/hub/tool-refusal.ts
 var init_tool_refusal = () => {};
 
@@ -13175,7 +13188,7 @@ var init_test_integrity = __esm(() => {
 var init_plan_conformance = () => {};
 
 // src/hub/control-write-trace.ts
-import { AsyncLocalStorage } from "async_hooks";
+import { AsyncLocalStorage as AsyncLocalStorage2 } from "async_hooks";
 function isObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -13650,7 +13663,7 @@ var init_control_write_trace = __esm(() => {
     "snapshot"
   ];
   CONTROL_WRITE_REQUEST_MAX_AGE_MS = 5 * 60000;
-  currentTrace = new AsyncLocalStorage;
+  currentTrace = new AsyncLocalStorage2;
   OPERATIONS = {
     hub_task_propose: "hub_task_propose",
     hub_review: "hub_review",
@@ -14229,7 +14242,7 @@ var init_profile_lock_diagnostic = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-guard.ts
-import { AsyncLocalStorage as AsyncLocalStorage2 } from "async_hooks";
+import { AsyncLocalStorage as AsyncLocalStorage3 } from "async_hooks";
 var doctorContext;
 var init_sync_placement_guard = __esm(() => {
   init_sync_placement_active();
@@ -14240,7 +14253,7 @@ var init_sync_placement_guard = __esm(() => {
   init_shard();
   init_sync_placement_format();
   init_profile_lock_diagnostic();
-  doctorContext = new AsyncLocalStorage2;
+  doctorContext = new AsyncLocalStorage3;
 });
 // node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
 var MAX_LOG_BYTES;
@@ -14481,10 +14494,10 @@ var init_shard_bridge = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
-import { AsyncLocalStorage as AsyncLocalStorage3 } from "async_hooks";
+import { AsyncLocalStorage as AsyncLocalStorage4 } from "async_hooks";
 var scope;
 var init_cli_attribution = __esm(() => {
-  scope = new AsyncLocalStorage3;
+  scope = new AsyncLocalStorage4;
 });
 
 // node_modules/@staix/agent-mem/src/memory/home.ts
@@ -16187,6 +16200,7 @@ var init_considered_findings = __esm(() => {
 // src/hub/board.ts
 var SURVEY_STORE_BYTES, GUIDANCE_VARIANT_SELECT, HOST_MERGE_ADOPTION, HOST_SPEC_ACCEPTANCE_CARRY, HOST_ROADMAP_DRAFT, EXECUTION_REFERENCE_SELECT, CLASSES2, SPEC_ACCEPTANCE_FIELD_BYTES, SPEC_ACCEPTANCE_TOTAL_BYTES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
+  init_instructed_exact();
   init_tool_refusal();
   init_guidance_variants();
   init_execution_links();
@@ -31339,7 +31353,7 @@ var MACHINE_LOCAL = [
   "corpus.paths",
   "invocation"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "edit_governance.arm", "roadmap.github_mirror", "roadmap.github_write", "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_mcp_allow", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "instructed", "edit_governance.arm", "roadmap.github_mirror", "roadmap.github_write", "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_mcp_allow", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
@@ -31415,8 +31429,61 @@ function readAdapterModuleDeclarations(cwd, layers) {
 }
 
 // src/hub/control-client.ts
-init_project();
 import { readFileSync as readFileSync16 } from "fs";
+
+// src/hub/instructed-ipc.ts
+class InstructedIpcSocket {
+  maxFrame;
+  readyState = WebSocket.CONNECTING;
+  onopen = null;
+  onmessage = null;
+  onerror = null;
+  onclose = null;
+  message = (value) => {
+    try {
+      const data = JSON.stringify(value);
+      if (typeof data !== "string" || Buffer.byteLength(data) > this.maxFrame)
+        throw new Error("invalid inherited control frame");
+      this.onmessage?.({ data });
+    } catch {
+      this.close();
+    }
+  };
+  disconnected = () => {
+    this.readyState = WebSocket.CLOSED;
+    this.onclose?.({ code: 1006, reason: "inherited control channel closed" });
+  };
+  constructor(maxFrame) {
+    this.maxFrame = maxFrame;
+    if (typeof process.send !== "function")
+      throw new Error("inherited control channel unavailable");
+    process.on("message", this.message);
+    process.once("disconnect", this.disconnected);
+    queueMicrotask(() => {
+      if (this.readyState === WebSocket.CONNECTING) {
+        this.readyState = WebSocket.OPEN;
+        this.onopen?.();
+      }
+    });
+  }
+  send(message) {
+    if (this.readyState !== WebSocket.OPEN || Buffer.byteLength(message) > this.maxFrame || typeof process.send !== "function")
+      throw new Error("invalid inherited control frame");
+    process.send(JSON.parse(message));
+  }
+  close() {
+    if (this.readyState === WebSocket.CLOSED)
+      return;
+    this.readyState = WebSocket.CLOSED;
+    process.removeListener("message", this.message);
+    process.removeListener("disconnect", this.disconnected);
+    if (process.connected && typeof process.disconnect === "function")
+      process.disconnect();
+  }
+}
+
+// src/hub/control-client.ts
+init_project();
 import { join as join37, resolve as resolve18 } from "path";
 
 // src/hub/tool-request.ts
@@ -31545,6 +31612,7 @@ function readControl(stateDir) {
     return;
   }
 }
+var instructedIpcClaimed = false;
 var instancePins = new Map;
 var INVOCATION_CONTROL_TIMEOUT_MS = 3665000;
 function controlRequestTimeout(msg, requested = 30000) {
@@ -31620,8 +31688,13 @@ class ControlClient {
       instanceId: pin?.instanceId ?? hello.instanceId ?? control.instanceId,
       projectRoot: hello.projectRoot ?? control.cwd
     };
+    const instructedIpc = process.env.AGENTHUB_INSTRUCTED_IPC;
+    if (instructedIpc !== undefined && (instructedIpc !== "1" || hello.role !== "console" || instructedIpcClaimed))
+      return Promise.reject(new Error("invalid or already used instructed control channel"));
+    if (instructedIpc !== undefined)
+      instructedIpcClaimed = true;
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(control.url);
+      const ws = instructedIpc === undefined ? new WebSocket(control.url) : new InstructedIpcSocket(1024 * 1024);
       const client = new ControlClient(ws);
       const timer = setTimeout(() => refuse(Object.assign(new Error(`hub connection timed out at ${control.url}`), { code: "AHUB_CONNECT_TIMEOUT" })), timeoutMs);
       const refuse = (error) => {

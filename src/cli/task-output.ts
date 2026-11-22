@@ -93,7 +93,7 @@ const planBlock = (plan: any, columns: number | undefined): Line[] => {
   const keys = ["paths", "symbols", "signatures", "insertion_points", "sections", "sources", "claims"];
   return keys.flatMap(key => bullets(key.replace("_", " "), list(plan?.[key]), columns, undefined, "  "));
 };
-const historyRows = (history: any[], now: number): Span[][] => history.map(entry => [s(when(entry.at, now), "muted"), s(entry.by ?? "-"), s(entry.event ?? "-", entry.event === "approved" ? "success" : entry.event === "changes_requested" ? "attention" : undefined), s(dash(entry.note))]);
+const historyRows = (history: any[], now: number): Span[][] => history.map(entry => [s(when(entry.at, now), "muted"), s(entry.instructed && entry.instructedPeer ? `${entry.by ?? "user"} via ${entry.instructedPeer}` : entry.by ?? "-"), s(entry.event ?? "-", entry.event === "approved" ? "success" : entry.event === "changes_requested" ? "attention" : undefined), s(dash(entry.note))]);
 
 /** The one task block: identity, who holds it, what it waits for, then plan, receipt and history. */
 function taskBlock(task: any, columns: number | undefined, now: number, detail: boolean): Line[] {

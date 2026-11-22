@@ -76,20 +76,34 @@ function commandRecord(raw: unknown, row: Row, now: number): { uuid: string; arg
 /** Private local state. No caller receives prompt text until host-only confirmation. */
 export class InstructionReceipts {
   private readonly db: Database;
+  private readonly exactLeases = new Map<string, { session: string; created: number }>();
   constructor(path: string, private readonly evidence: InstructionEvidence, private readonly clock: () => number = Date.now) {
     this.db = openHubDatabase(path, { create: true });
     this.db.run(`CREATE TABLE IF NOT EXISTS instruction_receipts (
       id TEXT PRIMARY KEY, session TEXT NOT NULL, prompt_id TEXT NOT NULL, transcript TEXT NOT NULL, home TEXT NOT NULL, cwd TEXT NOT NULL, project TEXT NOT NULL,
       hash TEXT NOT NULL, peer TEXT, created INTEGER NOT NULL, state TEXT NOT NULL, uses INTEGER NOT NULL DEFAULT 0, record_uuid TEXT UNIQUE)`);
     this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS instruction_prompt_id ON instruction_receipts(session, prompt_id)");
+    this.db.run("CREATE TABLE IF NOT EXISTS instructed_mode (id INTEGER PRIMARY KEY CHECK (id = 1), mode TEXT NOT NULL)");
   }
-  close(): void { this.db.close(); }
+  close(): void { this.exactLeases.clear(); this.db.close(); }
+  /** Missing witness uses the shipped default; malformed retained state never enables the tier. */
+  mode(): "off" | "exact" {
+    const row = this.db.query("SELECT mode FROM instructed_mode WHERE id = 1").get() as { mode: unknown } | null;
+    if (!row) return "exact";
+    if (row.mode !== "off" && row.mode !== "exact") throw new Error("instructed mode witness is invalid");
+    return row.mode;
+  }
+  setMode(value: "off" | "exact"): void {
+    if (value !== "off" && value !== "exact") throw new Error("invalid instructed mode");
+    this.db.query("INSERT INTO instructed_mode(id, mode) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET mode = excluded.mode").run(value);
+  }
   pending(value: PendingInstruction, now: number): boolean {
     if (!UUID.test(value.session) || !UUID.test(value.promptId)
       || !/^[0-9a-f]{64}$/.test(value.hash) || !Number.isSafeInteger(now) || now < 0 || !isAbsolute(value.home) || !isAbsolute(value.cwd) || !isAbsolute(value.project) || !isAbsolute(value.transcript)
       || [value.home, value.cwd, value.project, value.transcript].some(path => path.length > 4096 || /[\p{Cc}\p{Cf}]/u.test(path))
       || value.peer !== undefined && !/^[a-z][a-z0-9_-]{0,63}$/.test(value.peer)) return false;
     return this.db.transaction(() => {
+      for (const [id, lease] of this.exactLeases) if (lease.created <= now - MAX_AGE_MS || lease.created > now) this.exactLeases.delete(id);
       this.db.query("DELETE FROM instruction_receipts WHERE created <= ?").run(now - MAX_AGE_MS);
       const count = this.db.query("SELECT COUNT(*) AS n FROM instruction_receipts").get() as { n: number };
       if (count.n >= MAX_RECEIPTS) return false;
@@ -154,8 +168,23 @@ export class InstructionReceipts {
     return this.db.query("UPDATE instruction_receipts SET uses = uses + 1, state = CASE WHEN uses + 1 >= ? THEN 'closed' ELSE state END WHERE id = ? AND state = 'confirmed' AND created <= ? AND created > ? AND uses < ?")
       .run(MAX_OPERATIONS, id, now, now - MAX_AGE_MS, MAX_OPERATIONS).changes === 1;
   }
+  /** Exact mode closes the durable receipt before the effect; a host-only lease tracks an in-flight stop. */
+  consumeExact(id: string, now: number): boolean {
+    if (!Number.isSafeInteger(now) || now < 0) return false;
+    const row = this.db.query("UPDATE instruction_receipts SET uses = 1, state = 'closed' WHERE id = ? AND state = 'confirmed' AND uses = 0 AND created <= ? AND created > ? RETURNING session, created")
+      .get(id, now, now - MAX_AGE_MS) as { session: string; created: number } | null;
+    if (!row) return false;
+    this.exactLeases.set(id, row);
+    return true;
+  }
+  exactCurrent(id: string, now: number): boolean {
+    const lease = this.exactLeases.get(id);
+    return !!lease && Number.isSafeInteger(now) && now >= lease.created && now - lease.created < MAX_AGE_MS;
+  }
+  finishExact(id: string): void { this.exactLeases.delete(id); }
   stop(session: string, peer?: string): void {
     if (!UUID.test(session)) return;
+    for (const [id, lease] of this.exactLeases) if (lease.session === session) this.exactLeases.delete(id);
     this.db.query("UPDATE instruction_receipts SET state = 'closed' WHERE session = ? AND state != 'closed' AND (? IS NULL OR peer IS NULL OR peer = ?)").run(session, peer ?? null, peer ?? null);
   }
 }

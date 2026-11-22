@@ -50,6 +50,12 @@ Optional ports have explicit meaning: absent keeps the generic path, while prese
 
 Adapters translate different interaction surfaces without changing the peer's task identity. Claude's plugin channel connects through MCP and the hub control service; Codex is proxied through app-server; ACP peers share an ACP transport; Pi uses its extension bridge. Kimi defaults to a pull-only TUI, with headless ACP as a separate selected form under the same peer id. The TUI does not inherit headless push, session, or recovery behavior. Keeping forms distinct lets the hub preserve the native user interaction model while enforcing one role and delivery policy ([#316](https://github.com/STAIxBWLB/agent-hub/issues/316), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625)).
 
+## Exact instructed CLI authority
+
+A managed Claude session may request one exact command from a confirmed instruction receipt. The daemon derives the command from the session transcript, never from the tools client's request. It admits only explicitly classified console or conductor forms outside the closed trust, permission, machine-local path, irreversible deletion, release, identity and PII classes. Unknown forms stay closed. Exact mode consumes the receipt before execution; Stop, expiry, a session replacement, privacy changes or loss of managed-launch proof revoke an in-flight operation.
+
+The daemon starts its own captured installed CLI using Bun IPC and routes that child's messages through the existing control handler with host-owned receipt and peer provenance. The child never opens a WebSocket. A runtime in any checkout, project root or peer write root is refused. Same-user debugging, socket duplication, or modification of the installed package remains outside this proof.
+
 ## Qwen deny input fence (#888)
 
 A successfully appended `allowed: false` has a known delivery disposition, but

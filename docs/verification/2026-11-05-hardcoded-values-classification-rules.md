@@ -62,6 +62,14 @@ Rulings of hub task 1072 (the conductor, 2026-11-22), per key, not calibrated:
 - `instruction-receipt.ts` `MAX_OPERATIONS`: safety floor, bounds authority.
 - `instruction-receipt.ts` `MAX_RECEIPTS`: safety floor, bounds rows per external hook event.
 
+Rulings of hub task 1065 (the conductor, 2026-11-22), per key, not calibrated:
+
+- `daemon.ts` `drain` `64 * 1024`: safety floor, caps external process output.
+- `daemon.ts` `setTimeout=30_000`: operational, subprocess deadline under R2.
+- `instructed-exact.ts` `tail.length >= 2`: contract, mirrors the `settings set` argument count.
+- `instructed-exact.ts` `tail.length <= 3`: contract, mirrors the `settings set` argument count.
+
+
 
 R4 (a `maxTokens` or `contextWindow` default, 97%) and R7 (a length bound in `src/adapters`, `src/models`, `src/local`, 91%) agree with the file, but no baseline key was labelled by R4, and R7's five baseline keys have no exact agreeing precedent, so they stay in the baseline. Taken together the rules agree with 303 of the 311 decided keys they cover (97.4%) and with 97% and 98% on the two halves of a by-file hold-out (files split by a hash of their path), which is the same data seen differently, not an independent reader.
 

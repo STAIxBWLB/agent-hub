@@ -181,3 +181,5 @@ directory, or a link inside the tree, is reported and left alone, while a symlin
 choice and is resolved with `realPath` (`src/hub/project.ts`), never `realpathSync`. The file count and size are bounded
 before anything is written, and `ahub setup --undo` removes only the hub's own unmodified trees. Tests use fixture homes
 only and never read or write a real agent home.
+
+- Exact instructed CLI (#1622): derive argv only from the confirmed native transcript receipt; admit only the explicit classified form list, refuse private turns and PII tasks, and close the receipt before execution. Use the daemon-captured installed runtime outside project and peer write roots; the child uses inherited Bun IPC and never a WebSocket. Preserve the current managed-session and launcher checks through the effect, and never log prompt arguments.

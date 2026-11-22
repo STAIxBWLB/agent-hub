@@ -192,6 +192,7 @@ const schema: Record<string, Check> = {
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_mcp_allow: strings, jcode_provider_profile: text,
   action_policy: block({ enabled: bool, floor: bool, always_ask: (v, k) => { actionPolicyConfig({ always_ask: v }); }, budgets: map(number(0, 1000, true), ACTION_CLASSES) }),
   permission_modes: v => { permissionDefaults(v); }, protect_instruction_files: bool,
+  instructed: block({ mode: words(["off", "exact"]) }),
   adapter_modules: v => { adapterModuleDeclarations(v); },
   adapters: v => { createProjectAdapterCatalog(v); }, instances: v => { validateInstances(v, createProjectAdapterCatalog()); }, pet: validatePetConfig,
   batch_max: number(1, 100_000, true), batch_ms: number(0, 2_147_483_647), queue_cap: number(1, 1_000_000, true),
@@ -283,7 +284,7 @@ const restart: Record<string, string> = {
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", roadmap: "GitHub mirror authority is bound at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
-const live = new Set(["visuals", "action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "worktrees", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "questions", "pet", "specs", "supervision", "edit_governance"]);
+const live = new Set(["instructed", "visuals", "action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "worktrees", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "questions", "pet", "specs", "supervision", "edit_governance"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges", "memory.preface_unused_after"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {
