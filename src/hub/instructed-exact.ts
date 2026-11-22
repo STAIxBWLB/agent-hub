@@ -64,6 +64,11 @@ export function exactForm(argv: readonly string[]): ExactForm | undefined {
     if (taskClass && /^[a-z][a-z0-9_-]*$/.test(taskClass) && title.length && title.every(word => word && !word.startsWith("--"))) return { argv: [...argv], screen: true };
     return;
   }
+  if (command === "roadmap" && sub === "state") {
+    const [id, state, ...extra] = tail;
+    if (!extra.length && id && /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id)) && (state === "done" || state === "dropped")) return { argv: [...argv] };
+    return;
+  }
   if (command === "study" && sub === "approve") {
     const parsed = parseStudyArgs(argv.slice(1));
     if (!("usage" in parsed) && parsed.op === "approve") return { argv: [...argv], screen: true, study: { id: parsed.id, revision: parsed.revision } };

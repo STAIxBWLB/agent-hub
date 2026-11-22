@@ -11422,6 +11422,11 @@ export async function startDaemon(opts: DaemonOptions) {
         try { if (board.hasMilestoneState()) return "target lacks roadmap; retained milestones require a supporting daemon; choose a target advertising roadmap"; }
         catch { return "roadmap compatibility is unknown; inspect retained milestone state or choose a supporting target"; }
       }
+      // #1622 family 4: a milestone history row that carries instructed provenance throws in a daemon that predates it, so the floor holds only while such a row exists.
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("roadmap_instructed")) {
+        try { if (board.hasInstructedMilestoneHistory()) return "target lacks roadmap_instructed; retained instructed milestone verdicts require a supporting daemon; choose a target advertising roadmap_instructed"; }
+        catch { return "roadmap instructed compatibility is unknown; inspect retained milestone history or choose a supporting target"; }
+      }
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_quota")) {
         const proof = reviewerQuotaIntegrity();
         let explicit = config.review.gate !== undefined && config.review.gate !== DEFAULT_REVIEW_GATE || config.review.max_minutes !== undefined && config.review.max_minutes !== DEFAULT_REVIEW_MAX_MINUTES || config.review.unknown_quota !== undefined && config.review.unknown_quota !== DEFAULT_REVIEW_UNKNOWN_QUOTA;

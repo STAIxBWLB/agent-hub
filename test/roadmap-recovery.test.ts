@@ -97,6 +97,24 @@ test("retained roadmap refuses unsupported inspect/prepare/commit before recover
   expect((await person.request(request("abort"))).ok).toBe(true);
 }, 20_000);
 
+test("an instructed milestone verdict raises the recovery floor to roadmap_instructed only while it is retained (#1622 family 4)", async () => {
+  const f = fixture(); const milestone = retained(f); await startFixture(f); const person = await personAt(f.stateDir);
+  const withoutInstructed = DAEMON_FEATURES.filter(feature => feature !== "roadmap_instructed");
+  // No instructed entry yet: a target that advertises roadmap but not roadmap_instructed is accepted.
+  const accepted = await person.request(request("inspect", withoutInstructed));
+  expect<boolean>(accepted.ok, accepted.error).toBe(true);
+  // Write one the way an instructed run does, then the same target is refused before any recovery effect.
+  f.board.updateMilestone(milestone.id, { state: "done" }, milestone.revision, { at: 2000, by: "user", event: "state", fields: ["state"], instructed: true, instructedPeer: "claude", instructionReceipt: "3004bef3-8884-4e54-bbf2-c5c760a52090" });
+  for (const op of ["inspect", "prepare"]) {
+    const reply = await person.request(request(op, withoutInstructed));
+    expect(reply.ok).toBe(false); expect(String(reply.error)).toContain("target lacks roadmap_instructed");
+    const status = (await person.request({ t: "status" })).status;
+    expect(status.recovery?.operationId).toBeUndefined(); expect(status.stopping).not.toBe(true);
+  }
+  expect(JSON.stringify((await person.request(request("inspect", withoutInstructed))).error)).not.toContain("3004bef3");
+  const full = await person.request(request("inspect")); expect<boolean>(full.ok, full.error).toBe(true); // a supporting target is accepted
+}, 20_000);
+
 async function committedFixture() {
   const f = fixture(); retained(f); const source = await startFixture(f), person = await personAt(f.stateDir);
   const prepared = await person.request(request("prepare")); expect<boolean>(prepared.ok, prepared.error).toBe(true);

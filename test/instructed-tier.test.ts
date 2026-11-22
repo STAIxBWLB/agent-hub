@@ -123,8 +123,8 @@ test("a newer unconfirmed or closed intent never revives an older receipt", asyn
 
 test("intent command policy closes spending, identity, release and unknown forms", async () => {
   const { intentForm } = await import("../src/hub/instructed-intent.ts");
-  for (const args of [["task", "assign", "1055", "claude"], ["task", "claim", "1055", "2", "supported"], ["backlog", "pull", "1055"], ["backlog", "return", "1055"], ["stop", "claude"], ["model", "clear", "claude"], ["results"], ["capabilities"], ["learn", "list"], ["learn", "accept", "1055"], ["review", "1055", "approved"]]) expect(intentForm(args), args.join(" ")).toBeDefined();
-  for (const args of [["settings", "set", "tasks.auto_pull", "true"], ["agents", "trust", "claude", "1"], ["permission", "claude", "never-ask"], ["reset"], ["sdlc", "merge", "1"], ["task", "assign", "1", "claude", "--as-user"], ["results", "--read-all"], ["role", "assign", "claude", "planner"], ["title", "claude", "private text"], ["backlog", "add", "implement", "title"], ["backlog", "pin", "1", "0", "true", "reason"], ["backlog", "split", "1", "0", "[]", "reason"], ["study", "approve", "rc-0123456789ab", "1"], ["roadmap", "state", "1", "done"], ["task", "claim", "1", "1", "supported", "--manifest", "file"], ["task", "handoff", "--project", "elsewhere", "title"], ["review", "1", "approved", "some note"], ["unknown"]]) expect(intentForm(args), args.join(" ")).toBeUndefined();
+  for (const args of [["task", "assign", "1055", "claude"], ["task", "claim", "1055", "2", "supported"], ["backlog", "pull", "1055"], ["backlog", "return", "1055"], ["stop", "claude"], ["model", "clear", "claude"], ["results"], ["capabilities"], ["learn", "list"], ["learn", "accept", "1055"], ["review", "1055", "approved"], ["roadmap", "state", "1055", "done"], ["roadmap", "state", "1055", "dropped"]]) expect(intentForm(args), args.join(" ")).toBeDefined();
+  for (const args of [["settings", "set", "tasks.auto_pull", "true"], ["agents", "trust", "claude", "1"], ["permission", "claude", "never-ask"], ["reset"], ["sdlc", "merge", "1"], ["task", "assign", "1", "claude", "--as-user"], ["results", "--read-all"], ["role", "assign", "claude", "planner"], ["title", "claude", "private text"], ["backlog", "add", "implement", "title"], ["backlog", "pin", "1", "0", "true", "reason"], ["backlog", "split", "1", "0", "[]", "reason"], ["study", "approve", "rc-0123456789ab", "1"], ["roadmap", "state", "1", "active"], ["task", "claim", "1", "1", "supported", "--manifest", "file"], ["task", "handoff", "--project", "elsewhere", "title"], ["review", "1", "approved", "some note"], ["unknown"]]) expect(intentForm(args), args.join(" ")).toBeUndefined();
 });
 
 test("instructed mode defaults to intent and rejects unknown modes", async () => {
@@ -570,6 +570,30 @@ test("the daemon executes confirmed exact and intent commands through its inheri
         expect(JSON.stringify(pushes)).not.toContain(prompt);
         expect(JSON.stringify(worker.calls)).not.toContain(prompt);
       }
+      // #1622 family 4: an instructed milestone verdict. Two milestones, so a refused attempt can be told apart from the executed one.
+      const milestoneBoard = new Board(join(stateDir, "hub.db"));
+      const settled = milestoneBoard.newMilestone({ title: "Instructed settle", outcome: "Outcome", state: "active" }, "user"), wrongId = milestoneBoard.newMilestone({ title: "Not named", outcome: "Outcome", state: "active" }, "user");
+      milestoneBoard.close();
+      const milestonePrompt = async (promptId: string, uuid: string, text: string) => {
+        const at = Date.now();
+        expect(captured!.pending({ session, promptId, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(text) }, at)).toBe(true);
+        writeFileSync(transcript, JSON.stringify({ type: "user", uuid, sessionId: session, promptId, version: "2.1.329", timestamp: new Date(at + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${text}</command-args>` } }) + "\n");
+        await Bun.sleep(5);
+      };
+      await milestonePrompt("3004bef3-8884-4e54-bbf2-c5c760a52141", "3004bef3-8884-4e54-bbf2-c5c760a52142", `please close milestone ${settled.id} as done`);
+      const unnamed = await tools.request({ t: "instruction_execute", session, argv: ["roadmap", "state", String(wrongId.id), "done"] }, 35_000);
+      expect(unnamed.ok).toBe(false); expect(String(unnamed.error)).toContain("not written in the person's instruction");
+      const notFinal = await tools.request({ t: "instruction_execute", session, argv: ["roadmap", "state", String(settled.id), "active"] }, 35_000);
+      expect(notFinal.ok).toBe(false);
+      const roadmapDone = await tools.request({ t: "instruction_execute", session, argv: ["roadmap", "state", String(settled.id), "done"] }, 35_000);
+      expect(roadmapDone).toMatchObject({ ok: true, exitCode: 0 });
+      const roadmapRead = new Board(join(stateDir, "hub.db"));
+      try {
+        expect(roadmapRead.milestone(settled.id)!.state).toBe("done");
+        expect(roadmapRead.milestone(settled.id)!.history.at(-1)).toMatchObject({ by: "user", event: "state", fields: ["state"], instructed: true, instructedPeer: "claude" });
+        expect(roadmapRead.milestone(wrongId.id)!.state).toBe("active"); // a refused attempt wrote nothing
+        expect(roadmapRead.hasInstructedMilestoneHistory()).toBe(true);
+      } finally { roadmapRead.close(); }
       captured!.setMode("exact");
       const manifestPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52121", manifestArgs = `run task claim ${intentTask.id} 1 unsupported --manifest input.json --disposition resolved`, manifestAt = Date.now();
       expect(captured!.pending({ session, promptId: manifestPrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(manifestArgs) }, manifestAt)).toBe(true);

@@ -1,5 +1,5 @@
 import { requireConductor } from "./conductor.ts";
-import { instructedExecution } from "./instructed-exact.ts";
+import { instructedExecution, instructedHistory } from "./instructed-exact.ts";
 import { managedTaskPullRequest } from "./task-pr.ts";
 import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind, type DecomposePart, type DecomposeIntake, type MilestoneDecomposition, type DecompositionAccept } from "./roadmap.ts";
 import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
@@ -3611,7 +3611,9 @@ export class Tasks {
     this.roadmapWriteAuthority(by); this.roadmapStateAuthority(by, state);
     this.roadmapParsed(() => parseMilestonePatch({ state }));
     const row = this.roadmapCurrent(id, state);
-    if (row.state !== state) this.d.board.updateMilestone(id, { state }, row.revision, { by, at: this.d.now?.() ?? Date.now(), event: "state", fields: ["state"] });
+    // #1622 family 4: an instructed person verdict records the same three provenance keys task history does, for done and dropped only.
+    const instruction = by === USER && (state === "done" || state === "dropped") ? instructedHistory(by) : {};
+    if (row.state !== state) this.d.board.updateMilestone(id, { state }, row.revision, { by, at: this.d.now?.() ?? Date.now(), event: "state", fields: ["state"], ...instruction });
     return this.roadmapResult(by, id);
   }
 

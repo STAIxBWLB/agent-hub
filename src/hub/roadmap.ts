@@ -17,6 +17,8 @@ export type MilestoneLinkKind = typeof MILESTONE_LINK_KINDS[number];
 export interface MilestoneHistoryEntry {
   at: number; by: string; event: "created" | "edited" | "linked" | "unlinked" | "ordered" | "state";
   fields?: string[]; kind?: MilestoneLinkKind;
+  /** #1622 family 4: the same three keys task history carries for an instructed person verdict. Only on a `state` entry; the write path restricts them to done and dropped. */
+  instructed?: true; instructedPeer?: string; instructionReceipt?: string;
 }
 export interface MilestoneInput {
   title: string; outcome: string; state?: MilestoneState; horizon?: MilestoneHorizon; order?: number;
@@ -99,7 +101,7 @@ export function milestoneHistory(raw: unknown): MilestoneHistoryEntry[] {
   if (!Array.isArray(raw) || raw.length > MILESTONE_HISTORY_LIMIT) throw new Error("roadmap history is full or invalid");
   return raw.map(value => {
     const row = object(value);
-    if (Object.keys(row).some(key => !["at", "by", "event", "fields", "kind"].includes(key)) || !["created", "edited", "linked", "unlinked", "ordered", "state"].includes(String(row.event))) throw new Error("roadmap history event is invalid");
+    if (Object.keys(row).some(key => !["at", "by", "event", "fields", "kind", "instructed", "instructedPeer", "instructionReceipt"].includes(key)) || !["created", "edited", "linked", "unlinked", "ordered", "state"].includes(String(row.event))) throw new Error("roadmap history event is invalid");
     const entry: MilestoneHistoryEntry = { at: milestoneId(row.at), by: milestoneActor(row.by), event: row.event as MilestoneHistoryEntry["event"] };
     if (row.fields !== undefined) {
       if (!Array.isArray(row.fields) || row.fields.length > FIELDS.length || new Set(row.fields).size !== row.fields.length || row.fields.some(field => !(FIELDS as readonly unknown[]).includes(field))) throw new Error("roadmap history fields are invalid");
@@ -108,6 +110,14 @@ export function milestoneHistory(raw: unknown): MilestoneHistoryEntry[] {
     if (row.kind !== undefined) {
       if (!(MILESTONE_LINK_KINDS as readonly unknown[]).includes(row.kind)) throw new Error("roadmap history link kind is invalid");
       entry.kind = row.kind as MilestoneLinkKind;
+    }
+    const provenance = ["instructed", "instructedPeer", "instructionReceipt"].filter(key => row[key] !== undefined);
+    if (provenance.length) {
+      // All three together, on a state entry that names exactly the state field; anything else is a forged or truncated record.
+      if (provenance.length !== 3 || row.instructed !== true || row.event !== "state" || !Array.isArray(row.fields) || row.fields.length !== 1 || row.fields[0] !== "state"
+        || typeof row.instructedPeer !== "string" || row.instructedPeer.length > MILESTONE_LIMITS.actor || !/^[a-z][a-z0-9-]*$/.test(row.instructedPeer)
+        || typeof row.instructionReceipt !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(row.instructionReceipt)) throw new Error("roadmap history instructed provenance is invalid");
+      entry.instructed = true; entry.instructedPeer = row.instructedPeer; entry.instructionReceipt = row.instructionReceipt;
     }
     return entry;
   });
