@@ -31339,7 +31339,7 @@ var MACHINE_LOCAL = [
   "corpus.paths",
   "invocation"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "edit_governance.arm", "roadmap.github_mirror", "roadmap.github_write", "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "edit_governance.arm", "roadmap.github_mirror", "roadmap.github_write", "research.runners", "rooms", "tasks.queue_backpressure", "context.max_assignment_used", "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_mcp_allow", "jcode_provider_profile", "start.agents", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
@@ -32070,7 +32070,7 @@ init_permission_mode();
 import { dirname as dirname18, isAbsolute as isAbsolute11, sep as sep4 } from "path";
 init_model_token();
 init_model_token();
-var JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile"];
+var JCODE_FIELDS = ["jcode_home", "jcode_mcp_allow", "provider", "model", "provider_profile"];
 var MAX_JCODE_INSTANCES = 8;
 var MAX_INSTANCES = 64;
 var FLOW_ROLES = new Set(["planner", "implementer", "verifier", "reviewer", "conductor"]);
@@ -32103,6 +32103,11 @@ function roles(value, field) {
   }
   return out;
 }
+function mcpAllowNames(value, field) {
+  if (!Array.isArray(value) || value.length > 64 || value.some((name) => typeof name !== "string" || !name.trim() || Buffer.byteLength(name) > 256 || /\p{Cc}/u.test(name)))
+    return fail4(field, "must be an array of at most 64 nonempty control-free server names");
+  return [...value];
+}
 function jcodeInstanceFields(entry, path) {
   const home = entry.jcode_home?.value;
   if (typeof home !== "string" || !isAbsolute11(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
@@ -32117,6 +32122,8 @@ function jcodeInstanceFields(entry, path) {
       return fail4(`${path}.${key}`, "must be one bounded printable word without spaces");
     out[key] = word;
   }
+  if (entry.jcode_mcp_allow)
+    out.jcode_mcp_allow = mcpAllowNames(entry.jcode_mcp_allow.value, `${path}.jcode_mcp_allow`);
   if (entry.start_mode && entry.start_mode.value !== "headless")
     return fail4(`${path}.start_mode`, "a Jcode instance starts headless");
   return out;
