@@ -3129,7 +3129,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       } finally { hub.close(); }
       return;
     }
-    return fail("usage: ahub instructed run [<command> <args...>]");
+    return fail("usage: ahub instructed run [<operation> <args...>]");
   },
   "instruction-hook": async () => {
     if (args.length || caller.role !== "tools" || liveTest) return;
