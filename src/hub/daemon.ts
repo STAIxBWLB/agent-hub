@@ -131,7 +131,7 @@ import { roadmapConfig, type MilestoneLinkKind, type MilestoneState, type Roadma
 import { mcpAllowNames } from "./instances.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { instructedMode, parseExactInstruction, exactForm, instructedExecution, type InstructedExecution } from "./instructed-exact.ts";
-import { intentForm, literalInstructionId } from "./instructed-intent.ts";
+import { intentForm, intentRefusal, literalInstructionIds } from "./instructed-intent.ts";
 import { instructedRuntimeAllowed } from "./instructed-runtime.ts";
 import { classifyPeerCommand, cliCommandLabel } from "../cli/identity.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateRawConfig, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
@@ -12833,16 +12833,14 @@ export async function startDaemon(opts: DaemonOptions) {
               if (!raw || /[\p{Cc}\p{Cf}]/u.test(raw) || raw.includes("~~~")) return { ok: false, error: "instruction syntax is not supported for exact mode; the original command cannot be rendered safely" };
               return { ok: false, error: `this syntax is not proven for instructed exact mode. The person runs the original command in a terminal:\n\n~~~sh\ncd ${shellQuote(opts.cwd)} && ahub ${raw}\n~~~\n\nSuccess: the command reports its result in that terminal.` };
             }
-            if (!form || (typedExact || initialMode === "exact") && !["console", "conductor"].includes(classifyPeerCommand(argv[0]!, argv.slice(1), adapterCatalog))) return { ok: false, error: `this form is not proven for instructed ${typedExact || initialMode === "exact" ? "exact" : "intent"} mode. The person runs the same command in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub ${argv.map(shellQuote).join(" ")}\n\`\`\`\n\nSuccess: the command reports its result in that terminal.` };
-            if ("verdictId" in form && typeof form.verdictId === "string" && !literalInstructionId(receipt.args, form.verdictId)) return { ok: false, error: "the verdict's item id is not written in the person's instruction; type the id in a new instruction" };
+            if (!form || (typedExact || initialMode === "exact") && !["console", "conductor"].includes(classifyPeerCommand(argv[0]!, argv.slice(1), adapterCatalog))) return { ok: false, error: `${typedExact || initialMode === "exact" ? "this form is not proven for instructed exact mode" : intentRefusal(argv)}. The person runs the same command in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub ${argv.map(shellQuote).join(" ")}\n\`\`\`\n\nSuccess: the command reports its result in that terminal.` };
+            if ("verdictIds" in form && Array.isArray(form.verdictIds) && !literalInstructionIds(receipt.args, form.verdictIds)) return { ok: false, error: "the verdict's item id or slot is not written in the person's instruction; type it in a new instruction" };
             if (initialMode === "intent" && !typedExact && !tasks.publicMetadataText(JSON.stringify(argv))) return { ok: false, error: "the selected command may contain private information; run the command in a terminal" };
-            if (initialMode === "intent" && !typedExact && receipt.args && argv.slice(2).join(" ").includes(receipt.args)) return { ok: false, error: "the selected command repeats the private instruction text; use a shorter public description or run the command in a terminal" };
             const taskId = form.taskId;
             const guarded = () => {
               current();
               if (!instructedRuntimeReady()) throw new InstructionRefusal(runtimeRefusal);
               if (taskId !== undefined) { const task = board.get(taskId); if (!task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) throw new InstructionRefusal("the command targets unavailable or private work; run the command in a terminal"); }
-              if ("dependencyIds" in form && Array.isArray(form.dependencyIds) && form.dependencyIds.some(id => { const task = board.get(id); return !task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task); })) throw new InstructionRefusal("the command references unavailable or private work; run the command in a terminal");
               if ("review" in form && form.review && (taskId === undefined || board.get(taskId)?.reviewer !== USER)) throw new InstructionRefusal("only a task assigned to the person as reviewer can receive this verdict; run the command in a terminal");
               if (form.targetPeer && board.list().some(task => (task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) && (task.owner === form.targetPeer || task.reviewer === form.targetPeer || task.reserved === form.targetPeer))) throw new InstructionRefusal("the command targets private work; run the command in a terminal");
             };

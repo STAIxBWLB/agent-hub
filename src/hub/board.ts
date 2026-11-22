@@ -565,8 +565,6 @@ export class Board {
   /** Keep the generation and business write atomic without changing Bun's reported row count. */
   private taskWrite<T extends { changes: number }>(write: () => T): T {
     return controlWriteSpan("board-write", () => this.db.transaction(() => {
-      const instruction = instructedExecution.getStore();
-      if (instruction?.active) instruction.current();
       const result = { ...write() };
       if (result.changes) this.db.run("UPDATE board_status_revision SET revision=revision+1 WHERE id=1");
       return result;
@@ -2466,7 +2464,7 @@ export class Board {
     }
     const now = Date.now(), planner = plannerValue(t.planner);
     const chosen = Object.hasOwn(t, "planner") || t.plannerReason !== undefined ? plannerMetadata(planner, t.plannerReason) : {};
-    const history: HistoryEntry[] = [{ at: now, by, ...instructedHistory(by), ...chosen, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
+    const history: HistoryEntry[] = [{ at: now, by, ...chosen, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
     const { lastInsertRowid } = this.taskWrite(() => {
       const inserted = this.db
       .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue, planner, draft) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -2867,7 +2865,7 @@ export class Board {
     if (next.plannedStart != null && next.due != null && next.plannedStart > next.due) throw new Error("planned start must not follow due");
     if (next.release != null && !this.release(next.release)) throw new Error("no such release");
     const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, key === "sdlc" ? { repo: task.sdlc?.repo ?? null, issue: task.sdlc?.issue ?? null } : task[key] ?? (key === "pinned" || key === "needsPerson" ? false : key === "deps" ? [] : null)])) as PlanningFields;
-    const now = Date.now(), entry: HistoryEntry = { at: now, by, ...instructedHistory(by), event: "planned", planning: { revision: revision + 1, fields, previous }, ...(note ? { note } : {}), ...(withheld && note ? { withheld: true as const } : {}) };
+    const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "planned", planning: { revision: revision + 1, fields, previous }, ...(note ? { note } : {}), ...(withheld && note ? { withheld: true as const } : {}) };
     const result = this.taskWrite(() => this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, needs_person=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=?, sdlc=? WHERE id=? AND planning_revision=?`)
       .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, next.needsPerson ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, next.sdlc === undefined ? null : JSON.stringify(next.sdlc), id, revision));
     if (result.changes !== 1) throw new Error("planning revision changed");
@@ -2880,7 +2878,7 @@ export class Board {
     if (!task || (task.planningRevision ?? 0) !== revision || task.state !== "backlog" || task.owner || !taskCanPlan(task)) throw new Error("planner pull changed or already started");
     if (task.draft) throw new Error(`task #${id} is an intake draft; the person approves it first`);
     const selected = binding ? plannerMetadata(binding.planner, binding.plannerReason) : {};
-    const now = Date.now(), entry: HistoryEntry = { at: now, by, ...instructedHistory(by), ...selected, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
+    const now = Date.now(), entry: HistoryEntry = { at: now, by, ...selected, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
     const result = this.taskWrite(() => this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,offer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=?,planner=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
       .run(reserved, JSON.stringify([...task.history, entry]), now, binding ? selected.planner ?? null : task.planner ?? null, id, revision));
     if (result.changes !== 1) throw new Error("planner pull changed");

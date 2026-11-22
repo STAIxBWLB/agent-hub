@@ -83,12 +83,16 @@ test("intent receipt rechecks its transcript and admits at most ten serialized u
 });
 
 test("verdict identifiers must appear literally as complete identifiers", async () => {
-  const { literalInstructionId } = await import("../src/hub/instructed-intent.ts");
-  expect(literalInstructionId("approve task #1055", "1055")).toBe(true);
-  expect(literalInstructionId("approve task #11055", "1055")).toBe(false);
-  expect(literalInstructionId("approve rc-0123456789ab", "rc-0123456789ab")).toBe(true);
-  expect(literalInstructionId("approve rc-0123456789ab-extra", "rc-0123456789ab")).toBe(false);
-  expect(literalInstructionId("approve 1055", "1055|.*")).toBe(false);
+  const { literalInstructionIds } = await import("../src/hub/instructed-intent.ts");
+  expect(literalInstructionIds("approve task #1055", ["1055"])).toBe(true);
+  expect(literalInstructionIds("approve task #11055", ["1055"])).toBe(false);
+  expect(literalInstructionIds("task 1055 claim 2", ["1055", "2"])).toBe(true);
+  expect(literalInstructionIds("task 1055", ["1055", "2"])).toBe(false);
+  expect(literalInstructionIds("task 1 claim 1", ["1", "1"])).toBe(true);
+  expect(literalInstructionIds("task 1", ["1", "1"])).toBe(false);
+  expect(literalInstructionIds("approve rc-0123456789ab", ["rc-0123456789ab"])).toBe(true);
+  expect(literalInstructionIds("approve rc-0123456789ab-extra", ["rc-0123456789ab"])).toBe(false);
+  expect(literalInstructionIds("approve 1055", ["1055|.*"])).toBe(false);
 });
 
 test("a newer unconfirmed or closed intent never revives an older receipt", async () => {
@@ -119,53 +123,8 @@ test("a newer unconfirmed or closed intent never revives an older receipt", asyn
 
 test("intent command policy closes spending, identity, release and unknown forms", async () => {
   const { intentForm } = await import("../src/hub/instructed-intent.ts");
-  for (const args of [["task", "assign", "1055", "claude"], ["backlog", "add", "implement", "public work"], ["backlog", "pull", "1055"], ["backlog", "return", "1055"], ["backlog", "pin", "1055", "0", "true", "requested"], ["backlog", "split", "1055", "0", '[{"title":"a"},{"title":"b"}]', "requested"], ["stop", "claude"], ["model", "clear", "claude"], ["results"], ["capabilities"], ["learn", "list"], ["learn", "accept", "1055"], ["study", "approve", "rc-0123456789ab", "1"], ["review", "1055", "approved"]]) expect(intentForm(args), args.join(" ")).toBeDefined();
-  for (const args of [["settings", "set", "tasks.auto_pull", "true"], ["agents", "trust", "claude", "1"], ["permission", "claude", "never-ask"], ["reset"], ["sdlc", "merge", "1"], ["task", "assign", "1", "claude", "--as-user"], ["results", "--read-all"], ["roadmap", "state", "1", "active"], ["task", "assign", "1", "claude", "--project", "elsewhere"], ["unknown"]]) expect(intentForm(args), args.join(" ")).toBeUndefined();
-  expect(intentForm(["backlog", "plan", "1055", "0", '{"deps":[12,13]}', "requested"])?.dependencyIds).toEqual([12, 13]);
-  expect(intentForm(["backlog", "plan", "1055", "0", '{"needsPerson":false}', "requested"])).toBeUndefined();
-});
-
-test("instructed proposals and splits refuse private children before board writes", async () => {
-  const { mkdtempSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os"), { join } = await import("node:path");
-  const { Board } = await import("../src/hub/board.ts"), { Bus } = await import("../src/hub/bus.ts");
-  const { Tasks } = await import("../src/hub/tasks.ts"), { loadRouting } = await import("../src/hub/routing.ts");
-  const { instructedExecution } = await import("../src/hub/instructed-exact.ts");
-  const cwd = mkdtempSync(join(tmpdir(), "ahub-intent-pii-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
-  const routing = loadRouting(cwd); routing.signals.pii_patterns = ["SECRET_FIXTURE"];
-  const tasks = new Tasks({ board, bus, cwd, project: "fixture", routing: () => routing, notify: () => {} });
-  const scope = { peer: "claude", receipt: "fixture", active: true, current: () => {} };
-  try {
-    await expect(instructedExecution.run(scope, () => tasks.propose("user", { title: "SECRET_FIXTURE", class: "implement", backlog: true }))).rejects.toThrow("private work");
-    expect(board.list()).toHaveLength(0);
-    const parent = await tasks.propose("user", { title: "public parent", class: "implement", backlog: true });
-    await expect(instructedExecution.run(scope, () => tasks.splitBacklog("user", { id: parent.id, revision: 0, parts: [{ title: "public child" }, { title: "SECRET_FIXTURE" }], reason: "split" }))).rejects.toThrow("private work");
-    expect(board.list()).toHaveLength(1);
-  } finally { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); }
-});
-
-test("instructed study approval refuses private units and records public verdict provenance", async () => {
-  const { mkdtempSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os"), { join } = await import("node:path");
-  const { Board } = await import("../src/hub/board.ts"), { Bus } = await import("../src/hub/bus.ts");
-  const { Tasks } = await import("../src/hub/tasks.ts"), { loadRouting } = await import("../src/hub/routing.ts");
-  const { instructedExecution } = await import("../src/hub/instructed-exact.ts");
-  const cwd = mkdtempSync(join(tmpdir(), "ahub-intent-study-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 }), now = Date.now();
-  const routing = loadRouting(cwd); routing.signals.pii_patterns = ["SECRET_FIXTURE"];
-  const source = "src:0123456789abcdef";
-  const tasks = new Tasks({ board, bus, cwd, project: "fixture", routing: () => routing, notify: () => {}, studyNow: () => now, studySource: id => id === source ? { id, sha256: "a".repeat(64), private: false } : undefined });
-  const scope = { peer: "claude", receipt: "fixture", active: true, current: () => {} };
-  try {
-    const parent = await tasks.propose("user", { title: "public research", class: "implement" });
-    const contract = { question: "fixture question", scope: "synthetic", exclusions: [], sourceIds: [source], units: [{ id: "one", round: 0, question: "SECRET_FIXTURE", perspective: "measurement", requiredOutput: "result", sourceIds: [source], dependsOn: [], purpose: "synthesis" }], deliverableSections: [{ id: "result", title: "Result", ownerUnitId: "one" }], stopPolicy: { maxUnits: 1, maxFollowUpRounds: 0, deadline: new Date(now + 86_400_000).toISOString() } };
-    const draft = await tasks.studyDraft("user", { parentTaskId: parent.id, contract });
-    await expect(instructedExecution.run(scope, () => tasks.studyApprove("user", { id: draft.id, revision: 1 }))).rejects.toThrow("private work");
-    expect(board.list()).toHaveLength(1); expect(board.researchCampaign(draft.id, 1)?.status).toBe("draft");
-    const publicDraft = await tasks.studyDraft("user", { parentTaskId: parent.id, contract: { ...contract, units: [{ ...contract.units[0]!, question: "public fixture" }] } });
-    const approved = await instructedExecution.run(scope, () => tasks.studyApprove("user", { id: publicDraft.id, revision: 1 }));
-    expect(approved.status).toBe("approved");
-    expect(board.get(parent.id)!.history.findLast(entry => entry.event === "study approved")).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude" });
-  } finally { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); }
+  for (const args of [["task", "assign", "1055", "claude"], ["task", "claim", "1055", "2", "supported"], ["backlog", "pull", "1055"], ["backlog", "return", "1055"], ["stop", "claude"], ["model", "clear", "claude"], ["results"], ["capabilities"], ["learn", "list"], ["learn", "accept", "1055"], ["review", "1055", "approved"]]) expect(intentForm(args), args.join(" ")).toBeDefined();
+  for (const args of [["settings", "set", "tasks.auto_pull", "true"], ["agents", "trust", "claude", "1"], ["permission", "claude", "never-ask"], ["reset"], ["sdlc", "merge", "1"], ["task", "assign", "1", "claude", "--as-user"], ["results", "--read-all"], ["role", "assign", "claude", "planner"], ["title", "claude", "private text"], ["backlog", "add", "implement", "title"], ["backlog", "pin", "1", "0", "true", "reason"], ["backlog", "split", "1", "0", "[]", "reason"], ["study", "approve", "rc-0123456789ab", "1"], ["roadmap", "state", "1", "done"], ["task", "claim", "1", "1", "supported", "--manifest", "file"], ["task", "handoff", "--project", "elsewhere", "title"], ["review", "1", "approved", "some note"], ["unknown"]]) expect(intentForm(args), args.join(" ")).toBeUndefined();
 });
 
 test("instructed mode defaults to intent and rejects unknown modes", async () => {
@@ -375,35 +334,31 @@ test("the daemon executes confirmed exact and intent commands through its inheri
       } finally { reenable.close(); }
       captured!.setMode("intent");
       const intentBoard = new Board(join(stateDir, "hub.db"));
-      const intentTask = intentBoard.propose("user", { title: "intent fixture", class: "implement" });
-      const intentBacklog = intentBoard.propose("user", { title: "intent planning fixture", class: "implement", backlog: true });
-      const splitTask = intentBoard.propose("user", { title: "intent split fixture", class: "implement", backlog: true }); intentBoard.close();
+      const intentTask = intentBoard.propose("user", { title: "intent fixture", class: "implement", plan: { claims: ["fixture claim"] } });
+      intentBoard.update(intentTask.id, "claude", "declined", {}); intentBoard.close();
       const exactPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52115", exactArgs = `run task assign ${intentTask.id} claude`, exactAt = Date.now();
       expect(captured!.pending({ session, promptId: exactPrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(exactArgs) }, exactAt)).toBe(true);
       writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "3004bef3-8884-4e54-bbf2-c5c760a52116", sessionId: session, promptId: exactPrompt, version: "2.1.329", timestamp: new Date(exactAt + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${exactArgs}</command-args>` } }) + "\n");
       await Bun.sleep(5);
       expect((await tools.request({ t: "instruction_execute", session, argv: ["capabilities"] }, 35_000)).ok).toBe(false);
-      const intentPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52109", intentArgs = `please assign task ${intentTask.id} to claude, pin backlog ${intentBacklog.id}, split backlog ${splitTask.id}, and add a public backlog item`, intentAt = Date.now();
+      const intentPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52109", intentArgs = `please assign task ${intentTask.id} to claude and mark claim 1 supported`, intentAt = Date.now();
       expect(captured!.pending({ session, promptId: intentPrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(intentArgs) }, intentAt)).toBe(true);
       writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "3004bef3-8884-4e54-bbf2-c5c760a52110", sessionId: session, promptId: intentPrompt, version: "2.1.329", timestamp: new Date(intentAt + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${intentArgs}</command-args>` } }) + "\n");
       await Bun.sleep(5);
       expect((await tools.request({ t: "instruction_execute", session, argv: ["task", "assign", String(intentTask.id), "claude"] }, 35_000)).ok).toBe(true);
-      expect((await tools.request({ t: "instruction_execute", session, argv: ["backlog", "pin", String(intentBacklog.id), "0", "true", "requested"] }, 35_000)).ok).toBe(true);
-      expect((await tools.request({ t: "instruction_execute", session, argv: ["backlog", "add", "implement", "public addition"] }, 35_000)).ok).toBe(true);
-      const parts = JSON.stringify([{ title: "first part" }, { title: "second part" }]);
-      expect((await tools.request({ t: "instruction_execute", session, argv: ["backlog", "split", String(splitTask.id), "0", parts, "requested"] }, 35_000)).ok).toBe(true);
-      const wrongVerdict = await tools.request({ t: "instruction_execute", session, argv: ["review", String(task.id), "approved"] }, 35_000);
-      expect(wrongVerdict.ok).toBe(false); expect(wrongVerdict.error).toContain("item id is not written");
-      const echoed = await tools.request({ t: "instruction_execute", session, argv: ["review", String(intentTask.id), "approved", intentArgs] }, 35_000);
-      expect(echoed.ok).toBe(false); expect(echoed.error).toContain("repeats the private instruction text"); expect(echoed.error).not.toContain(intentArgs);
+      const wrongVerdict = await tools.request({ t: "instruction_execute", session, argv: ["review", "999999", "approved"] }, 35_000);
+      expect(wrongVerdict.ok).toBe(false); expect(wrongVerdict.error).toContain("not written");
+      const wrongSlot = await tools.request({ t: "instruction_execute", session, argv: ["task", "claim", String(intentTask.id), "2", "supported"] }, 35_000);
+      expect(wrongSlot.ok).toBe(false); expect(wrongSlot.error).toContain("not written");
+      const freeText = await tools.request({ t: "instruction_execute", session, argv: ["review", String(intentTask.id), "approved", "a note"] }, 35_000);
+      expect(freeText.ok).toBe(false); expect(freeText.error).toContain("free text");
+      expect((await tools.request({ t: "instruction_execute", session, argv: ["task", "claim", String(intentTask.id), "1", "supported"] }, 35_000)).ok).toBe(true);
       expect((await tools.request({ t: "instruction_execute", session, argv: ["capabilities"] }, 35_000)).ok).toBe(true);
       expect((await tools.request({ t: "instruction_execute", session, argv: ["settings", "set", "tasks.auto_pull", "false"] }, 35_000)).ok).toBe(false);
       const intentRead = new Board(join(stateDir, "hub.db"));
       try {
-        expect(intentRead.get(intentTask.id)!.history.at(-1)).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude" });
-        expect(intentRead.get(intentBacklog.id)!.history.findLast(entry => entry.event === "planned")).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude" });
-        expect(intentRead.get(splitTask.id)!.history.findLast(entry => entry.event === "planned")).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude" });
-        expect(intentRead.list().find(row => row.title === "public addition")?.history[0]).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude" });
+        expect(intentRead.get(intentTask.id)!.history.findLast(entry => entry.event === "reassigned")).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude" });
+        expect(intentRead.get(intentTask.id)!.history.findLast(entry => entry.event === "claim verdict")).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude", claim: { slot: 1, verdict: "supported" } });
         intentRead.update(intentTask.id, "user", "fixture accepted", { state: "in_progress", reviewer: "user" });
         intentRead.update(intentTask.id, "claude", "fixture done", { state: "in_review" });
       } finally { intentRead.close(); }
@@ -595,6 +550,33 @@ test("the person-disabled mode witness survives a daemon restart and a file edit
       const view = await consoleClient.request({ t: "settings_get" });
       expect(view.rows.find((row: { key: string }) => row.key === "instructed.mode").value).toBe("off");
     } finally { consoleClient.close(); }
+  } finally {
+    await daemon?.stop(); keys.forEach((key, index) => previous[index] === undefined ? delete process.env[key] : process.env[key] = previous[index]);
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("implicit intent allows recovery to an older target with a narrower exact default", async () => {
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os"), { join } = await import("node:path");
+  const { realPath } = await import("../src/hub/project.ts"), { startDaemon } = await import("../src/hub/daemon.ts");
+  const { ControlClient, stateDirFor } = await import("../src/hub/control-client.ts");
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-intent-recovery-"))), cwd = join(root, "project"), home = join(root, "home"); mkdirSync(cwd); mkdirSync(home); mkdirSync(join(cwd, ".agenthub"));
+  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: false } }));
+  const keys = ["HOME", "CLAUDE_CONFIG_DIR", "AGENTHUB_HOME", "AMEM_HOME"] as const, previous = keys.map(key => process.env[key]);
+  Object.assign(process.env, { HOME: home, CLAUDE_CONFIG_DIR: join(home, "claude"), AGENTHUB_HOME: join(home, "hub"), AMEM_HOME: join(home, "mem") });
+  const stateDir = stateDirFor(cwd); let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
+  try {
+    daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false });
+    const client = await ControlClient.connect(stateDir, { role: "console" });
+    try {
+      const view = await client.request({ t: "settings_get" });
+      expect(view.rows.find((row: { key: string }) => row.key === "instructed.mode").value).toBe("intent");
+      const targetFeatures = client.features.filter(feature => feature !== "instructed_intent");
+      const result = await client.request({ t: "recovery", op: "prepare", expectedInstanceId: client.instanceId, operationId: "implicit-intent-recovery", targetFeatures });
+      expect(result.ok).toBe(true);
+      expect((await client.request({ t: "recovery", op: "abort", expectedInstanceId: client.instanceId, operationId: "implicit-intent-recovery" })).ok).toBe(true);
+    } finally { client.close(); }
   } finally {
     await daemon?.stop(); keys.forEach((key, index) => previous[index] === undefined ? delete process.env[key] : process.env[key] = previous[index]);
     rmSync(root, { recursive: true, force: true });

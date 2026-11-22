@@ -1,5 +1,4 @@
 import { requireConductor } from "./conductor.ts";
-import { instructedExecution } from "./instructed-exact.ts";
 import { managedTaskPullRequest } from "./task-pr.ts";
 import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind, type DecomposePart, type DecomposeIntake, type MilestoneDecomposition, type DecompositionAccept } from "./roadmap.ts";
 import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
@@ -2607,11 +2606,8 @@ export class Tasks {
     const fields = this.studyFields(input, ["id", "revision"]), id = this.studyId(fields.id), revision = this.studyNumber(fields.revision, "revision");
     return this.studyWrite(async () => {
       const original = this.studyRecord(id, revision), parent = this.studyParent(original.parentTaskId);
-      const privateTask = (task: Task | undefined) => !task || task.signals.some(signal => signal === "pii" || signal === "pii_path") || this.isPii(task);
       if (original.status === "approved") {
         const privacy = this.studyReplayPrivacy(original, parent); requestCheck();
-        const instruction = instructedExecution.getStore();
-        if (instruction?.active) { instruction.current(); if (privacy || privateTask(parent) || this.d.board.researchCampaignBindings(original.id, original.revision).some(unit => privateTask(this.d.board.get(unit.taskId)))) throw new PreEffectToolRefusal("an instructed study approval cannot affect private work; run it in a terminal"); }
         const replay = this.d.board.activateCampaign(id, revision, this.d.project, by, this.studyTime(), [], parent.history.length, privacy);
         return this.studyReceipt(replay.campaign, true);
       }
@@ -2640,11 +2636,6 @@ export class Tasks {
       const now = this.studyTime(), deadline = Date.parse(original.contract.stopPolicy.deadline);
       if (deadline <= now || deadline - now > 90 * 86_400_000) throw new PreEffectToolRefusal("study deadline must be in the next ninety days at approval");
       priv ||= latest.private || current.private;
-      const instruction = instructedExecution.getStore();
-      if (instruction?.active) {
-        instruction.current();
-        if (priv || privateTask(parent) || [...current.adopted.values(), ...current.reused.values()].some(privateTask) || prepared.some(unit => unit.create?.signals?.some(signal => signal === "pii" || signal === "pii_path"))) throw new PreEffectToolRefusal("an instructed study approval cannot create or affect private work; run it in a terminal");
-      }
       if (priv && [...current.adopted.values(), ...current.reused.values()].some(task => !this.isPii(task)))
         throw new PreEffectToolRefusal("a private study cannot retain a public task without changing its authority");
       for (const unit of prepared) if (unit.create) {
@@ -4479,11 +4470,6 @@ export class Tasks {
     const verdicts = screenedVerdicts.map((verdict, index) => deterministicPrivate[index] ? undefined : verdict);
     const inherited = current.drafts.map((_part, index) => (initialParentPrivate || this.isPii(current.parent)) && !deterministicPrivate[index]);
     const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!, ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
-    const instruction = instructedExecution.getStore();
-    if (instruction?.active) {
-      instruction.current();
-      if (drafts.some(draft => draft.signals.some(signal => signal === "pii" || signal === "pii_path") || draft.deps.some(id => { const task = this.d.board.get(id); return !task || task.signals.some(signal => signal === "pii" || signal === "pii_path") || this.isPii(task); }))) throw new PreEffectToolRefusal("an instructed split cannot create or reference private work; run it in a terminal");
-    }
     for (const draft of drafts) this.warmRepository(draft);
     // #334: the hub's intake split is only for a draft; the board asks for it again inside its transaction (a flag set for exactly this write, never left on).
     this.d.board.requireDraftForNextSplit = opts.intake === true && by === HUB;
@@ -4798,11 +4784,6 @@ export class Tasks {
     const screened = screening && !signals.includes("pii") ? await this.screenCall(screenText({ ...text, detail: screenDetail, plan })) : undefined;
     requestCheck();
     if (screened && screened.label !== "clear") signals.push("pii");
-    const instruction = instructedExecution.getStore();
-    if (instruction?.active) {
-      instruction.current();
-      if (signals.some(signal => signal === "pii" || signal === "pii_path") || deps.some(id => { const task = this.d.board.get(id); return !task || task.signals.some(signal => signal === "pii" || signal === "pii_path") || this.isPii(task); })) throw new PreEffectToolRefusal("an instructed proposal cannot create or reference private work; run it in a terminal");
-    }
     let cls = baseGiven;
     let triaged = false;
     let fenced = false; // a PII task off campus: triage is not asked
