@@ -60,8 +60,10 @@ test("doctor reports installed and missing Claude plugin skills", async () => {
     for (const name of ["bun", "claude", "codex", "kimi", "jcode", "qwen", "agy", "pi", "amem"]) {
       writeFileSync(join(bin, name), `#!/bin/sh\ncase "$1" in --version) echo fixture;; plugin) echo '${inventory}';; esac\n`, { mode: 0o755 });
     }
-    const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: join(dir, "claude"), CODEX_HOME: join(dir, "codex"), AGENTHUB_HOME: join(dir, "hub"), AMEM_HOME: join(dir, "mem"), PATH: `${bin}:/usr/bin:/bin`, AGENTHUB_OMNIROUTE_URL: "http://127.0.0.1:9/v1" };
-    for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "AGENTHUB_PROJECT_DIR", "AGENTHUB_STATE_DIR", "CLAUDECODE", "CODEX_THREAD_ID"]) delete env[key as keyof typeof env];
+    const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: join(dir, "claude"), AGENTHUB_HOME: join(dir, "hub"), AMEM_HOME: join(dir, "mem"), PATH: `${bin}:/usr/bin:/bin`, AGENTHUB_OMNIROUTE_URL: "http://127.0.0.1:9/v1" };
+    // The row also reports every other host's skill trees, so each host variable is cleared: this home has none, and the
+    // runner's own value for one of them must not reach the fixture.
+    for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "AGENTHUB_PROJECT_DIR", "AGENTHUB_STATE_DIR", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_HOME", "KIMI_CODE_HOME", "QWEN_HOME", "JCODE_HOME", "PI_CODING_AGENT_DIR"]) delete env[key as keyof typeof env];
     async function row() {
       const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "doctor", "--json"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
       const [output] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -69,6 +71,9 @@ test("doctor reports installed and missing Claude plugin skills", async () => {
     }
     expect((await row()).detail).toContain("claude plugin uninstall agent-hub@agent-hub --scope user && ahub setup");
     for (const name of names) { const skill = join(plugin, "skills", name); mkdirSync(skill, { recursive: true }); writeFileSync(join(skill, "SKILL.md"), "fixture"); }
-    expect(await row()).toMatchObject({ level: "ok", detail: "Claude plugin skills present" });
+    const installed = await row();
+    expect(installed.level).toBe("ok");
+    expect(installed.detail).toContain("Claude plugin skills present");
+    expect(installed.detail).toContain("no other agent host installed on this machine");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 20_000);

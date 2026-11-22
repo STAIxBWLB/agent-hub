@@ -64,7 +64,7 @@ smoke ledger; the presence of this option proves no outstanding #273 live leg.
 
 ## Claude plugin skills
 
-Claude's agent-hub plugin carries `ahub-status`, `ahub-manage`, `ahub-use` and the person-invoked `ahub` skill. `ahub doctor` checks the user plugin's skill files and reports a repair command when missing. The person types `/agent-hub:ahub` to prepare a command; it does not grant authority or create a receipt. Existing sessions can continue running an older plugin server after setup or upgrade.
+Claude's agent-hub plugin carries `ahub-status`, `ahub-manage`, `ahub-use` and the person-invoked `ahub` skill. `ahub doctor` checks the user plugin's skill files and reports a repair command when missing; the same `hub skills` row also reports every other agent host's installed skill trees (below). The person types `/agent-hub:ahub` to prepare a command; it does not grant authority or create a receipt. Existing sessions can continue running an older plugin server after setup or upgrade.
 
 ## Command output
 
@@ -7612,3 +7612,40 @@ Kimi has no verified typed quota error frame. The narrow exception requires a hu
 Kimi reviewer usage is read from its isolated native session index/wire usage through the existing counter before profile removal, attributed once to the review task. A journal ACK precedes spawn; terminal accounting follows confirmed group settlement and usage read. An unmatched start, damaged replay or incomplete count makes soft headroom UNKNOWN across restart. No host start/cap timestamp clears it. Incomplete logs or missing terminal ACK retain the profile through the existing cleanup hold. Events carry only opaque attempt ids, enums, counts and times. These synthetic paths do not certify a live account reset or a newer native Kimi diagnostic.
 
 Controlled recovery advertises `reviewer_quota`. A target needs it only when reviewer accounting/wait history is retained or the project explicitly configures `review.gate`, `review.unknown_quota` or `review.max_minutes` (including `unknown_quota = "skip"` and `gate = "off"`); legacy empty state remains compatible with older targets. Snapshot integrity binds ordered safe accounting fields, complete/pending/unknown counts and replay completeness, with no native session/home/text. Missing or changed journal state refuses target restoration. Ending a quota wait at its original deadline is separate from native review readiness: failed enforce-mode CI cannot extend the quota wait, and no premature native review is sent.
+
+## Hub skills on other hosts (#1622)
+
+The hub's own skills (`ahub-status`, `ahub-manage`, `ahub-use` and the person-only `ahub`) ship in the Claude
+plugin, which Claude Code loads as it is. `ahub setup` also writes them to every other agent host installed on this
+machine, in that host's user skill directory:
+
+| Host | User skill directory |
+|---|---|
+| Codex | `$CODEX_HOME/skills` (default `~/.codex/skills`) |
+| Kimi | `$KIMI_CODE_HOME/skills` (default `~/.kimi-code/skills`) |
+| Qwen | `$QWEN_HOME/skills` (default `~/.qwen/skills`) |
+| Jcode | `$JCODE_HOME/skills` (default `~/.jcode/skills`) |
+| Pi | `$PI_CODING_AGENT_DIR/skills` (default `~/.pi/agent/skills`) |
+| agy | `~/.gemini/config/skills` |
+
+A host with no config directory on this machine is left alone: setup never creates a home for a tool that is not
+installed. Setup prints the per-host plan and asks once; `--yes` runs it without the question.
+
+Every installed skill tree carries `.ahub-skill.json` with `tool`, `version` and the `sha256` digest of the tree. The
+contract:
+
+- A tree that is absent is installed.
+- A tree the hub wrote is replaced only while its digest still matches the marker; a different version is stale and
+  is replaced.
+- A tree with no marker, another tool's marker, a local edit or a link is reported as foreign, modified or linked and
+  left exactly as it is. The check runs again at the moment of the write, so a tree that changed while the question
+  was open is kept too.
+- `ahub setup --undo` removes only trees whose marker is the hub's and whose digest still matches; it reports and
+  keeps anything else. It takes `--yes` like the install path.
+
+A symlinked host config home (`~/.codex` -> a data directory, say) is the host's own choice and is resolved; a linked
+skills directory or a link inside a tree is reported as linked and left alone.
+
+`ahub doctor` has one `hub skills` row covering the Claude plugin's own copy and each installed host's state:
+`installed`, `stale`, `missing`, `modified`, `foreign` or `linked`. A stale or missing tree makes the row fail and
+names the repair command; a tree the hub will not touch is a warning, never a failure.
