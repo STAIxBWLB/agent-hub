@@ -6,7 +6,7 @@ import { shellQuote } from "./shell-quote.ts";
 import { stableBunRuntime, stablePackageRoot } from "./install-paths.ts";
 import type { ClaudeHome } from "./claude-homes.ts";
 
-export interface ClaudeProfileHookOptions { script?: string; runtime?: string }
+export interface ClaudeProfileHookOptions { script?: string; runtime?: string; instruction?: boolean }
 export interface ClaudeProfileHookCheck { state: "installed" | "missing" | "refused"; reason: string }
 export interface ClaudeProfileHookInstall extends ClaudeProfileHookCheck { changed: boolean }
 const MAX_SETTINGS_BYTES = 1024 * 1024;
@@ -28,6 +28,23 @@ function hookEntry(options: ClaudeProfileHookOptions): Record<string, unknown> {
   const script = options.script ?? join(stablePackageRoot(join(import.meta.dir, "../..")), "src/cli/claude-profile-hook.ts"), runtime = options.runtime ?? stableBunRuntime();
   if (!validPath(script) || !validPath(runtime)) throw new Error("invalid profile hook command");
   return { matcher: "*", hooks: [{ type: "command", command: `${shellQuote(runtime)} ${shellQuote(script)} --run`, timeout: 5 }] };
+}
+
+function instructionEntry(options: ClaudeProfileHookOptions): Record<string, unknown> {
+  const script = join(stablePackageRoot(join(import.meta.dir, "../..")), "src/cli/main.js"), runtime = options.runtime ?? stableBunRuntime();
+  if (!validPath(script) || !validPath(runtime)) throw new Error("invalid instruction hook command");
+  return { hooks: [{ type: "command", command: `${shellQuote(runtime)} ${shellQuote(script)} instruction-hook`, timeout: 5 }] };
+}
+
+function managedInstructionHook(candidate: unknown): ManagedProfileHook | undefined {
+  if (!object(candidate) || !Array.isArray(candidate.hooks) || candidate.hooks.length !== 1) return;
+  const hook = candidate.hooks[0];
+  if (!object(hook) || hook.type !== "command" || typeof hook.command !== "string") return;
+  const match = /^'((?:[^']|'\\'')*)' '((?:[^']|'\\'')*)' instruction-hook$/.exec(hook.command);
+  if (!match) return;
+  const runtime = match[1]!.replace(/'\\''/g, "'"), script = match[2]!.replace(/'\\''/g, "'");
+  if (!validPath(runtime) || !validPath(script) || !script.endsWith("/src/cli/main.js") || hook.command !== `${shellQuote(runtime)} ${shellQuote(script)} instruction-hook`) return;
+  return { entry: candidate, hook, runtime, script };
 }
 
 interface ManagedProfileHook { entry: Record<string, unknown>; hook: Record<string, unknown>; runtime: string; script: string }
@@ -96,13 +113,33 @@ function planClaudeProfileHook(home: ClaudeHome, options: ClaudeProfileHookOptio
       return owned === first ? [{ ...owned.entry, hooks: [{ ...owned.hook, command: expectedCommand }] }] : [];
     });
     if (!first) normalized.push(entry);
-    const next = configured ? undefined : `${JSON.stringify({ ...value, hooks: { ...hooks, PreToolUse: normalized } }, null, 2)}\n`;
+    const nextHooks: Record<string, unknown> = { ...hooks, PreToolUse: normalized };
+    let instructionConfigured = true;
+    if (options.instruction) {
+      const entry = instructionEntry(options), expected = (entry.hooks as { command: string }[])[0]!.command;
+      for (const event of ["UserPromptSubmit", "Stop"]) {
+        const list = hooks[event] ?? [];
+        if (!Array.isArray(list)) return refuse(`Claude's ${event} hook list is malformed.`);
+        const managed = list.map(managedInstructionHook), first = managed.find(candidate => candidate !== undefined);
+        const count = managed.filter(candidate => candidate !== undefined).length;
+        const current = count === 1 && first?.hook.command === expected && hookPathPresent(first.runtime) && hookPathPresent(first.script);
+        if (!current) instructionConfigured = false;
+        const rewritten = list.flatMap((candidate, index) => {
+          const owned = managed[index];
+          if (!owned) return [candidate];
+          return owned === first ? [{ ...owned.entry, hooks: [{ ...owned.hook, command: expected }] }] : [];
+        });
+        if (!first) rewritten.push(entry);
+        nextHooks[event] = rewritten;
+      }
+    }
+    const next = configured && instructionConfigured ? undefined : `${JSON.stringify({ ...value, hooks: nextHooks }, null, 2)}\n`;
     if (next !== undefined && Buffer.byteLength(next, "utf8") > MAX_SETTINGS_BYTES) return refuse("Claude's settings would exceed the bounded profile settings size.");
     let reason = "The project-neutral profile hook is not configured for this install; run ahub setup.";
     if (count > 1) reason = "Duplicate managed profile hooks need normalization; run ahub setup.";
     if (stale) reason = "A managed profile hook script or runtime is missing; run ahub setup to refresh the selected home's hook.";
     if (configured) reason = "The project-neutral profile hook is configured; this does not prove live permission enforcement.";
-    return { file, home: directory, parent, source, next, check: { state: configured ? "installed" : "missing", reason } };
+    return { file, home: directory, parent, source, next, check: { state: configured && instructionConfigured ? "installed" : "missing", reason } };
   } catch { return refuse("Claude profile settings could not be safely inspected; no settings were changed."); }
 }
 
