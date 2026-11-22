@@ -96,6 +96,18 @@
     "reason": "Authenticated channel hello/receipts/inbox and native facts/Stop bind to the host socket generation; Jcode TUI tuple and Kimi admission remain fixed native proofs, with Claude hook extraction in 2e."
   },
   {
+    "predicate": "isLocalPeer",
+    "function": "src/hub/daemon.ts:startDaemon.onMessage",
+    "count": 2,
+    "reason": "Instructed title writes admit only the hub-owned local worker, whose synchronous title mutation can be fenced; native Pi writes remain closed."
+  },
+  {
+    "predicate": "isLocalPeer",
+    "function": "src/hub/daemon.ts:startDaemon.onMessage.guarded",
+    "count": 1,
+    "reason": "Recheck that the screened title target remains the same hub-owned local worker before every instructed effect."
+  },
+  {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.onMessage",
     "count": 7,

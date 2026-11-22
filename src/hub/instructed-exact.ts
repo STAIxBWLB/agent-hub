@@ -21,7 +21,7 @@ export function instructedMode(value: unknown): "off" | "exact" | "intent" {
   throw new Error("instructed.mode must be off, exact or intent");
 }
 
-export interface ExactForm { argv: string[]; taskId?: number; targetPeer?: string; screen?: true; study?: { id: string; revision: number } }
+export interface ExactForm { argv: string[]; taskId?: number; targetPeer?: string; screen?: true; titleTarget?: true; study?: { id: string; revision: number } }
 
 /** Closed, syntax-checked forms only. New and unclassified forms never inherit authority. */
 export function exactForm(argv: readonly string[]): ExactForm | undefined {
@@ -51,6 +51,14 @@ export function exactForm(argv: readonly string[]): ExactForm | undefined {
     return { argv: [...argv], taskId: Number(positional[0]) };
   }
   if (command === "backlog" && (sub === "pull" || sub === "return") && tail.length === 1 && /^[1-9]\d*$/.test(tail[0]!) && Number.isSafeInteger(Number(tail[0]))) return { argv: [...argv], taskId: Number(tail[0]) };
+  if (command === "backlog" && (sub === "pin" || sub === "pull-ready")) {
+    const [id, revision, ...rest] = tail;
+    if (!id || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)) || !revision || !/^\d+$/.test(revision) || !Number.isSafeInteger(Number(revision))) return;
+    const reason = sub === "pin" ? rest.slice(1) : rest;
+    if (sub === "pin" && !["true", "false"].includes(rest[0] ?? "")) return;
+    if (!reason.length || reason.some(word => !word || word.startsWith("--"))) return;
+    return { argv: [...argv], taskId: Number(id), screen: true };
+  }
   if (command === "backlog" && sub === "add") {
     const [taskClass, ...title] = tail;
     if (taskClass && /^[a-z][a-z0-9_-]*$/.test(taskClass) && title.length && title.every(word => word && !word.startsWith("--"))) return { argv: [...argv], screen: true };
@@ -61,6 +69,7 @@ export function exactForm(argv: readonly string[]): ExactForm | undefined {
     if (!("usage" in parsed) && parsed.op === "approve") return { argv: [...argv], screen: true, study: { id: parsed.id, revision: parsed.revision } };
     return;
   }
+  if (command === "title" && sub && /^[a-z][a-z0-9-]*$/.test(sub) && tail.length && tail.every(word => word && !word.startsWith("--"))) return { argv: [...argv], targetPeer: sub, screen: true, titleTarget: true };
   if (command === "model") {
     try { const model = parseModelCommand(argv.slice(1)); if ((model.op === "set" || model.op === "clear") && model.peer) return { argv: [...argv], targetPeer: model.peer }; } catch { return; }
   }

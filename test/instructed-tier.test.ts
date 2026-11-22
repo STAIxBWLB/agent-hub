@@ -142,6 +142,9 @@ test("the exact form policy closes unknown forms and detects task scope", async 
   expect(exactForm(["task", "claim", "1055", "2", "supported"])).toEqual({ argv: ["task", "claim", "1055", "2", "supported"], taskId: 1055 });
   expect(exactForm(["backlog", "add", "implement", "public", "work"])).toEqual({ argv: ["backlog", "add", "implement", "public", "work"], screen: true });
   expect(exactForm(["study", "approve", "rc-0123456789ab", "1"])).toEqual({ argv: ["study", "approve", "rc-0123456789ab", "1"], screen: true, study: { id: "rc-0123456789ab", revision: 1 } });
+  expect(exactForm(["backlog", "pin", "5", "0", "true", "public", "reason"])).toEqual({ argv: ["backlog", "pin", "5", "0", "true", "public", "reason"], taskId: 5, screen: true });
+  expect(exactForm(["backlog", "pull-ready", "5", "0", "public", "reason"])).toEqual({ argv: ["backlog", "pull-ready", "5", "0", "public", "reason"], taskId: 5, screen: true });
+  for (const bad of [["backlog", "pin", "5", "0", "true"], ["backlog", "pin", "5", "0", "yes", "reason"], ["backlog", "pull-ready", "5", "0"], ["backlog", "plan", "5", "0", "{}", "reason"]]) expect(exactForm(bad)).toBeUndefined();
   expect(exactForm(["backlog", "add", "implement"])).toBeUndefined();
   expect(exactForm(["study", "approve", "rc-0123456789ab", "1", "extra"])).toBeUndefined();
   for (const args of [["task", "claim", "1055", "0", "supported"], ["task", "claim", "1055", "2", "unknown"], ["task", "claim", "1055", "2", "supported", "--manifest", "input.json", "--disposition", "resolved"], ["task", "claim", "1055", "2", "supported", "--model", "label"]]) expect(exactForm(args)).toBeUndefined();
@@ -206,7 +209,7 @@ test("the daemon executes confirmed exact and intent commands through its inheri
   mkdirSync(join(install, "node_modules", "@staix"), { recursive: true });
   cpSync(dirname(dirname(memoryFile)), join(install, "node_modules", "@staix", "agent-mem"), { recursive: true });
   mkdirSync(join(cwd, ".agenthub"));
-  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: true }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: false } }));
+  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: true }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: false }, tasks: { wip_limits: { claude: 8 } } }));
   writeFileSync(join(cwd, ".agenthub/routing.toml"), readFileSync(join(repo, "templates/routing.toml"), "utf8").replace('pii = "local_only"', 'pii = "off"').replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"'));
   const keys = ["HOME", "CLAUDE_CONFIG_DIR", "AGENTHUB_HOME", "AMEM_HOME"] as const, previous = keys.map(key => process.env[key]);
   Object.assign(process.env, { HOME: home, CLAUDE_CONFIG_DIR: config, AGENTHUB_HOME: join(home, "hub"), AMEM_HOME: join(home, "mem") });
@@ -309,6 +312,83 @@ test("the daemon executes confirmed exact and intent commands through its inheri
         expect((await tools.request({ t: "instruction_hook", op: "stop", session })).ok).toBe(true);
       } finally { release(); }
       expect((await pendingScreen).ok).toBe(false); expect(countTasks()).toBe(countBeforeScreen + 1);
+      screenInput = async () => ({ label: "clear", ms: 0 });
+      const planningBoard = new Board(join(stateDir, "hub.db"));
+      const pinTask = planningBoard.propose("user", { title: "fixture pin task", class: "implement", backlog: true });
+      const pullTask = planningBoard.propose("user", { title: "fixture pull task", class: "implement", backlog: true });
+      planningBoard.plan(pullTask.id, "user", { reserved: "claude" }, 0, "fixture reservation");
+      planningBoard.close();
+      const pinArgs = `run backlog pin ${pinTask.id} 0 true fixture pin reason`;
+      await typed(pinArgs); screenInputs.length = 0;
+      expect((await tools.request({ t: "instruction_execute", session, argv: ["backlog", "pin", String(pinTask.id), "0", "false", "other"] }, 35_000)).ok).toBe(false);
+      expect(await tools.request({ t: "instruction_execute", session }, 35_000)).toMatchObject({ ok: true, exitCode: 0 });
+      expect(screenInputs).toEqual([pinArgs, JSON.stringify(["backlog", "pin", String(pinTask.id), "0", "true", "fixture", "pin", "reason"])]);
+      const pinnedBoard = new Board(join(stateDir, "hub.db"));
+      try { const pinned = pinnedBoard.get(pinTask.id)!; expect(pinned.pinned).toBe(true); expect(pinned.history.at(-1)).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude", note: "fixture pin reason" }); } finally { pinnedBoard.close(); }
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);
+      screenInput = async text => ({ label: text.includes("sensitive planning reason") ? "pii" : "clear", ms: 0 });
+      await typed(`run backlog pin ${pinTask.id} 1 false sensitive planning reason`);
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);
+      const privatePinBoard = new Board(join(stateDir, "hub.db"));
+      try { expect(privatePinBoard.get(pinTask.id)!.pinned).toBe(true); expect(privatePinBoard.get(pinTask.id)!.planningRevision).toBe(1); } finally { privatePinBoard.close(); }
+      expect(readFileSync(join(stateDir, "events.jsonl"), "utf8")).not.toContain("sensitive planning reason");
+      screenInput = async () => ({ label: "clear", ms: 0 });
+      await typed(`run backlog pull-ready ${pullTask.id} 1 fixture pull reason`);
+      expect(await tools.request({ t: "instruction_execute", session }, 35_000)).toMatchObject({ ok: true, exitCode: 0 });
+      const pulledBoard = new Board(join(stateDir, "hub.db"));
+      try { const pulled = pulledBoard.get(pullTask.id)!; expect(pulled.state).toBe("proposed"); expect(pulled.history.find(entry => entry.event === "backlog pulled")).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude", note: "fixture pull reason" }); } finally { pulledBoard.close(); }
+      const { LocalPeer } = await import("../src/adapters/local-worker.ts");
+      const { OmniRoute } = await import("../src/omniroute/client.ts");
+      const localTitlePeer = new LocalPeer("local", { cwd, fixedModel: "fixture", omni: new OmniRoute({ urls: [], access_hosts: [] }), tools: { deny: [], permit: async () => false } });
+      daemon.bus.add(localTitlePeer); await localTitlePeer.start();
+      await typed("run title local fixture replacement");
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);
+      expect(localTitlePeer.sessionTitle).toBe("");
+      expect(await localTitlePeer.setSessionTitle("fixture previous", false)).toEqual({ ok: true });
+      await typed("run title local fixture replacement"); screenInputs.length = 0;
+      const titleResult = await tools.request({ t: "instruction_execute", session }, 35_000);
+      expect(titleResult.ok).toBe(true); expect(titleResult.output).toContain("fixture previous");
+      expect(localTitlePeer.sessionTitle).toBe("fixture replacement");
+      expect(screenInputs).toEqual(["run title local fixture replacement", JSON.stringify(["title", "local", "fixture", "replacement"]), "fixture previous"]);
+      expect(titleResult.output).toContain("ahub title 'local' 'fixture previous'");
+      const titleConsole = await ControlClient.connect(stateDir, { role: "console" });
+      try { expect((await titleConsole.request({ t: "title", peer: "local", title: "fixture previous" })).ok).toBe(true); } finally { titleConsole.close(); }
+      expect(localTitlePeer.sessionTitle).toBe("fixture previous");
+      expect(await localTitlePeer.setSessionTitle("fixture replacement", false)).toEqual({ ok: true });
+      screenInput = async text => ({ label: text.includes("fixture private replacement") ? "pii" : "clear", ms: 0 });
+      await typed("run title local fixture private replacement");
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);
+      expect(localTitlePeer.sessionTitle).toBe("fixture replacement");
+      expect(readFileSync(join(stateDir, "events.jsonl"), "utf8")).not.toContain("fixture private replacement");
+      screenInput = async () => ({ label: "clear", ms: 0 });
+      await typed("run title claude fixture invalid");
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);
+      let titleEntered!: () => void, titleRelease!: () => void;
+      const titleStarted = new Promise<void>(resolve => { titleEntered = resolve; }), titleHold = new Promise<void>(resolve => { titleRelease = resolve; });
+      screenInput = async () => { titleEntered(); await titleHold; return { label: "clear", ms: 0 }; };
+      await typed("run title local fixture revoked");
+      const titlePending = tools.request({ t: "instruction_execute", session }, 35_000);
+      try { await titleStarted; expect((await tools.request({ t: "instruction_hook", op: "stop", session })).ok).toBe(true); } finally { titleRelease(); }
+      expect((await titlePending).ok).toBe(false); expect(localTitlePeer.sessionTitle).toBe("fixture replacement");
+      screenInput = async () => ({ label: "clear", ms: 0 });
+      const originalTitleWrite = localTitlePeer.setSessionTitle.bind(localTitlePeer);
+      let writeEntered!: () => void, writeRelease!: () => void;
+      const writeStarted = new Promise<void>(resolve => { writeEntered = resolve; }), writeHold = new Promise<void>(resolve => { writeRelease = resolve; });
+      localTitlePeer.setSessionTitle = async (...args) => { writeEntered(); await writeHold; return originalTitleWrite(...args); };
+      await typed("run title local fixture late");
+      const titleWrite = tools.request({ t: "instruction_execute", session }, 35_000);
+      try { await writeStarted; expect((await tools.request({ t: "instruction_hook", op: "stop", session })).ok).toBe(true); } finally { writeRelease(); }
+      expect((await titleWrite).ok).toBe(false); expect(localTitlePeer.sessionTitle).toBe("fixture replacement");
+      localTitlePeer.setSessionTitle = originalTitleWrite;
+      let changedEntered!: () => void, changedRelease!: () => void;
+      const changedStarted = new Promise<void>(resolve => { changedEntered = resolve; }), changedHold = new Promise<void>(resolve => { changedRelease = resolve; });
+      localTitlePeer.setSessionTitle = async (...args) => { changedEntered(); await changedHold; return originalTitleWrite(...args); };
+      await typed("run title local fixture stale");
+      const staleTitle = tools.request({ t: "instruction_execute", session }, 35_000);
+      try { await changedStarted; expect(await originalTitleWrite("fixture concurrent", false)).toEqual({ ok: true }); } finally { changedRelease(); }
+      expect((await staleTitle).ok).toBe(false); expect(localTitlePeer.sessionTitle).toBe("fixture concurrent");
+      localTitlePeer.setSessionTitle = originalTitleWrite;
+      await localTitlePeer.stop();
       screenInput = async () => ({ label: "clear", ms: 0 });
       const { SourceRegistry } = await import("../src/hub/sources.ts");
       const sources = new SourceRegistry(stateDir), source = sources.add({ bytes: Buffer.from("fixture study source"), kind: "file", origin: "fixture.txt", private: false, text: "fixture study source" });
