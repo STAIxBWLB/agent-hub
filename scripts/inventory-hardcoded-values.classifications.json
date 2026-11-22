@@ -509,6 +509,7 @@
   "src/adapters/definitions/native-cli-claude-setup.ts:safeDisplayValue:inline:value.length <= 4096=4096#0": "safety floor",
   "src/adapters/definitions/native-cli-entry-jcode.ts:timer:inline:setTimeout=200#0": "operational",
   "src/adapters/definitions/native-cli-entry-kimi.ts:timeout:inline:timeout=5000#0": "operational",
+  "src/adapters/definitions/native-cli-jcode-home-init.ts:planJcodeHomeInit:inline:Object.keys(plan.servers).length > 1=1#0": "contract",
   "src/adapters/definitions/native-cli-jcode-mcp.ts:document:inline:stat.size > 256 * 1024=256 * 1024#0": "safety floor",
   "src/adapters/definitions/native-cli-jcode-mcp.ts:readBoundedJson:inline:info.size > 256 * 1024=256 * 1024#0": "safety floor",
   "src/adapters/definitions/native-cli-jcode-mcp.ts:readBoundedJson:inline:open.size > 256 * 1024=256 * 1024#0": "safety floor",
