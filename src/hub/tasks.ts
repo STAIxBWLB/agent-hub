@@ -3324,7 +3324,8 @@ export class Tasks {
     let queueAssignment: { current: () => void } | undefined;
     // `opts.guard` (the auto pull's own admission, #785 P1c) throws a PreEffectToolRefusal once the pull is no longer wanted; it runs wherever authority is rechecked, so it
     // also runs after the awaited PII screen and right before the assignment write, where a setting turned off or a recovery that began meanwhile must still stop it.
-    const authorized = () => { this.planningAuthority(planner); opts.guard?.(); queueAssignment?.current(); };
+    const instructionCheck = this.requestCheck(by);
+    const authorized = () => { instructionCheck(); this.planningAuthority(planner); opts.guard?.(); queueAssignment?.current(); };
     authorized();
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planner pull needs an id, revision and bounded reason");
     queueAssignment = by !== HUB && opts.onBehalfOf === undefined && this.d.board.get(input.id)?.reserved
@@ -4281,6 +4282,7 @@ export class Tasks {
   }
 
   async planBacklog(by: PeerId, input: { id: number; revision: number; fields?: unknown; reason: string }): Promise<Task> {
+    const instructionCheck = this.requestCheck(by);
     this.planningAuthority(by);
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0) throw new PreEffectToolRefusal("invalid planning identity or revision");
     if (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planning needs a bounded reason");
@@ -4338,6 +4340,7 @@ export class Tasks {
       return task;
     };
     const task = validate(), withheld = await this.withholds("note", input.reason, task);
+    instructionCheck();
     this.planningAuthority(by); // #455: or moved the planner
     const latest = validate(); // a person may have changed planning or frozen a release while the screen ran
     let receipt: Task["sdlc"];

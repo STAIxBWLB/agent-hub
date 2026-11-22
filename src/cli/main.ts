@@ -2498,6 +2498,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (reply.ok === false && reply.error === "no answer from the hub within 35 s") fail("session title request timed out; the title may have been applied; check ahub status before retrying");
       if (reply.ok !== true) fail(String(reply.error ?? `session title refused: ${String(reply.reason ?? "invalid")}; refresh ahub status, then retry`));
       console.log(`${peer}: session title updated`);
+      if (typeof reply.previousTitle === "string") console.log(`To restore the previous title in a terminal:\ncd ${shellQuote(cwd)} && ahub title ${shellQuote(peer!)} ${shellQuote(reply.previousTitle)}`);
     } finally { hub.close(); }
   },
 

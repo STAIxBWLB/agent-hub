@@ -4019,7 +4019,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const titlePreface = (peer: PeerId): string | undefined => definitionOf(peer)?.title === "hub" && bus.peers.get(peer)?.sessionTitle === "" && !titlePrivate(peer) ? SESSION_TITLE_HINT : undefined;
   type TitleResult = { ok: true } | { ok: false; reason: "already_named" | "private" | "invalid"; error: string; mayHaveApplied?: true };
-  async function setSessionTitle(peer: PeerId, value: unknown, onlyIfUnnamed: boolean, privateTurn = false): Promise<TitleResult> {
+  async function setSessionTitle(peer: PeerId, value: unknown, onlyIfUnnamed: boolean, privateTurn = false, instructionCurrent?: () => boolean): Promise<TitleResult> {
     const owner = bus.peers.get(peer);
     if (definitionOf(peer)?.title !== "hub") return { ok: false, reason: "invalid", error: "this peer has no hub-owned title slot; choose a Pi/local peer from ahub status or rename its session in its own UI" };
     if (!owner?.setSessionTitle || owner.state === "offline") return { ok: false, reason: "invalid", error: "peer title slot is offline or unavailable; start or reconnect the peer, then retry hub_set_title" };
@@ -4038,7 +4038,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!title) return { ok: false, reason: "invalid", error: "title needs 1-80 normalized characters; enter a short public title" };
       if (owner.sessionTitle === undefined) return { ok: false, reason: "invalid", error: "native title state is unknown; reconnect the peer, check ahub status, then retry" };
       if (onlyIfUnnamed && owner.sessionTitle !== "") return { ok: false, reason: "already_named", error: "this session already has a title; keep it, or ask the person to replace it with ahub title" };
-      const admitted = () => current() && !privateTurn && !titlePrivate(peer, title);
+      const admitted = () => current() && !privateTurn && !titlePrivate(peer, title) && instructionCurrent?.() !== false;
       let result: Awaited<ReturnType<NonNullable<PeerAdapter["setSessionTitle"]>>>;
       try { result = await owner.setSessionTitle!(title, onlyIfUnnamed, admitted); } catch { return uncertain(titlePrivate(peer, title) ? "private" : "invalid"); }
       if (privateTurn || titlePrivate(peer, title)) return uncertain("private");
@@ -12257,7 +12257,11 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!bus.peers.has(msg.peer) || bus.stateOf(msg.peer) === "offline") return void reply({ ok: false, reason: "invalid", error: `peer is offline; start it with ahub ${msg.peer}, then retry ahub title` });
         if (stopping || recoveryActive()) return void reply({ ok: false, reason: "invalid", error: "recovery or shutdown is holding titles; wait for ahub status to settle, then retry" });
         if (!sessionTitleText(msg.title)) return void reply({ ok: false, reason: "invalid", error: "title needs 1-80 normalized characters; enter a short public title" });
-        void setSessionTitle(msg.peer, msg.title, false).then(reply, () => reply({ ok: false, reason: "invalid", mayHaveApplied: true, error: "session title result is unconfirmed; the title may have been applied; check ahub status before retrying" }));
+        const instruction = c.instructed;
+        const titleOwner = bus.peers.get(msg.peer), previousTitle = titleOwner?.sessionTitle;
+        if (instruction && (!isLocalPeer(titleOwner) || !previousTitle || titlePrivate(msg.peer, previousTitle))) return void reply({ ok: false, reason: "invalid", error: "this title cannot be safely restored or fenced; run the command in a terminal" });
+        const instructionCurrent = instruction ? () => { try { instruction.current(); return titleOwner?.sessionTitle === previousTitle; } catch { return false; } } : undefined;
+        void setSessionTitle(msg.peer, msg.title, false, false, instructionCurrent).then(result => reply(result.ok && instruction ? { ...result, previousTitle } : result), () => reply({ ok: false, reason: "invalid", mayHaveApplied: true, error: "session title result is unconfirmed; the title may have been applied; check ahub status before retrying" }));
         return;
       }
       case "queue": {
@@ -12839,6 +12843,10 @@ export async function startDaemon(opts: DaemonOptions) {
             if (initialMode === "intent" && !typedExact && !tasks.publicMetadataText(JSON.stringify(argv))) return { ok: false, error: "the selected command may contain private information; run the command in a terminal" };
             const screened = "screen" in form && form.screen === true;
             const screenRefusal = `instruction privacy screening did not clear the command. The person runs it in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub ${argv.map(shellQuote).join(" ")}\n\`\`\`\n\nSuccess: the command reports its result in that terminal.`;
+            const titleOwner = (form as ExactForm).titleTarget && form.targetPeer ? bus.peers.get(form.targetPeer) : undefined;
+            const previousTitle = titleOwner?.sessionTitle;
+            const titleSession = titleOwner?.titleSession;
+            if ((form as ExactForm).titleTarget && (!isLocalPeer(titleOwner) || !previousTitle || titlePrivate(form.targetPeer!, previousTitle))) throw new InstructionRefusal("this title cannot be safely restored or fenced; run the command in a terminal");
             const study = (form as ExactForm).study;
             const campaign = study ? board.researchCampaign(study.id, study.revision) : undefined;
             if (study && (!campaign || campaign.project !== chain.at(-1) || campaign.private)) throw new InstructionRefusal("the study is unavailable or private; run the command in a terminal");
@@ -12848,7 +12856,7 @@ export async function startDaemon(opts: DaemonOptions) {
             const initialStudyBindings = studyBindings();
             const studyTasks = campaign ? [...new Set([campaign.parentTaskId, ...campaign.contract.units.flatMap(unit => { const previous = board.researchLatestUnitBinding(campaign.id, unit.id); return [...(unit.adoptTaskId === undefined ? [] : [unit.adoptTaskId]), ...(previous ? [previous.taskId] : [])]; }), ...board.researchCampaignBindings(campaign.id, campaign.revision).map(unit => unit.taskId)])] : [];
             const studyHash = campaign?.hash;
-            const screenedInputs = screened ? [receipt.args, JSON.stringify(argv), ...(campaign ? [JSON.stringify(campaign.contract)] : [])] : [];
+            const screenedInputs = screened ? [receipt.args, JSON.stringify(argv), ...(campaign ? [JSON.stringify(campaign.contract)] : previousTitle ? [previousTitle] : [])] : [];
             let studyEffectStarted = false;
             const guarded = () => {
               current();
@@ -12856,6 +12864,7 @@ export async function startDaemon(opts: DaemonOptions) {
               if (screenedInputs.some(input => Buffer.byteLength(input) > SCREEN_MAX_BYTES || !tasks.publicMetadataText(input))) throw new InstructionRefusal(screenRefusal);
               if (taskId !== undefined) { const task = board.get(taskId); if (!task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) throw new InstructionRefusal("the command targets unavailable or private work; run the command in a terminal"); }
               if (study && (!campaign || (() => { const latest = board.researchCampaign(study.id, study.revision); return !latest || latest.private || latest.hash !== studyHash; })() || !studyEffectStarted && studyBindings() !== initialStudyBindings || studyTasks.some(id => { const task = board.get(id); return !task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task) || !tasks.publicMetadataText(JSON.stringify(task.refs)); }) || studySources.some(id => { const source = sourceRegistry.get(id); return !source || source.private; }))) throw new InstructionRefusal("the study changed or refers to private work; run the command in a terminal");
+              if ((form as ExactForm).titleTarget && (!form.targetPeer || !isLocalPeer(titleOwner) || bus.peers.get(form.targetPeer) !== titleOwner || titleOwner.titleSession !== titleSession || titleOwner.sessionTitle !== previousTitle || titlePrivate(form.targetPeer, previousTitle))) throw new InstructionRefusal("the session or previous title changed; run the command in a terminal");
               if ("review" in form && form.review && (taskId === undefined || board.get(taskId)?.reviewer !== USER)) throw new InstructionRefusal("only a task assigned to the person as reviewer can receive this verdict; run the command in a terminal");
               if (form.targetPeer && board.list().some(task => (task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) && (task.owner === form.targetPeer || task.reviewer === form.targetPeer || task.reserved === form.targetPeer))) throw new InstructionRefusal("the command targets private work; run the command in a terminal");
             };
