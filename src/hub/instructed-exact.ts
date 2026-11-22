@@ -22,6 +22,12 @@ export interface ExactForm { argv: string[]; taskId?: number; targetPeer?: strin
 export function exactForm(argv: readonly string[]): ExactForm | undefined {
   if (argv.some(word => word === "--as-user" || word.startsWith("--as-user=") || word === "--project" || word.startsWith("--project=") || word === "--live-test")) return;
   const [command, sub, ...tail] = argv;
+  if (command === "task" && sub === "claim") {
+    const [id, slot, verdict, ...extra] = tail;
+    if (!extra.length && id && slot && /^[1-9]\d*$/.test(id) && /^[1-9]\d*$/.test(slot)
+      && Number.isSafeInteger(Number(id)) && Number.isSafeInteger(Number(slot)) && ["supported", "unsupported", "unclear"].includes(verdict ?? "")) return { argv: [...argv], taskId: Number(id) };
+    return;
+  }
   if (command === "task" && (sub === "assign" || sub === "unassign")) {
     const positional: string[] = [], flags = new Map<string, string>();
     for (let i = 0; i < tail.length; i++) {

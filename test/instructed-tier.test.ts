@@ -139,6 +139,8 @@ test("instructed mode defaults to intent and rejects unknown modes", async () =>
 test("the exact form policy closes unknown forms and detects task scope", async () => {
   const { exactForm } = await import("../src/hub/instructed-exact.ts");
   expect(exactForm(["task", "assign", "1055", "jcode"])).toEqual({ argv: ["task", "assign", "1055", "jcode"], taskId: 1055 });
+  expect(exactForm(["task", "claim", "1055", "2", "supported"])).toEqual({ argv: ["task", "claim", "1055", "2", "supported"], taskId: 1055 });
+  for (const args of [["task", "claim", "1055", "0", "supported"], ["task", "claim", "1055", "2", "unknown"], ["task", "claim", "1055", "2", "supported", "--manifest", "input.json", "--disposition", "resolved"], ["task", "claim", "1055", "2", "supported", "--model", "label"]]) expect(exactForm(args)).toBeUndefined();
   expect(exactForm(["task", "unassign", "1055", "--role", "reviewer", "--revision", "3"])?.taskId).toBe(1055);
   expect(exactForm(["settings", "set", "tasks.auto_pull", "true", "--yes"])).toBeDefined();
   expect(exactForm(["settings", "set", "tasks.wip_limits.claude", "2"])).toBeDefined();
@@ -378,11 +380,29 @@ test("the daemon executes confirmed exact and intent commands through its inheri
         expect(JSON.stringify(worker.calls)).not.toContain(prompt);
       }
       captured!.setMode("exact");
+      const manifestPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52121", manifestArgs = `run task claim ${intentTask.id} 1 unsupported --manifest input.json --disposition resolved`, manifestAt = Date.now();
+      expect(captured!.pending({ session, promptId: manifestPrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(manifestArgs) }, manifestAt)).toBe(true);
+      writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "3004bef3-8884-4e54-bbf2-c5c760a52122", sessionId: session, promptId: manifestPrompt, version: "2.1.329", timestamp: new Date(manifestAt + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${manifestArgs}</command-args>` } }) + "\n");
+      await Bun.sleep(5);
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);
+      const claimPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52117", claimArgs = `run task claim ${intentTask.id} 1 unsupported`, claimAt = Date.now();
+      expect(captured!.pending({ session, promptId: claimPrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(claimArgs) }, claimAt)).toBe(true);
+      writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "3004bef3-8884-4e54-bbf2-c5c760a52118", sessionId: session, promptId: claimPrompt, version: "2.1.329", timestamp: new Date(claimAt + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${claimArgs}</command-args>` } }) + "\n");
+      await Bun.sleep(5);
+      expect((await tools.request({ t: "instruction_execute", session, argv: ["task", "claim", String(intentTask.id), "1", "supported"] }, 35_000)).ok).toBe(false);
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000))).toMatchObject({ ok: true, exitCode: 0 });
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);
+      const claimBoard = new Board(join(stateDir, "hub.db"));
+      try {
+        const claims = claimBoard.get(intentTask.id)!.history.filter(entry => entry.event === "claim verdict");
+        expect(claims).toHaveLength(2); expect(claims.at(-1)).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude", claim: { slot: 1, verdict: "unsupported" } });
+      } finally { claimBoard.close(); }
+      expect(readFileSync(join(stateDir, "events.jsonl"), "utf8")).not.toContain(claimArgs);
       const read = new Board(join(stateDir, "hub.db"));
       let privateId: number;
       try {
         const saved = read.get(task.id)!; expect(saved.owner).toBe("claude"); expect(saved.history.at(-1)).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude" });
-        privateId = read.propose("user", { title: "private fixture", class: "implement", signals: ["pii"] }).id;
+        privateId = read.propose("user", { title: "private fixture", class: "implement", signals: ["pii"], plan: { claims: ["private claim"] } }).id;
       } finally { read.close(); }
       captured!.setMode("intent");
       const privateIntentPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52113", privateIntent = `please assign task ${privateId}`, privateIntentAt = Date.now();
@@ -392,6 +412,14 @@ test("the daemon executes confirmed exact and intent commands through its inheri
       const privateIntentResult = await tools.request({ t: "instruction_execute", session, argv: ["task", "assign", String(privateId), "claude"] }, 35_000);
       expect(privateIntentResult.ok).toBe(false); expect(privateIntentResult.error).toContain("private work");
       captured!.setMode("exact");
+      const privateClaimPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52119", privateClaim = `run task claim ${privateId} 1 supported`, privateClaimAt = Date.now();
+      expect(captured!.pending({ session, promptId: privateClaimPrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(privateClaim) }, privateClaimAt)).toBe(true);
+      writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "3004bef3-8884-4e54-bbf2-c5c760a52120", sessionId: session, promptId: privateClaimPrompt, version: "2.1.329", timestamp: new Date(privateClaimAt + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${privateClaim}</command-args>` } }) + "\n");
+      await Bun.sleep(5);
+      const privateClaimResult = await tools.request({ t: "instruction_execute", session }, 35_000);
+      expect(privateClaimResult.ok).toBe(false); expect(privateClaimResult.error).toContain("private work");
+      const privateClaimBoard = new Board(join(stateDir, "hub.db"));
+      try { expect(privateClaimBoard.get(privateId)!.history.some(entry => entry.event === "claim verdict")).toBe(false); } finally { privateClaimBoard.close(); }
       const privatePrompt = "3004bef3-8884-4e54-bbf2-c5c760a52093", privateArgs = `run task assign ${privateId} claude`, privateAt = Date.now();
       expect(captured!.pending({ session, promptId: privatePrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(privateArgs) }, privateAt)).toBe(true);
       writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "3004bef3-8884-4e54-bbf2-c5c760a52094", sessionId: session, promptId: privatePrompt, version: "2.1.329", timestamp: new Date(privateAt + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${privateArgs}</command-args>` } }) + "\n");
