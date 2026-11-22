@@ -309,7 +309,7 @@ Upgrading from 0.12.36 or earlier, the 0.12.37 notes below also apply.
 
 The restarted Claude planner gets the release-train tools (`hub_release_new`, `hub_release_assign`, `hub_release_configure`, `hub_release_cut`, `hub_release_report`); the person uses `ahub sdlc train report|configure|cut` (#481 S11). A due date asks for a cut review and never clears unfinished work; a cut freezes scope and publishes nothing. See [release scheduling](operations.md#planner-release-scheduling).
 
-Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
+Jcode must be 0.98.0 or later, below 1.1.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
 Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is in `package.json`. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
