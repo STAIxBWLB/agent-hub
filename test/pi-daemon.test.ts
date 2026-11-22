@@ -1474,6 +1474,12 @@ async function continuationPi(maxContinuations = DEFAULT_CONFIG.pi.max_continuat
   board.update(task.id, "pi", "accepted", { owner: "pi", reviewer: "user", state: "in_progress" });
   expect((await h.console_.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx" } })).ok).toBe(true);
   const pi = h.daemon.bus.peers.get("pi") as PiPeer;
+  // #1075: `Bus.lastDeliveredTo` is recorded before `deliver` is awaited, while PiPeer registers the delivery id a few
+  // lines before it sends the prompt and resolves only once that prompt is answered. Waiting on the resolved delivery
+  // is therefore the first effect that proves the registration, so a native agent_start injected after it always lands
+  // on a registered turn, as it does in production.
+  const delivered: string[] = [], deliver = pi.deliver.bind(pi);
+  pi.deliver = async (...args) => { await deliver(...args); delivered.push(...args[0].map(env => env.id)); };
   const native = pi as unknown as { tuiLaunch: { env: Record<string, string> }; proc: { pid: number; kill(signal: string): void }; opts: { onTurnFailure: NonNullable<ConstructorParameters<typeof PiPeer>[1]["onTurnFailure"]> } };
   const launch = native.tuiLaunch, metadata = pi.recoveryMetadata();
   const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
@@ -1497,7 +1503,7 @@ async function continuationPi(maxContinuations = DEFAULT_CONFIG.pi.max_continuat
   cleanup.push(() => { Tasks.prototype.escalate = escalate; });
   let generation = 0;
   const start = async (env: ReturnType<typeof newEnvelope>) => {
-    await wait(() => h.daemon.bus.lastDeliveredTo("pi").some(item => item.id === env.id), "the Bus delivered the actual envelope");
+    await wait(() => delivered.includes(env.id), "the Pi delivery registered the turn before agent_start");
     await event({ type: "agent_start", generation: ++generation });
     expect(pi.budgetEnvelopes.some(item => item.refs?.task === String(task.id))).toBe(true);
   };
