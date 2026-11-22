@@ -260,7 +260,10 @@ test("the real roster CLI uses settings for live changes, stable JSON, and refus
     expect(hub.daemon.bus.isRostered("kimi")).toBe(true);
     expect((await cli(["roster", "remove", "kimi", "--yes"])).code).toBe(0);
     expect(hub.daemon.bus.isRostered("kimi")).toBe(false);
-    expect((await cli(["roster", "add", "kimi"])).code).toBe(0);
+    const unconfirmed = await cli(["roster", "add", "kimi"]); // #1627 B: no terminal and no --yes: the preflight is shown and nothing changes
+    expect(unconfirmed.code).toBe(1); expect(unconfirmed.stderr).toContain("ahub roster add kimi --yes"); expect(unconfirmed.stdout).toContain("kimi");
+    expect(hub.daemon.bus.isRostered("kimi")).toBe(false);
+    expect((await cli(["roster", "add", "kimi", "--yes"])).code).toBe(0); // #1627: adding asks first; without a terminal it needs --yes
     expect(hub.daemon.bus.isRostered("kimi")).toBe(true);
     const agentRoster = await cli(["roster", "--json"], true); expect(agentRoster.code).toBe(0); expect(JSON.parse(agentRoster.stdout)).toEqual((await hub.client.request({ t: "settings_get" })).roster);
     for (const args of [["roster", "remove", "kimi", "--yes"], ["roster", "add", "kimi"], ["settings", "set", "roster.kimi", "false", "--yes"]]) {

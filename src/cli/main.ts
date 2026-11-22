@@ -93,6 +93,7 @@ import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, c
 import { configureKimiMcp } from "./kimi-mcp.ts";
 import { HUB_SKILL_NAMES, hubSkillsPresent, nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { installHubSkills, skillHostStates, skillStateRow } from "./skills-install.ts";
+import { applyJcodeHome, installHubSkillsInJcodeHomes, installSkillsInJcodeHome, jcodeHomeBlocked, jcodeHomeSkillStates, jcodeSkillHomes, planJcodeHomeInit, rosterPreflight, rosterPreflightLines, writeJcodeHomeConfig } from "../adapters/definitions/native-cli-jcode-home-init.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { freeText, unknownOption, unknownOptionRefusal, withoutSeparator } from "./free-text.ts";
@@ -416,6 +417,11 @@ const connect = async (timeoutMs = 3000) => {
 
 const connectLaunch = () => retryLaunchConnect(connect, () => console.error("hub busy, retrying"));
 
+/** #1627 A: what init does for the hub-owned jcode home, read-only. */
+function initJcodeHome() {
+  const config = loadConfig(cwd);
+  return planJcodeHomeInit({ cwd, stateDir, bundle: join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js"), hubHome: hubHome(), config, env: process.env, installed: !!Bun.which(config.jcode_cmd[0] ?? "jcode") });
+}
 function registeredProject(): Project {
   const registry = new Registry();
   try { return registry.register(cwd, stateDir); }
@@ -1185,6 +1191,10 @@ const commands: Record<string, () => Promise<void> | void> = {
         await installHubSkills({ undo: true, yes: args.includes("--yes"),
           ask: async prompt => { try { return undoReader ? await undoReader.question(prompt) : null; } catch { return null; } },
           print: line => console.log(terminalText(line)) });
+        // #1627 AC1b: the hub-owned jcode homes (the configured one and each instance's), under the same marker contract.
+        await installHubSkillsInJcodeHomes({ undo: true, homes: jcodeSkillHomes(loadConfig(cwd), process.env), yes: args.includes("--yes"),
+          ask: async prompt => { try { return undoReader ? await undoReader.question(prompt) : null; } catch { return null; } },
+          print: line => console.log(terminalText(line)) });
       } finally { undoReader?.close(); }
       return;
     }
@@ -1216,6 +1226,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       await installHubSkills({ source: join(root, "plugins", "agent-hub", "skills"), yes: args.includes("--yes"),
         ask: async prompt => { try { return rl ? await rl.question(prompt) : null; } catch { return null; } },
         print: line => console.log(terminalText(line)) });
+      await installHubSkillsInJcodeHomes({ source: join(root, "plugins", "agent-hub", "skills"), homes: jcodeSkillHomes(loadConfig(cwd), process.env), yes: args.includes("--yes"),
+        ask: async prompt => { try { return rl ? await rl.question(prompt) : null; } catch { return null; } },
+        print: line => console.log(terminalText(line)) });
       if (research !== undefined) machineRoots = [...registry.list().map(row => row.root), cwd];
     } finally { registry.close(); rl?.close(); }
     if (homesFailed) fail(startupDiagnostic(homesFailure));
@@ -1232,7 +1245,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // #1065 T1: the settings flags come out first (a value flag takes the next word), then the older flags as before.
     let settings: ReturnType<typeof parseInitSettings>;
     try { settings = parseInitSettings(args); } catch (error) { return fail((error as Error).message); }
-    const flags = takeFlags(settings.rest.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow" && arg !== "--release-guard" && arg !== "--yes"), ["--profile"], []);
+    const flags = takeFlags(settings.rest.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow" && arg !== "--release-guard" && arg !== "--yes" && arg !== "--no-jcode-home"), ["--profile"], []);
     if (flags.rest.length) fail(INIT_USAGE);
     // A pack is a project file in .agenthub/roles/<name>.pack.json (#513a); init resolves the name and refuses an unknown one with the profiles and packs it knows.
     let requestedProfile = flags.one["--profile"];
@@ -1278,6 +1291,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       const inherit = inheritAutonomy ? autonomyInheritanceChange(cwd, defaults.enabled, request.autonomy) : undefined;
       if (inherit) plan.push(inherit);
       if (defaults.notice) console.error(defaults.notice);
+      // #1627 A: the hub-owned jcode home is part of the plan, never written by a dry run.
+      const homePlan = args.includes("--no-jcode-home") ? undefined : initJcodeHome();
+      if (homePlan?.applicable) for (const line of homePlan.lines) plan.push({ action: homePlan.plan?.exists ? "modify" : "create", path: homePlan.plan!.home, reason: line.trim() });
       // Without a settings flag the preview is the bare list of file rows, as it always was; with one it is { changes, settings }.
       if (args.includes("--json")) return console.log(JSON.stringify(asked ? { changes: plan, settings: rows } : plan, null, 2));
       const settingLines = rows.map(row => `  ${row.key}: ${row.from === undefined ? "(not set)" : JSON.stringify(row.from)} -> ${JSON.stringify(row.to)} (${row.file})`);
@@ -1289,6 +1305,24 @@ const commands: Record<string, () => Promise<void> | void> = {
     try { nextSteps = initNextSteps(cwd, request); changed = init(cwd, requestedProfile, shadow, releaseGuard, request); } catch (error) { return fail((error as Error).message); }
     const project = registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
+    // #1627 A: the hub-owned jcode home, after the project files exist. The person's own home is never written; a rerun reports drift only.
+    if (!args.includes("--no-jcode-home")) {
+      const homeInit = initJcodeHome();
+      if (homeInit.applicable && homeInit.plan) {
+        for (const line of homeInit.lines) console.log(terminalText(line));
+        if (homeInit.switchHome) { try { writeJcodeHomeConfig(cwd, homeInit.plan.home); console.log(`jcode_home now points at ${homeInit.plan.home}`); } catch (error) { console.error((error as Error).message); process.exitCode = 1; } }
+        if (!homeInit.plan.exists) {
+          if (jcodeHomeBlocked(homeInit.plan.home)) console.error(`jcode home ${homeInit.plan.home} is not a plain directory; nothing was created there`);
+          else {
+            try {
+              applyJcodeHome(homeInit.plan);
+              const installed = installSkillsInJcodeHome(join(import.meta.dir, "..", "..", "plugins", "agent-hub", "skills"), homeInit.plan.home);
+              console.log(`wrote ${homeInit.plan.home}; hub skills: ${installed.filter(entry => entry.action === "install" || entry.action === "replace").length} installed`);
+            } catch (error) { console.error(`jcode home was not fully set up: ${(error as Error).message}`); process.exitCode = 1; }
+          }
+        }
+      }
+    }
     if (newProject) {
       if (inheritAutonomy) {
         const registry = new Registry();
@@ -2489,7 +2523,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   roster: async () => {
     const options = outputOptions(), flags = args.filter(arg => arg.startsWith("--")), positional = outputArguments().filter(arg => arg !== "--yes" && arg !== "--now");
     const [sub = "list", peer, ...extra] = positional;
-    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !peerDefinition(peer) && !(sub === "remove" && typeof peer === "string" && staleInstanceKey(peer, projectCatalog))) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
+    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !peerDefinition(peer) && !(sub === "remove" && typeof peer === "string" && staleInstanceKey(peer, projectCatalog))) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub === "list" && flags.some(flag => ["--yes", "--now"].includes(flag))) || (sub === "add" && flags.includes("--now"))) fail("usage: ahub roster [--json] | add <peer> [--yes] | remove <peer> [--yes] [--now]");
     const hub = await connect();
     try {
       requireNamedPeerFeature(hub, peer);
@@ -2503,6 +2537,17 @@ const commands: Record<string, () => Promise<void> | void> = {
       const key = `roster.${peer}`, stale = sub === "remove" && !peerDefinition(peer) && staleInstanceKey(peer!, projectCatalog), value = stale ? null : sub === "add";
       const preview = await request({ t: "settings_preview", key, value });
       printOutput((preview.lines ?? []).map((text: string) => [{ text }]), options.color);
+      // #1627 B: adding a peer shows what it would start with, and asks first. Without a terminal and without --yes nothing is changed; a conductor that passes --yes keeps today's authority.
+      if (sub === "add") {
+        const config = loadConfig(cwd), kind = peerDefinition(peer)?.kind ?? peer!;
+        printOutput(rosterPreflightLines(peer!, rosterPreflight(peer!, kind, cwd, config, process.env)).map(text => [{ text }]), options.color);
+        if (!flags.includes("--yes")) {
+          if (!process.stdin.isTTY) fail(`not a terminal: nothing was changed; rerun with: cd ${shellQuote(cwd)} && ahub roster add ${peer} --yes`);
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          let answer: string; try { answer = await rl.question(`Add ${peer} to the roster? [y/N] `); } finally { rl.close(); }
+          if (!/^(y|yes)$/i.test(answer.trim())) return console.log("nothing was changed");
+        }
+      }
       if (sub === "remove" && !flags.includes("--yes")) {
         if (!process.stdin.isTTY) fail("not a terminal: nothing was changed; rerun with --yes after reviewing the preview");
         const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -3428,7 +3473,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       const hostSkills = skillStateRow(skillHostStates({ home: homedir(), env: process.env }, HUB_SKILL_NAMES));
       const claudeSkills = skillsPresent ? "Claude plugin skills present" : `missing from Claude user plugin; repair: cd ${shellQuote(cwd)} && ${plugin.state === "missing" ? "ahub setup" : "claude plugin uninstall agent-hub@agent-hub --scope user && ahub setup"}`;
       const hostRepair = hostSkills.ok === false ? `; repair: cd ${shellQuote(cwd)} && ahub setup` : "";
-      row(skillsPresent ? hostSkills.ok : false, "hub skills", `${claudeSkills}; ${hostSkills.detail}${hostRepair}`);
+      // #1627 AC1b: the hub-owned jcode homes carry the skills too; a missing or stale tree there is the same repair.
+      const ownedHomes = jcodeHomeSkillStates(jcodeSkillHomes(loadConfig(cwd), process.env), HUB_SKILL_NAMES);
+      const ownedBad = ownedHomes.filter(state => state.state === "missing" || state.state === "stale" || state.state === "failed");
+      const ownedText = ownedHomes.length ? `; hub-owned jcode ${ownedHomes.map(state => `${state.home} ${state.state}`).join(", ")}${ownedBad.length ? `; repair: cd ${shellQuote(cwd)} && ahub setup` : ""}` : "";
+      row(skillsPresent ? (ownedBad.length ? false : hostSkills.ok) : false, "hub skills", `${claudeSkills}; ${hostSkills.detail}${hostRepair}${ownedText}`);
       let profileRegistry: Registry | undefined;
       try {
         profileRegistry = new Registry();

@@ -115,6 +115,17 @@ function readBoundedJson(root: string, parts: string[]): unknown | undefined {
   } finally { closeSync(fd); }
 }
 
+/** One `mcp.json` in a jcode home: its server map (entries included), whether the file exists, and whether it was unreadable or unsafe. Used by init's home plan, never by doctor's names-only listing. */
+export function readJcodeMcpServers(home: string): { servers: Record<string, unknown>; present: boolean; unreadable: boolean } {
+  try {
+    const doc = readBoundedJson(home, ["mcp.json"]);
+    if (doc === undefined) return { servers: {}, present: false, unreadable: false };
+    const servers = object(doc) ? (doc.mcpServers ?? doc.servers) : undefined;
+    if (!object(doc) || (servers !== undefined && !object(servers))) return { servers: {}, present: true, unreadable: true };
+    return { servers: { ...servers }, present: true, unreadable: false };
+  } catch { return { servers: {}, present: true, unreadable: true }; }
+}
+
 export function jcodeExtraMcpServers(cwd: string, home: string): { servers: string[]; unreadable: string[] } {
   const sources: [label: string, root: string, parts: string[]][] = [
     ["mcp.json (JCODE_HOME)", home, ["mcp.json"]], [JCODE_MCP_FILE, cwd, [".jcode", "mcp.json"]],
