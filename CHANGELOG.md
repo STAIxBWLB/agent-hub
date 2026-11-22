@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Document and pin the instructed cross-project handoff refusal in both modes: the destination cannot check receipt revocation at its write. Refs #1622, hub task 1080.
 - Admit screened exact backlog pin and pull-ready reasons and named local title changes, with receipt fences and a prior-title undo; intent free text and native Pi titles remain closed. Refs #1622, hub task 1079.
 - Screen exact instructed backlog creation and public study approval before their effects; only person-typed command text is declassified, and intent creation remains closed. Refs #1622, hub task 1078.
 - Permit a no-manifest task claim verdict from an exact instructed receipt, with its task, slot and verdict bound to the person's command. Refs #1622.
