@@ -430,8 +430,8 @@ var init_compat = __esm(() => {
     },
     jcode: {
       label: "Jcode",
-      verified: ["0.98.1", "0.99.0", "0.99.1"],
-      line: { min: "0.98.0", below: "1.0.0" },
+      verified: ["0.98.1", "0.99.0", "0.99.1", "1.0.3"],
+      line: { min: "0.98.0", below: "1.1.0" },
       gate: "contract",
       probe: ["jcode", "--quiet", "version", "--json"],
       config: "jcode_cmd",
@@ -443,8 +443,8 @@ var init_compat = __esm(() => {
           return;
         }
       },
-      trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and 0.99.1 and steering on 0.99.0 and 0.99.1; an untested version may change them.",
-      receipt: "docs/verification/2026-10-26-jcode-0.99.1.md"
+      trustNote: "The ACP, serve and MCP contract was verified on 0.98.1, 0.99.1 and 1.0.3, steering on 0.99.0, 0.99.1 and 1.0.3, and a hub delivery was acknowledged on 1.0.3; an untested version inside the line may change them. A real account, provider or model, the TUI form and Linux builds stay unverified.",
+      receipt: "docs/verification/2026-11-22-jcode-1.0.3.md"
     },
     agy: {
       label: "agy",

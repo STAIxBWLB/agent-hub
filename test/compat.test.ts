@@ -357,7 +357,7 @@ test("every COMPAT entry names a receipt that exists and has a watcher source, s
     expect(existsSync(join(import.meta.dir, "..", receipt)), `${id} receipt ${receipt} does not exist`).toBe(true);
   }
   // The receipt to repeat is the newest one for each of the three #843 AC5 CLIs.
-  expect(COMPAT.jcode.receipt).toBe("docs/verification/2026-10-26-jcode-0.99.1.md");
+  expect(COMPAT.jcode.receipt).toBe("docs/verification/2026-11-22-jcode-1.0.3.md");
   expect(COMPAT.agy.receipt).toBe("docs/verification/2026-11-08-agy-1.5.3.md");
   expect(COMPAT.pi.receipt).toBe("docs/verification/2026-11-14-pi-152-compat.md");
 });
