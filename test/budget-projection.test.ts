@@ -5,14 +5,37 @@ import { projectExhaustion, windowLeft } from "../src/hub/budget-projection.ts";
 const base = 1_760_000_000_000, min = 60_000, hour = 3_600_000;
 
 test("a steady burn projects the time the window reaches its limit (#1513 AC1)", () => {
-  // 5 h window, half used at the halfway point, 100 tokens burnt each hour since it opened.
+  // A 5 h window opened at base, burnt at a steady 100 tokens an hour: two and a half hours in it is half used, and the
+  // last bucket holds only that half hour. 250 burnt over the 2.5 h that elapsed is 100/h, so 250 left is 2.5 more hours:
+  // the limit lands exactly at the reset. Measured between the two stamps instead (250 over 2 h) it would read 125/h and
+  // land half an hour early, which is what the buckets' start stamps must not do.
   const now = base + 2.5 * hour;
   const projection = projectExhaustion({
     used: 0.5, windowStart: base, resetsAt: base + 5 * hour, now, lookbackMs: 5 * hour,
-    points: [{ at: base, tokens: 100 }, { at: base + hour, tokens: 100 }, { at: base + 2 * hour, tokens: 100 }],
+    points: [{ at: base, tokens: 100 }, { at: base + hour, tokens: 100 }, { at: base + 2 * hour, tokens: 50 }],
   });
-  // capacity 600, 300 left, 100/hour: two more hours from now.
-  expect(projection).toEqual({ state: "projected", at: base + 4.5 * hour, basis: "window" });
+  expect(projection).toEqual({ state: "projected", at: base + 5 * hour, basis: "window" });
+});
+
+test("the two-point minimum does not double the rate (#1513 AC1)", () => {
+  // Two points, the floor: 200 tokens over the 2 h that elapsed, not over the 1 h between the two stamps. Doubling it
+  // would put the limit an hour early, at base+3h instead of base+4h.
+  const now = base + 2 * hour;
+  const projection = projectExhaustion({
+    used: 0.5, windowStart: base, resetsAt: base + 6 * hour, now, lookbackMs: 6 * hour,
+    points: [{ at: base, tokens: 100 }, { at: base + hour, tokens: 100 }],
+  });
+  expect(projection).toEqual({ state: "projected", at: base + 4 * hour, basis: "window" });
+});
+
+test("a stale reading is no usable reading, so it never claims a time (#1513 AC1)", () => {
+  const input = {
+    used: 0.5, windowStart: base, resetsAt: base + 5 * hour, now: base + 2.5 * hour, lookbackMs: 5 * hour,
+    points: [{ at: base, tokens: 100 }, { at: base + hour, tokens: 100 }, { at: base + 2 * hour, tokens: 50 }],
+  };
+  expect(projectExhaustion({ ...input, stale: true })).toEqual({ state: "unknown", cause: "unknown_usage" });
+  // The same numbers, fresh, do project: the cause above is the staleness, not the data.
+  expect(projectExhaustion({ ...input, stale: false })).toMatchObject({ state: "projected" });
 });
 
 test("a full lookback is named as the basis when the window is older than it (#1513 AC1)", () => {
@@ -32,7 +55,8 @@ test("a reset inside the lookback measures from the window start and says so (#1
     used: 0.5, windowStart: base + 2 * hour, resetsAt: base + 7 * hour, now, lookbackMs: 5 * hour,
     points: [{ at: base, tokens: 9_000 }, { at: base + 2 * hour, tokens: 100 }, { at: base + 3 * hour, tokens: 100 }],
   });
-  // The pre-reset point is outside the window: only 200 tokens count, so capacity 400 and 100/hour means one hour.
+  // The pre-reset point is outside the window: only 200 tokens count, so capacity 400, and the 200 burnt in the hour
+  // since the window opened leave one more hour.
   expect(projection).toEqual({ state: "projected", at: base + 4 * hour, basis: "window" });
 });
 

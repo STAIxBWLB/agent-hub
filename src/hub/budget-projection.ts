@@ -1,7 +1,11 @@
 // #1513 AC1: when a quota window reaches its limit, at the burn rate seen over a lookback. Pure: the clock, the
 // roll-up and the window all arrive as arguments, so a fixture needs no daemon and no database.
 
-/** One sample of tokens burned inside the window. `at` is epoch ms, `tokens` the whole sample. */
+/**
+ * One hour of burn inside the window. `at` is epoch ms of the bucket's **start**, so a bucket holds everything burned
+ * from `at` until the next one and the last bucket is a partial hour; `tokens` is that bucket's whole burn. The rate is
+ * therefore measured to `now`, never to the last `at`.
+ */
 export interface ProjectionPoint {
   at: number;
   tokens: number;
@@ -26,6 +30,8 @@ export interface ProjectionInput {
   now: number;
   /** How far back the rate is measured; the current window may be shorter than this. */
   lookbackMs: number;
+  /** The reading behind this window is older than the hub's freshness bound, so none of these numbers describe it now. */
+  stale?: boolean;
   points: readonly ProjectionPoint[];
 }
 
@@ -36,8 +42,10 @@ const finite = (v: number | null | undefined): v is number => typeof v === "numb
  * projection that lands after the window's own reset each answer `unknown` with the cause named, never a time.
  */
 export function projectExhaustion(input: ProjectionInput): ExhaustionProjection {
-  const { used, windowStart, resetsAt, now, lookbackMs, points } = input;
-  if (!finite(used) || used < 0 || used > 1) return { state: "unknown", cause: "unknown_usage" };
+  const { used, windowStart, resetsAt, now, lookbackMs, points, stale } = input;
+  // A stale reading is no usable reading, exactly like a window whose reset has passed: the numbers it still carries
+  // describe an earlier window, so no time is claimed from them.
+  if (stale === true || !finite(used) || used < 0 || used > 1) return { state: "unknown", cause: "unknown_usage" };
   if (!finite(windowStart) || !finite(resetsAt) || windowStart >= now || resetsAt <= now) return { state: "unknown", cause: "unknown_usage" };
   if (!finite(lookbackMs) || lookbackMs <= 0) return { state: "unknown", cause: "few_points" };
   // A reset inside the lookback: the window opened after the lookback did, so the rate is measured from the window
@@ -49,14 +57,17 @@ export function projectExhaustion(input: ProjectionInput): ExhaustionProjection 
   const total = points.filter(p => finite(p.at) && finite(p.tokens) && p.tokens > 0 && p.at >= windowStart && p.at <= now).reduce((sum, p) => sum + p.tokens, 0);
   if (used >= 1) return { state: "projected", at: now, basis };
   if (inside.length < 2) return { state: "unknown", cause: "few_points" };
-  const span = inside[inside.length - 1]!.at - inside[0]!.at;
-  if (span <= 0) return { state: "unknown", cause: "few_points" };
+  // The points are buckets stamped at their start, so their burn covers the time from the first bucket's start to `now`,
+  // the partial last hour included. Measuring between the two stamps would count n buckets over n-1 hours and overstate
+  // the rate (two points, the minimum: doubled, and the forecast an hour early).
+  const elapsed = now - inside[0]!.at;
+  if (elapsed <= 0) return { state: "unknown", cause: "few_points" };
   const burned = inside.reduce((sum, p) => sum + p.tokens, 0);
   // No tokens at all in the window is no data, not a zero rate: a window nobody used cannot be projected either way.
   if (total <= 0 || burned <= 0) return { state: "unknown", cause: "no_burn" };
   // The window's own numbers give its capacity: what is burnt now is `used` of it.
   const capacity = total / used, remaining = (1 - used) * capacity;
-  const at = now + remaining / (burned / span);
+  const at = now + remaining / (burned / elapsed);
   if (!Number.isFinite(at)) return { state: "unknown", cause: "few_points" };
   if (at > resetsAt) return { state: "unknown", cause: "reset_first" };
   return { state: "projected", at: Math.round(at), basis };

@@ -453,10 +453,10 @@ export class UsageRollup {
     return { days: resultDays, peers: allPeers };
   }
 
-  /** Every roll-up row, in key order, for the rebuild-equals-incremental test. */
   /**
    * #1513: the hourly burn series for one peer, for the quota projection. An hour a provider reported uses the
    * provider's number, exactly as `total()` chooses native over the hub's count, so one hour is never counted twice.
+   * A point is its hour's start, so the last one is a partial hour (`budget-projection.ts` measures the rate to `now`).
    */
   points(peer: string, since: number, until: number): { at: number; tokens: number }[] {
     if (!Number.isFinite(since) || !Number.isFinite(until) || until < since) return [];
@@ -471,9 +471,11 @@ export class UsageRollup {
     return [...byHour.entries()].map(([hour, bucket]) => ({ at: Date.parse(`${hour}:00:00.000Z`), tokens: bucket.native > 0 ? bucket.native : bucket.count }));
   }
 
+  /** Every roll-up row, in key order, for the rebuild-equals-incremental test. */
   dump(): unknown {
     const all = (table: string, order: string) => this.db.query(`SELECT * FROM ${table} ORDER BY ${order}`).all();
-    return { usage: all("usage_rollup", "day, peer, model, source, task, pii"), tokens: all("token_rollup", "day, peer, task, pii"), pii: all("rollup_pii", "task"),
+    return { usage: all("usage_rollup", "day, peer, model, source, task, pii"), tokens: all("token_rollup", "day, peer, task, pii"),
+      points: all("usage_points", "hour, peer, code"), pii: all("rollup_pii", "task"),
       limits: this.db.query("SELECT at, type, peer, window, detail FROM limit_events ORDER BY seq").all(), offset: this.state().offset };
   }
 

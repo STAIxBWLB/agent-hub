@@ -68,6 +68,9 @@ test("the hourly burn series reads back per peer, one point per hour, and a rebu
   const incremental = JSON.stringify(r.points("codex", start, end));
   r.rebuild();
   expect(JSON.stringify(r.points("codex", start, end))).toBe(incremental);
+  // The point rows ride `dump()` too, so the rebuild-equals-incremental test above covers the new table and not only
+  // the daily rows it already held.
+  expect((r.dump() as { points: { peer: string }[] }).points.some(p => p.peer === "codex")).toBe(true);
   r.close();
 });
 

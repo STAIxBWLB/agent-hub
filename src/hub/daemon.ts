@@ -4275,17 +4275,21 @@ export async function startDaemon(opts: DaemonOptions) {
     const resetsAt = typeof window.resetsAt === "number" ? window.resetsAt : null;
     const windowMins = window.windowMins ?? WINDOW_MINS[window.id] ?? 0;
     const windowStart = resetsAt !== null && windowMins > 0 ? resetsAt - windowMins * 60_000 : null;
+    // A stale reading is no usable reading, so its forecast is never served from the cache, never cached, and never
+    // computed from points it would not look at (the page polls every second, and a stale row is what a pause leaves).
     const key = `${peer}\0${window.id}\0${window.at}`;
-    const cached = projectionCache.get(key);
+    const cached = window.stale ? undefined : projectionCache.get(key);
     const projection = cached && now - cached.at < PROJECTION_TTL_MS ? cached.value : (() => {
       const value = projectExhaustion({
-        used: window.used, windowStart, resetsAt, now,
+        used: window.used, windowStart, resetsAt, now, stale: window.stale,
         lookbackMs: windowMins > 0 ? Math.min(PROJECTION_LOOKBACK_MS, windowMins * 60_000) : PROJECTION_LOOKBACK_MS,
-        points: windowStart === null ? [] : usageRollup.points(peer, windowStart, now),
+        points: windowStart === null || window.stale ? [] : usageRollup.points(peer, windowStart, now),
       });
       /* ponytail: the cache is per reading and cleared whole past 256 entries; a per-window expiry is the upgrade if a project ever holds more. */
-      if (projectionCache.size > 256) projectionCache.clear();
-      projectionCache.set(key, { at: now, value });
+      if (!window.stale) {
+        if (projectionCache.size > 256) projectionCache.clear();
+        projectionCache.set(key, { at: now, value });
+      }
       return value;
     })();
     return { ...window, left: windowLeft(window.used), projection };

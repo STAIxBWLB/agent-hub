@@ -3466,7 +3466,8 @@ The console's peer detail (Enter on Peers) and the Usage detail, and the dashboa
 Usage detail and the dashboard's Usage budgets row show the same two numbers for the same window. The rate is the peer's token series from the roll-up over at most 24 hours,
 and when the window opened inside that span it is measured from the window's opening (the sentence says `rate since the window opened`), so a reset is never projected across.
 A forecast that would land after the window's own reset reads `no forecast: it resets first`; fewer than two hourly points reads `no forecast: too few points yet`; a window
-nobody burnt reads `no forecast: no burn yet`; and an unusable reading reads `no forecast: no usable reading`. An unknown forecast is never printed as a time. One view in the
+nobody burnt reads `no forecast: no burn yet`; and an unusable or stale reading reads `no forecast: no usable reading`. The burn is measured over the time that elapsed since
+the first hourly bucket, so a partial last hour counts and a two-point series is not read at double its rate. An unknown forecast is never printed as a time. One view in the
 hub fills every window for all three surfaces, so they cannot disagree, and `--json` carries each window's `left` and `projection` (an older hub sends neither, and the CLI
 and the page print no forecast for it rather than inventing one).
 
