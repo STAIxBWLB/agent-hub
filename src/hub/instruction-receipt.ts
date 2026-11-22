@@ -6,7 +6,7 @@ import { realPath } from "./project.ts";
 
 export const INSTRUCTION_PROBED_VERSIONS = ["2.1.328", "2.1.329"] as const;
 export const INSTRUCTION_PREFIX = "/agent-hub:ahub";
-const MAX_PROMPT_BYTES = 16 * 1024;
+export const MAX_PROMPT_BYTES = 16 * 1024;
 const MAX_TRANSCRIPT_TAIL = 1024 * 1024;
 const MAX_AGE_MS = 10 * 60 * 1000;
 const MAX_OPERATIONS = 10;
@@ -29,7 +29,7 @@ export interface PendingInstruction {
   session: string; promptId: string; transcript: string; home: string; cwd: string; project: string; hash: string; peer?: string;
 }
 interface Row {
-  id: string; session: string; prompt_id: string; transcript: string; home: string; cwd: string; project: string; hash: string; peer: string | null; created: number; state: string; uses: number;
+  id: string; session: string; prompt_id: string; transcript: string; home: string; cwd: string; project: string; hash: string; peer: string | null; created: number; state: string; uses: number; record_uuid: string | null;
 }
 export interface ConfirmedInstruction { id: string; session: string; args: string; peer?: string }
 /** Supplied by the daemon from its own session and managed-home inventory, never from a control message. */
@@ -87,19 +87,25 @@ export class InstructionReceipts {
   }
   close(): void { this.exactLeases.clear(); this.db.close(); }
   /** A new witness inherits only an off display copy; a retained witness always wins. */
-  seedMode(display: () => "off" | "exact"): void {
+  seedMode(display: () => "off" | "exact" | "intent"): void {
     if (this.db.query("SELECT 1 FROM instructed_mode WHERE id = 1").get()) return;
-    this.db.query("INSERT OR IGNORE INTO instructed_mode(id, mode) VALUES(1, ?)").run(display() === "off" ? "off" : "exact");
+    if (display() === "off") this.db.query("INSERT OR IGNORE INTO instructed_mode(id, mode) VALUES(1, 'off')").run();
   }
   /** Missing witness uses the shipped default; malformed retained state never enables the tier. */
-  mode(): "off" | "exact" {
+  mode(): "off" | "exact" | "intent" {
     const row = this.db.query("SELECT mode FROM instructed_mode WHERE id = 1").get() as { mode: unknown } | null;
-    if (!row) return "exact";
-    if (row.mode !== "off" && row.mode !== "exact") throw new Error("instructed mode witness is invalid");
+    if (!row) return "intent";
+    if (row.mode !== "off" && row.mode !== "exact" && row.mode !== "intent") throw new Error("instructed mode witness is invalid");
     return row.mode;
   }
-  setMode(value: "off" | "exact"): void {
-    if (value !== "off" && value !== "exact") throw new Error("invalid instructed mode");
+  hasIntentWitness(): boolean {
+    const row = this.db.query("SELECT mode FROM instructed_mode WHERE id = 1").get() as { mode: unknown } | null;
+    if (!row) return false;
+    if (row.mode !== "off" && row.mode !== "exact" && row.mode !== "intent") throw new Error("instructed mode witness is invalid");
+    return row.mode === "intent";
+  }
+  setMode(value: "off" | "exact" | "intent"): void {
+    if (value !== "off" && value !== "exact" && value !== "intent") throw new Error("invalid instructed mode");
     this.db.query("INSERT INTO instructed_mode(id, mode) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET mode = excluded.mode").run(value);
   }
   pending(value: PendingInstruction, now: number): boolean {
@@ -116,16 +122,18 @@ export class InstructionReceipts {
         .run(randomUUID(), value.session, value.promptId, value.transcript, value.home, value.cwd, value.project, value.hash, value.peer ?? null, now).changes === 1;
     })();
   }
-  forPeer(peer: string): { confirmReceipt(session: string, now: number): Promise<ConfirmedInstruction | undefined> } {
-    return { confirmReceipt: (session, now) => this.confirmForPeer(session, now, peer).catch(() => undefined) };
+  forPeer(peer: string): { confirmReceipt(session: string, now: number): Promise<ConfirmedInstruction | undefined>; confirmIntent(session: string, now: number): Promise<ConfirmedInstruction | undefined> } {
+    return { confirmReceipt: (session, now) => this.confirmForPeer(session, now, peer).catch(() => undefined), confirmIntent: (session, now) => this.confirmForPeer(session, now, peer, true).catch(() => undefined) };
   }
-  private async confirmForPeer(session: string, now: number, peer: string): Promise<ConfirmedInstruction | undefined> {
+  private async confirmForPeer(session: string, now: number, peer: string, reusable = false): Promise<ConfirmedInstruction | undefined> {
     if (!UUID.test(session) || !Number.isSafeInteger(now) || !/^[a-z][a-z0-9_-]{0,63}$/.test(peer)) return;
     const evidence = await this.evidence(session, peer);
     if (!evidence || evidence.session !== session || evidence.peer !== peer) return;
     this.db.query("UPDATE instruction_receipts SET state = 'closed' WHERE state != 'closed' AND (created <= ? OR created > ?)").run(now - MAX_AGE_MS, now);
-    const rows = this.db.query("SELECT * FROM instruction_receipts WHERE session = ? AND state = 'pending' ORDER BY created, id").all(session) as Row[];
-    if (rows.length === 0) return;
+    let rows = this.db.query(reusable ? "SELECT * FROM instruction_receipts WHERE session = ? ORDER BY created DESC, id DESC" : "SELECT * FROM instruction_receipts WHERE session = ? AND state = 'pending' ORDER BY created, id").all(session) as Row[];
+    if (reusable && rows[0] && rows[1]?.created === rows[0].created) return; // Equal timestamps do not establish which instruction is current.
+    if (reusable) rows = rows.slice(0, 1);
+    if (rows.length === 0 || reusable && rows[0]!.state === "closed") return;
     const boundEvidence = { ...rows[0], session, home: evidence.home, cwd: evidence.cwd, transcript: evidence.transcript } as Row;
     const tail = transcriptTail(boundEvidence); if (tail === undefined) return;
     const lines = tail.split("\n");
@@ -161,8 +169,13 @@ export class InstructionReceipts {
           this.db.query("UPDATE instruction_receipts SET state = 'closed' WHERE id = ?").run(row.id);
           return;
         }
-        const changed = this.db.query("UPDATE instruction_receipts SET state = 'confirmed', record_uuid = ? WHERE id = ? AND state = 'pending' AND NOT EXISTS (SELECT 1 FROM instruction_receipts WHERE record_uuid = ?)")
-          .run(record.uuid, row.id, record.uuid);
+        if (reusable && row.state === "confirmed" && row.peer === peer && row.record_uuid === record.uuid) {
+          const stillOpen = this.db.query("SELECT 1 FROM instruction_receipts WHERE id = ? AND state = 'confirmed' AND peer = ? AND record_uuid = ?").get(row.id, peer, record.uuid);
+          if (stillOpen) return { id: row.id, session, args: record.args, peer };
+          continue;
+        }
+        const changed = this.db.query("UPDATE instruction_receipts SET state = 'confirmed', record_uuid = ?, peer = ? WHERE id = ? AND state = 'pending' AND NOT EXISTS (SELECT 1 FROM instruction_receipts WHERE record_uuid = ?)")
+          .run(record.uuid, peer, row.id, record.uuid);
         if (changed.changes === 1) return { id: row.id, session, args: record.args, ...(row.peer ? { peer: row.peer } : {}) };
       }
     }
@@ -178,6 +191,15 @@ export class InstructionReceipts {
     if (!Number.isSafeInteger(now) || now < 0) return false;
     const row = this.db.query("UPDATE instruction_receipts SET uses = 1, state = 'closed' WHERE id = ? AND state = 'confirmed' AND uses = 0 AND created <= ? AND created > ? RETURNING session, created")
       .get(id, now, now - MAX_AGE_MS) as { session: string; created: number } | null;
+    if (!row) return false;
+    this.exactLeases.set(id, row);
+    return true;
+  }
+  /** Serialize intent operations and retain a revocable lease even for the tenth use. */
+  consumeIntent(id: string, now: number): boolean {
+    if (!Number.isSafeInteger(now) || now < 0 || this.exactLeases.has(id)) return false;
+    const row = this.db.query("UPDATE instruction_receipts SET uses = uses + 1, state = CASE WHEN uses + 1 >= ? THEN 'closed' ELSE state END WHERE id = ? AND state = 'confirmed' AND created <= ? AND created > ? AND uses < ? RETURNING session, created")
+      .get(MAX_OPERATIONS, id, now, now - MAX_AGE_MS, MAX_OPERATIONS) as { session: string; created: number } | null;
     if (!row) return false;
     this.exactLeases.set(id, row);
     return true;

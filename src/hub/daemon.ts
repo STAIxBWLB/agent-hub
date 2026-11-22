@@ -53,7 +53,7 @@ import { loadExternalAdapterDefinitions, readAdapterModuleDeclarations, external
 import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
 import { NativeHookLaunches, type NativeHookLaunch } from "./native-hook-launch.ts";
-import { InstructionReceipts } from "./instruction-receipt.ts";
+import { InstructionReceipts, MAX_PROMPT_BYTES } from "./instruction-receipt.ts";
 import { Registry } from "./registry.ts";
 import { usedClaudeHomes } from "../cli/autonomy-homes.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
@@ -131,6 +131,7 @@ import { roadmapConfig, type MilestoneLinkKind, type MilestoneState, type Roadma
 import { mcpAllowNames } from "./instances.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { instructedMode, parseExactInstruction, exactForm, instructedExecution, type InstructedExecution } from "./instructed-exact.ts";
+import { intentForm, literalInstructionId } from "./instructed-intent.ts";
 import { instructedRuntimeAllowed } from "./instructed-runtime.ts";
 import { classifyPeerCommand, cliCommandLabel } from "../cli/identity.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateRawConfig, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
@@ -304,7 +305,7 @@ export interface HubConfig {
   action_policy?: ActionPolicyConfig;
   permission_modes: Record<string, PermissionMode>;
   protect_instruction_files: boolean;
-  instructed?: { mode: "off" | "exact" };
+  instructed?: { mode: "off" | "exact" | "intent" };
   /** Loader-owned provenance of requested defaults, before machine-local filtering. */
   permission_default_sources?: Record<string, { mode: PermissionMode; source: string }>;
   codex_bin: string;
@@ -411,7 +412,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   action_policy: actionPolicyConfig(),
   permission_modes: {},
   protect_instruction_files: false,
-  instructed: { mode: "exact" },
+  instructed: { mode: "intent" },
   ...nativeDefaults.proxy,
   batch_max: 3,
   batch_ms: 15_000,
@@ -3094,6 +3095,8 @@ export async function startDaemon(opts: DaemonOptions) {
     // #223: a headless reviewer's verdict holds only while the same child it started with still runs for that task.
     reviewAuthority: runningReviewAuthority,
     requestAuthority: by => {
+      const instruction = instructedExecution.getStore();
+      if (by === USER && instruction?.active) return () => { try { instruction.current(); return undefined; } catch { return "the instruction is no longer current"; } };
       const scope = childToolAuthority.getStore();
       return scope?.by === by ? () => scope.current() ? undefined : "Claude child generation or execution root changed" : undefined;
     },
@@ -10853,7 +10856,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (refusal) return { ok: false, error: refusal };
     const source = settingSource(authority);
     if (def.key === "instructed.mode") {
-      if (authority !== "terminal" || instructedExecution.getStore()?.active || (value !== "off" && value !== "exact")) return { ok: false, error: "instructed.mode is changed only by the person in a terminal, to off or exact" };
+      if (authority !== "terminal" || instructedExecution.getStore()?.active || (value !== "off" && value !== "exact" && value !== "intent")) return { ok: false, error: "instructed.mode is changed only by the person in a terminal, to off, exact or intent" };
       const before = instructionReceipts.mode();
       if (value === "off") instructionReceipts.setMode(value);
       try {
@@ -10862,7 +10865,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (value === "off" && before !== value) recordSetting(def.key, before, value, source);
         return { ok: false, error: `instructed.mode: ${value === "off" ? "witness is off; " : "witness unchanged; "}display copy could not be written: ${(error as Error).message}` };
       }
-      if (value === "exact") instructionReceipts.setMode(value);
+      if (value === "exact" || value === "intent") instructionReceipts.setMode(value);
       if (before !== value) recordSetting(def.key, before, value, source);
       return { ok: true, text: `instructed.mode: witness ${value}; config.local.json is a display copy` };
     }
@@ -11435,6 +11438,14 @@ export async function startDaemon(opts: DaemonOptions) {
 
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("instructed_exact")) {
         try { if (instructionReceipts.mode() === "off") return "target lacks instructed_exact; the retained person-disabled mode requires a supporting daemon"; }
+        catch { return "instructed mode compatibility is unknown; choose a supporting daemon"; }
+      }
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("instructed_intent")) {
+        try {
+          const texts = configSourceTexts(opts.cwd);
+          const rawIntent = CONFIG_FILES.some(name => texts[name] !== null && JSON.parse(texts[name]!).instructed?.mode === "intent");
+          if (instructionReceipts.hasIntentWitness() || rawIntent) return "target lacks instructed_intent; the retained or configured intent mode requires a supporting daemon";
+        }
         catch { return "instructed mode compatibility is unknown; choose a supporting daemon"; }
       }
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("guidance_probes")) {
@@ -12782,19 +12793,23 @@ export async function startDaemon(opts: DaemonOptions) {
         return apply();
       }
       case "instruction_execute": {
-        if (c.role !== "tools" || !c.peer || c.toolsOwner || c.externalOwner || Object.keys(msg).some(key => !["t", "rid", "session"].includes(key)) || typeof msg.session !== "string") return void reply({ ok: false, error: "instruction unavailable" });
+        if (c.role !== "tools" || !c.peer || c.toolsOwner || c.externalOwner || Object.keys(msg).some(key => !["t", "rid", "session", "argv"].includes(key)) || typeof msg.session !== "string" || msg.argv !== undefined && (!Array.isArray(msg.argv) || msg.argv.some((word: unknown) => typeof word !== "string") || Buffer.byteLength(JSON.stringify(msg.argv)) > MAX_PROMPT_BYTES)) return void reply({ ok: false, error: "instruction unavailable" });
         const peer = c.peer, session = msg.session, socket = sock;
+        let initialMode: ReturnType<typeof effectiveInstructionMode>;
+        try { initialMode = effectiveInstructionMode(); }
+        catch { return void reply({ ok: false, error: "instructed.mode is unavailable; inspect hub status and run the command in a terminal" }); }
         const initialSession = claudeSession(peer), owner = claudeLaunchProof.owner(peer), generation = owner?.sessionGeneration;
         const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
         class InstructionRefusal extends Error {}
         const sessionRefusal = `this Claude session changed or was not started by ahub claude. The person starts a managed session in this project:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub claude\n\`\`\`\n\nSuccess: a new managed Claude session starts; type the instruction again there.`;
-        const modeRefusal = `instructed.mode is off. The person turns it on in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub settings set instructed.mode exact\n\`\`\`\n\nSuccess: the command reports witness exact; type the instruction again.`;
+        const requestedMode = msg.argv === undefined ? "exact" : "intent";
+        const modeRefusal = `instructed.mode is off. The person turns it on in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub settings set instructed.mode ${requestedMode}\n\`\`\`\n\nSuccess: the command reports witness ${requestedMode}; type the instruction again.`;
         const receiptRefusal = "no usable instruction receipt; type the /agent-hub:ahub command again. A receipt is used once and expires after 10 minutes.";
         const runtimeRefusal = "the installed hub runtime is unavailable or inside a project or peer write root; install the hub package and start a new managed session with ahub claude";
         const current = () => {
           const observed = claudeSession(peer), latest = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
-          const checks = { socket: socket.readyState === WebSocket.OPEN && socket.data === c && !c.closed && c.role === "tools" && c.peer === peer, lifecycle: !stopping && !recoveryActive() && !bus.isRecoveryHeld, policy: membershipAllowed(peer) && !readOnlyPeer(peer) && !turns.get(peer)?.private && !contextPii(peer) && !board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && (task.signals.includes("pii") || task.signals.includes("pii_path"))), owner: !!owner && owner.attached && owner.state !== "offline" && !owner.claiming && bus.peers.get(peer) === owner && !!generation && owner.sessionGeneration === generation, session: observed.sessionId === session && observed.sessionId === initialSession.sessionId && observed.transcriptPath === initialSession.transcriptPath && observed.launchId === initialSession.launchId, launch: !!launch?.privateRecord && !!launch.launcherPid && !!launch.launcherSignature && launch.launchId === observed.launchId && !!latest?.privateRecord && latest.launchId === launch.launchId && latest.launcherPid === launch.launcherPid && latest.launcherSignature === launch.launcherSignature && processLiveness(launch.launcherPid, launch.launcherSignature) === "live", mode: effectiveInstructionMode() === "exact" };
-          if (!checks.mode) throw new InstructionRefusal(modeRefusal);
+          const checks = { socket: socket.readyState === WebSocket.OPEN && socket.data === c && !c.closed && c.role === "tools" && c.peer === peer, lifecycle: !stopping && !recoveryActive() && !bus.isRecoveryHeld, policy: membershipAllowed(peer) && !readOnlyPeer(peer) && !turns.get(peer)?.private && !contextPii(peer) && !board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && (task.signals.includes("pii") || task.signals.includes("pii_path"))), owner: !!owner && owner.attached && owner.state !== "offline" && !owner.claiming && bus.peers.get(peer) === owner && !!generation && owner.sessionGeneration === generation, session: observed.sessionId === session && observed.sessionId === initialSession.sessionId && observed.transcriptPath === initialSession.transcriptPath && observed.launchId === initialSession.launchId, launch: !!launch?.privateRecord && !!launch.launcherPid && !!launch.launcherSignature && launch.launchId === observed.launchId && !!latest?.privateRecord && latest.launchId === launch.launchId && latest.launcherPid === launch.launcherPid && latest.launcherSignature === launch.launcherSignature && processLiveness(launch.launcherPid, launch.launcherSignature) === "live", mode: initialMode !== "off" && effectiveInstructionMode() === initialMode };
+          if (!checks.mode) throw new InstructionRefusal(effectiveInstructionMode() === "off" ? modeRefusal : "instructed.mode changed; type the instruction again in the current mode");
           if (!checks.lifecycle) throw new InstructionRefusal("the hub is stopping or recovering; retry after ahub status shows it running");
           if (!checks.policy) throw new InstructionRefusal("a private turn or private task is active for this peer, or its access is restricted; run the command in a terminal");
           if (!checks.socket || !checks.owner || !checks.session || !checks.launch) throw new InstructionRefusal(sessionRefusal);
@@ -12805,25 +12820,34 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!initialSession.sessionId || !initialSession.transcriptPath) return { ok: false, error: "no session evidence for this Claude session yet; send one ordinary prompt in this session, then type the /agent-hub:ahub command again" };
             current();
             if (!instructedRuntimeReady()) return { ok: false, error: `the loaded hub runtime is inside a project or peer write root, or its location is unknown. The person installs the hub package before restarting the session:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && bun add -g @staix/agent-hub\n\`\`\`\n\nSuccess: the package is installed globally. The person then starts the managed session:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub claude\n\`\`\`\n\nSuccess: the installed hub starts Claude; type the instruction again.` };
-            const receipt = await instructionReceipts.forPeer(peer).confirmReceipt(session, Date.now());
+            if (initialMode === "exact" && msg.argv !== undefined) return { ok: false, error: "exact mode takes no agent-selected command; type the exact /agent-hub:ahub run command again" };
+            const receipt = await (initialMode === "intent" ? instructionReceipts.forPeer(peer).confirmIntent(session, Date.now()) : instructionReceipts.forPeer(peer).confirmReceipt(session, Date.now()));
             current();
             if (!receipt) return { ok: false, error: receiptRefusal };
-            const argv = parseExactInstruction(receipt.args), form = argv && exactForm(argv);
+            const typedExact = /^run(?:\s|$)/u.test(receipt.args);
+            if (typedExact && msg.argv !== undefined) return { ok: false, error: "the person typed an exact command; run it without an agent-selected command" };
+            const argv: string[] | undefined = typedExact || initialMode === "exact" ? parseExactInstruction(receipt.args) : msg.argv;
+            const form = argv && (typedExact || initialMode === "exact" ? exactForm(argv) : intentForm(argv));
             if (!argv) {
               const raw = receipt.args.startsWith("run ") ? receipt.args.slice("run ".length).trim() : "";
               if (!raw || /[\p{Cc}\p{Cf}]/u.test(raw) || raw.includes("~~~")) return { ok: false, error: "instruction syntax is not supported for exact mode; the original command cannot be rendered safely" };
               return { ok: false, error: `this syntax is not proven for instructed exact mode. The person runs the original command in a terminal:\n\n~~~sh\ncd ${shellQuote(opts.cwd)} && ahub ${raw}\n~~~\n\nSuccess: the command reports its result in that terminal.` };
             }
-            if (!form || !["console", "conductor"].includes(classifyPeerCommand(argv[0]!, argv.slice(1), adapterCatalog))) return { ok: false, error: `this form is not proven for instructed exact mode. The person runs the same command in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub ${argv.map(shellQuote).join(" ")}\n\`\`\`\n\nSuccess: the command reports its result in that terminal.` };
+            if (!form || (typedExact || initialMode === "exact") && !["console", "conductor"].includes(classifyPeerCommand(argv[0]!, argv.slice(1), adapterCatalog))) return { ok: false, error: `this form is not proven for instructed ${typedExact || initialMode === "exact" ? "exact" : "intent"} mode. The person runs the same command in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub ${argv.map(shellQuote).join(" ")}\n\`\`\`\n\nSuccess: the command reports its result in that terminal.` };
+            if ("verdictId" in form && typeof form.verdictId === "string" && !literalInstructionId(receipt.args, form.verdictId)) return { ok: false, error: "the verdict's item id is not written in the person's instruction; type the id in a new instruction" };
+            if (initialMode === "intent" && !typedExact && !tasks.publicMetadataText(JSON.stringify(argv))) return { ok: false, error: "the selected command may contain private information; run the command in a terminal" };
+            if (initialMode === "intent" && !typedExact && receipt.args && argv.slice(2).join(" ").includes(receipt.args)) return { ok: false, error: "the selected command repeats the private instruction text; use a shorter public description or run the command in a terminal" };
             const taskId = form.taskId;
             const guarded = () => {
               current();
               if (!instructedRuntimeReady()) throw new InstructionRefusal(runtimeRefusal);
               if (taskId !== undefined) { const task = board.get(taskId); if (!task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) throw new InstructionRefusal("the command targets unavailable or private work; run the command in a terminal"); }
+              if ("dependencyIds" in form && Array.isArray(form.dependencyIds) && form.dependencyIds.some(id => { const task = board.get(id); return !task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task); })) throw new InstructionRefusal("the command references unavailable or private work; run the command in a terminal");
+              if ("review" in form && form.review && (taskId === undefined || board.get(taskId)?.reviewer !== USER)) throw new InstructionRefusal("only a task assigned to the person as reviewer can receive this verdict; run the command in a terminal");
               if (form.targetPeer && board.list().some(task => (task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) && (task.owner === form.targetPeer || task.reviewer === form.targetPeer || task.reserved === form.targetPeer))) throw new InstructionRefusal("the command targets private work; run the command in a terminal");
             };
             guarded();
-            if (!instructionReceipts.consumeExact(receipt.id, Date.now())) return { ok: false, error: receiptRefusal };
+            if (!(initialMode === "intent" && !typedExact ? instructionReceipts.consumeIntent(receipt.id, Date.now()) : instructionReceipts.consumeExact(receipt.id, Date.now()))) return { ok: false, error: receiptRefusal };
             if (!event({ type: "agent_cli", peer, command: cliCommandLabel(argv[0]!, argv.slice(1), adapterCatalog), refused: false, instructed: true, instructionReceipt: receipt.id })) { instructionReceipts.finishExact(receipt.id); return { ok: false, error: "instruction audit is unavailable; check hub status and run the command in a terminal" }; }
             let revoked = false;
             const binding: InstructedExecution = { peer, receipt: receipt.id, active: true, ...(taskId === undefined ? {} : { taskId }), current: () => {

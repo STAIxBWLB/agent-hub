@@ -3118,18 +3118,18 @@ const commands: Record<string, () => Promise<void> | void> = {
     printOutput(sub === "limits" ? renderLimits(reply.limits, reply.current, options.columns) : sub === "total" ? renderTotal(reply.total, options.columns) : renderUsage(reply.usage, options.columns), options.color);
   },
   instructed: async () => {
-    if (args.length === 1 && args[0] === "run") {
+    if (args[0] === "run") {
       const session = process.env.CLAUDE_CODE_SESSION_ID;
       if (caller.role !== "tools" || !session || liveTest) return fail("instruction requires the current managed Claude session");
       const hub = await connect();
       try {
-        const result = await hub.request({ t: "instruction_execute", session }, 35_000);
+        const result = await hub.request({ t: "instruction_execute", session, ...(args.length > 1 ? { argv: args.slice(1) } : {}) }, 35_000);
         if (typeof result.output === "string") process.stdout.write(result.output);
         if (result.ok !== true) fail(String(result.error ?? "instruction was not completed"));
       } finally { hub.close(); }
       return;
     }
-    return fail("usage: ahub instructed run");
+    return fail("usage: ahub instructed run [<command> <args...>]");
   },
   "instruction-hook": async () => {
     if (args.length || caller.role !== "tools" || liveTest) return;

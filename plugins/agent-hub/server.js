@@ -31858,6 +31858,9 @@ init_db_schema();
 init_hub_tools();
 init_envelope();
 
+// src/hub/tasks.ts
+init_instructed_exact();
+
 // src/hub/github-import.ts
 init_sdlc();
 

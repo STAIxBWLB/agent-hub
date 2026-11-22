@@ -54,6 +54,8 @@ Adapters translate different interaction surfaces without changing the peer's ta
 
 A managed Claude session may request one exact command from a confirmed instruction receipt. The daemon derives the command from the session transcript, never from the tools client's request. It admits only explicitly classified console or conductor forms outside the closed trust, permission, machine-local path, irreversible deletion, release, identity and PII classes. Unknown forms stay closed. Exact mode consumes the receipt before execution; Stop, expiry, a session replacement, privacy changes or loss of managed-launch proof revoke an in-flight operation.
 
+In intent mode the tools client selects a command, and the daemon admits only the closed reversible intent forms against that session's confirmed receipt. The receipt admits at most ten operations; a verdict also requires its literal item id in the person's confirmed prompt. An operation is reserved before execution and Stop, expiry, session replacement, privacy changes or loss of launch proof revoke its in-flight authority. Spending settings and the same dangerous classes remain closed. Fresh mode witnesses default to intent; retained off and exact witnesses keep their values.
+
 The daemon starts its own captured installed CLI using Bun IPC and routes that child's messages through the existing control handler with host-owned receipt and peer provenance. The child never opens a WebSocket. A runtime in any checkout, project root or peer write root is refused. Same-user debugging, socket duplication, or modification of the installed package remains outside this proof.
 
 ## Qwen deny input fence (#888)
