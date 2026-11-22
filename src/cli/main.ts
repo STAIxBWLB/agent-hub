@@ -90,7 +90,8 @@ import { loadPacks } from "../hub/packs.ts";
 import { launcherPreview } from "./preview.ts";
 import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
 import { configureKimiMcp } from "./kimi-mcp.ts";
-import { hubSkillsPresent, nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
+import { HUB_SKILL_NAMES, hubSkillsPresent, nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
+import { installHubSkills, skillHostStates, skillStateRow } from "./skills-install.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { freeText, unknownOption, unknownOptionRefusal, withoutSeparator } from "./free-text.ts";
@@ -1173,8 +1174,19 @@ const commands: Record<string, () => Promise<void> | void> = {
     const root = join(import.meta.dir, "..", "..");
     if (args.includes("--research") && args.includes("--no-research")) fail("--research conflicts with --no-research; give one; nothing was written");
     const research = args.includes("--research") ? true : args.includes("--no-research") ? false : undefined;
-    const setupFlags = takeFlags(args.filter(arg => !["--yes", "--research", "--no-research"].includes(arg)), ["--agents"], []);
-    if (setupFlags.rest.length) fail("usage: ahub setup [--yes] [--agents <a,b>] [--research|--no-research]");
+    const setupFlags = takeFlags(args.filter(arg => !["--yes", "--research", "--no-research", "--undo"].includes(arg)), ["--agents"], []);
+    if (setupFlags.rest.length) fail("usage: ahub setup [--yes] [--agents <a,b>] [--research|--no-research] [--undo]");
+    if (args.includes("--undo")) {
+      if (research !== undefined || setupFlags.one["--agents"] !== undefined) fail("--undo removes the hub's own skill trees only; drop --research and --agents; nothing was written");
+      // #1622: remove only the trees the hub wrote and nobody edited; a modified, foreign or linked tree is reported and kept.
+      const undoReader = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+      try {
+        await installHubSkills({ undo: true, yes: args.includes("--yes"),
+          ask: async prompt => { try { return undoReader ? await undoReader.question(prompt) : null; } catch { return null; } },
+          print: line => console.log(terminalText(line)) });
+      } finally { undoReader?.close(); }
+      return;
+    }
     if (research !== undefined && (liveTest || delegatedPeer || recoveryLauncherCurrent)) fail("the machine research default requires the person's own ahub setup; nothing was written");
     const registry = new Registry(), rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
     let machineRoots = [cwd];
@@ -1198,6 +1210,11 @@ const commands: Record<string, () => Promise<void> | void> = {
           ...(rl ? { ask: async (prompt: string) => { try { return await rl.question(prompt); } catch { return null; } } } : {}), print: line => console.log(terminalText(line)) });
         if (refused) fail(refused);
       }
+      // #1622: the hub's own skills for every other installed agent host, under the marker contract.
+      assertLifecycleAvailable(cwd);
+      await installHubSkills({ source: join(root, "plugins", "agent-hub", "skills"), yes: args.includes("--yes"),
+        ask: async prompt => { try { return rl ? await rl.question(prompt) : null; } catch { return null; } },
+        print: line => console.log(terminalText(line)) });
       if (research !== undefined) machineRoots = [...registry.list().map(row => row.root), cwd];
     } finally { registry.close(); rl?.close(); }
     if (homesFailed) fail(startupDiagnostic(homesFailure));
@@ -3381,8 +3398,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       const plugins = parseList<InstalledPlugin>(spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8" }).stdout ?? "");
       const plugin = pluginState(plugins, join(import.meta.dir, "..", ".."));
       row(plugin.state === "current", DOCTOR_PLUGIN_PROBE.name, plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
+      // #1622: one row for the hub's own skills, in the Claude plugin and on every other installed host; a tree the hub will not touch is a warning.
       const skillsPresent = hubSkillsPresent(plugins);
-      row(skillsPresent, "hub skills", skillsPresent ? "Claude plugin skills present" : `missing from Claude user plugin; repair: cd ${shellQuote(cwd)} && ${plugin.state === "missing" ? "ahub setup" : "claude plugin uninstall agent-hub@agent-hub --scope user && ahub setup"}`);
+      const hostSkills = skillStateRow(skillHostStates({ home: homedir(), env: process.env }, HUB_SKILL_NAMES));
+      const claudeSkills = skillsPresent ? "Claude plugin skills present" : `missing from Claude user plugin; repair: cd ${shellQuote(cwd)} && ${plugin.state === "missing" ? "ahub setup" : "claude plugin uninstall agent-hub@agent-hub --scope user && ahub setup"}`;
+      const hostRepair = hostSkills.ok === false ? `; repair: cd ${shellQuote(cwd)} && ahub setup` : "";
+      row(skillsPresent ? hostSkills.ok : false, "hub skills", `${claudeSkills}; ${hostSkills.detail}${hostRepair}`);
       let profileRegistry: Registry | undefined;
       try {
         profileRegistry = new Registry();
