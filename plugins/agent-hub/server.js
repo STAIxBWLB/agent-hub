@@ -41163,8 +41163,12 @@ ${hint}`;
 async function push(envs, deliveryId, generation) {
   const parent = replyParent(envs);
   const single = envs.length === 1;
-  const content = single ? sanitize(parent.body) : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---
-${sanitize(e.body)}`).join(`
+  const channelBody = (body) => {
+    const safe = sanitize(body);
+    return safe.startsWith("/") ? `\\${safe}` : safe;
+  };
+  const content = single ? channelBody(parent.body) : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---
+${channelBody(e.body)}`).join(`
 
 `);
   const meta = {
