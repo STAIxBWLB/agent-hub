@@ -32,6 +32,12 @@ export function intentForm(argv: readonly string[]): IntentForm | undefined {
     const [id, slot, verdict, ...extra] = tail;
     if (!extra.length && integer(id) && integer(slot) && ["supported", "unsupported", "unclear"].includes(verdict ?? "")) return { argv: [...argv], taskId: Number(id), verdictIds: [id!, slot!] };
   }
+  // #1622 family 4: a final milestone verdict. The milestone id must be written literally in the person's prompt; the history entry carries the instructed provenance.
+  if (command === "roadmap" && sub === "state") {
+    const [id, state, ...extra] = tail;
+    if (!extra.length && integer(id) && (state === "done" || state === "dropped")) return { argv: [...argv], verdictIds: [id!] };
+    return;
+  }
   if (command === "results" && argv.slice(1).every(word => ["--unread", "--json", "--full", "--color=auto", "--color=always", "--color=never"].includes(word))) return { argv: [...argv] };
   if (command === "capabilities" && argv.slice(1).every(word => ["--json", "--color=auto", "--color=always", "--color=never"].includes(word))) return { argv: [...argv] };
   if (command === "learn" && sub === "list" && tail.every(word => ["--all", "--json", "--color=auto", "--color=always", "--color=never"].includes(word))) return { argv: [...argv] };
@@ -51,7 +57,7 @@ export function intentRefusal(argv: readonly string[]): string {
   if (command === "task" && sub === "handoff") return "cross-project handoff lacks an instruction revocation fence";
   if (command === "backlog" && ["add", "split"].includes(sub ?? "")) return "task creation requires instruction-bound privacy screening";
   if (command === "study" && sub === "approve") return "study approval requires instruction-bound privacy screening";
-  if (command === "roadmap" && sub === "state") return "roadmap verdicts lack retained instructed provenance";
+  if (command === "roadmap" && sub === "state") return "only roadmap state done or dropped for one milestone id is admitted; other states stay with the person";
   if (command === "title") return "titles contain free text, and an unnamed title cannot be restored";
   if (command === "backlog" && ["plan", "pin", "pull-ready"].includes(sub ?? "") || command === "review") return "this form contains free text or unclassified options";
   return "this form is not proven for instructed intent mode";

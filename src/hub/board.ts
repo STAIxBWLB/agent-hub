@@ -3009,6 +3009,12 @@ export class Board {
       ref: milestoneLinkRef(row.kind as MilestoneLinkKind, row.ref), by: milestoneActor(row.by), at: milestoneId(row.at) }));
   }
 
+  /** #1622 family 4: whether any milestone history holds an instructed entry; a daemon without `roadmap_instructed` cannot read such a row. */
+  hasInstructedMilestoneHistory(): boolean {
+    const row = this.db.query("SELECT EXISTS(SELECT 1 FROM milestones WHERE history LIKE '%\"instructed\"%') AS present").get() as { present: number };
+    return row.present === 1;
+  }
+
   hasMilestoneState(): boolean {
     const row = this.db.query("SELECT EXISTS(SELECT 1 FROM milestones) OR EXISTS(SELECT 1 FROM milestone_links) AS present").get() as { present: number };
     return row.present === 1;
@@ -3216,6 +3222,7 @@ export class Board {
     const current = this.currentMilestone(id, revision), next = { ...current, ...patch };
     this.milestoneParent(id, next.parent);
     const settling = current.state !== next.state && (next.state === "done" || next.state === "dropped");
+    if (event.instructed && !(settling && event.event === "state")) throw new PreEffectToolRefusal("instructed provenance is recorded only on a done or dropped verdict; ask the person to run ahub roadmap state");
     if (current.history.length >= MILESTONE_HISTORY_LIMIT - 1 && !settling)
       throw new PreEffectToolRefusal(`roadmap history reserves its last slot for settlement; ask the person to run ahub roadmap state ${id} done or ahub roadmap state ${id} dropped`);
     const history = milestoneHistory([...current.history, event]);

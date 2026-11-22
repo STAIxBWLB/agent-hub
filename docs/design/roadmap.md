@@ -96,7 +96,14 @@ Edits require the revision returned by show. Every write uses a transactional
 revision compare-and-set. Link changes and their history/revision update commit
 together. An identical link/unlink replay changes nothing. History contains at
 most 256 metadata events: actor, time, event, field names and link kind, never
-task text or the linked task id. Ordinary mutations reserve the last event slot
+task text or the linked task id. A `done` or `dropped` verdict the person typed
+through an instructed session (#1622 family 4) also carries the three keys task
+history uses, `instructed: true`, `instructedPeer` and `instructionReceipt`
+(spread from `instructedHistory`, never a milestone-only shape). The parser
+accepts them only together, only on a `state` entry whose fields are exactly
+`["state"]`, with a lower-case peer id and a receipt UUID; the write path
+(`Board.writeMilestone`) refuses them on any change that is not a settlement.
+They carry no prompt text, session id or transcript path. Ordinary mutations reserve the last event slot
 for the person's done/dropped settlement, so reaching the ordinary-write ceiling
 cannot strand an active milestone. Duplicate link/unlink replays consume no slot.
 
@@ -159,7 +166,12 @@ person-only, and live-test delegation cannot write milestone content.
 
 Rows are preserved in the same hub database through restart. Retained milestone
 state requires the roadmap capability on a controlled recovery target and adds
-its ordered row/link digest to integrity. Empty databases retain the existing
+its ordered row/link digest to integrity. A daemon that predates the instructed
+keys throws when it parses a history row holding them, so a recovery target must
+advertise `roadmap_instructed` while any milestone history holds one
+(`Board.hasInstructedMilestoneHistory`); with none, the floor is unchanged and a
+target without the feature is accepted. There is no rewrite on downgrade:
+dropping the keys would erase the only record that the verdict was instructed. Empty databases retain the existing
 format floor and integrity shape; the additive tables do not advance the database
 format marker.
 
