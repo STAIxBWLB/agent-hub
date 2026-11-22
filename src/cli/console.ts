@@ -216,6 +216,15 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           client.request({ t: "usage", by: "peer" }, 5000), client.request({ t: "usage", op: "limits", limit: 1000 }, 5000),
           ...(usageTask !== undefined ? [client.request({ t: "usage", by: "peer", task: usageTask }, 5000)] : [])]);
       })() : undefined;
+      // #1483 R5: the Roadmap panel reads the public milestone list while it is open, and the drift check at most every five minutes.
+      // Both are read-only hub ops; an older hub never sees either because its status does not advertise `roadmap`.
+      const roadmapOpen = panels && state.panel === 9 && state.features?.includes("roadmap") === true;
+      const roadmapReplies = roadmapOpen ? await (async () => {
+        const list = await client.request({ t: "task", op: "hub_roadmap_list", args: {} }, 5000);
+        const stale = list.ok !== false && (!state.roadmapDrift || Date.now() - state.roadmapDrift.at > 300_000);
+        const drift = stale ? await client.request({ t: "task", op: "hub_roadmap_check", args: {} }, 30_000) : undefined;
+        return { list, drift };
+      })() : undefined;
       if (!active) return;
       // #1053 T4: the person's own read of the open questions, asked only of a hub whose status lists the `questions` feature: an older hub is never sent a request it does not know.
       const hasQuestions = Array.isArray(replies[0]?.status?.features) && replies[0].status.features.includes("questions");
@@ -292,6 +301,28 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         if (failed || !today?.usage || !week?.usage || !life?.usage || !limits?.limits) state.usage = { ...state.usage, problem: String(failed?.error ?? "usage is unavailable") };
         else state.usage = { today: today.usage, week: week.usage, life: life.usage, limits: limits.limits, at: Date.now(), ...(usageReplies.some(reply => reply?.behind) ? { behind: true } : {}),
           ...(usageTask !== undefined && task?.usage && state.usageTask === usageTask ? { task: task.usage, taskId: usageTask } : {}) };
+      }
+      if (roadmapReplies) {
+        const { list, drift } = roadmapReplies;
+        if (list.ok === false) { state.roadmap = []; state.roadmapKnown = false; state.roadmapProblem = String(list.error ?? "the hub refused the roadmap read"); }
+        else {
+          let report: any;
+          try { report = JSON.parse(String(list.text ?? "")); } catch { report = undefined; }
+          const rows = Array.isArray(report?.milestones) ? report.milestones : [];
+          state.roadmap = rows.filter((row: any) => row && Number.isSafeInteger(Number(row.id))).map((row: any) => ({
+            id: Number(row.id), title: String(row.title ?? ""), horizon: String(row.horizon ?? "later"), state: String(row.state ?? ""), order: Number(row.order ?? 0),
+            approved: Number(row.rollup?.tasks?.approved ?? 0), total: Number(row.rollup?.tasks?.total ?? 0), withheld: Number(row.withheld ?? 0) }));
+          state.roadmapKnown = true; state.roadmapProblem = undefined;
+        }
+        if (drift) {
+          if (drift.ok === false) state.roadmapDrift = { at: Date.now(), findings: 0, problem: String(drift.error ?? "the hub refused the drift check") };
+          else {
+            let report: any;
+            try { report = JSON.parse(String(drift.text ?? "")); } catch { report = undefined; }
+            state.roadmapDrift = { at: Date.now(), findings: Array.isArray(report?.findings) ? report.findings.length : 0,
+              ...(Array.isArray(report?.unknown) && report.unknown.length ? { unknown: report.unknown.length } : {}), ...(report?.truncated === true ? { problem: "more findings exist; run ahub roadmap check" } : {}) };
+          }
+        }
       }
       if (tasks?.ok) { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
           const readyIds = new Set(ready?.ok ? JSON.parse(ready.text).map((task: any) => task.id) : []);
@@ -416,15 +447,15 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
       return;
     }
-    if (action.type === "keys") return stream({ text: keyTable(columns, !!state.petEnabled || !!state.petChoices?.length, !!state.petChoices?.length, state.rooms === null || Array.isArray(state.rooms) && state.rooms.length > 0).map(line => paint(line, false)).join("\n"), kind: "console" }, false);
+    if (action.type === "keys") return stream({ text: keyTable(columns, !!state.petEnabled || !!state.petChoices?.length, !!state.petChoices?.length, state.rooms === null || Array.isArray(state.rooms) && state.rooms.length > 0, state.features?.includes("roadmap") === true).map(line => paint(line, false)).join("\n"), kind: "console" }, false);
     if (action.type === "print") return stream({ text: action.text, kind: action.kind, ...(action.tone ? { tone: action.tone } : {}) }, false);
     if (action.type === "show") {
-      const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);
+      const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : action.panel === 9 ? { t: "task", op: "hub_roadmap_show", args: { id: Number(action.id) } } : { t: "queue", op: "show", id: action.id }, 3000);
       // A late reply is for the panel and row it was asked for: once the person has moved on, it would show one item
       // while the keys act on another, so it is dropped.
       if (!active || state.mode !== "panels" || state.panel !== action.panel || state.help || state.detail !== undefined || String(selectedPanelRow(state)?.id) !== action.id) return;
       state.detailOffset = 0;
-      state.detail = result.ok === false ? String(result.error) : action.panel === 3 ? labeled(String(result.text)) : result.delivery ?? "delivery not found";
+      state.detail = result.ok === false ? String(result.error) : action.panel === 3 || action.panel === 9 ? labeled(String(result.text)) : result.delivery ?? "delivery not found";
       draw(); return;
     }
     if (childRunning) { notice("a command is already running"); draw(); return; }

@@ -780,6 +780,13 @@ function renderProjects() {
       head.append(name, badge(state, projectBadge[state])); row.append(head); row.append(el('p', String(project.root || id), 'meta'));
       const counts = []; if (project.peers !== undefined) counts.push(String(count(project.peers)) + ' peers'); if (project.tasks !== undefined) counts.push(String(taskCount(project.tasks)) + ' tasks');
       if (counts.length) row.append(el('p', counts.join(' / '), 'meta')); if (project.warning || project.error) row.append(el('p', project.warning || project.error, 'meta'));
+      // #1483 R5: the project's public roadmap, lanes in now/next/later order; a hub that could not answer says so instead of showing zeros.
+      const roadmap = project.roadmap && typeof project.roadmap === 'object' ? project.roadmap : undefined;
+      if (roadmap) {
+        const lanes = ['now', 'next', 'later'].map((lane) => String((roadmap.byHorizon && roadmap.byHorizon[lane]) || 0)).join('/');
+        const drift = typeof roadmap.drift === 'number' && roadmap.drift > 0 ? ' / drift ' + String(roadmap.drift) : '';
+        row.append(el('p', roadmap.partial ? 'roadmap unavailable' : 'roadmap ' + String(roadmap.total || 0) + ' milestones (now/next/later ' + lanes + ')' + drift, 'meta'));
+      }
       const actions = el('div', undefined, 'actions');
       if (state === 'running' && id === selectedProjectId) {
         actions.append(el('span', 'Selected', 'badge'));
