@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/hub/daemon.ts";
-import { rosterPreflight, rosterPreflightLines } from "../src/cli/jcode-home-init.ts";
+import { rosterPreflight, rosterPreflightLines } from "../src/adapters/definitions/native-cli-jcode-home-init.ts";
 
 // #1627 B: the preflight before `ahub roster add`. Fixture homes only.
 const roots: string[] = [];

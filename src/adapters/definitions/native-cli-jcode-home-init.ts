@@ -1,18 +1,18 @@
 import { existsSync, lstatSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { assessVersion, COMPAT, configuredCommands, isCompatId, type CompatId } from "../adapters/compat.ts";
-import { applyJcodeHome, hubJcodeHomePath, jcodeLoginCommand, jcodeOwnHome, planJcodeHome, sameJcodeHome, type JcodeHomePlan } from "../adapters/definitions/native-cli-jcode-home.ts";
-import { jcodeExtraMcpServers, splitJcodeMcpServers } from "../adapters/definitions/native-cli-jcode-mcp.ts";
-import { agentVersions } from "./agents.ts";
-import { editJsonText } from "./init-settings.ts";
-import { applySkillPlan, applySkillUndo, skillHostStates, skillInstallPlan, skillUndoPlan, type SkillEntry, type SkillHostState } from "./skills-install.ts";
-import { configRefusal } from "../hub/config-trust.ts";
-import { idFor } from "../hub/registry.ts";
-import { projectRoot } from "../hub/project.ts";
-import { startModeOf } from "../hub/start-mode.ts";
-import type { HubConfig } from "../hub/daemon.ts";
-import { shellQuote } from "./shell-quote.ts";
+import { assessVersion, COMPAT, configuredCommands, isCompatId, type CompatId } from "../compat.ts";
+import { applyJcodeHome, hubJcodeHomePath, jcodeLoginCommand, jcodeOwnHome, planJcodeHome, sameJcodeHome, type JcodeHomePlan } from "./native-cli-jcode-home.ts";
+import { jcodeExtraMcpServers, splitJcodeMcpServers } from "./native-cli-jcode-mcp.ts";
+import { agentVersions } from "../../cli/agents.ts";
+import { editJsonText } from "../../cli/init-settings.ts";
+import { applySkillPlan, applySkillUndo, skillHostStates, skillInstallPlan, skillUndoPlan, type SkillEntry, type SkillHostState } from "../../cli/skills-install.ts";
+import { configRefusal } from "../../hub/config-trust.ts";
+import { idFor } from "../../hub/registry.ts";
+import { projectRoot } from "../../hub/project.ts";
+import { startModeOf } from "../../hub/start-mode.ts";
+import type { HubConfig } from "../../hub/daemon.ts";
+import { shellQuote } from "../../cli/shell-quote.ts";
 
 /** Whether init should offer the hub-owned home: jcode is installed or rostered, and `jcode_home` is unset or the person's own. */
 export function jcodeHomeApplicable(config: Pick<HubConfig, "jcode_home" | "roster" | "jcode_cmd">, env: NodeJS.ProcessEnv, installed: boolean, user = homedir()): boolean {

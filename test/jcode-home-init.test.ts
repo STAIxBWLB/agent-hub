@@ -9,7 +9,7 @@ import { idFor } from "../src/hub/registry.ts";
 import { projectRoot } from "../src/hub/project.ts";
 import { HUB_SKILL_NAMES } from "../src/adapters/definitions/native-cli-claude-setup.ts";
 import { hubJcodeHomePath, jcodeOwnHome, planJcodeHome, sameJcodeHome } from "../src/adapters/definitions/native-cli-jcode-home.ts";
-import { installHubSkillsInJcodeHomes, installSkillsInJcodeHome, jcodeHomeApplicable, jcodeHomeSkillStates, jcodeSkillHomes, planJcodeHomeInit } from "../src/cli/jcode-home-init.ts";
+import { installHubSkillsInJcodeHomes, installSkillsInJcodeHome, jcodeHomeApplicable, jcodeHomeSkillStates, jcodeSkillHomes, planJcodeHomeInit } from "../src/adapters/definitions/native-cli-jcode-home-init.ts";
 
 // #1627 A: init creates a separate hub-owned jcode home. Every test uses fixture homes only and never reads or writes the person's real ~/.jcode.
 const roots: string[] = [];

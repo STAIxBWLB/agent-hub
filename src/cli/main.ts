@@ -93,7 +93,7 @@ import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, c
 import { configureKimiMcp } from "./kimi-mcp.ts";
 import { HUB_SKILL_NAMES, hubSkillsPresent, nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { installHubSkills, skillHostStates, skillStateRow } from "./skills-install.ts";
-import { applyJcodeHome, installHubSkillsInJcodeHomes, installSkillsInJcodeHome, jcodeHomeBlocked, jcodeHomeSkillStates, jcodeSkillHomes, planJcodeHomeInit, rosterPreflight, rosterPreflightLines, writeJcodeHomeConfig } from "./jcode-home-init.ts";
+import { applyJcodeHome, installHubSkillsInJcodeHomes, installSkillsInJcodeHome, jcodeHomeBlocked, jcodeHomeSkillStates, jcodeSkillHomes, planJcodeHomeInit, rosterPreflight, rosterPreflightLines, writeJcodeHomeConfig } from "../adapters/definitions/native-cli-jcode-home-init.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { freeText, unknownOption, unknownOptionRefusal, withoutSeparator } from "./free-text.ts";

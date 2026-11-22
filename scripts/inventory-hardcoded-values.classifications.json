@@ -745,6 +745,7 @@
   "src/cli/install-paths.ts:hops:inline:hops=0#0": "contract",
   "src/cli/instruction-hook.ts:MAX_HOOK_BYTES:constant:MAX_HOOK_BYTES=1024 * 1024#0": "safety floor",
   "src/cli/jcode-home-init.ts:planJcodeHomeInit:inline:Object.keys(plan.servers).length > 1=1#0": "contract",
+  "src/adapters/definitions/native-cli-jcode-home-init.ts:planJcodeHomeInit:inline:Object.keys(plan.servers).length > 1=1#0": "contract",
   "src/cli/kimi-mcp.ts:timeout:inline:timeout=3000#0": "operational",
   "src/cli/kimi-plugin.ts:MAX_HOOK:constant:MAX_HOOK=8 * 1024 * 1024#0": "safety floor",
   "src/cli/kimi-plugin.ts:MAX_INSTALLED:constant:MAX_INSTALLED=1024 * 1024#0": "safety floor",
