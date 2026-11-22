@@ -556,7 +556,7 @@ const officeView = (() => {
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
 const officeControl = document.getElementById('office-view'); officeControl.value = officeView.get(); document.getElementById('office-section').hidden = officeView.get() === 'off'; officeControl.addEventListener('change', () => { officeView.set(officeControl.value); if (lastSnapshot) render(lastSnapshot); else document.getElementById('office-section').hidden = officeView.get() === 'off'; applyDashboardView(); });
 // dashboard-navigation-begin
-const DASHBOARD_VIEWS = ['board','office','stream','agents','message','memory','settings'];
+const DASHBOARD_VIEWS = ['board','office','stream','agents','message','memory','settings','roadmap'];
 let currentView = dashboardCookie.get('agent-hub-view', 'board');
 if (!DASHBOARD_VIEWS.includes(currentView)) currentView = 'board';
 function applyDashboardView() {
@@ -2135,7 +2135,9 @@ function renderRoadmapTray(block) {
   const unplaced = roadmapTray, items = unplaced ? [...(unplaced.issues || []).map(row => ({kind:'issue', ref:row.ref, text:row.ref + (row.reason ? ' (' + row.reason + ')' : '')})), ...(unplaced.tasks || []).map(row => ({kind:'task', ref:'#' + row.id, text:'#' + row.id + ' ' + row.title + (row.reason ? ' (' + row.reason + ')' : '')})), ...(unplaced.specs || []).map(row => ({kind:'spec', ref:row.id, text:row.id + (row.reason ? ' (' + row.reason + ')' : '')}))] : [];
   const privateCount = unplaced && Number.isSafeInteger(unplaced.privateTasks) ? unplaced.privateTasks : 0;
   $('roadmap-unplaced-count').textContent = roadmapTrayError ? 'unavailable' : unplaced ? items.length + ' unplaced' + (privateCount ? ', ' + privateCount + ' private' : '') + (unplaced.partial ? ' (partial read)' : '') : 'reading';
-  update('roadmap-tray', [items, privateCount, roadmapTrayError, roadmapSuggestions], target => {
+  // The read's own state is part of the signature: an empty answer and "still reading" have the same items, and
+  // without it the tray kept its first paint ("Reading unplaced items...") after the hub had answered.
+  update('roadmap-tray', [unplaced ? 'loaded' : roadmapTrayStatus, items, privateCount, roadmapTrayError, roadmapSuggestions], target => {
     if (roadmapTrayError) { empty(target, 'Unplaced items unavailable: ' + roadmapTrayError); return; }
     for (const item of items) { const row = el('div', undefined, 'row'); row.append(el('span', item.kind, 'label'), el('span', item.text, 'meta')); target.append(row); }
     if (privateCount) target.append(el('p', privateCount + ' private ' + (privateCount === 1 ? 'item is' : 'items are') + ' not listed.', 'meta'));
@@ -2161,6 +2163,8 @@ function renderRoadmap(snapshot) {
     if (currentView === 'roadmap') update('roadmap-lanes', 'unavailable', target => empty(target, snapshot && snapshot.roadmap && snapshot.roadmap.unavailable ? 'Roadmap unavailable.' : 'Loading the roadmap...'));
     return;
   }
+  // The hub keeps the last drift check in this snapshot, so a reload shows it instead of asking for it again.
+  if (block.drift && (!roadmapDrift || roadmapDrift.at < block.drift.at)) roadmapDrift = block.drift;
   const model = roadmapModel(block.milestones);
   $('roadmap-count').textContent = model.cards.length + (model.cards.length === 1 ? ' milestone' : ' milestones');
   $('roadmap-drift').textContent = roadmapDrift ? 'Drift checked ' + time(roadmapDrift.at) + ': ' + roadmapDrift.findings.length + (roadmapDrift.findings.length === 1 ? ' finding' : ' findings') + (roadmapDrift.truncated ? ' (list truncated)' : '') + (roadmapDrift.unknown && roadmapDrift.unknown.length ? ', evidence unknown for ' + roadmapDrift.unknown.length + ' rule(s)' : '') : 'Drift not checked yet: Check drift reads GitHub issue and milestone metadata for every milestone.';

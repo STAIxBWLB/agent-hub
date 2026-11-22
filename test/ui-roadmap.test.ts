@@ -81,6 +81,9 @@ test("the dashboard has eight views, key 8 is the roadmap, and every view has a 
   for (const name of DASHBOARD_VIEWS) expect(html).toContain(`data-view-target="${name}"`);
   expect(html).toContain('<kbd>1</kbd>-<kbd>8</kbd>');
   expect(html).toContain('data-view="roadmap"');
+  // The page keeps its own list, which gates switchView and the digit keys: a view missing there is unreachable however the markup reads.
+  const page = /const DASHBOARD_VIEWS = \[([^\]]*)\]/.exec(html)?.[1]?.replace(/['"\s]/g, "");
+  expect(page).toBe(DASHBOARD_VIEWS.join(","));
 });
 
 test("the roadmap view writes text through textContent only", () => {
@@ -95,6 +98,25 @@ test("the roadmap view writes text through textContent only", () => {
   expect(block).toContain("textContent");
 });
 
+test("the board filters by the hub's own placement, and an unlinked task stays out", () => {
+  const html = renderDashboard().html;
+  // Placement is the hub's link, not a task field: the page filters on snapshot.milestoneOfTask.
+  expect(html).toContain("milestoneOptions($('task-milestone-filter'), Array.isArray(snapshot.milestones) ? snapshot.milestones : [])");
+  expect(html).toContain("milestoneFilter?'No tasks are linked to this milestone.'");
+  const start = html.indexOf("const milestoneScope = ");
+  const line = html.slice(start, html.indexOf("\n", start));
+  const scope = runInNewContext(`(() => {
+    const milestoneFilter = "2", boardViewState = { milestoneOfTask: { "1": "1", "2": "2" } };
+    return ${line.replace(/^const milestoneScope = /, "").replace(/;$/, "")};
+  })()`) as (task: { id: number }) => boolean;
+  expect(scope({ id: 2 })).toBe(true);
+  expect(scope({ id: 1 })).toBe(false);
+  // A task with no entry is unplaced, so it never matches a chosen milestone.
+  expect(scope({ id: 3 })).toBe(false);
+  // The filter is part of the repaint signature, or a changed filter leaves the previous cards on screen.
+  expect(html).toContain("releaseFilter,milestoneFilter,lanes,showAllDone");
+});
+
 test("a management action carries the revision it rendered and the hub refuses a stale one", () => {
   const html = renderDashboard().html;
   const start = html.indexOf("// #1483 R5: the roadmap view.");
@@ -107,4 +129,18 @@ test("a management action carries the revision it rendered and the hub refuses a
   for (const payload of writes) expect(payload).toMatch(/revision[:,}]/);
   // A drag carries the revision it rendered too, so a stale drop is refused rather than applied.
   expect(block).toContain("typeof payload.revision !== 'number'");
+});
+
+test("a drift check the hub already holds survives a page reload", () => {
+  // The daemon includes its last check in the roadmap snapshot; without reading it the page forgets the check at every reload
+  // while the hub still holds it, and a second browser tab never sees it at all.
+  const html = renderDashboard().html;
+  expect(html).toContain("if (block.drift && (!roadmapDrift || roadmapDrift.at < block.drift.at)) roadmapDrift = block.drift;");
+});
+
+test("the unplaced tray repaints when its read settles, even with nothing unplaced", () => {
+  // An empty answer and "still reading" carry the same items, so the read's own state is part of the repaint signature.
+  const html = renderDashboard().html;
+  expect(html).toContain("update('roadmap-tray', [unplaced ? 'loaded' : roadmapTrayStatus, items, privateCount, roadmapTrayError, roadmapSuggestions],");
+  expect(html).toContain("empty(target, unplaced ? 'Everything is placed.' : 'Reading unplaced items...')");
 });
