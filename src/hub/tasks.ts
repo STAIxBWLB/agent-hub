@@ -1442,6 +1442,7 @@ export class Tasks {
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
       at: h.at, by: h.by, event: h.event,
+      ...(h.instructed && h.instructedPeer && h.instructionReceipt ? { instructed: true, instructedPeer: h.instructedPeer, instructionReceipt: h.instructionReceipt } : {}),
       ...(h.note === undefined ? {} : { note: screenHistoryText(h.note, "note", h.withheld) }),
       ...(h.reviewFindings ? { reviewFindings: !h.withheld && this.findingTextAllowed(task, h.reviewFindings.items) ? h.reviewFindings
         : { ...(h.reviewFindings.head ? { head: h.reviewFindings.head } : {}), tally: findingTally(h.reviewFindings.items), withheld: true } } : {}),

@@ -2659,6 +2659,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const def = key === undefined || sdlcRead ? undefined : settingDef(key, settingScope.instances, settingScope.catalog);
     if (typeof def === "string") fail(settingScopeError && def.startsWith("unknown setting") ? `${key}: ${def}; the project config could not be read: ${settingScopeError}` : `${key}: ${def}`);
     if (flags.includes("--now") && (typeof def !== "object" || def.group !== "Roster")) fail(usage);
+    if (sub === "set" && key === "instructed.mode" && (caller.role !== "console" || liveTest || !process.stdin.isTTY)) fail("instructed.mode is changed only by the person in a terminal");
     const value = sub === "set" ? parseSettingText(def!, text!) : undefined;
     const peer = def?.group === "Permissions" || def?.group === "Roster" ? def.path.at(-1)! : undefined;
     if (sub === "set" && value === "never-ask" && !flags.includes("--preview")) {
@@ -2759,7 +2760,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (sub === "list" && row.group !== group) console.log(`${group ? "\n" : ""}${group = row.group}`);
         const facts = [`from ${row.source}`, `file: ${settingText(row.fileValue === undefined ? row.pending ?? row.value : row.fileValue)}`, row.applies === "live" ? "applies at once" : row.applies === "next use" ? "applies at next use" : "pending restart", ...(row.restartReason ? [row.restartReason] : []), ...(row.note ? [row.note] : [])];
         console.log(`  ${row.key.padEnd(width)}  ${settingText(row.value).padEnd(valueWidth)}  ${facts.join("; ")}`);
-        if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "number-or-off" ? `off or a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "integer" || row.type === "number" ? `a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "peers" ? "a comma list of peer ids" : row.type === "roles" ? "up to two comma-separated catalog ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
+        if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "number-or-off" ? `off or a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "integer" || row.type === "number" ? `a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "peers" ? "a comma list of peer ids" : row.type === "roles" ? "up to two comma-separated catalog ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" || row.key === "instructed.mode" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
       }
       if (sub === "list" && view.pendingRestart?.length) console.log(`\npending restart: ${view.pendingRestart.map((entry: { key: string }) => entry.key).join(", ")}`);
       if (sub === "list" && view.undo) console.log(`\nahub settings undo puts back the last write (${view.undo})`);
@@ -3115,6 +3116,20 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (reply.behind) process.stderr.write("ahub: the usage roll-up is still catching up with the event log: these numbers are partial; run it again in a few seconds\n");
     if (options.json) return console.log(JSON.stringify(sub === "limits" ? { limits: reply.limits, current: reply.current } : sub === "total" ? reply.total : reply.usage, null, 2));
     printOutput(sub === "limits" ? renderLimits(reply.limits, reply.current, options.columns) : sub === "total" ? renderTotal(reply.total, options.columns) : renderUsage(reply.usage, options.columns), options.color);
+  },
+  instructed: async () => {
+    if (args.length === 1 && args[0] === "run") {
+      const session = process.env.CLAUDE_CODE_SESSION_ID;
+      if (caller.role !== "tools" || !session || liveTest) return fail("instruction requires the current managed Claude session");
+      const hub = await connect();
+      try {
+        const result = await hub.request({ t: "instruction_execute", session }, 35_000);
+        if (typeof result.output === "string") process.stdout.write(result.output);
+        if (result.ok !== true) fail(String(result.error ?? "instruction was not completed"));
+      } finally { hub.close(); }
+      return;
+    }
+    return fail("usage: ahub instructed run");
   },
   "instruction-hook": async () => {
     if (args.length || caller.role !== "tools" || liveTest) return;

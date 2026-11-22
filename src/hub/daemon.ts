@@ -110,7 +110,7 @@ import { appendFileSync, chmodSync, existsSync, fstatSync, mkdirSync, readFileSy
 import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
-import { childEnv } from "./child-process.ts";
+import { childEnv, personEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { CONTRADICTION_WINDOW_SETTING, DEMOTE_AT_SETTING, DEMOTION_HALF_LIFE_SETTING, GROOM_FYI_WINDOW_SETTING, RESCREEN_MAX_SETTING, SPLIT_FAILURE_SHARE_SETTING, SPLIT_MIN_SETTING, taskOperationalReaders } from "./operational-settings.ts";
@@ -130,6 +130,9 @@ import { corpusConfig } from "./corpus-config.ts";
 import { roadmapConfig, type MilestoneLinkKind, type MilestoneState, type RoadmapConfig } from "./roadmap.ts";
 import { mcpAllowNames } from "./instances.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
+import { instructedMode, parseExactInstruction, exactForm, instructedExecution, type InstructedExecution } from "./instructed-exact.ts";
+import { instructedRuntimeAllowed } from "./instructed-runtime.ts";
+import { classifyPeerCommand, cliCommandLabel } from "../cli/identity.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateRawConfig, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSourceTexts, type ConfigSources } from "./config-reload.ts";
@@ -301,6 +304,7 @@ export interface HubConfig {
   action_policy?: ActionPolicyConfig;
   permission_modes: Record<string, PermissionMode>;
   protect_instruction_files: boolean;
+  instructed?: { mode: "off" | "exact" };
   /** Loader-owned provenance of requested defaults, before machine-local filtering. */
   permission_default_sources?: Record<string, { mode: PermissionMode; source: string }>;
   codex_bin: string;
@@ -407,6 +411,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   action_policy: actionPolicyConfig(),
   permission_modes: {},
   protect_instruction_files: false,
+  instructed: { mode: "exact" },
   ...nativeDefaults.proxy,
   batch_max: 3,
   batch_ms: 15_000,
@@ -465,7 +470,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "worktrees", "visuals", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet", "questions"];
+const CONFIG_BLOCKS = ["instructed", "action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "worktrees", "visuals", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet", "questions"];
 
 /** Older targets parse raw keys before placement/trust checks, so even an empty or refused declaration needs the floor. */
 function rawResearchRunnersPresent(cwd: string): boolean {
@@ -627,6 +632,10 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     actionPolicyConfig(file.action_policy);
     if (file.edit_governance !== undefined) parseEditGovernance(file.edit_governance);
     instructionProtection(file.protect_instruction_files);
+    if (file.instructed !== undefined) {
+      if (!file.instructed || typeof file.instructed !== "object" || Array.isArray(file.instructed) || Object.keys(file.instructed).some(key => key !== "mode")) throw new Error("instructed must contain only mode");
+      instructedMode(file.instructed.mode);
+    }
     permissionDefaults(file.permission_modes, instances, adapterCatalog); // malformed declarations fail even when trust would drop them
     peerStartConfig(file.peers, instances, adapterCatalog);
     if (file.terminal != null && (typeof file.terminal !== "object" || Array.isArray(file.terminal))) throw new Error("terminal must be an object");
@@ -717,6 +726,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     ...(file.edit_governance !== undefined ? { edit_governance: parseEditGovernance(file.edit_governance) } : {}),
     permission_modes: { ...instancePermissions, ...permissionDefaults(file.permission_modes, instances, adapterCatalog) },
     protect_instruction_files: instructionProtection(file.protect_instruction_files),
+    instructed: { mode: instructedMode(file.instructed?.mode) },
     permission_default_sources: appliedPermissionSources,
     memory: { ...DEFAULT_CONFIG.memory, native: true, ...file.memory, ...(file.memory?.short_ttl_days !== undefined ? { short_ttl_days: ttlDays(file.memory.short_ttl_days) } : {}),
       ...(file.memory?.sync_interval_min !== undefined ? { sync_interval_min: syncMinutes(file.memory.sync_interval_min) } : {}) }, // the native store is on with any project config (#258)
@@ -869,6 +879,8 @@ export interface DaemonOptions {
   questionSweepMs?: number;
   /** Test seam (#1054): wraps the completion store so a test can make its writes throw, like a busy or locked database. */
   completionStore?: (store: CompletionStore) => CompletionStore;
+  /** Test seam: fixture package root and runtime for isolated inherited-socket integration. */
+  instructedRuntimeForTest?: { root: string; bun: string };
   /** Test seam: capture the host-only receipt store without publishing it as a control operation. */
   instructionReceiptStore?: (store: InstructionReceipts) => InstructionReceipts;
   /** Test seam: an extra hold on the SDLC band evaluation, like a storage error. */
@@ -920,6 +932,7 @@ export interface DaemonOptions {
 
 interface Client {
   authed: boolean;
+  instructed?: InstructedExecution;
   protocol?: number;
   role?: "peer" | "console" | "tools";
   peer?: PeerId;
@@ -996,6 +1009,8 @@ function capturedRecoverySourceDigest(): string | undefined {
 const STARTUP_RUNNER_WAIT_MS = 500;
 
 export async function startDaemon(opts: DaemonOptions) {
+  // Capture the daemon's own load location once; no caller supplies or later resolves it.
+  const instructedRuntime = (() => { try { return { root: realPath(opts.instructedRuntimeForTest?.root ?? resolve(import.meta.dir, "../..")), bun: realPath(opts.instructedRuntimeForTest?.bun ?? process.execPath) }; } catch { return undefined; } })();
   const startupTimings = new StartupTimings();
   // Refuse unknown formats before logs, session cleanup, module factories or any writable store is opened.
   assertHubDbCompatible(join(opts.stateDir, "hub.db"));
@@ -1253,7 +1268,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const operationalLogSubscribers=new Map<Sock,()=>void>();
   const operationalContext=new AsyncLocalStorage<{actor:string;current:()=>void}|undefined>();
   const guidanceProbeRequestContext = new AsyncLocalStorage<GuidanceProbeRequestContext>();
-  const checkOperational=(authority:SettingAuthority)=>{if(authority==="conductor"){const scope=operationalContext.getStore();if(!scope)throw new OperationalAuthorityError("operational conductor authority unavailable");scope.current();}};
+  const checkOperational=(authority:SettingAuthority)=>{const instruction=instructedExecution.getStore();if(instruction?.active)instruction.current();if(authority==="conductor"){const scope=operationalContext.getStore();if(!scope)throw new OperationalAuthorityError("operational conductor authority unavailable");scope.current();}};
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
   const rotateHubLog = textLogRotator(logFile); // #1546: copy-truncate, because the daemon's own stderr also appends to this file
@@ -7319,6 +7334,13 @@ export async function startDaemon(opts: DaemonOptions) {
     finally { registry?.close(); }
   }));
   startupCleanup.push(() => instructionReceipts.close());
+  instructionReceipts.seedMode(() => {
+    try {
+      const instructionDisplay = readEditable(opts.cwd, "config.local.json");
+      return instructionDisplay !== null && JSON.parse(instructionDisplay)?.instructed?.mode === "off" ? "off" : "exact";
+    } catch { return "off"; } // Unknown display state cannot re-enable a lost witness.
+  });
+  const effectiveInstructionMode = () => instructionReceipts.mode();
   /**
    * Claude Code's version, from the last row of its transcript that names one (its rows carry it): the last MiB is read,
    * opened without blocking and only as a regular file, and the last version found is kept for a tail of big rows.
@@ -10673,7 +10695,12 @@ export async function startDaemon(opts: DaemonOptions) {
     });
     const undo = pendingUndo(opts.stateDir);
     const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it pins the listed peers as the only planners; new tasks select one of those holders. Agents cannot change this setting.`;
-    return { pendingRestart: allPendingRestart(), retainedConfig, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
+    return { pendingRestart: allPendingRestart(), retainedConfig, rows: rows.map(row => {
+      if (row.key === "planner") return { ...row, hint: planner };
+      if (row.key !== "instructed.mode") return row;
+      const { pending: _pending, ...rest } = row;
+      return { ...rest, file: "hub.db", source: "person witness", value: instructionReceipts.mode(), fileValue: stored?.instructed?.mode ?? null, note: "Only the person's terminal changes the witness; config.local.json is a display copy." };
+    }), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
   const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: SettingSource, undo = false, reason?: string) => {
@@ -10825,6 +10852,20 @@ export async function startDaemon(opts: DaemonOptions) {
     const refusal = settingRefusal(def, value, authority);
     if (refusal) return { ok: false, error: refusal };
     const source = settingSource(authority);
+    if (def.key === "instructed.mode") {
+      if (authority !== "terminal" || instructedExecution.getStore()?.active || (value !== "off" && value !== "exact")) return { ok: false, error: "instructed.mode is changed only by the person in a terminal, to off or exact" };
+      const before = instructionReceipts.mode();
+      if (value === "off") instructionReceipts.setMode(value);
+      try {
+        writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, def.path.join(".")));
+      } catch (error) {
+        if (value === "off" && before !== value) recordSetting(def.key, before, value, source);
+        return { ok: false, error: `instructed.mode: ${value === "off" ? "witness is off; " : "witness unchanged; "}display copy could not be written: ${(error as Error).message}` };
+      }
+      if (value === "exact") instructionReceipts.setMode(value);
+      if (before !== value) recordSetting(def.key, before, value, source);
+      return { ok: true, text: `instructed.mode: witness ${value}; config.local.json is a display copy` };
+    }
     // #1408 R2: the conductor needs an interactive session, so its start mode cannot be set to headless while it holds the role. The refusal comes before any write, from the running policy.
     const modeRefusal = conductorStartModeRefusal(def, value);
     if (modeRefusal) return { ok: false, error: modeRefusal };
@@ -11049,6 +11090,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", `For a busy peer, use ahub roster remove ${peer} --now explicitly; this stops its owned runtime or detaches its native session during the active turn.`, ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...tasks.rosterPreview(peer).map(move => sanitize(`task ${move.title}: ${move.to ? `${move.role} offered to ${move.to} if removed now` : `${move.role} stays with ${peer}; no eligible replacement`}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
       } catch (error) { return { ok: false, error: sanitize((error as Error).message) }; }
     }
+    if (def.key === "instructed.mode") return { ok: true, lines: [`The person witness and effective mode are ${instructionReceipts.mode()}.`, "Only a person's terminal changes the witness; config.local.json is a display copy."] };
     if (def.key === "scoped_grants.protect_instructions") return { ok: true, lines: ["Applies now to scoped writes and edits of AGENTS.md, CLAUDE.md and QWEN.md, including symlinks and folded spellings.", "true asks a person; false keeps these documents grantable (the default). Explicit approval and never-ask keep their meaning."] };
     if (def.group === "Permissions") {
       const peer = def.path.at(-1)!;
@@ -11391,6 +11433,10 @@ export async function startDaemon(opts: DaemonOptions) {
           return "target lacks reviewer_quota; retained accounting, wait deadlines or explicit reviewer quota policy require a supporting daemon";
       }
 
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("instructed_exact")) {
+        try { if (instructionReceipts.mode() === "off") return "target lacks instructed_exact; the retained person-disabled mode requires a supporting daemon"; }
+        catch { return "instructed mode compatibility is unknown; choose a supporting daemon"; }
+      }
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("guidance_probes")) {
         try { if (guidanceProbeStore.hasRecords()) return "target lacks guidance_probes; retained probe declarations or held work require a supporting daemon; choose a target advertising guidance_probes"; }
         catch { return "guidance probe compatibility is unknown; inspect retained probe state or choose a supporting target"; }
@@ -11795,8 +11841,62 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!result.ok) throw new Error(String(result.error));
   }
 
+  function instructedRuntimeReady(): boolean {
+    if (!instructedRuntime) return false;
+    let registry: Registry | undefined;
+    try {
+      registry = new Registry();
+      const roots = [opts.cwd, ...registry.list().map(project => project.root), ...executionRoots.values(), ...Object.values(declarations).flatMap(instance => instance.worktree ? [resolve(opts.cwd, instance.worktree)] : [])];
+      return instructedRuntimeAllowed(instructedRuntime.root, roots);
+    } catch { return false; }
+    finally { registry?.close(); }
+  }
+
+  async function launchInstructed(argv: string[], binding: InstructedExecution): Promise<Record<string, unknown>> {
+    binding.current();
+    if (!instructedRuntime || !instructedRuntimeReady()) return { ok: false, error: "instructed execution requires an installed hub outside project and peer write roots; install the hub package and restart this session with ahub claude" };
+    const client: Client = { authed: false, instructed: binding };
+    let open = true;
+    let child: ReturnType<typeof Bun.spawn>;
+    const inherited = { data: client, get readyState() { return open ? WebSocket.OPEN : WebSocket.CLOSED; }, send: (text: string) => child.send(JSON.parse(text)), close: () => { open = false; child.disconnect(); }, getBufferedAmount: () => 0 } as unknown as Sock;
+    child = Bun.spawn({ cmd: [instructedRuntime.bun, join(instructedRuntime.root, "src/cli/main.js"), ...argv],
+      cwd: opts.cwd, env: { ...personEnv(process.env), AGENTHUB_INSTRUCTED_IPC: "1", AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", serialization: "json",
+      ipc(message) {
+        try {
+          if (!open || !message || typeof message !== "object" || Buffer.byteLength(JSON.stringify(message)) > 1024 * 1024) throw new Error("invalid instruction control message");
+          onControlMessage(inherited, message);
+        } catch { open = false; child.disconnect(); }
+      },
+    });
+    let output = Buffer.alloc(0), overflow = false, timedOut = false;
+    const readers = [(child.stdout as ReadableStream<Uint8Array>).getReader(), (child.stderr as ReadableStream<Uint8Array>).getReader()];
+    const cancel = () => { for (const reader of readers) void reader.cancel().catch(() => {}); };
+    const drain = async (reader: (typeof readers)[number]) => {
+      try {
+        for (;;) {
+          const part = await reader.read(); if (part.done) break;
+          const bytes = Buffer.from(part.value);
+          if (output.length + bytes.length > 64 * 1024) { overflow = true; child.kill(); cancel(); break; }
+          output = Buffer.concat([output, bytes]);
+        }
+      } finally { reader.releaseLock(); }
+    };
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); cancel(); }, 30_000);
+    let code: number;
+    try { [code] = await Promise.all([child.exited, ...readers.map(drain)]); }
+    finally { clearTimeout(timer); open = false; client.closed = true; child.disconnect(); }
+    if (timedOut) return { ok: false, error: "instruction timed out; inspect the target before retrying because the effect may have occurred" };
+    return overflow ? { ok: false, error: "instruction output exceeded its limit; inspect the target before retrying because the effect may have occurred" } : { ok: code === 0, exitCode: code, output: output.toString("utf8") };
+  }
+
   function onControlMessage(sock: Sock, msg: any): void {
     const client = sock.data;
+    if (client.instructed && instructedExecution.getStore() !== client.instructed) {
+      try { client.instructed.current(); }
+      catch (error) { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ok: false, error: "instructed session is no longer current" })); return; }
+      return instructedExecution.run(client.instructed, () => onControlMessage(sock, msg));
+    }
     const admittedAtReceive = client.authed && !!client.role, peer = client.peer;
     if (!admittedAtReceive) return onMessage(sock, msg);
     const metadata = controlWriteMetadata(msg);
@@ -11918,7 +12018,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if ((msg.projectId && msg.projectId !== projectId) || (msg.instanceId && msg.instanceId !== instanceId) ||
           (msg.projectRoot && msg.projectRoot !== opts.cwd)) return sock.close(4404, "project or instance mismatch");
-      if (!["peer", "tools", "console"].includes(msg.role)) return sock.close(4403, "invalid client role");
+      if (!["peer", "tools", "console"].includes(msg.role) || c.instructed && msg.role !== "console") return sock.close(4403, "invalid client role");
       try { refreshConductorPolicy(); } catch { return sock.close(4403, "invalid conductor role/feed configuration"); }
       if (stopping && msg.role !== "console") return sock.close(1013, "hub is stopping");
       c.authed = true;
@@ -11926,7 +12026,7 @@ export async function startDaemon(opts: DaemonOptions) {
       c.role = msg.role;
       c.guidanceProbeConnectionId = randomUUID(); // Private comparator only; never sent, persisted separately or accepted from hello.
       c.clientVersion = displayVersion(msg.clientVersion);
-      if (c.role === "console") consoles.add(sock);
+      if (c.role === "console") { if (!c.instructed) consoles.add(sock); }
       else if (c.role === "tools" && sessionHello(msg)) {
         // agent-hub#1036: a connection that names a peer id but is not that peer's current session gets an id of its own instead of becoming the peer. It can send and read; it holds none of the
         // peer's board roles, is never a bus peer (no delivery, no push) and replaces nobody. Nothing is refused: a hello that worked before still works, as a session.
@@ -12681,6 +12781,66 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         return apply();
       }
+      case "instruction_execute": {
+        if (c.role !== "tools" || !c.peer || c.toolsOwner || c.externalOwner || Object.keys(msg).some(key => !["t", "rid", "session"].includes(key)) || typeof msg.session !== "string") return void reply({ ok: false, error: "instruction unavailable" });
+        const peer = c.peer, session = msg.session, socket = sock;
+        const initialSession = claudeSession(peer), owner = claudeLaunchProof.owner(peer), generation = owner?.sessionGeneration;
+        const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
+        class InstructionRefusal extends Error {}
+        const sessionRefusal = `this Claude session changed or was not started by ahub claude. The person starts a managed session in this project:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub claude\n\`\`\`\n\nSuccess: a new managed Claude session starts; type the instruction again there.`;
+        const modeRefusal = `instructed.mode is off. The person turns it on in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub settings set instructed.mode exact\n\`\`\`\n\nSuccess: the command reports witness exact; type the instruction again.`;
+        const receiptRefusal = "no usable instruction receipt; type the /agent-hub:ahub command again. A receipt is used once and expires after 10 minutes.";
+        const runtimeRefusal = "the installed hub runtime is unavailable or inside a project or peer write root; install the hub package and start a new managed session with ahub claude";
+        const current = () => {
+          const observed = claudeSession(peer), latest = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
+          const checks = { socket: socket.readyState === WebSocket.OPEN && socket.data === c && !c.closed && c.role === "tools" && c.peer === peer, lifecycle: !stopping && !recoveryActive() && !bus.isRecoveryHeld, policy: membershipAllowed(peer) && !readOnlyPeer(peer) && !turns.get(peer)?.private && !contextPii(peer) && !board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && (task.signals.includes("pii") || task.signals.includes("pii_path"))), owner: !!owner && owner.attached && owner.state !== "offline" && !owner.claiming && bus.peers.get(peer) === owner && !!generation && owner.sessionGeneration === generation, session: observed.sessionId === session && observed.sessionId === initialSession.sessionId && observed.transcriptPath === initialSession.transcriptPath && observed.launchId === initialSession.launchId, launch: !!launch?.privateRecord && !!launch.launcherPid && !!launch.launcherSignature && launch.launchId === observed.launchId && !!latest?.privateRecord && latest.launchId === launch.launchId && latest.launcherPid === launch.launcherPid && latest.launcherSignature === launch.launcherSignature && processLiveness(launch.launcherPid, launch.launcherSignature) === "live", mode: effectiveInstructionMode() === "exact" };
+          if (!checks.mode) throw new InstructionRefusal(modeRefusal);
+          if (!checks.lifecycle) throw new InstructionRefusal("the hub is stopping or recovering; retry after ahub status shows it running");
+          if (!checks.policy) throw new InstructionRefusal("a private turn or private task is active for this peer, or its access is restricted; run the command in a terminal");
+          if (!checks.socket || !checks.owner || !checks.session || !checks.launch) throw new InstructionRefusal(sessionRefusal);
+        };
+        void (async () => {
+          try {
+            if (!launch?.privateRecord || !launch.launcherPid || !launch.launcherSignature || processLiveness(launch.launcherPid, launch.launcherSignature) !== "live") return { ok: false, error: `this Claude session was not started by ahub claude. The person starts a managed session in this project:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub claude\n\`\`\`\n\nSuccess: a new Claude session starts under the hub; type the instruction again there.` };
+            if (!initialSession.sessionId || !initialSession.transcriptPath) return { ok: false, error: "no session evidence for this Claude session yet; send one ordinary prompt in this session, then type the /agent-hub:ahub command again" };
+            current();
+            if (!instructedRuntimeReady()) return { ok: false, error: `the loaded hub runtime is inside a project or peer write root, or its location is unknown. The person installs the hub package before restarting the session:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && bun add -g @staix/agent-hub\n\`\`\`\n\nSuccess: the package is installed globally. The person then starts the managed session:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub claude\n\`\`\`\n\nSuccess: the installed hub starts Claude; type the instruction again.` };
+            const receipt = await instructionReceipts.forPeer(peer).confirmReceipt(session, Date.now());
+            current();
+            if (!receipt) return { ok: false, error: receiptRefusal };
+            const argv = parseExactInstruction(receipt.args), form = argv && exactForm(argv);
+            if (!argv) {
+              const raw = receipt.args.startsWith("run ") ? receipt.args.slice("run ".length).trim() : "";
+              if (!raw || /[\p{Cc}\p{Cf}]/u.test(raw) || raw.includes("~~~")) return { ok: false, error: "instruction syntax is not supported for exact mode; the original command cannot be rendered safely" };
+              return { ok: false, error: `this syntax is not proven for instructed exact mode. The person runs the original command in a terminal:\n\n~~~sh\ncd ${shellQuote(opts.cwd)} && ahub ${raw}\n~~~\n\nSuccess: the command reports its result in that terminal.` };
+            }
+            if (!form || !["console", "conductor"].includes(classifyPeerCommand(argv[0]!, argv.slice(1), adapterCatalog))) return { ok: false, error: `this form is not proven for instructed exact mode. The person runs the same command in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub ${argv.map(shellQuote).join(" ")}\n\`\`\`\n\nSuccess: the command reports its result in that terminal.` };
+            const taskId = form.taskId;
+            const guarded = () => {
+              current();
+              if (!instructedRuntimeReady()) throw new InstructionRefusal(runtimeRefusal);
+              if (taskId !== undefined) { const task = board.get(taskId); if (!task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) throw new InstructionRefusal("the command targets unavailable or private work; run the command in a terminal"); }
+              if (form.targetPeer && board.list().some(task => (task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) && (task.owner === form.targetPeer || task.reviewer === form.targetPeer || task.reserved === form.targetPeer))) throw new InstructionRefusal("the command targets private work; run the command in a terminal");
+            };
+            guarded();
+            if (!instructionReceipts.consumeExact(receipt.id, Date.now())) return { ok: false, error: receiptRefusal };
+            if (!event({ type: "agent_cli", peer, command: cliCommandLabel(argv[0]!, argv.slice(1), adapterCatalog), refused: false, instructed: true, instructionReceipt: receipt.id })) { instructionReceipts.finishExact(receipt.id); return { ok: false, error: "instruction audit is unavailable; check hub status and run the command in a terminal" }; }
+            let revoked = false;
+            const binding: InstructedExecution = { peer, receipt: receipt.id, active: true, ...(taskId === undefined ? {} : { taskId }), current: () => {
+              if (revoked) throw new Error("instruction authority revoked");
+              try { guarded(); if (!instructionReceipts.exactCurrent(receipt.id, Date.now())) throw new InstructionRefusal(receiptRefusal); }
+              catch (error) { revoked = true; throw error; }
+            } };
+            try { return await launchInstructed(argv, binding); }
+            catch (error) {
+              if (error instanceof InstructionRefusal) throw error;
+              throw new InstructionRefusal("the hub could not complete instructed execution; inspect the target before running the command in a terminal because an effect may have occurred");
+            }
+            finally { binding.active = false; instructionReceipts.finishExact(receipt.id); }
+          } catch (error) { return { ok: false, error: error instanceof InstructionRefusal ? error.message : "instruction execution failed unexpectedly; inspect hub status and run the command in a terminal" }; }
+        })().then(reply, () => reply({ ok: false, error: "instruction unavailable" }));
+        return;
+      }
       case "instruction_hook": {
         const peer = c.peer;
         const adapter = peer ? definitionOf(peer) : undefined;
@@ -13407,7 +13567,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "model":
         if (c.role !== "console") return void reply(modelFailure("model overrides are person-only; run ahub model in a person's terminal"));
-        return void reply(modelCommandSafe(msg, { source: "cli", scope: c, current: () => c.authed === true && !c.closed && c.role === "console" && sock.readyState === WebSocket.OPEN }));
+        return void reply(modelCommandSafe(msg, { source: "cli", scope: c, current: () => { try { c.instructed?.current(); } catch { return false; } return c.authed === true && !c.closed && c.role === "console" && sock.readyState === WebSocket.OPEN; } }));
       case "settings_get":
         if (c.role !== "console") {
           try { const current = publicReadCurrent(sock); current(); const view = publicSettingsView(); current(); return void reply({ ok: true, ...view }); }
@@ -13476,9 +13636,9 @@ export async function startDaemon(opts: DaemonOptions) {
         void hubStart(msg.peer, "the console", true).then(result => reply(includeRetainedLaunchConfig(String(msg.peer), result)), (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
         return;
       case "peer_stop":
-        let stopCurrent:(()=>void)|undefined;
+        let stopCurrent:(()=>void)|undefined = c.instructed?.current;
         if(c.role!=="console")try{stopCurrent=admitOperational(sock,"stop");}catch(error){return void reply(operationalFailure(error));}
-        void stopPeer(msg.peer,false,stopCurrent?{actor:c.peer!,current:stopCurrent}:undefined).then(reply).catch(error => reply(operationalFailure(error,"peer stop failed; inspect ahub status and logs before retrying")));
+        void stopPeer(msg.peer,false,stopCurrent?{actor:c.instructed ? USER : c.peer!,current:stopCurrent}:undefined).then(reply).catch(error => reply(operationalFailure(error,"peer stop failed; inspect ahub status and logs before retrying")));
         return;
       case "start":
         if (c.role !== "console") return void reply({ t: "started", ok: false, error: "start is a console command; use hub_peer_start with the conductor role" });
