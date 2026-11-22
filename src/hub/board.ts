@@ -2464,7 +2464,7 @@ export class Board {
     }
     const now = Date.now(), planner = plannerValue(t.planner);
     const chosen = Object.hasOwn(t, "planner") || t.plannerReason !== undefined ? plannerMetadata(planner, t.plannerReason) : {};
-    const history: HistoryEntry[] = [{ at: now, by, ...chosen, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
+    const history: HistoryEntry[] = [{ at: now, by, ...instructedHistory(by), ...chosen, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
     const { lastInsertRowid } = this.taskWrite(() => {
       const inserted = this.db
       .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue, planner, draft) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")

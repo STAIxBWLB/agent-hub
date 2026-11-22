@@ -130,7 +130,7 @@ import { corpusConfig } from "./corpus-config.ts";
 import { roadmapConfig, type MilestoneLinkKind, type MilestoneState, type RoadmapConfig } from "./roadmap.ts";
 import { mcpAllowNames } from "./instances.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
-import { instructedMode, parseExactInstruction, exactForm, instructedExecution, type InstructedExecution } from "./instructed-exact.ts";
+import { instructedMode, parseExactInstruction, exactForm, instructedExecution, INSTRUCTION_CHILD_TIMEOUT_MS, type ExactForm, type InstructedExecution } from "./instructed-exact.ts";
 import { intentForm, intentRefusal, literalInstructionIds } from "./instructed-intent.ts";
 import { instructedRuntimeAllowed } from "./instructed-runtime.ts";
 import { classifyPeerCommand, cliCommandLabel } from "../cli/identity.ts";
@@ -218,7 +218,7 @@ import { ProposalStore, SupervisionProposals, type SupervisionProposal } from ".
 import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
 import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
-import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig, type PiiVerdict } from "./inference.ts";
+import { DEFAULT_INFERENCE, DIGEST, Inference, SCREEN_MAX_BYTES, SCREEN_TIMEOUT_MS, screenPii, type InferenceConfig, type PiiVerdict } from "./inference.ts";
 import { taskEvidencePrivacy, type TaskEvidencePrivacy, ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { withChecklistLine } from "./learning.ts";
@@ -11894,7 +11894,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       } finally { reader.releaseLock(); }
     };
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); cancel(); }, 30_000);
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); cancel(); }, INSTRUCTION_CHILD_TIMEOUT_MS);
     let code: number;
     try { [code] = await Promise.all([child.exited, ...readers.map(drain)]); }
     finally { clearTimeout(timer); open = false; client.closed = true; child.disconnect(); }
@@ -12837,19 +12837,45 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!form || (typedExact || initialMode === "exact") && !["console", "conductor"].includes(classifyPeerCommand(argv[0]!, argv.slice(1), adapterCatalog))) return { ok: false, error: `${typedExact || initialMode === "exact" ? "this form is not proven for instructed exact mode" : intentRefusal(argv)}. The person runs the same command in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub ${argv.map(shellQuote).join(" ")}\n\`\`\`\n\nSuccess: the command reports its result in that terminal.` };
             if ("verdictIds" in form && Array.isArray(form.verdictIds) && !literalInstructionIds(receipt.args, form.verdictIds)) return { ok: false, error: "the verdict's item id or slot is not written in the person's instruction; type it in a new instruction" };
             if (initialMode === "intent" && !typedExact && !tasks.publicMetadataText(JSON.stringify(argv))) return { ok: false, error: "the selected command may contain private information; run the command in a terminal" };
-            const taskId = form.taskId;
+            const screened = "screen" in form && form.screen === true;
+            const screenRefusal = `instruction privacy screening did not clear the command. The person runs it in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub ${argv.map(shellQuote).join(" ")}\n\`\`\`\n\nSuccess: the command reports its result in that terminal.`;
+            const study = (form as ExactForm).study;
+            const campaign = study ? board.researchCampaign(study.id, study.revision) : undefined;
+            if (study && (!campaign || campaign.project !== chain.at(-1) || campaign.private)) throw new InstructionRefusal("the study is unavailable or private; run the command in a terminal");
+            const taskId = form.taskId ?? campaign?.parentTaskId;
+            const studySources = campaign ? [...new Set([...campaign.contract.sourceIds, ...campaign.contract.units.flatMap(unit => unit.sourceIds)])] : [];
+            const studyBindings = () => campaign ? JSON.stringify(campaign.contract.units.map(unit => board.researchLatestUnitBinding(campaign.id, unit.id))) : "";
+            const initialStudyBindings = studyBindings();
+            const studyTasks = campaign ? [...new Set([campaign.parentTaskId, ...campaign.contract.units.flatMap(unit => { const previous = board.researchLatestUnitBinding(campaign.id, unit.id); return [...(unit.adoptTaskId === undefined ? [] : [unit.adoptTaskId]), ...(previous ? [previous.taskId] : [])]; }), ...board.researchCampaignBindings(campaign.id, campaign.revision).map(unit => unit.taskId)])] : [];
+            const studyHash = campaign?.hash;
+            const screenedInputs = screened ? [receipt.args, JSON.stringify(argv), ...(campaign ? [JSON.stringify(campaign.contract)] : [])] : [];
+            let studyEffectStarted = false;
             const guarded = () => {
               current();
               if (!instructedRuntimeReady()) throw new InstructionRefusal(runtimeRefusal);
+              if (screenedInputs.some(input => Buffer.byteLength(input) > SCREEN_MAX_BYTES || !tasks.publicMetadataText(input))) throw new InstructionRefusal(screenRefusal);
               if (taskId !== undefined) { const task = board.get(taskId); if (!task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) throw new InstructionRefusal("the command targets unavailable or private work; run the command in a terminal"); }
+              if (study && (!campaign || (() => { const latest = board.researchCampaign(study.id, study.revision); return !latest || latest.private || latest.hash !== studyHash; })() || !studyEffectStarted && studyBindings() !== initialStudyBindings || studyTasks.some(id => { const task = board.get(id); return !task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task) || !tasks.publicMetadataText(JSON.stringify(task.refs)); }) || studySources.some(id => { const source = sourceRegistry.get(id); return !source || source.private; }))) throw new InstructionRefusal("the study changed or refers to private work; run the command in a terminal");
               if ("review" in form && form.review && (taskId === undefined || board.get(taskId)?.reviewer !== USER)) throw new InstructionRefusal("only a task assigned to the person as reviewer can receive this verdict; run the command in a terminal");
               if (form.targetPeer && board.list().some(task => (task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) && (task.owner === form.targetPeer || task.reviewer === form.targetPeer || task.reserved === form.targetPeer))) throw new InstructionRefusal("the command targets private work; run the command in a terminal");
             };
             guarded();
+            if (screened) {
+              const screen = opts.piiScreen ?? ((text: string) => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model }));
+              for (const input of screenedInputs) {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                const verdict = await Promise.race([screen(input).catch(() => undefined), new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), SCREEN_TIMEOUT_MS); })]).finally(() => clearTimeout(timer));
+                guarded();
+                if (verdict?.label !== "clear") throw new InstructionRefusal(screenRefusal);
+                const fresh = await instructionReceipts.forPeer(peer).confirmIntent(session, Date.now());
+                guarded();
+                if (!fresh || fresh.id !== receipt.id || fresh.args !== receipt.args) throw new InstructionRefusal(receiptRefusal);
+              }
+            }
             if (!(initialMode === "intent" && !typedExact ? instructionReceipts.consumeIntent(receipt.id, Date.now()) : instructionReceipts.consumeExact(receipt.id, Date.now()))) return { ok: false, error: receiptRefusal };
             if (!event({ type: "agent_cli", peer, command: cliCommandLabel(argv[0]!, argv.slice(1), adapterCatalog), refused: false, instructed: true, instructionReceipt: receipt.id })) { instructionReceipts.finishExact(receipt.id); return { ok: false, error: "instruction audit is unavailable; check hub status and run the command in a terminal" }; }
             let revoked = false;
-            const binding: InstructedExecution = { peer, receipt: receipt.id, active: true, ...(taskId === undefined ? {} : { taskId }), current: () => {
+            const binding: InstructedExecution = { peer, receipt: receipt.id, active: true, ...(taskId === undefined ? {} : { taskId }), ...(study ? { beginStudy: () => { guarded(); studyEffectStarted = true; } } : {}), current: () => {
               if (revoked) throw new Error("instruction authority revoked");
               try { guarded(); if (!instructionReceipts.exactCurrent(receipt.id, Date.now())) throw new InstructionRefusal(receiptRefusal); }
               catch (error) { revoked = true; throw error; }

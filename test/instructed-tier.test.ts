@@ -140,6 +140,10 @@ test("the exact form policy closes unknown forms and detects task scope", async 
   const { exactForm } = await import("../src/hub/instructed-exact.ts");
   expect(exactForm(["task", "assign", "1055", "jcode"])).toEqual({ argv: ["task", "assign", "1055", "jcode"], taskId: 1055 });
   expect(exactForm(["task", "claim", "1055", "2", "supported"])).toEqual({ argv: ["task", "claim", "1055", "2", "supported"], taskId: 1055 });
+  expect(exactForm(["backlog", "add", "implement", "public", "work"])).toEqual({ argv: ["backlog", "add", "implement", "public", "work"], screen: true });
+  expect(exactForm(["study", "approve", "rc-0123456789ab", "1"])).toEqual({ argv: ["study", "approve", "rc-0123456789ab", "1"], screen: true, study: { id: "rc-0123456789ab", revision: 1 } });
+  expect(exactForm(["backlog", "add", "implement"])).toBeUndefined();
+  expect(exactForm(["study", "approve", "rc-0123456789ab", "1", "extra"])).toBeUndefined();
   for (const args of [["task", "claim", "1055", "0", "supported"], ["task", "claim", "1055", "2", "unknown"], ["task", "claim", "1055", "2", "supported", "--manifest", "input.json", "--disposition", "resolved"], ["task", "claim", "1055", "2", "supported", "--model", "label"]]) expect(exactForm(args)).toBeUndefined();
   expect(exactForm(["task", "unassign", "1055", "--role", "reviewer", "--revision", "3"])?.taskId).toBe(1055);
   expect(exactForm(["settings", "set", "tasks.auto_pull", "true", "--yes"])).toBeDefined();
@@ -186,6 +190,7 @@ test("the daemon executes confirmed exact and intent commands through its inheri
   const { ControlClient, stateDirFor } = await import("../src/hub/control-client.ts");
   const { processSignature } = await import("../src/pi/process-signature.ts");
   const { instructionHash } = await import("../src/hub/instruction-receipt.ts");
+  const { personEnv } = await import("../src/hub/child-process.ts");
   const { FakeMemoryClient, startFakeMemWorker } = await import("./fakes/mem-worker.ts");
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-exact-e2e-")));
   const install = join(root, "installed"), home = join(root, "home"), config = join(home, "claude"), cwd = join(root, "project");
@@ -209,11 +214,13 @@ test("the daemon executes confirmed exact and intent commands through its inheri
   const board = new Board(join(stateDir, "hub.db"));
   const task = board.propose("user", { title: "instructed fixture", class: "implement" }); board.close();
   let captured: import("../src/hub/instruction-receipt.ts").InstructionReceipts | undefined;
+  const screenInputs: string[] = [];
+  let screenInput = async (_text: string): Promise<import("../src/hub/inference.ts").PiiVerdict> => ({ label: "clear", ms: 0 });
   const worker = startFakeMemWorker(), memory = new FakeMemoryClient(worker.url);
   await memory.save({ text: "MEMORY-CONTROL", project: "fixture", metadata: {} });
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
   try {
-    daemon = await startDaemon({ cwd, stateDir, memoryClient: memory, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, instructedRuntimeForTest: { root: install, bun: process.execPath }, instructionReceiptStore: store => { captured = store; return store; } });
+    daemon = await startDaemon({ cwd, stateDir, memoryClient: memory, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, piiScreen: async text => { screenInputs.push(text); return screenInput(text); }, instructedRuntimeForTest: { root: install, bun: process.execPath }, instructionReceiptStore: store => { captured = store; return store; } });
     expect(captured!.mode()).toBe("intent"); captured!.setMode("exact");
     const native = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
     const pushes: unknown[] = []; native.onPush = message => { pushes.push(message); };
@@ -255,6 +262,102 @@ test("the daemon executes confirmed exact and intent commands through its inheri
       expect(JSON.stringify(pushes)).not.toContain(args);
       expect(JSON.stringify(worker.calls)).toContain("MEMORY-CONTROL");
       expect(JSON.stringify(worker.calls)).not.toContain(args);
+      const typed = async (command: string) => {
+        const promptId = crypto.randomUUID(), created = Date.now();
+        expect(captured!.pending({ session, promptId, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(command) }, created)).toBe(true);
+        writeFileSync(transcript, JSON.stringify({ type: "user", uuid: crypto.randomUUID(), sessionId: session, promptId, version: "2.1.329", timestamp: new Date(created + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${command}</command-args>` } }) + "\n");
+        await Bun.sleep(5);
+      };
+      const countTasks = () => { const current = new Board(join(stateDir, "hub.db")); try { return current.list().length; } finally { current.close(); } };
+      const countBeforeScreen = countTasks();
+      const publicCommand = "run backlog add implement fixture public title";
+      await typed(publicCommand); screenInputs.length = 0;
+      expect((await tools.request({ t: "instruction_execute", session, argv: ["backlog", "add", "implement", "substituted"] }, 35_000)).ok).toBe(false);
+      expect(await tools.request({ t: "instruction_execute", session }, 35_000)).toMatchObject({ ok: true, exitCode: 0 });
+      expect(screenInputs).toEqual([publicCommand, JSON.stringify(["backlog", "add", "implement", "fixture", "public", "title"])]);
+      const createdBoard = new Board(join(stateDir, "hub.db"));
+      try {
+        const created = createdBoard.list().filter(row => row.title === "fixture public title");
+        expect(created).toHaveLength(1); expect(created[0]!.history[0]).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude" });
+      } finally { createdBoard.close(); }
+      expect(countTasks()).toBe(countBeforeScreen + 1);
+      screenInput = async text => ({ label: text.startsWith("[") ? "pii" : "clear", ms: 0 });
+      await typed("run backlog add implement fixture private title"); screenInputs.length = 0;
+      const rejected = await tools.request({ t: "instruction_execute", session }, 35_000);
+      expect(rejected.ok).toBe(false); expect(rejected.error).toContain("privacy screening"); expect(screenInputs).toHaveLength(2);
+      expect(countTasks()).toBe(countBeforeScreen + 1);
+      expect(readFileSync(join(stateDir, "events.jsonl"), "utf8")).not.toContain("fixture private title");
+      expect(readFileSync(join(stateDir, "hub.log"), "utf8")).not.toContain("fixture private title");
+      expect(JSON.stringify(pushes)).not.toContain("fixture private title"); expect(JSON.stringify(worker.calls)).not.toContain("fixture private title");
+      screenInput = async text => ({ label: text.includes("fixture sensitive title") ? "pii" : "clear", ms: 0 });
+      await typed("run backlog add implement fixture sensitive title"); screenInputs.length = 0;
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false); expect(screenInputs).toHaveLength(1);
+      expect(countTasks()).toBe(countBeforeScreen + 1);
+      screenInput = async () => ({ label: "unknown", miss: "failed", ms: 0 });
+      await typed("run backlog add implement fixture unknown title");
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false); expect(countTasks()).toBe(countBeforeScreen + 1);
+      const { SCREEN_MAX_BYTES } = await import("../src/hub/inference.ts");
+      await typed(`run backlog add implement ${"x".repeat(SCREEN_MAX_BYTES)}`);
+      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false); expect(countTasks()).toBe(countBeforeScreen + 1);
+      let entered!: () => void, release!: () => void;
+      const startedScreen = new Promise<void>(resolve => { entered = resolve; }), heldScreen = new Promise<void>(resolve => { release = resolve; });
+      screenInput = async () => { entered(); await heldScreen; return { label: "clear", ms: 0 }; };
+      await typed("run backlog add implement fixture stopped title");
+      const pendingScreen = tools.request({ t: "instruction_execute", session }, 35_000);
+      try {
+        await startedScreen;
+        expect((await tools.request({ t: "instruction_hook", op: "stop", session })).ok).toBe(true);
+      } finally { release(); }
+      expect((await pendingScreen).ok).toBe(false); expect(countTasks()).toBe(countBeforeScreen + 1);
+      screenInput = async () => ({ label: "clear", ms: 0 });
+      const { SourceRegistry } = await import("../src/hub/sources.ts");
+      const sources = new SourceRegistry(stateDir), source = sources.add({ bytes: Buffer.from("fixture study source"), kind: "file", origin: "fixture.txt", private: false, text: "fixture study source" });
+      const contract = (question: string) => ({ question: "fixture study", scope: "synthetic", exclusions: [], sourceIds: [source.id], units: [{ id: "one", round: 0, question, perspective: "measurement", requiredOutput: "result", sourceIds: [source.id], dependsOn: [], purpose: "synthesis" }], deliverableSections: [{ id: "result", title: "Result", ownerUnitId: "one" }], stopPolicy: { maxUnits: 1, maxFollowUpRounds: 0, deadline: new Date(Date.now() + 86_400_000).toISOString() } });
+      const personControl = await ControlClient.connect(stateDir, { role: "console" });
+      try {
+        const draftReply = await personControl.request({ t: "task", op: "study_draft", args: { parentTaskId: task.id, contract: contract("public research question") } });
+        expect(draftReply.ok).toBe(true);
+        const draft = JSON.parse(draftReply.text), studyCommand = `run study approve ${draft.id} ${draft.revision}`, beforeStudy = countTasks();
+        await typed(studyCommand); screenInputs.length = 0;
+        expect((await tools.request({ t: "instruction_execute", session, argv: ["study", "approve", draft.id, String(draft.revision + 1)] }, 35_000)).ok).toBe(false);
+        expect(await tools.request({ t: "instruction_execute", session }, 35_000)).toMatchObject({ ok: true, exitCode: 0 });
+        expect(screenInputs).toHaveLength(3); expect(screenInputs[0]).toBe(studyCommand);
+        const studyBoard = new Board(join(stateDir, "hub.db"));
+        try {
+          expect(studyBoard.researchCampaign(draft.id, draft.revision)?.status).toBe("approved");
+          expect(studyBoard.get(task.id)!.history.findLast(entry => entry.event === "study approved")).toMatchObject({ by: "user", instructed: true, instructedPeer: "claude" });
+        } finally { studyBoard.close(); }
+        expect(countTasks()).toBe(beforeStudy + 1);
+        const privateParentBoard = new Board(join(stateDir, "hub.db"));
+        const privateParent = privateParentBoard.propose("user", { title: "study fixture parent", class: "implement" }); privateParentBoard.close();
+        const privateDraftReply = await personControl.request({ t: "task", op: "study_draft", args: { parentTaskId: privateParent.id, contract: contract("fixture confidential subject") } });
+        expect(privateDraftReply.ok).toBe(true);
+        const privateDraft = JSON.parse(privateDraftReply.text), beforePrivateStudy = countTasks();
+        screenInput = async text => ({ label: text.includes("fixture confidential subject") ? "pii" : "clear", ms: 0 });
+        await typed(`run study approve ${privateDraft.id} ${privateDraft.revision}`); screenInputs.length = 0;
+        expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false); expect(screenInputs).toHaveLength(3);
+        const privateStudyBoard = new Board(join(stateDir, "hub.db"));
+        try { expect(privateStudyBoard.researchCampaign(privateDraft.id, privateDraft.revision)?.status).toBe("draft"); } finally { privateStudyBoard.close(); }
+        expect(countTasks()).toBe(beforePrivateStudy);
+      } finally { personControl.close(); }
+      const { SCREEN_TIMEOUT_MS } = await import("../src/hub/inference.ts");
+      const { INSTRUCTION_CONTROL_TIMEOUT_MS, INSTRUCTION_CHILD_TIMEOUT_MS } = await import("../src/hub/instructed-exact.ts");
+      expect(INSTRUCTION_CONTROL_TIMEOUT_MS).toBeGreaterThan(INSTRUCTION_CHILD_TIMEOUT_MS + 3 * SCREEN_TIMEOUT_MS);
+      let slowOnce = true;
+      screenInput = async () => { if (slowOnce) { slowOnce = false; await Bun.sleep(SCREEN_TIMEOUT_MS - 250); } return { label: "clear", ms: 0 }; };
+      await typed("run backlog add implement fixture slow clear");
+      const slowClient = Bun.spawn([process.execPath, join(repo, "src/cli/main.ts"), "instructed", "run"], { cwd, env: { ...personEnv(process.env), CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: session, AGENTHUB_PEER_ID: "claude", AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      const [slowExit, slowOutput, slowError] = await Promise.all([slowClient.exited, new Response(slowClient.stdout).text(), new Response(slowClient.stderr).text()]);
+      expect(slowExit, slowError).toBe(0); expect(slowOutput).toContain("backlog, owner none");
+      const slowBoard = new Board(join(stateDir, "hub.db"));
+      try { expect(slowBoard.list().some(row => row.title === "fixture slow clear")).toBe(true); } finally { slowBoard.close(); }
+      screenInput = async () => await new Promise<import("../src/hub/inference.ts").PiiVerdict>(() => {});
+      const beforeTimeout = countTasks();
+      await typed("run backlog add implement fixture bounded screen");
+      const bounded = await tools.request({ t: "instruction_execute", session }, INSTRUCTION_CONTROL_TIMEOUT_MS);
+      expect(bounded.ok).toBe(false); expect(bounded.error).toContain("privacy screening");
+      expect(countTasks()).toBe(beforeTimeout);
+      screenInput = async () => ({ label: "clear", ms: 0 });
       const settingPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52095", settingArgs = "run settings set tasks.auto_pull true --yes", settingAt = Date.now();
       expect(captured!.pending({ session, promptId: settingPrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(settingArgs) }, settingAt)).toBe(true);
       writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "3004bef3-8884-4e54-bbf2-c5c760a52096", sessionId: session, promptId: settingPrompt, version: "2.1.329", timestamp: new Date(settingAt + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${settingArgs}</command-args>` } }) + "\n");
@@ -313,7 +416,6 @@ test("the daemon executes confirmed exact and intent commands through its inheri
       expect(captured!.pending({ session, promptId: offPrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(offArgs) }, offAt)).toBe(true);
       writeFileSync(transcript, JSON.stringify({ type: "user", uuid: "3004bef3-8884-4e54-bbf2-c5c760a52098", sessionId: session, promptId: offPrompt, version: "2.1.329", timestamp: new Date(offAt + 1).toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: `<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>${offArgs}</command-args>` } }) + "\n");
       expect((await tools.request({ t: "settings_set", key: "instructed.mode", value: "off" })).ok).toBe(false);
-      const { personEnv } = await import("../src/hub/child-process.ts");
       let terminalOutput = "";
       const person = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "settings", "set", "instructed.mode", "off"], { cwd, env: { ...personEnv(process.env), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, terminal: { cols: 100, rows: 20, data: (_term: unknown, bytes: Uint8Array) => { terminalOutput += new TextDecoder().decode(bytes); } } } as never);
       expect(await person.exited).toBe(0);
