@@ -21,12 +21,15 @@ export function conductorProgressSink(record: (event: HubEvent) => void, feed: P
 }
 
 /** What `Budget.status` returns, with the fields added after it optional so an older shape still projects. */
-type PublicBudgetStatus = Record<string, { windows: (Omit<ReturnType<Budget["status"]>[string]["windows"][number], "kind" | "superseded"> & { kind?: WindowKind; superseded?: boolean })[]; paused?: ReturnType<Budget["status"]>[string]["paused"]; accountUsage?: QuotaAccountReading }>;
+type PublicBudgetStatus = Record<string, { windows: (Omit<ReturnType<Budget["status"]>[string]["windows"][number], "kind" | "superseded"> & { kind?: WindowKind; superseded?: boolean; left?: number | null; projection?: unknown })[]; paused?: ReturnType<Budget["status"]>[string]["paused"]; accountUsage?: QuotaAccountReading }>;
 export function publicPeerBudget(status: PublicBudgetStatus, nameable: (text: string) => boolean): Record<string, unknown> {
   return Object.fromEntries(Object.entries(status).map(([peer, value]) => [peer, {
     windows: value.windows.map(window => ({ id: window.id, kind: windowKind(window), used: window.used, at: window.at, stale: window.stale, ...(window.superseded ? { superseded: true } : {}),
       ...(window.resetsAt === undefined ? {} : { resetsAt: window.resetsAt }),
       ...(window.windowMins === undefined ? {} : { windowMins: window.windowMins }),
+      // #1513 AC2: the window's remainder and its forecast travel with it, so the console, `ahub budget --json` and the page agree.
+      ...(window.left === undefined ? {} : { left: window.left }),
+      ...(window.projection === undefined ? {} : { projection: window.projection }),
       source: nameable(window.source) ? window.source : "[quota source withheld]",
     })),
     ...(value.paused ? { paused: { since: value.paused.since, resetsAt: value.paused.resetsAt, reason: "quota" } } : {}),
@@ -132,7 +135,7 @@ export function conductorStart(peer: unknown, mode: unknown, preview: (peer: str
 
 const numberOrNull = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 export interface ConductorStatusInput {
-  peers: Array<{ peer: string; state?: string; attached?: boolean; queued?: number; needsReview?: number; manualHeld?: boolean; hold?: ConductorHold | null; budgetPause?: { since?: number; resetsAt?: number } | null; windows?: Array<{ id: string; used?: number; resetsAt?: number; at?: number; source?: string }>; doing?: PeerDoing | null }>;
+  peers: Array<{ peer: string; state?: string; attached?: boolean; queued?: number; needsReview?: number; manualHeld?: boolean; hold?: ConductorHold | null; budgetPause?: { since?: number; resetsAt?: number } | null; windows?: Array<{ id: string; used?: number; resetsAt?: number; at?: number; source?: string; left?: number | null; projection?: unknown }>; doing?: PeerDoing | null }>;
   taskCounts: Record<string, number>;
   approvals: Array<{ peer: string; tool?: string; at?: number }>;
 }
@@ -146,7 +149,9 @@ export function publicConductorStatus(input: ConductorStatusInput, now = Date.no
       manualHold: p.manualHeld === undefined ? null : { held: p.manualHeld, actor: p.manualHeld ? "user" : null },
       conductorHold: p.hold ? { actor: p.hold.actor, since: numberOrNull(p.hold.since) } : null,
       budgetPause: p.budgetPause ? { since: numberOrNull(p.budgetPause.since), resetsAt: numberOrNull(p.budgetPause.resetsAt) } : null,
-      windows: p.windows === undefined ? null : p.windows.map((w) => ({ id: w.id, used: numberOrNull(w.used), resetsAt: numberOrNull(w.resetsAt), at: numberOrNull(w.at), source: w.source ?? null })),
+      // #1513 AC2: hub_status reports the same remainder and forecast the dashboard and the console render.
+      windows: p.windows === undefined ? null : p.windows.map((w) => ({ id: w.id, used: numberOrNull(w.used), resetsAt: numberOrNull(w.resetsAt), at: numberOrNull(w.at), source: w.source ?? null,
+        ...(w.left === undefined ? {} : { left: numberOrNull(w.left) }), ...(w.projection === undefined ? {} : { projection: w.projection }) })),
       // Native reports retain peer authorship; incoming message labels carry their own display provenance.
       doing: !p.doing ? null : p.doing.text === DOING_STUB ? { text: DOING_STUB, source: p.doing.source, at: numberOrNull(p.doing.at) }
         : p.doing.source === "label" ? { text: sanitize(p.doing.text), source: "label", at: numberOrNull(p.doing.at), note: INCOMING_LABEL_NOTE, untrusted: true }

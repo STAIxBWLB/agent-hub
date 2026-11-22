@@ -1985,6 +1985,11 @@ function renderUsage(usage, tasks, budget) {
 }
 // Mirrors windowKind in src/hub/window-kind.ts (the page imports nothing): a window from an older hub has no kind. test/ui.test.ts keeps the two equal.
 function windowKindOf(w) { return w.kind || (w.id === 'tokens' ? 'count' : w.source === 'ahub budget set' ? 'manual' : 'native'); }
+// #1513 AC2: the same sentence the console and `ahub budget` print, and never a date when the hub claims none.
+const PROJECTION_CAUSE = { few_points: 'too few points yet', no_burn: 'no burn yet', reset_first: 'it resets first', unknown_usage: 'no usable reading' };
+function projectionText(p, when) {
+  return p.state === 'projected' ? 'reaches its limit ' + when(p.at) + (p.basis === 'window' ? ' (rate since the window opened)' : '') : 'no forecast: ' + (PROJECTION_CAUSE[p.cause] || 'unknown');
+}
 function appendRoleDetails(target, peer) {
   if (typeof peer.form === 'string') target.append(el('p', 'Form: ' + peer.form, 'meta'));
   if (Array.isArray(peer.capableRoles)) target.append(el('p', 'Capable roles: ' + (peer.capableRoles.join(', ') || 'none'), 'meta'));
@@ -2407,12 +2412,14 @@ function render(snapshot) {
       else if (budget.note) row.append(el('p', budget.note, 'meta'));
       for (const window of budget.windows) {
         const item = el('div', undefined, 'budget-window'), percent = Math.round(window.used * 100);
-        item.append(el('p', window.id + ': ' + percent + '% used' + (window.stale ? ' (stale)' : window.superseded ? ' (information only)' : ''), 'meta'));
+        item.append(el('p', window.id + ': ' + percent + '% used' + (typeof window.left === 'number' ? ', ' + Math.round(window.left * 100) + '% left' : '') + (window.stale ? ' (stale)' : window.superseded ? ' (information only)' : ''), 'meta'));
         const bar = el('progress'); bar.max = 1; bar.value = window.used; bar.className = percent >= 90 ? 'critical' : percent >= 70 ? 'warn' : '';
         bar.setAttribute('aria-label', peer + ' ' + window.id + ' usage'); item.append(bar);
         const meta = el('p', windowKindOf(window) + ' / ' + window.source + (window.resetsAt ? ' / resets ' : ''), 'meta');
         if (window.resetsAt) { const stamp = el('span'); stamp.dataset.ts = window.resetsAt; stamp.title = time(window.resetsAt); stamp.textContent = rel(window.resetsAt); meta.append(stamp); }
-        item.append(meta); row.append(item);
+        item.append(meta);
+        if (window.projection) item.append(el('p', projectionText(window.projection, rel), 'meta'));
+        row.append(item);
       }
       target.append(row);
     }

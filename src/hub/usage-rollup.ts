@@ -85,6 +85,10 @@ export class UsageRollup {
     this.db.run(`CREATE TABLE IF NOT EXISTS token_rollup (day TEXT NOT NULL, peer TEXT NOT NULL, task INTEGER NOT NULL, pii INTEGER NOT NULL,
       tokens INTEGER NOT NULL DEFAULT 0, increments INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, peer, task, pii))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS limit_events (seq INTEGER PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, peer TEXT NOT NULL, window TEXT NOT NULL, detail TEXT NOT NULL)`);
+    // #1513: an hourly burn series for the quota projection. Same fold as the daily rows, so a rebuild equals the
+    // incremental result; `tokens` is each record's own total (or the closest proxy, see recordTokens).
+    this.db.run(`CREATE TABLE IF NOT EXISTS usage_points (hour TEXT NOT NULL, peer TEXT NOT NULL, code TEXT NOT NULL, tokens INTEGER NOT NULL DEFAULT 0,
+      records INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (hour, peer, code))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS rollup_state (id INTEGER PRIMARY KEY CHECK (id = 1), byte_offset INTEGER NOT NULL, first_at TEXT)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS rollup_seen (key TEXT PRIMARY KEY)`);
     /** A task the log has marked private stays private for every later record, even one written before the mark. */
@@ -192,10 +196,21 @@ export class UsageRollup {
   rebuild(): void { this.reset(); this.catchUp(); }
 
   private reset(): void {
-    this.db.transaction(() => { for (const table of ["usage_rollup", "token_rollup", "limit_events", "rollup_seen", "rollup_pii"]) this.db.run(`DELETE FROM ${table}`); this.db.run("UPDATE rollup_state SET byte_offset = 0, first_at = NULL WHERE id = 1"); })();
+    this.db.transaction(() => { for (const table of ["usage_rollup", "token_rollup", "limit_events", "usage_points", "rollup_seen", "rollup_pii"]) this.db.run(`DELETE FROM ${table}`); this.db.run("UPDATE rollup_state SET byte_offset = 0, first_at = NULL WHERE id = 1"); })();
   }
 
   private day(at: string): string | undefined { const t = Date.parse(at); return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : undefined; }
+
+  /** The point series is hourly; a stamp that does not parse contributes no point. */
+  private hour(at: string): string | undefined { const t = Date.parse(at); return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 13) : undefined; }
+
+  private addPoint(measured: string, peer: string, code: "native" | "count", tokens: number): void {
+    if (!(tokens > 0)) return;
+    const hour = this.hour(measured);
+    if (!hour) return;
+    this.db.query(`INSERT OR IGNORE INTO usage_points (hour, peer, code) VALUES (?, ?, ?)`).run(hour, peer, code);
+    this.db.query(`UPDATE usage_points SET tokens = tokens + ?, records = records + 1 WHERE hour = ? AND peer = ? AND code = ?`).run(tokens, hour, peer, code);
+  }
 
   private fold(line: string): void {
     if (!line.trim()) return;
@@ -237,6 +252,11 @@ export class UsageRollup {
     const fields: Record<Kind, unknown> = { input: e.inputTokens, output: e.outputTokens, cache_read: e.cacheReadTokens, cache_write: e.cacheWriteTokens, reasoning: e.reasoningTokens, total: known(e.totalTokens) ? e.totalTokens : derived };
     const withUsage = [e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheWriteTokens, e.totalTokens].some(known) ? 1 : 0;
     const l = this.link(e);
+    // #1513: the point series burns what the record says it spent: the provider's total, its derived total, or the
+    // counters that do not carry a cached part. A record with none of them adds no point, so the rate understates
+    // rather than inventing burn.
+    const spent = known(e.totalTokens) ? e.totalTokens : derived ?? [e.inputTokens, e.outputTokens, e.reasoningTokens].filter(known).reduce((sum: number, v: number) => sum + v, 0);
+    this.addPoint(measured, e.peer, "native", spent);
     const params: Record<string, number | string> = { $day: day, $peer: e.peer, $model: model, $source: e.source, $task: l.task, $pii: l.pii, $with: withUsage };
     this.db.query(`INSERT OR IGNORE INTO usage_rollup (day, peer, model, source, task, pii) VALUES ($day, $peer, $model, $source, $task, $pii)`).run(params as any);
     const sets = ["records = records + 1", "with_usage = with_usage + $with"];
@@ -250,6 +270,7 @@ export class UsageRollup {
     const l = this.link(e);
     this.db.query(`INSERT OR IGNORE INTO token_rollup (day, peer, task, pii) VALUES (?, ?, ?, ?)`).run(day, e.peer, l.task, l.pii);
     this.db.query(`UPDATE token_rollup SET tokens = tokens + ?, increments = increments + 1 WHERE day = ? AND peer = ? AND task = ? AND pii = ?`).run(e.n, day, e.peer, l.task, l.pii);
+    this.addPoint(e.at, e.peer, "count", e.n);
   }
 
   private foldLimit(e: any): void {
@@ -433,6 +454,23 @@ export class UsageRollup {
   }
 
   /** Every roll-up row, in key order, for the rebuild-equals-incremental test. */
+  /**
+   * #1513: the hourly burn series for one peer, for the quota projection. An hour a provider reported uses the
+   * provider's number, exactly as `total()` chooses native over the hub's count, so one hour is never counted twice.
+   */
+  points(peer: string, since: number, until: number): { at: number; tokens: number }[] {
+    if (!Number.isFinite(since) || !Number.isFinite(until) || until < since) return [];
+    const rows = this.db.query(`SELECT hour, code, tokens FROM usage_points WHERE peer = ? AND hour >= ? AND hour <= ?`)
+      .all(peer, new Date(since).toISOString().slice(0, 13), new Date(until).toISOString().slice(0, 13)) as { hour: string; code: string; tokens: number }[];
+    const byHour = new Map<string, { native: number; count: number }>();
+    for (const row of rows) {
+      const bucket = byHour.get(row.hour) ?? { native: 0, count: 0 };
+      if (row.code === "native") bucket.native += row.tokens; else bucket.count += row.tokens;
+      byHour.set(row.hour, bucket);
+    }
+    return [...byHour.entries()].map(([hour, bucket]) => ({ at: Date.parse(`${hour}:00:00.000Z`), tokens: bucket.native > 0 ? bucket.native : bucket.count }));
+  }
+
   dump(): unknown {
     const all = (table: string, order: string) => this.db.query(`SELECT * FROM ${table} ORDER BY ${order}`).all();
     return { usage: all("usage_rollup", "day, peer, model, source, task, pii"), tokens: all("token_rollup", "day, peer, task, pii"), pii: all("rollup_pii", "task"),

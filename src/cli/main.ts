@@ -1658,8 +1658,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       const op = outputArguments()[1] ?? "status";
       let request: Record<string, unknown> = { t: "execution_budget", op, ...(outputArguments()[2] ? { id: outputArguments()[2] } : {}) };
       if (op === "configure") {
-        if (!outputArguments()[2]) { hub.close(); fail("usage: ahub budget execution configure <config.json>"); }
-        try { request = { t: "execution_budget", op, config: JSON.parse(readFileSync(outputArguments()[2]!, "utf8")) }; }
+        // #1513 AC3: the reason is optional; without one the budget is configured exactly as before.
+        const flags = takeFlags(outputArguments().slice(2), ["--reason"], []);
+        const configPath = flags.rest[0];
+        if (!configPath || flags.rest.length > 1) { hub.close(); fail("usage: ahub budget execution configure <config.json> [--reason <text>]"); }
+        try { request = { t: "execution_budget", op, config: JSON.parse(readFileSync(configPath, "utf8")), ...(flags.one["--reason"] ? { reason: flags.one["--reason"] } : {}) }; }
         catch { hub.close(); fail("cannot read execution budget JSON configuration"); }
       }
       const result = await hub.request(request); hub.close();

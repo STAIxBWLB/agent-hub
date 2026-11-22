@@ -1,5 +1,6 @@
 import { windowKind, type WindowKind } from "../hub/window-kind.ts";
 import type { Counter, LimitsResult, UsageResult, UsageRow } from "../hub/usage-rollup.ts";
+import { projectionText, type ExhaustionProjection } from "../hub/budget-projection.ts";
 
 // #683 U3: what the console's Usage panel shows, as plain strings. No terminal code and no state import here: console-state.ts renders it.
 // Every number names its source, an unknown counter reads `unknown` (never 0), and a private task is `#id [pii]` with no title.
@@ -33,9 +34,10 @@ export function usagePeers(usage: UsageState | undefined, budget: Record<string,
   return [...ids].sort().map(id => ({ id }));
 }
 
-interface Budget { windows?: { id: string; used: number; resetsAt?: number; kind?: string; source?: string }[]; paused?: { resetsAt: number }; note?: string }
-const windowText = (w: { id: string; used: number; resetsAt?: number }, rel: (at: number) => string) =>
-  `${w.id} ${Math.round(w.used * 100)}%${typeof w.resetsAt === "number" ? ` ${rel(w.resetsAt)}` : ""}`;
+interface Budget { windows?: { id: string; used: number; resetsAt?: number; kind?: string; source?: string; left?: number | null; projection?: ExhaustionProjection }[]; paused?: { resetsAt: number }; note?: string }
+// #1513 AC2: the console cell carries the same remainder and forecast the dashboard row and `ahub budget` print.
+const windowText = (w: { id: string; used: number; resetsAt?: number; left?: number | null; projection?: ExhaustionProjection }, rel: (at: number) => string) =>
+  `${w.id} ${Math.round(w.used * 100)}%${typeof w.left === "number" ? ` (${Math.round(w.left * 100)}% left)` : ""}${w.projection ? `, ${projectionText(w.projection, rel)}` : ""}${typeof w.resetsAt === "number" ? ` ${rel(w.resetsAt)}` : ""}`;
 const lastResets = (limits: LimitsResult | undefined, peer: string, count: number) =>
   (limits?.history ?? []).filter(h => h.type === "quota_reset" && h.peer === peer).slice(-count).reverse();
 

@@ -1184,10 +1184,10 @@ export class Tasks {
     else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", refs: { task: String(task.id), taskRecipient } }));
   }
 
-  configureExecutionBudget = (config: ExecutionBudgetConfig): ExecutionBudgetStatus | undefined => {
+  configureExecutionBudget = (config: ExecutionBudgetConfig, meta: { reason?: string; by?: string } = {}): ExecutionBudgetStatus | undefined => {
     if (!this.d.executionBudget) return undefined;
     if (config.kind === "task" && (!config.taskId || !this.d.board.get(config.taskId))) throw new Error(`task #${config.taskId ?? "?"} does not exist`);
-    return this.d.executionBudget.configure(config);
+    return this.d.executionBudget.configure(config, meta);
   };
   disableExecutionBudget = (id: string): boolean => this.d.executionBudget?.disable(id) ?? false;
   executionBudgetStatus = (id?: string): ExecutionBudgetStatus | ExecutionBudgetStatus[] | undefined => this.d.executionBudget?.status(id);

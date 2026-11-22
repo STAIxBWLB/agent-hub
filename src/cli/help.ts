@@ -171,7 +171,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]", "feed a reading by hand (also: test the relay)"],
     ["ahub budget resume <peer>", "override a budget pause; readings are ignored for that peer until the window resets"],
     ["ahub budget execution status [id] [--json] [--color=auto|always|never]", "read execution counters and limits"],
-    ["ahub budget execution configure <config.json> | disable <id> [--json] [--color=auto|always|never]", "opt-in limits on model calls, tool calls, time and tokens for pi and local"],
+    ["ahub budget execution configure <config.json> [--reason <text>] | disable <id> [--json] [--color=auto|always|never]", "opt-in limits on model calls, tool calls, time and tokens for pi and local; an optional reason is kept with the person and the time"],
   ]],
   ["History and reports", [
     [`ahub guidance probe ${Object.values(GUIDANCE_PROBE_USAGE).join(" | ")}`, "person or configured conductor only: bounded T1 declaration and fake-only probe lifecycle; receipts reads the sealed receipts, the outcome denominator and the comparability reasons, read-only; production execution is unavailable"],
