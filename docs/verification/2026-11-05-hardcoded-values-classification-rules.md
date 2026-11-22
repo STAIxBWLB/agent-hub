@@ -48,6 +48,20 @@ A key is labelled by a rule only when the rule is a pure function of its name, k
 
 R1x is the conductor's ruling on the review of PR #1212, not a calibrated rule: the committed file had no decided key of that kind (its decided `*GRACE_MS` keys are process-kill grace periods and `RATE_LIMIT_MS` throttles a log line, all operational), so its agreement is not measured. It labels four baseline keys: `tool-request.ts` `MAX_FUTURE_MS` (the replay window of request ids), `broker/store.ts` and `rooms/store.ts` `GRACE_MS` (how long a rotated epoch's frames stay accepted, which bounds how long a revoked member's key still works) and `schedules.ts` `MIN_EVERY_MS` (the floor that stops a schedule triggering an agent turn more often than every 15 minutes, a spend guard).
 
+Rulings of hub task 1072 (the conductor, 2026-11-22), per key, not calibrated:
+
+- `claude-profile-hook.ts` `timeout=5`: operational, native hook deadline.
+- `instruction-hook.ts` `MAX_HOOK_BYTES`: safety floor, bounds raw input.
+- `main.ts` instruction-hook `size > 1024 * 1024`: safety floor, bounds raw input.
+- `claude-launch-proof.ts` `launcherSignature.length <= 256`: safety floor, bounds input from another process's file.
+- `instruction-receipt.ts` `MAX_PROMPT_BYTES`: safety floor, bounds raw input.
+- `instruction-receipt.ts` `path.length > 4096`: safety floor, bounds raw input.
+- `instruction-receipt.ts` `MAX_TRANSCRIPT_TAIL`: safety floor, bounds input from another process's file.
+- `instruction-receipt.ts` `MAX_AGE_MS`: safety floor, bounds replay.
+- `instruction-receipt.ts` `MAX_OPERATIONS`: safety floor, bounds authority.
+- `instruction-receipt.ts` `MAX_RECEIPTS`: safety floor, bounds rows per external hook event.
+
+
 R4 (a `maxTokens` or `contextWindow` default, 97%) and R7 (a length bound in `src/adapters`, `src/models`, `src/local`, 91%) agree with the file, but no baseline key was labelled by R4, and R7's five baseline keys have no exact agreeing precedent, so they stay in the baseline. Taken together the rules agree with 303 of the 311 decided keys they cover (97.4%) and with 97% and 98% on the two halves of a by-file hold-out (files split by a hash of their path), which is the same data seen differently, not an independent reader.
 
 Not labelled, on purpose: every length bound and truncation in `src/hub`, `src/cli`, `src/ui`, `src/rooms` and `src/broker`; `Math.min`/`Math.max` clamps of a timeout; default-parameter timeouts (`timeoutMs = 2000`); `MAX_*` and `*_BYTES` constants; unit conversions. #739 settles their convention first and then relabels the inconsistent existing entries by name.

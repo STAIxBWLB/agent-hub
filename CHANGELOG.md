@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Record hash-only pending Claude instruction evidence and confirm it against the bound native transcript; it grants no command authority. Refs #1622.
+
 - Add Claude plugin skills for hub status, management, use and person-run commands, with a doctor check. Refs #1622.
 - Add a machine-local `jcode_mcp_allow` list (in `.agenthub/config.local.json`, per instance too, never settings-editable) of jcode MCP server names that `ahub doctor` accepts for the hub-owned jcode: allowed names read `ok` and are listed as allowed by the person, any other extra server still fails and is named, with the key as a hint, and an unreadable file still fails. Matching is by name only and launch is unchanged (Refs #1621, hub task 1056).
 - Warn in `ahub doctor`'s `routing classes` row when a rostered peer that can implement (its roles or its adapter's say implementer) appears in no `[classes.*].peers` list of the routing the hub loaded: the row names the peer, says the hub never offers it work automatically, and names the routing file and the class lines to edit. A warning, never a failure, and a peer the person took off the roster or that cannot implement is not reported (Refs #1626, hub task 1069).

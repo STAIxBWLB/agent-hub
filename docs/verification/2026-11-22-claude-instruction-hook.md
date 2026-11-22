@@ -2,7 +2,7 @@
 
 Hub task 1067, issue #1622 AC3. **Result: the typed, Skill, subagent and compaction cases passed on both versions.** The channel case was not driven: the clients reported that channels were unavailable. The hub-owned channel escapes a leading slash in each notification body by construction. Another plugin channel needs its own `--channels` opt-in, which hub-launched sessions do not pass; that remains a separate boundary.
 
-The rerunnable harness is `scripts/probes/claude-instruction-hook.py`. It runs each supplied Claude binary under a new isolated HOME and Claude config, an empty project, a private tmux server and a synthetic loopback API. It uses no account or real model. The native API-key prompt was answered for the synthetic key. A private fake MCP server emitted the channel notification. The harness exits nonzero if any case fails or cannot be driven.
+The rerunnable harness is `scripts/probes/claude-instruction-hook.py`. It runs each supplied Claude binary under a new isolated HOME and Claude config, an empty project, a private tmux server and a synthetic loopback API. It uses no account or real model. The native API-key prompt was answered for the synthetic key. A private fake MCP server emitted the channel notification. The harness exits nonzero if a required driven case fails or cannot be driven; the unavailable channel leg is covered by the construction guard below.
 
 | Claude Code | Typed TUI | Skill tool | Subagent | `/compact` | Channel |
 |---|---|---|---|---|---|
@@ -21,3 +21,13 @@ python3 scripts/probes/claude-instruction-hook.py /absolute/path/to/claude-2.1.3
 ```
 
 The paths above are probe arguments, not person-run repair instructions. When an isolated account-backed run is available, rerun the channel leg. The construction guard covers the hub channel until then. The prior print-mode observations from hub task 1064 are superseded by the TUI cases above.
+
+## Deferred confirmation observations
+
+On both versions, the hook's `prompt_id` matched the corresponding command record's `promptId`. The command record had `origin.kind: human`, `isSidechain: false` and no `promptSource`; the skill expansion was a separate meta record. A plain pasted text lookalike on 2.1.329 retained the same command-shaped content but had `promptSource: typed`. At `/compact`, each version wrote a summary record without a human origin. These observations support fail-closed checks, not authentication against a same-user process that edits the transcript.
+
+Claude recorded `/agent-hub:ahub   show   status` as command name `/agent-hub:ahub` and args `show   status`: the separator whitespace was not retained while internal whitespace was. The comparison therefore hashes the command and trimmed args, keeps internal bytes, and refuses args containing `<`, `>` or `&` until their encoding is separately proven.
+
+In an earlier exploratory version-binding probe, the isolated hook's `CLAUDE_PID` identified the native ancestor. A symlink-launched 2.1.329 process retained a mapped executable pointing at its versioned binary; resolving the launch symlink after replacing it could no longer establish that match, so version admission returned unknown. The implementation no longer uses that probe: confirmation checks the matched transcript record's version.
+
+An isolated native 2.1.329 TUI was then run against a scratch daemon and the setup-generated hooks, with a synthetic loopback API. A typed command produced one pending row with the expected canonical hash; the native Stop hook closed it. No real account or project was used. This is a pending/Stop integration check, not evidence that an instructed operation was admitted.

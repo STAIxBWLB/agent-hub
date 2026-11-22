@@ -53,6 +53,9 @@ import { loadExternalAdapterDefinitions, readAdapterModuleDeclarations, external
 import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
 import { NativeHookLaunches, type NativeHookLaunch } from "./native-hook-launch.ts";
+import { InstructionReceipts } from "./instruction-receipt.ts";
+import { Registry } from "./registry.ts";
+import { usedClaudeHomes } from "../cli/autonomy-homes.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
 import { MERGE_READBACK_INTERVAL_MS } from "./sdlc-merge.ts";
 import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunnerState, type RunReceipt } from "./check-runner.ts";
@@ -865,6 +868,8 @@ export interface DaemonOptions {
   questionSweepMs?: number;
   /** Test seam (#1054): wraps the completion store so a test can make its writes throw, like a busy or locked database. */
   completionStore?: (store: CompletionStore) => CompletionStore;
+  /** Test seam: capture the host-only receipt store without publishing it as a control operation. */
+  instructionReceiptStore?: (store: InstructionReceipts) => InstructionReceipts;
   /** Test seam: an extra hold on the SDLC band evaluation, like a storage error. */
   bandsHeld?: () => boolean;
   /** Test seam: the schedules clock and the period of the due check (default Date.now and one minute). */
@@ -7246,6 +7251,35 @@ export async function startDaemon(opts: DaemonOptions) {
       };
     } catch { return {}; }
   };
+  // Host-only confirmation re-reads the native session and the same managed-home inventory as setup.
+  const instructionReceipts = (opts.instructionReceiptStore ?? (store => store))(new InstructionReceipts(join(opts.stateDir, "hub.db"), async (session, peer) => {
+    const first = claudeSession(peer), owner = claudeLaunchProof.owner(peer), launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
+    if (!owner || !owner.attached || owner.claiming || owner.state === "offline" || first.sessionId !== session || !first.transcriptPath || !first.launchId
+      || !launch?.privateRecord || launch.launchId !== first.launchId || !launch.launcherPid || !launch.launcherSignature
+      || processLiveness(launch.launcherPid, launch.launcherSignature) !== "live") return;
+    const generation = owner.sessionGeneration;
+    if (!generation) return;
+    let registry: Registry | undefined;
+    try {
+      registry = new Registry();
+      const found = await usedClaudeHomes(registry, homedir(), process.env);
+      if (!found.complete) return;
+      const current = claudeSession(peer);
+      if (stopping || bus.peers.get(peer) !== owner || !owner.attached || owner.claiming || bus.stateOf(peer) === "offline" || owner.sessionGeneration !== generation
+        || current.sessionId !== first.sessionId || current.transcriptPath !== first.transcriptPath || current.launchId !== first.launchId) return;
+      const currentLaunch = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
+      if (!currentLaunch?.privateRecord || currentLaunch.launchId !== launch.launchId || currentLaunch.executionCwd !== launch.executionCwd
+        || currentLaunch.launcherPid !== launch.launcherPid || currentLaunch.launcherSignature !== launch.launcherSignature
+        || processLiveness(launch.launcherPid, launch.launcherSignature) !== "live") return;
+      const cwd = realPath(currentLaunch.executionCwd ?? opts.cwd);
+      for (const home of found.homes) {
+        const root = realPath(home.path), expected = join(root, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${session}.jsonl`);
+        if (first.transcriptPath === expected && realPath(expected) === expected) return { session, transcript: expected, home: root, cwd, peer };
+      }
+    } catch { /* Unknown native session or home never confirms a receipt. */ }
+    finally { registry?.close(); }
+  }));
+  startupCleanup.push(() => instructionReceipts.close());
   /**
    * Claude Code's version, from the last row of its transcript that names one (its rows carry it): the last MiB is read,
    * opened without blocking and only as a regular file, and the last version found is kept for a tail of big rows.
@@ -12504,6 +12538,27 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         return apply();
       }
+      case "instruction_hook": {
+        const peer = c.peer;
+        const adapter = peer ? definitionOf(peer) : undefined;
+        const fields = msg.op === "stop" ? ["t", "rid", "op", "session"] : ["t", "rid", "op", "session", "promptId", "transcript", "home", "cwd", "hash"];
+        if (Object.keys(msg).some(key => !fields.includes(key))) return void reply({ ok: false });
+        if (c.role !== "tools" || !peer || !isFixedBuiltinDefinition(adapter) || adapter?.transport !== "claude-channel" || stopping || recoveryActive()) return void reply({ ok: false });
+        if (msg.op === "stop") {
+          if (typeof msg.session !== "string") return void reply({ ok: false });
+          instructionReceipts.stop(msg.session, peer);
+          return void reply({ ok: true });
+        }
+        if (msg.op !== "pending" || typeof msg.session !== "string" || typeof msg.promptId !== "string" || typeof msg.transcript !== "string"
+          || typeof msg.home !== "string" || typeof msg.cwd !== "string" || typeof msg.hash !== "string") return void reply({ ok: false });
+        const current = claudeSession(peer);
+        const attached = current.sessionId === msg.session && current.transcriptPath === msg.transcript && bus.stateOf(peer) !== "offline";
+        try {
+          const ok = instructionReceipts.pending({ session: msg.session, promptId: msg.promptId, transcript: msg.transcript, home: msg.home, cwd: msg.cwd, project: opts.cwd,
+            hash: msg.hash, ...(attached ? { peer } : {}) }, Date.now());
+          return void reply({ ok });
+        } catch { return void reply({ ok: false }); }
+      }
       case "facts": {
         // Turn-free facts (issue #108) for Claude's hooks: `pre` before a tool runs (the fact rides back as additional
         // context), `post` after it (its effect, and the readback of what went in before), `stop` when its turn ends.
@@ -13665,6 +13720,7 @@ export async function startDaemon(opts: DaemonOptions) {
       modelPreviews.clear(); modelOverrides.close();
       visuals.close();
       guidanceProbeStore.close();
+      instructionReceipts.close();
       board.close();
       turnLog?.close();
       server.stop(true);

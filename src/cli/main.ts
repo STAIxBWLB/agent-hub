@@ -73,6 +73,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { retryLaunchConnect, ControlClient, readControl } from "../hub/control-client.ts";
 import { loadConfig } from "../hub/daemon.ts";
 import { factsHook } from "./facts-hook.ts";
+import { parseInstructionHook } from "./instruction-hook.ts";
 import { hubHome, projectContext, projectRoot, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
 import { datasetInputFor, exportResearchDataset, projectFamilyOf } from "../hub/research-dataset.ts";
@@ -1195,7 +1196,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const found = recoveryLauncherCurrent || delegatedPeer ? await discoverClaudeHomes({ home: homedir(), env: process.env }) : await usedClaudeHomes(registry, homedir(), process.env);
       for (const notice of found.notices) console.log(terminalText(notice));
       try {
-        await setupClaudeHomes({ homes: found.homes, env: process.env, packageRoot: root, yes: args.includes("--yes"),
+        await setupClaudeHomes({ homes: found.homes, env: process.env, packageRoot: root, yes: args.includes("--yes"), hook: { instruction: true },
           interactive: !!rl,
           current: () => { recoveryLauncherCurrent?.(); assertLifecycleAvailable(cwd); },
           print: line => console.log(terminalText(line)), ask: async prompt => rl ? rl.question(prompt) : null,
@@ -3066,6 +3067,18 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (reply.behind) process.stderr.write("ahub: the usage roll-up is still catching up with the event log: these numbers are partial; run it again in a few seconds\n");
     if (options.json) return console.log(JSON.stringify(sub === "limits" ? { limits: reply.limits, current: reply.current } : sub === "total" ? reply.total : reply.usage, null, 2));
     printOutput(sub === "limits" ? renderLimits(reply.limits, reply.current, options.columns) : sub === "total" ? renderTotal(reply.total, options.columns) : renderUsage(reply.usage, options.columns), options.color);
+  },
+  "instruction-hook": async () => {
+    if (args.length || caller.role !== "tools" || liveTest) return;
+    try {
+      const chunks: Buffer[] = []; let size = 0;
+      for await (const chunk of process.stdin) { const bytes = Buffer.from(chunk); size += bytes.length; if (size > 1024 * 1024) return; chunks.push(bytes); }
+      const input = Buffer.concat(chunks).toString("utf8");
+      const message = parseInstructionHook(input, process.env);
+      if (!message) return;
+      const hub = await connect(2000);
+      try { await hub.request(message, 2000); } finally { hub.close(); }
+    } catch { /* Hook failure never alters the native prompt or reveals it. */ }
   },
   facts: async () => {
     if (!args.includes("--hook")) return fail("usage: ahub facts --hook (a Claude Code PreToolUse, PostToolUse and Stop hook)");

@@ -66,6 +66,9 @@ smoke ledger; the presence of this option proves no outstanding #273 live leg.
 
 Claude's agent-hub plugin carries `ahub-status`, `ahub-manage`, `ahub-use` and the person-invoked `ahub` skill. `ahub doctor` checks the user plugin's skill files and reports a repair command when missing; the same `hub skills` row also reports every other agent host's installed skill trees (below). The person types `/agent-hub:ahub` to prepare a command; it does not grant authority or create a receipt. Existing sessions can continue running an older plugin server after setup or upgrade.
 
+
+The Claude instruction hook records a pending hash and prompt ID for a matching skill prefix. A pending receipt is not authority; confirmation refuses transcript records from unsupported versions. Host-only confirmation binds a later unused human command row to a current private `ahub claude` launch, the daemon's recorded session and a setup-managed Claude home; Stop, ten minutes or ten operations close it. This step grants no command authority. A same-user process that writes a fake user record into the managed session's real transcript or changes its environment is outside the proof. An unmanaged or unknown session cannot confirm; start it with `ahub claude`, send an ordinary prompt if no session evidence exists, then type the instruction again.
+
 ## Command output
 
 `ahub status` defaults to an attention-first summary with next-step commands; `--verbose` or `--full` prints the detailed view, `--full` also keeps long identifiers whole, and `--ascii` uses ASCII markers. `board`, `budget`, `doctor`, `projects`, `queue list`, `turns`, `report` and `usage` print shared console tables and labelled details.

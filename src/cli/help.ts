@@ -34,6 +34,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub --live-test [--project <path|id>] <command> [args...]", "user-authorized operational console delegation; ordinary calls retain peer identity; person-authored content refuses"],
     ["ahub help [command [--ascii]]", "this help, or one command's entries; also --help and -h"],
     ["ahub version | --version", "print the installed version"],
+    ["ahub instruction-hook", "internal Claude prompt and Stop hook; pending evidence grants no authority"],
     ["ahub completion zsh|bash|fish", "print a shell completion script; its candidates come from these help entries"],
   ]],
   ["Daemon and runtime", [

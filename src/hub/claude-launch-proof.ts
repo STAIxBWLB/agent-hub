@@ -8,6 +8,8 @@ import type { PeerAdapter } from "./peers.ts";
 
 export interface ClaudeLaunchRecordProof {
   launchId: string;
+  launcherPid?: number;
+  launcherSignature?: string;
   executionCwd?: string;
   privateRecord: boolean;
   permissionHook: boolean;
@@ -28,7 +30,9 @@ export function readClaudeLaunchProof(stateDir: string, peer: string, instanceId
     if (count > 16 * 1024) return;
     const row = JSON.parse(bytes.subarray(0, count).toString("utf8"));
     if (row?.instanceId !== instanceId || typeof row.launchId !== "string" || !row.launchId || row.launchId.length > 128) return;
-    return { launchId: row.launchId, privateRecord: stat.nlink === 1 && (stat.mode & 0o777) === 0o600 && !!process.getuid && stat.uid === process.getuid(),
+    return { launchId: row.launchId,
+      ...(Number.isSafeInteger(row.launcherPid) && row.launcherPid > 0 ? { launcherPid: row.launcherPid } : {}),
+      ...(typeof row.launcherSignature === "string" && row.launcherSignature.length > 0 && row.launcherSignature.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(row.launcherSignature) ? { launcherSignature: row.launcherSignature } : {}), privateRecord: stat.nlink === 1 && (stat.mode & 0o777) === 0o600 && !!process.getuid && stat.uid === process.getuid(),
       ...(typeof row.executionCwd === "string" && row.executionCwd.length <= 4096 && isAbsolute(row.executionCwd) ? { executionCwd: row.executionCwd } : {}),
       permissionHook: row.permissionHook === true, unattended: row.unattended === true,
       ...(typeof row.hookPurpose === "string" ? { hookPurpose: row.hookPurpose } : {}) };

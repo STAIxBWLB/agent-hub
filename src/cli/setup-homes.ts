@@ -32,6 +32,7 @@ export async function setupClaudeHomes(ports: SetupHomesPorts): Promise<void> {
   }
   for (const check of initial) if (check.next) ports.print(`${check.home.path}: ${check.next.blocked ? "setup blocked" : check.next.argv.join(" ")} (${check.next.why})`);
   if (initial.every(check => !check.next && check.hook.state === "installed")) return;
+  if (ports.hook?.instruction && initial.some(check => check.hook.state !== "installed")) ports.print("The Claude UserPromptSubmit and Stop hooks record and close hash-only pending instruction evidence; they grant no command authority.");
   if (!ports.yes && ports.interactive === false) throw new Error("not a terminal: nothing was changed; rerun with --yes to apply");
   if (!ports.yes && !["y", "yes"].includes((await ports.ask("Install the hub plugin and project-neutral hook in these Claude homes? [y/N] "))?.trim().toLowerCase() ?? "")) { ports.print("Claude setup was not changed."); return; }
   ports.current?.();

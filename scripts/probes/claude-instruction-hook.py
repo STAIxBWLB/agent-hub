@@ -110,7 +110,7 @@ with open(""" + repr(str(events)) + """,'a') as f: f.write(json.dumps(x)+'\\n')
                     except json.JSONDecodeError:
                         rows = []
                     if any(row.get('prompt') == PROMPT and row.get('session_id') for row in rows):
-                        result['typed'] = 'pass'; result['transcript_counts'] = [rows[-1].get('probe_initial_rows'), rows[-1].get('probe_delayed_rows')]; break
+                        result['typed'] = 'pass'; result['transcript_counts'] = [rows[-1].get('probe_initial_rows'), rows[-1].get('probe_delayed_rows')]; typed_event = rows[-1]; break
                 time.sleep(0.2)
             result['onboarding'] = sorted(handled)
             if result['typed'] != 'pass':
@@ -123,17 +123,31 @@ with open(""" + repr(str(events)) + """,'a') as f: f.write(json.dumps(x)+'\\n')
                     if server.requests and 'done' in pane:
                         break
                     time.sleep(0.1)
+                transcript = pathlib.Path(typed_event['transcript_path'])
+                command_content = '<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>show status</command-args>'
+                bound = False
+                for _ in range(100):
+                    try:
+                        recorded = [json.loads(line) for line in transcript.read_text().splitlines() if line.strip()]
+                    except (OSError, ValueError): recorded = []
+                    bound = any(row.get('type') == 'user' and row.get('isMeta') is not True and row.get('isSidechain') is False
+                        and row.get('origin', {}).get('kind') == 'human' and 'promptSource' not in row
+                        and row.get('promptId') == typed_event.get('prompt_id') and row.get('version') == version.split()[0]
+                        and row.get('message', {}).get('content') == command_content for row in recorded)
+                    if bound: break
+                    time.sleep(0.1)
+                result['transcript_binding'] = 'pass' if bound else 'fail'
                 initial_requests = len(server.requests)
                 run('send-keys', '-t', 'probe', '-l', '/compact')
                 run('send-keys', '-t', 'probe', 'Enter')
                 for _ in range(150):
                     pane = run('capture-pane', '-p', '-t', 'probe').stdout
-                    if len(server.requests) > initial_requests and ('compacted' in pane.lower() or 'compaction' in pane.lower()):
+                    if len(server.requests) > initial_requests and 'compacted' in pane.lower():
                         break
                     time.sleep(0.1)
                 rows = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
                 prefixed = [row for row in rows if str(row.get('prompt', '')).startswith('/agent-hub:ahub')]
-                driven = len(server.requests) > initial_requests and ('compacted' in pane.lower() or 'compaction' in pane.lower())
+                driven = len(server.requests) > initial_requests and 'compacted' in pane.lower()
                 result['compact'] = 'pass' if driven and len(prefixed) == 1 else ('fail' if driven else 'not_driven')
                 result['compact_detail'] = pane[-400:]
                 # Drive a synthetic model Skill request under a separate print session.
@@ -203,5 +217,5 @@ if __name__ == '__main__':
         raise SystemExit('pass absolute Claude binary paths')
     results = [probe(str(pathlib.Path(arg).resolve())) for arg in sys.argv[1:]]
     print(json.dumps(results, indent=2))
-    if any(any(row[key] != 'pass' for key in ('typed', 'skill_tool', 'subagent', 'compact', 'channel')) for row in results):
+    if any(any(row.get(key) != 'pass' for key in ('typed', 'skill_tool', 'subagent', 'compact', 'transcript_binding')) or row.get('channel') == 'fail' for row in results):
         raise SystemExit(1)
