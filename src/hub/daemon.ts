@@ -125,6 +125,7 @@ import { QuestionDesk } from "./question-desk.ts";
 import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
 import { roadmapConfig, type RoadmapConfig } from "./roadmap.ts";
+import { mcpAllowNames } from "./instances.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateRawConfig, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
@@ -290,6 +291,8 @@ export interface HubConfig {
   qwen_cmd: string[];
   jcode_cmd: string[];
   jcode_home: string;
+  /** Machine-local names of jcode MCP servers `ahub doctor` accepts for the hub-owned jcode (#1621). Names only; launch is unchanged. */
+  jcode_mcp_allow?: string[];
   jcode_provider_profile: string;
   action_policy?: ActionPolicyConfig;
   permission_modes: Record<string, PermissionMode>;
@@ -614,6 +617,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     }
     if (file.jcode_cmd !== undefined && (!Array.isArray(file.jcode_cmd) || !file.jcode_cmd.length || file.jcode_cmd.some((word: unknown) => typeof word !== "string" || !word))) throw new Error("jcode_cmd must be a nonempty executable argv");
     if (file.jcode_home !== undefined && (typeof file.jcode_home !== "string" || !isAbsolute(file.jcode_home))) throw new Error("jcode_home must be an absolute path");
+    if (file.jcode_mcp_allow !== undefined) mcpAllowNames(file.jcode_mcp_allow, "jcode_mcp_allow");
     for (const key of ["jcode_home", "jcode_provider_profile"]) if (file[key] !== undefined && typeof file[key] !== "string") throw new Error(`${key} must be a string`);
     if (file.qwen_cmd !== undefined && (!Array.isArray(file.qwen_cmd) || !file.qwen_cmd.length || file.qwen_cmd.some((word: unknown) => typeof word !== "string" || !word))) throw new Error("qwen_cmd must be a nonempty executable argv");
     actionPolicyConfig(file.action_policy);

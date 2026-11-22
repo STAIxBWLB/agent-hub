@@ -58,7 +58,7 @@ import { projectProfile, resolveProfile } from "../hub/profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
 import { verifiedJcodeCommand } from "../adapters/jcode.ts";
-import { configureJcodeMcp, jcodeExtraMcpServers } from "./jcode-mcp.ts";
+import { configureJcodeMcp, jcodeExtraMcpServers, splitJcodeMcpServers } from "./jcode-mcp.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, undoableDef, type SettingRow } from "../hub/settings.ts";
@@ -3412,8 +3412,10 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (probe.kind === "source-identity") row(verifiedJcodeCommand(probe.command, cwd), probe.name, probe.detail);
         else if (probe.kind === "jcode-mcp") {
           const { servers, unreadable } = jcodeExtraMcpServers(cwd, probe.home);
-          row(servers.length || unreadable.length ? false : true, probe.name,
-            [servers.length ? `${servers.length} besides the hub's own would load in the hub-owned jcode (${servers.join(", ")}); jcode has no switch to choose them, so remove them from its config or use another JCODE_HOME` : "",
+          const { allowed, refused } = splitJcodeMcpServers(servers, probe.allow ?? []);
+          row(refused.length || unreadable.length ? false : true, probe.name,
+            [refused.length ? `${refused.length} besides the hub's own would load in the hub-owned jcode and are not allowed (${refused.join(", ")}); jcode has no switch to choose them, so remove them from its config, use another JCODE_HOME, or accept them by name in jcode_mcp_allow in .agenthub/config.local.json` : "",
+              allowed.length ? `allowed by the person: ${allowed.join(", ")}` : "",
               unreadable.length ? `unreadable or unsafe, not listed: ${unreadable.join(", ")}` : ""].filter(Boolean).join("; ") || "none besides the hub's own");
         } else {
           const verdict = assessVersion(probe.compat, COMPAT[probe.compat].parse(version(probe.command[0]!) ?? ""));

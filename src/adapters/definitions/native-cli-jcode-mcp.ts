@@ -132,3 +132,12 @@ export function jcodeExtraMcpServers(cwd: string, home: string): { servers: stri
   }
   return { servers: [...names].sort(), unreadable };
 }
+
+/**
+ * Split the extra servers by the person's machine-local allowlist (#1621). Doctor policy only: launch is unchanged.
+ * ponytail: matching is by name only (the doctor contract reads names, never a command or args), so a different server registered under an allowed name also passes. Upgrade path: compare a command fingerprint once the inventory carries one.
+ */
+export function splitJcodeMcpServers(servers: readonly string[], allow: readonly string[]): { allowed: string[]; refused: string[] } {
+  const ok = new Set(allow);
+  return { allowed: servers.filter(name => ok.has(name)), refused: servers.filter(name => !ok.has(name)) };
+}
