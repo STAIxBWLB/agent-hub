@@ -217,7 +217,9 @@ describe("one-shot output", () => {
       { peer: "codex", kind: "no-reading", note: "no reading yet: codex rateLimits has not reported" }] };
   test("ahub budget names each window's kind and source, marks a superseded count, and says why Pi, local and a silent peer show no number", () => {
     const out = text(renderBudget(kindBudget, 200, now));
-    expect(out).toMatch(/claude\s+5h\s+23%\s+in 10m\s+native\s+claude status line\s+6s ago\s+fresh/);
+    // #1513: LEFT and REACHES sit between USED and RESETS. This fixture carries neither, so both read `unknown` rather than a number.
+    expect(out).toMatch(/PEER\s+WINDOW\s+USED\s+LEFT\s+RESETS\s+REACHES\s+KIND\s+SOURCE\s+MEASURED\s+STATE/);
+    expect(out).toMatch(/claude\s+5h\s+23%\s+unknown\s+in 10m\s+unknown\s+native\s+claude status line\s+6s ago\s+fresh/);
     expect(out).toMatch(/kimi\s+tokens\s+56%.*count\s+hub count, kimi wire log, of kimi_tokens_5h 800000.*info only/);
     expect(out).toMatch(/kimi\s+5h\s+40%.*manual\s+ahub budget set.*fresh/);
     expect(out).toMatch(/pi\s+no quota: on-prem backends have no provider quota; 1\.2M tokens in 5h \(hub count\)/);

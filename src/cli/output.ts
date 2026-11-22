@@ -1,4 +1,5 @@
 import type { ReviewGate, ReviewUnknownQuota } from "../hub/review-budget.ts";
+import { projectionText } from "../hub/budget-projection.ts";
 import { quotaAccountReading } from "../hub/quota-account.ts";
 import { projectModelStatus } from "./model.ts";
 import type { RuntimeModelStatus } from "../hub/model-overrides.ts";
@@ -616,8 +617,13 @@ export function renderBudget(data: BudgetOutput, columns?: number, now = Date.no
   if (data.review) out.push(...detail("Reviewer admission", data.review.rule, columns));
   // KIND names what the number is (#285): the provider's own (native), tokens the hub counted against a ceiling (count), or a person's (manual).
   // A window without a kind, from an older hub, is classified by `windowKind`. A fresh window that does not gate says so in STATE.
-  const windows = Object.entries(data.budget).flatMap(([peer, b]) => (b.windows ?? []).map((w: any) => [span(peer, peerTone(peer)), span(w.id), span(`${Math.round(w.used * 100)}%`, "number"), span(typeof w.resetsAt === "number" ? relative(w.resetsAt, now) : "-", "muted"), span(windowKind({ id: w.id, source: w.source ?? "", kind: w.kind }), "muted"), span(w.source ?? "unknown", "muted"), span(typeof w.at === "number" ? relative(w.at, now) : "unknown", "muted"), span(w.stale ? "stale" : w.superseded ? "info only" : "fresh", w.stale ? "attention" : undefined)]));
-  if (windows.length) out.push(...rows(["PEER", "WINDOW", "USED", "RESETS", "KIND", "SOURCE", "MEASURED", "STATE"], windows, columns));
+  // #1513 AC2: LEFT and REACHES are the same fields the dashboard and the console render, from the same window view.
+  const windows = Object.entries(data.budget).flatMap(([peer, b]) => (b.windows ?? []).map((w: any) => [span(peer, peerTone(peer)), span(w.id), span(`${Math.round(w.used * 100)}%`, "number"),
+    span(typeof w.left === "number" ? `${Math.round(w.left * 100)}%` : "unknown", typeof w.left === "number" ? "number" : "muted"),
+    span(typeof w.resetsAt === "number" ? relative(w.resetsAt, now) : "-", "muted"),
+    span(w.projection ? projectionText(w.projection, at => relative(at, now)) : "unknown", w.projection?.state === "projected" ? undefined : "muted"),
+    span(windowKind({ id: w.id, source: w.source ?? "", kind: w.kind }), "muted"), span(w.source ?? "unknown", "muted"), span(typeof w.at === "number" ? relative(w.at, now) : "unknown", "muted"), span(w.stale ? "stale" : w.superseded ? "info only" : "fresh", w.stale ? "attention" : undefined)]));
+  if (windows.length) out.push(...rows(["PEER", "WINDOW", "USED", "LEFT", "RESETS", "REACHES", "KIND", "SOURCE", "MEASURED", "STATE"], windows, columns));
   else if (!data.peers?.length) out.push(...lines(`no quota readings yet (gate ${data.gate ?? "unknown"}). Sources: Codex rate limits, Claude's status line (ahub claude), ahub budget set.`, columns));
   // A peer with no number says why, in its own line, so a peer without quota is not mistaken for one that has not reported.
   for (const note of data.peers ?? []) out.push(...detail(note.peer, note.note, columns, peerTone(note.peer)));

@@ -3462,6 +3462,26 @@ source has not reported yet says which. `--json` carries `kind`, `source`, `supe
 without them and the CLI classifies a window by its source. `ahub doctor` adds the row `kimi usage source` (counting, no ceiling, or unreadable).
 The console's peer detail (Enter on Peers) and the Usage detail, and the dashboard's Usage budgets row, show the same kind and source per window.
 
+`ahub budget` also prints LEFT, the window's own remainder, and REACHES, when the window would reach its limit at the burn rate seen so far (#1513); the console's
+Usage detail and the dashboard's Usage budgets row show the same two numbers for the same window. The rate is the peer's token series from the roll-up over at most 24 hours,
+and when the window opened inside that span it is measured from the window's opening (the sentence says `rate since the window opened`), so a reset is never projected across.
+A forecast that would land after the window's own reset reads `no forecast: it resets first`; fewer than two hourly points reads `no forecast: too few points yet`; a window
+nobody burnt reads `no forecast: no burn yet`; and an unusable or stale reading reads `no forecast: no usable reading`. The burn is measured over the time that elapsed since
+the first hourly bucket, so a partial last hour counts and a two-point series is not read at double its rate. An unknown forecast is never printed as a time. One view in the
+hub fills every window for all three surfaces, so they cannot disagree, and `--json` carries each window's `left` and `projection` (an older hub sends neither, and the CLI
+and the page print no forecast for it rather than inventing one).
+
+A person's reconfigure of an execution budget can say why, and the budget row keeps the last reason with who gave it and when (#1513 AC3):
+
+```bash
+ahub budget execution configure <config.json> --reason "the release cut doubles this run"
+```
+
+`ahub budget execution status` then shows it as `override reason`, `override by` (`person`) and `override at`, and `--json` carries
+`override: { reason, by, at }` on that budget. The reason is trimmed and at most 280 characters, and a longer one is refused before anything is written.
+A configure without `--reason` changes the limits exactly as before and keeps the previous override and its reason, so the row answers why the limit is
+what it is rather than what the last call said; a project that never gave one shows no `override` at all.
+
 While a Codex peer's account is budget-paused (#1440), the hub reads `codex rateLimits` through the attached TUI link every 60 seconds instead of the
 usual `usagePollMs` cadence (ten minutes), so a reset is seen early; it never redeems a credit or resumes a peer, and the existing reset/resume path
 still decides. For a paused peer `ahub budget` adds the account diagnostics that read allows: reset credits available with their earliest expiry

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExecutionBudget } from "../src/hub/execution-budget.ts";
+import { renderExecutionBudgetStatus } from "../src/cli/output.ts";
 
 const dirs: string[] = [];
 function open() {
@@ -53,6 +54,28 @@ describe("shared execution budgets", () => {
     const { meter } = open();
     meter.configure({ id: "task:3", kind: "task", taskId: 3, peers: ["pi"], limits: { tokens: 1000 } });
     expect(meter.admitTask(3, "pi", "tokens")[0]).toMatchObject({ allowed: false, used: 0, limit: 1000, reason: "unknown_usage" });
+    meter.close();
+  });
+
+  test("#1513 AC3 an override reason is kept with its actor and time, and a configure without one still works", () => {
+    const { meter } = open();
+    const first = meter.configure({ id: "run:raised", kind: "run", peers: ["pi"], limits: { model_calls: 2 } }, { reason: "raised for the release run", by: "person" });
+    expect(first.override).toMatchObject({ reason: "raised for the release run", by: "person" });
+    expect(typeof first.override?.at).toBe("number");
+    // `ahub budget execution status` shows the last override, its actor and its time, as operations.md says it does.
+    const shown = JSON.stringify(renderExecutionBudgetStatus([first], 200, first.override!.at));
+    expect(shown).toContain("override reason");
+    expect(shown).toContain("raised for the release run");
+    expect(shown).toContain("override by");
+    expect(shown).toContain("person");
+    expect(shown).toContain("override at");
+    // A later configure without a reason keeps the reasoned override: the row answers why the limit is what it is.
+    const second = meter.configure({ id: "run:raised", kind: "run", peers: ["pi"], limits: { model_calls: 4 } });
+    expect(second.limits.model_calls).toBe(4);
+    expect(second.override).toMatchObject({ reason: "raised for the release run", by: "person" });
+    // A second reason replaces the first, and the bound is enforced rather than stored.
+    expect(meter.configure({ id: "run:raised", kind: "run", peers: ["pi"], limits: { model_calls: 5 } }, { reason: "second raise" }).override?.reason).toBe("second raise");
+    expect(() => meter.configure({ id: "run:raised", kind: "run", peers: ["pi"], limits: { model_calls: 6 } }, { reason: "x".repeat(281) })).toThrow("at most 280");
     meter.close();
   });
 

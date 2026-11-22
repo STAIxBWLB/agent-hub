@@ -193,6 +193,7 @@ import { Briefs, preferRecordItems, type NativeItem, type BriefTask } from "../m
 import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { UsageRollup, USAGE_GROUPS, LIMITS_MAX, type UsageGroup } from "./usage-rollup.ts";
 import { Budget, readNativeQuota, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
+import { projectExhaustion, windowLeft, WINDOW_MINS, type ExhaustionProjection } from "./budget-projection.ts";
 import { remoteEnvelope, HUB } from "./envelope.ts";
 import { applyTurnAttribution, turnAttribution } from "./turn-attribution.ts";
 import { recallMemoryLines, trimToTokens, aggregateUse, orderByUse } from "../memory/recall.ts";
@@ -4262,6 +4263,44 @@ export async function startDaemon(opts: DaemonOptions) {
   // #683 U2: events.jsonl folded into hub.db, a bounded pass at a time, so `usage` never rescans the log.
   const usageRollup = new UsageRollup(join(opts.stateDir, "hub.db"), join(opts.stateDir, "events.jsonl"));
   startupCleanup.push(() => usageRollup.close());
+  // #1513 AC2: one window view feeds the `budget` reply, the dashboard snapshot and therefore `ahub budget` and the
+  // console, so the three cannot disagree. The burn series is hourly and an answer is kept for a minute per reading:
+  // the page polls every second and must not query the roll-up that often.
+  type BudgetRowStatus = ReturnType<Budget["status"]>[string];
+  const projectionCache = new Map<string, { at: number; value: ExhaustionProjection }>();
+  const PROJECTION_TTL_MS = 60_000, PROJECTION_LOOKBACK_MS = 86_400_000;
+  type WindowView = BudgetRowStatus["windows"][number] & { left: number | null; projection: ExhaustionProjection };
+  function windowView(peer: string, window: BudgetRowStatus["windows"][number]): WindowView {
+    const now = Date.now();
+    const resetsAt = typeof window.resetsAt === "number" ? window.resetsAt : null;
+    const windowMins = window.windowMins ?? WINDOW_MINS[window.id] ?? 0;
+    const windowStart = resetsAt !== null && windowMins > 0 ? resetsAt - windowMins * 60_000 : null;
+    // A stale reading is no usable reading, so its forecast is never served from the cache, never cached, and never
+    // computed from points it would not look at (the page polls every second, and a stale row is what a pause leaves).
+    const key = `${peer}\0${window.id}\0${window.at}`;
+    const cached = window.stale ? undefined : projectionCache.get(key);
+    const projection = cached && now - cached.at < PROJECTION_TTL_MS ? cached.value : (() => {
+      const value = projectExhaustion({
+        used: window.used, windowStart, resetsAt, now, stale: window.stale,
+        lookbackMs: windowMins > 0 ? Math.min(PROJECTION_LOOKBACK_MS, windowMins * 60_000) : PROJECTION_LOOKBACK_MS,
+        points: windowStart === null || window.stale ? [] : usageRollup.points(peer, windowStart, now),
+      });
+      /* ponytail: the cache is per reading and cleared whole past 256 entries; a per-window expiry is the upgrade if a project ever holds more. */
+      if (!window.stale) {
+        if (projectionCache.size > 256) projectionCache.clear();
+        projectionCache.set(key, { at: now, value });
+      }
+      return value;
+    })();
+    return { ...window, left: windowLeft(window.used), projection };
+  }
+  /** The same view for one peer's row and for a whole status: `left` and the projection ride each window, never the summary. */
+  function windowRow(peer: string, row: BudgetRowStatus) {
+    return { ...row, windows: row.windows.map(window => windowView(peer, window)) };
+  }
+  function budgetViews(status: ReturnType<Budget["status"]>): ReturnType<Budget["status"]> {
+    return Object.fromEntries(Object.entries(status).map(([peer, row]) => [peer, windowRow(peer, row)]));
+  }
   /**
    * #1546: the event log rotates by size. The oldest segment is kept while something still needs its events, so the log grows past its bound until that ends: (1) a task that has started and is open
    * (a card still in backlog or proposed has only its proposal in the log), (2) a task that closed but still waits for its research record (`researchPending`), (3) a segment with a line that does not parse (the
@@ -9801,7 +9840,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const summary = bus.queueSummary(peer);
           return { peer, state: bus.stateOf(peer), attached: !!bus.peers.get(peer) && bus.peers.get(peer)!.state !== "offline", queued: bus.queued(peer), needsReview: summary.needsReview,
             manualHeld: manualPaused.has(peer), hold: conductorHolds.get(peer), budgetPause: quota[accountOf(peer)]?.paused ?? null, doing: doing[peer] ?? null,
-            ...(quota[accountOf(peer)] ? { windows: quota[accountOf(peer)]!.windows.map(w => ({ id: w.id, ...(w.stale || (w.resetsAt !== undefined && w.resetsAt <= Date.now()) ? {} : { used: w.used }), resetsAt: w.resetsAt, at: w.at, source: w.source, kind: w.kind, ...(w.superseded ? { superseded: true } : {}) })) } : {}) };
+            ...(quota[accountOf(peer)] ? { windows: windowRow(accountOf(peer), quota[accountOf(peer)]!).windows.map(w => ({ id: w.id, ...(w.stale || (w.resetsAt !== undefined && w.resetsAt <= Date.now()) ? {} : { used: w.used }), resetsAt: w.resetsAt, at: w.at, source: w.source, kind: w.kind, ...(w.superseded ? { superseded: true } : {}), ...(w.left === undefined ? {} : { left: w.left }), ...(w.projection === undefined ? {} : { projection: w.projection }) })) } : {}) };
         }),
         taskCounts: board.counts(), approvals: [...permissions.values()].map(p => ({ peer: p.peer, tool: p.tool, at: p.createdAt })),
       };
@@ -10296,7 +10335,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, planner: view.planner ?? null, reviewer: task.reviewer, ...holderReasons(view), deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(() => { const group = codeGroup(task, view.codeSymbols, task.plan?.symbols, tasks.publicMetadataText, tasks.isPii(task)); return group ? { codeGroup: group } : {}; })(), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, flowRevision: task.history.length, reviewStateKey, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}), ...(() => { const deliverables = tasks.deliverableBadge(task); return deliverables ? { deliverables } : {}; })() };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
-      budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[accountOf(id)] ?? { windows: [] }), ...(budgetNoteOf.get(id) ? { note: budgetNoteOf.get(id)!.note, noteKind: budgetNoteOf.get(id)!.kind } : {}), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
+      budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[accountOf(id)] ? windowRow(accountOf(id), quota[accountOf(id)]!) : { windows: [] }), ...(budgetNoteOf.get(id) ? { note: budgetNoteOf.get(id)!.note, noteKind: budgetNoteOf.get(id)!.kind } : {}), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
         const req = JSON.parse(push);
         // Local tool titles quote file contents and commands, including those of PII turns.
@@ -12258,7 +12297,9 @@ export async function startDaemon(opts: DaemonOptions) {
             const cfg = msg.config;
             if (!cfg || !Array.isArray(cfg.peers) || cfg.peers.some((p: unknown) => (typeof p !== "string" || definitionOf(p)?.budget?.instrumented !== true))) throw new Error("strict execution budgets support local and Pi only; native Codex/Claude calls are not instrumented");
             if (cfg.kind === "task" && !board.get(cfg.taskId)) throw new Error("task not found");
-            return void reply({ ok: true, budget: tasks.configureExecutionBudget(cfg) });
+            // #1513 AC3: the reason is a person's, bounded, and kept with the actor and the time. Never task text.
+            if (msg.reason !== undefined && (typeof msg.reason !== "string" || msg.reason.length > 280)) throw new Error("execution budget reason is at most 280 characters");
+            return void reply({ ok: true, budget: tasks.configureExecutionBudget(cfg, { ...(typeof msg.reason === "string" ? { reason: msg.reason } : {}), by: "person" }) });
           }
           if (msg.op === "disable" && typeof msg.id === "string") return void reply({ ok: true, disabled: tasks.disableExecutionBudget(msg.id) });
           return void reply({ ok: false, error: "unknown execution budget operation" });
@@ -13583,7 +13624,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "budget":
         if (c.role !== "console") {
           if (msg.resume !== undefined || msg.set !== undefined) return void reply({ t: "budget", ok: false, error: "budget mutations are console commands" });
-          return void reply({ t: "budget", ok: true, budget: publicPeerBudget(budget.status(), text => tasks.nameable(text)), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate, review: reviewerBudgetView() });
+          return void reply({ t: "budget", ok: true, budget: publicPeerBudget(budgetViews(budget.status()), text => tasks.nameable(text)), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate, review: reviewerBudgetView() });
         }
         if (recoveryActive()) return void reply({ t: "budget", ok: false, error: "recovery is holding mutations" });
         if (msg.resume) {
@@ -13594,7 +13635,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!(used >= 0 && used <= 1)) return void reply({ t: "budget", ok: false, error: "used must be between 0 and 1" });
           budget.report(String(msg.set.peer), [{ id: msg.set.window === "week" ? "week" : "5h", kind: "manual", used, ...(msg.set.resetsInMs ? { resetsAt: Date.now() + Number(msg.set.resetsInMs) } : {}), source: "ahub budget set" }]);
         }
-        return void reply({ t: "budget", ok: true, budget: budget.status(), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate, review: reviewerBudgetView() });
+        return void reply({ t: "budget", ok: true, budget: budgetViews(budget.status()), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate, review: reviewerBudgetView() });
       case "usage": {
         // #683 U2: the console, the person and a configured planner read usage; every other agent is refused. Always answered (rid).
         const planner = c.role === "tools" && !!c.peer && !!config.roles[c.peer]?.includes("planner");

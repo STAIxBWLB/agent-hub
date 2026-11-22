@@ -11,11 +11,19 @@ export interface ExecutionBudgetConfig {
   peers: string[];
   limits: ExecutionBudgetLimits;
 }
+/** #1513 AC3: a person's reason for reconfiguring a budget, kept with who gave it and when. */
+export interface ExecutionOverride {
+  reason: string;
+  by: string;
+  at: number;
+}
 export interface ExecutionBudgetStatus extends ExecutionBudgetConfig {
   used: Partial<Record<ExecutionUnit, number>>;
   units: Partial<Record<ExecutionUnit, { used: number; limit: number; remaining: number; reason?: "exhausted" | "unknown_usage" }>>;
   createdAt: number;
   updatedAt: number;
+  /** The last reasoned override. A configure without a reason leaves it as it was. */
+  override?: ExecutionOverride;
 }
 export interface ExecutionBudgetDecision {
   allowed: boolean;
@@ -48,9 +56,16 @@ export class ExecutionBudget {
     this.db.run(`CREATE TABLE IF NOT EXISTS execution_budgets (
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, task_id INTEGER, peers TEXT NOT NULL,
       limits TEXT NOT NULL, used TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+    // #1513: a table created before the override column exists still opens, and keeps its rows.
+    const columns = this.db.query("PRAGMA table_info(execution_budgets)").all() as { name: string }[];
+    if (!columns.some(column => column.name === "last_override")) this.db.run("ALTER TABLE execution_budgets ADD COLUMN last_override TEXT");
   }
 
-  configure(input: ExecutionBudgetConfig): ExecutionBudgetStatus {
+  /**
+   * A configure with a reason records it with the actor and the time, and the caller's `by` is only ever
+   * `person`: the console is the one writer of an execution budget.
+   */
+  configure(input: ExecutionBudgetConfig, meta: { reason?: string; by?: string } = {}): ExecutionBudgetStatus {
     if (!input.id || input.id.length > 200) throw new Error("execution budget id is invalid");
     if (input.kind !== "task" && input.kind !== "run") throw new Error("execution budget kind must be task or run");
     if (input.kind === "task" && (!Number.isSafeInteger(input.taskId) || input.taskId! < 1)) throw new Error("task budget requires a positive task id");
@@ -60,13 +75,17 @@ export class ExecutionBudget {
     if (unsupported.length) throw new Error(`execution budgets require instrumented peers (pi, local); unsupported: ${unsupported.join(", ")}`);
     const limits = validLimits(input.limits ?? {});
     if (!Object.keys(limits).length) throw new Error("execution budget requires at least one supported limit");
+    const reason = meta.reason === undefined ? undefined : String(meta.reason).trim();
+    if (reason !== undefined && reason.length > 280) throw new Error("execution budget reason is at most 280 characters");
     const now = Date.now();
-    const existing = this.db.query("SELECT kind,task_id FROM execution_budgets WHERE id=?").get(input.id) as { kind: string; task_id: number | null } | undefined;
+    const existing = this.db.query("SELECT kind,task_id,last_override FROM execution_budgets WHERE id=?").get(input.id) as { kind: string; task_id: number | null; last_override: string | null } | undefined;
     if (existing && (existing.kind !== input.kind || existing.task_id !== (input.taskId ?? null))) throw new Error("execution budget id is already bound to another scope");
-    this.db.query(`INSERT INTO execution_budgets (id,kind,task_id,peers,limits,used,created_at,updated_at)
-      VALUES (?,?,?,?,?,'{}',?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,task_id=excluded.task_id,
-      peers=excluded.peers,limits=excluded.limits,updated_at=excluded.updated_at`).run(
-      input.id, input.kind, input.taskId ?? null, JSON.stringify(peers), JSON.stringify(limits), now, now,
+    // A configure without a reason keeps the last one: the row answers "why is this limit what it is", not "what did the last call say".
+    const lastOverride = reason ? JSON.stringify({ reason, by: meta.by ?? "person", at: now }) : existing?.last_override ?? null;
+    this.db.query(`INSERT INTO execution_budgets (id,kind,task_id,peers,limits,used,created_at,updated_at,last_override)
+      VALUES (?,?,?,?,?,'{}',?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,task_id=excluded.task_id,
+      peers=excluded.peers,limits=excluded.limits,updated_at=excluded.updated_at,last_override=excluded.last_override`).run(
+      input.id, input.kind, input.taskId ?? null, JSON.stringify(peers), JSON.stringify(limits), now, now, lastOverride,
     );
     return this.status(input.id) as ExecutionBudgetStatus;
   }
@@ -147,7 +166,7 @@ export class ExecutionBudget {
   close(): void { this.db.close(); }
 }
 
-interface BudgetRow { id: string; kind: "task"|"run"; task_id: number | null; peers: string; limits: string; used: string; created_at: number; updated_at: number }
+interface BudgetRow { id: string; kind: "task"|"run"; task_id: number | null; peers: string; limits: string; used: string; created_at: number; updated_at: number; last_override?: string | null }
 function fromRow(row: BudgetRow): ExecutionBudgetStatus {
   const limits = JSON.parse(row.limits) as ExecutionBudgetLimits;
   const used = JSON.parse(row.used) as Partial<Record<ExecutionUnit, number>>;
@@ -157,5 +176,7 @@ function fromRow(row: BudgetRow): ExecutionBudgetStatus {
     const current = used[unit] ?? 0, remaining = Math.max(0, limit - current);
     units[unit] = { used: current, limit, remaining, ...((unit === "tokens" && remaining > 0) ? { reason: "unknown_usage" as const } : (remaining === 0 ? { reason: "exhausted" as const } : {})) };
   }
-  return { id: row.id, kind: row.kind, ...(row.task_id === null ? {} : { taskId: row.task_id }), peers: JSON.parse(row.peers), limits, used, units, createdAt: row.created_at, updatedAt: row.updated_at };
+  const override = row.last_override ? JSON.parse(row.last_override) as ExecutionOverride : undefined;
+  return { id: row.id, kind: row.kind, ...(row.task_id === null ? {} : { taskId: row.task_id }), peers: JSON.parse(row.peers), limits, used, units, createdAt: row.created_at, updatedAt: row.updated_at,
+    ...(override && typeof override.reason === "string" && typeof override.by === "string" && typeof override.at === "number" ? { override } : {}) };
 }

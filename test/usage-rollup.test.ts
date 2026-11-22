@@ -51,6 +51,29 @@ test("a rebuild from byte 0 equals the incremental roll-up, however the passes a
   }
 });
 
+test("the hourly burn series reads back per peer, one point per hour, and a rebuild equals the incremental fold (#1513 AC1)", () => {
+  const f = fixture(); sample(f);
+  // The same hour holds a provider number and a hub count for codex, and a later hour holds only a provider number.
+  f.write([[usage("codex", "u6", { totalTokens: 500 }), 10]]);
+  const r = f.open(); r.catchUp();
+  const start = Date.UTC(2026, 9, 9), end = Date.UTC(2026, 9, 10, 23, 59);
+  const codex = [{ at: Date.UTC(2026, 9, 9), tokens: 1050 + 530 }, { at: Date.UTC(2026, 9, 10), tokens: 500 }];
+  // 1580, not 3160: the hour a provider reported is its number, exactly as `total()` chooses native over the count.
+  expect(r.points("codex", start, end)).toEqual(codex);
+  expect(r.points("jcode", start, end)).toEqual([{ at: Date.UTC(2026, 9, 9), tokens: 77 }]);            // a count with no usage record
+  expect(r.points("local", start, end)).toEqual([{ at: Date.UTC(2026, 9, 10), tokens: 10 + 2 }]);        // derived from input and output
+  expect(r.points("nobody", start, end)).toEqual([]);
+  expect(r.points("codex", Date.UTC(2026, 9, 10), end)).toEqual([{ at: Date.UTC(2026, 9, 10), tokens: 500 }]);
+  expect(r.points("codex", end, start)).toEqual([]);                                                    // an inverted range is empty, not a throw
+  const incremental = JSON.stringify(r.points("codex", start, end));
+  r.rebuild();
+  expect(JSON.stringify(r.points("codex", start, end))).toBe(incremental);
+  // The point rows ride `dump()` too, so the rebuild-equals-incremental test above covers the new table and not only
+  // the daily rows it already held.
+  expect((r.dump() as { points: { peer: string }[] }).points.some(p => p.peer === "codex")).toBe(true);
+  r.close();
+});
+
 test("each pass reads at most the cap, a later append is folded from the stored offset, and a half-written last line waits (#683 U2)", () => {
   const f = fixture(); f.write([[task(1)], [tokens("codex", 5, 1)]]);
   const r = f.open({ maxBytesPerPass: 100_000 });
