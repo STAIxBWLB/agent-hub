@@ -2,16 +2,17 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { realPath } from "../src/hub/project.ts";
 import { loadConfig } from "../src/hub/daemon.ts";
 import { rosterPreflight, rosterPreflightLines } from "../src/adapters/definitions/native-cli-jcode-home-init.ts";
 
 // #1627 B: the preflight before `ahub roster add`. Fixture homes only.
 const roots: string[] = [];
-const realPath = process.env.PATH;
+const savedPath = process.env.PATH;
 beforeEach(() => { process.env.PATH = "/nonexistent"; }); // the CLI probe reads the process PATH: no real CLI is run
-afterEach(() => { if (realPath === undefined) delete process.env.PATH; else process.env.PATH = realPath; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "ahub-preflight-")); roots.push(root);
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-preflight-"))); roots.push(root);
   const user = join(root, "user"), project = join(root, "project");
   mkdirSync(join(user, ".jcode"), { recursive: true }); mkdirSync(join(project, ".agenthub"), { recursive: true });
   writeFileSync(join(project, ".agenthub", "config.json"), "{}");

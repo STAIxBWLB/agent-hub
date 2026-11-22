@@ -1310,12 +1310,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       const homeInit = initJcodeHome();
       if (homeInit.applicable && homeInit.plan) {
         for (const line of homeInit.lines) console.log(terminalText(line));
+        if (homeInit.switchHome) { try { writeJcodeHomeConfig(cwd, homeInit.plan.home); console.log(`jcode_home now points at ${homeInit.plan.home}`); } catch (error) { console.error((error as Error).message); process.exitCode = 1; } }
         if (!homeInit.plan.exists) {
           if (jcodeHomeBlocked(homeInit.plan.home)) console.error(`jcode home ${homeInit.plan.home} is not a plain directory; nothing was created there`);
           else {
             try {
               applyJcodeHome(homeInit.plan);
-              writeJcodeHomeConfig(cwd, homeInit.plan.home);
               const installed = installSkillsInJcodeHome(join(import.meta.dir, "..", "..", "plugins", "agent-hub", "skills"), homeInit.plan.home);
               console.log(`wrote ${homeInit.plan.home}; hub skills: ${installed.filter(entry => entry.action === "install" || entry.action === "replace").length} installed`);
             } catch (error) { console.error(`jcode home was not fully set up: ${(error as Error).message}`); process.exitCode = 1; }

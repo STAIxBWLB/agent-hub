@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
 import { loadConfig } from "../src/hub/daemon.ts";
 import { idFor } from "../src/hub/registry.ts";
-import { projectRoot } from "../src/hub/project.ts";
+import { projectRoot, realPath } from "../src/hub/project.ts";
 import { HUB_SKILL_NAMES } from "../src/adapters/definitions/native-cli-claude-setup.ts";
 import { hubJcodeHomePath, jcodeOwnHome, planJcodeHome, sameJcodeHome } from "../src/adapters/definitions/native-cli-jcode-home.ts";
 import { installHubSkillsInJcodeHomes, installSkillsInJcodeHome, jcodeHomeApplicable, jcodeHomeSkillStates, jcodeSkillHomes, planJcodeHomeInit } from "../src/adapters/definitions/native-cli-jcode-home-init.ts";
@@ -16,7 +16,7 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const SOURCE = join(import.meta.dir, "..", "plugins", "agent-hub", "skills");
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "ahub-jcode-home-")); roots.push(root);
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-jcode-home-"))); roots.push(root); // macOS tmpdir is a symlink: compare real paths
   const user = join(root, "user"), hub = join(root, "hub"), own = join(user, ".jcode"), project = join(root, "project");
   mkdirSync(own, { recursive: true }); mkdirSync(join(project, ".agenthub"), { recursive: true });
   writeFileSync(join(own, "mcp.json"), JSON.stringify({ servers: { amem: { command: "amem", args: ["mcp"] }, vmem: { command: "vmem" }, ares: { command: "ares" }, "computer-use": { command: "cu" } } }));
@@ -49,15 +49,33 @@ test("AC1: init creates the hub-owned home with only the hub entry plus allowed 
   expect(existsSync(join(f.home, "auth.json"))).toBe(false); // no login, session or history is copied
   expect(readdirSync(f.home).sort()).toEqual(["mcp.json", "skills"]);
   expect(lstatSync(join(f.home, "mcp.json")).mode & 0o777).toBe(0o600);
-  expect(JSON.parse(readFileSync(join(f.project, ".agenthub", "config.local.json"), "utf8")).jcode_home).toBe(f.home);
+  expect(JSON.parse(readFileSync(join(f.project, ".agenthub", "config.local.json"), "utf8")).jcode_home).toBeUndefined(); // no login there yet: a working jcode is not switched to an unauthenticated home
+  expect(text(done)).toContain("jcode_home is left unchanged");
   expect(f.digest(f.own)).toBe(before); // the person's own home is byte-identical
   expect(text(done)).toContain(`JCODE_HOME='${f.home}' jcode login`); // the complete person step
   expect(readFileSync(join(f.project, ".agenthub", "config.json"), "utf8")).not.toContain("jcode_home"); // never the tracked config
 });
 
+test("a rerun writes jcode_home once the hub-owned home holds a login, and only then", () => {
+  const f = fixture(); stageJcode(f.project);
+  expect(f.run(["init", "--yes"]).exitCode).toBe(0);
+  const local = join(f.project, ".agenthub", "config.local.json");
+  expect(JSON.parse(readFileSync(local, "utf8")).jcode_home).toBeUndefined();
+  const again = f.run(["init", "--yes"]);
+  expect(JSON.parse(readFileSync(local, "utf8")).jcode_home).toBeUndefined(); // still no login
+  expect(text(again)).toContain("stays your own home");
+  writeFileSync(join(f.home, "auth.json"), "FIXTURE-LOGIN"); // the person ran jcode login there
+  const switched = f.run(["init", "--yes"]);
+  expect(switched.exitCode, text(switched)).toBe(0);
+  expect(JSON.parse(readFileSync(local, "utf8")).jcode_home).toBe(f.home);
+  expect(f.digest(f.own)).toBe(f.digest(f.own));
+  const dry = f.run(["init", "--dry-run"]); expect(text(dry)).not.toContain("jcode_home ->"); // already switched: nothing more to write
+});
+
 test("AC1b: the hub-owned home and every instance home get the hub skill trees, and the doctor read reports them", async () => {
   const f = fixture(); stageJcode(f.project);
   expect(f.run(["init", "--yes"]).exitCode).toBe(0);
+  writeFileSync(join(f.home, "auth.json"), "FIXTURE-LOGIN"); expect(f.run(["init", "--yes"]).exitCode).toBe(0); // logged in: the rerun points jcode_home at it
   const instance = join(f.root, "instance-home"); mkdirSync(instance);
   const config = { ...loadConfig(f.project), instances: { "jcode-two": { kind: "jcode", jcode_home: instance } } } as ReturnType<typeof loadConfig>;
   const homes = jcodeSkillHomes(config, f.env, f.user);
@@ -122,6 +140,7 @@ test("init offers nothing when jcode is neither installed nor rostered, or when 
 
 test("a tracked config.local.json is never written for jcode_home", () => {
   const f = fixture(); stageJcode(f.project);
+  expect(f.run(["init", "--yes"]).exitCode).toBe(0); writeFileSync(join(f.home, "auth.json"), "FIXTURE-LOGIN"); // the switch is the write that must be refused
   expect(hubGitSync(["add", "-f", ".agenthub/config.local.json"], { cwd: f.project, encoding: "utf8", env: f.env }).status).toBe(0);
   const done = f.run(["init", "--yes"]);
   expect(text(done)).toContain("committed to git");

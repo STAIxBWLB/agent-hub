@@ -20,7 +20,7 @@ export function jcodeHomeApplicable(config: Pick<HubConfig, "jcode_home" | "rost
   return sameJcodeHome(config.jcode_home, jcodeOwnHome(env, user));
 }
 
-export interface JcodeHomeInit { applicable: boolean; plan?: JcodeHomePlan; lines: string[] }
+export interface JcodeHomeInit { applicable: boolean; plan?: JcodeHomePlan; lines: string[]; /** Write `jcode_home` now: the hub-owned home exists, holds a login, and the project still points at the person's own home. */ switchHome?: boolean }
 
 /** What `ahub init` would do for the hub-owned jcode home. Reads only; never writes the person's home. */
 export function planJcodeHomeInit(input: { cwd: string; stateDir: string; bundle: string; hubHome: string; config: HubConfig; env: NodeJS.ProcessEnv; installed: boolean; user?: string }): JcodeHomeInit {
@@ -32,16 +32,21 @@ export function planJcodeHomeInit(input: { cwd: string; stateDir: string; bundle
   const home = configured ? config.jcode_home : hubJcodeHomePath(hubHome, idFor(projectRoot(cwd)));
   const plan = planJcodeHome({ home, own, cwd, stateDir, bundle, allow: config.jcode_mcp_allow ?? [] });
   const lines: string[] = [];
+  const loggedIn = !!lstatSync(join(home, "auth.json"), { throwIfNoEntry: false });
+  const switchHome = plan.exists && !configured && loggedIn;
   if (plan.exists) {
     lines.push(`jcode home ${home}: ${plan.drift.length ? "drift" : "up to date"}`);
     for (const drift of plan.drift) lines.push(`  ${drift}`);
+    if (switchHome) lines.push(`  modify .agenthub/config.local.json: jcode_home -> ${home} (it now holds a login)`);
+    else if (!configured) lines.push(`  jcode_home stays your own home until ${home} holds a login; then run: cd ${shellQuote(cwd)} && ahub init`);
   } else {
     lines.push(`create ${home}: hub-owned jcode home (mcp.json with agent-hub-jcode${Object.keys(plan.servers).length > 1 ? ` and ${Object.keys(plan.servers).filter(name => name !== "agent-hub-jcode").join(", ")}` : ""}; no sessions, history or login copied)`);
     if (plan.absentAllowed.length) lines.push(`  jcode_mcp_allow names ${plan.absentAllowed.join(", ")}, which ${join(own, "mcp.json")} does not define: nothing to copy`);
-    lines.push(`  modify .agenthub/config.local.json: jcode_home -> ${home}`);
-    lines.push(`  person step after init, to log in there: ${jcodeLoginCommand(home)}`);
+    lines.push(`  jcode_home is left unchanged: a new home has no login, and switching would break a working jcode`);
+    lines.push(`  person steps: ${jcodeLoginCommand(home)}  then: cd ${shellQuote(cwd)} && ahub init`);
+    lines.push(`  provider and model defaults live in your own config.toml ([provider], [providers.*]); they are not copied, so set them in ${join(home, "config.toml")} or pass --provider-profile`);
   }
-  return { applicable: true, plan, lines };
+  return { applicable: true, plan, lines, switchHome };
 }
 
 /** Set `jcode_home` in the untracked local config, keeping every other byte. Refuses a tracked or unreadable file. */
