@@ -11,8 +11,8 @@ class Node {
 }
 function navigation(saved="",blocked=false){
  const cookies=new Map<string,string>(saved.split("; ").filter(Boolean).map(item=>item.split("=") as [string,string])),writes:string[]=[];
- const sections=["board","office","stream","agents","agents","message","memory","settings"].map(view=>{const node=new Node();node.dataset.view=view;return node});
- const buttons=["board","office","stream","agents","message","memory","settings"].map(view=>{const node=new Node();node.dataset.viewTarget=view;return node});
+ const sections=["board","office","stream","agents","agents","message","memory","settings","roadmap"].map(view=>{const node=new Node();node.dataset.view=view;return node});
+ const buttons=["board","office","stream","agents","message","memory","settings","roadmap"].map(view=>{const node=new Node();node.dataset.viewTarget=view;return node});
  const nodes=new Map<string,Node>(),get=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id)!};
  const document={documentElement:{dataset:{}},get cookie(){if(blocked)throw Error("blocked");return [...cookies].map(([name,value])=>name+"="+value).join("; ")},set cookie(value:string){if(blocked)throw Error("blocked");writes.push(value);const [name,entry]=value.split(";")[0]!.split("=");cookies.set(name!,entry!)},listeners:{} as Record<string,(event:any)=>unknown>,addEventListener(name:string,handler:(event:any)=>unknown){this.listeners[name]=handler},querySelectorAll:(selector:string)=>selector.includes("view-target")?buttons:selector.includes("stack")?[]:sections};
  const preferences=html.match(/<script>([\s\S]*?)<\/script>/)![1];
@@ -36,7 +36,7 @@ test("dashboard view preferences reject unknown values and tolerate blocked cook
  const blocked=navigation("",true);expect(()=>blocked.api.switchView("agents")).not.toThrow();expect(blocked.api.view()).toBe("agents");
 });
 test("dashboard views retain one snapshot poll and ticket-only hash with CSP-safe controls (#391)",()=>{
- expect([...html.matchAll(/data-view-target="([^"]+)"/g)].map(match=>match[1])).toEqual(["board","office","stream","agents","message","memory","settings"]);
+ expect([...html.matchAll(/data-view-target="([^"]+)"/g)].map(match=>match[1])).toEqual(["board","office","stream","agents","message","memory","settings","roadmap"]);
  const source=html.slice(html.indexOf("// dashboard-navigation-begin"),html.indexOf("// dashboard-navigation-end"));
  expect(source).not.toMatch(/setInterval|setTimeout|requestAnimationFrame|fetch\(|post\(|location\.hash|history\./);
  expect(html).not.toMatch(/\sstyle="|\son[a-z]+="/i);
@@ -60,20 +60,21 @@ test("native dialog close clears cached detail content and selected task (#391)"
 });
 
 // #469 R2 (AC4): keys 1-7 switch views, ? opens the key list, Esc is the native dialog's own close; typing is never hijacked.
+// #1483 R5 adds the eighth view, so the range is 1-8 and its key is pinned with the rest.
 function keyFixture(){
  const f=navigation(),keys=f.get("keys-dialog") as Node&{showModal():void;close():void},detail=f.get("task-detail-dialog");
  let shown=0;keys.showModal=()=>{keys.open=true;shown++};keys.close=()=>{keys.open=false};
  const press=(key:string,extra:Record<string,unknown>={})=>{let prevented=false;const event={key,target:{tagName:"BODY"},preventDefault(){prevented=true},...extra};f.document.listeners.keydown!(event);return prevented};
  return{...f,keys,detail,press,shown:()=>shown};
 }
-test("keys 1-7 switch the seven views in order and persist the choice (#469 R2 AC4)",()=>{
+test("keys 1-8 switch the eight views in order and persist the choice (#469 R2 AC4)",()=>{
  const f=keyFixture();expect(f.document.listeners.keydown).toBeTypeOf("function");
- const order=["board","office","stream","agents","message","memory","settings"];
+ const order=["board","office","stream","agents","message","memory","settings","roadmap"];
  order.forEach((view,index)=>{expect(f.press(String(index+1))).toBe(true);expect(f.api.view()).toBe(view);expect(f.writes.at(-1)).toBe(`agent-hub-view=${view}; Path=/; Max-Age=31536000; SameSite=Strict`)});
  const writes=f.writes.length;
  // "01", " 1", "1e0" and "0x1" all convert to a valid index with Number(); only a single digit is a view key.
- for(const key of ["0","8","9","a","10","01"," 1","1e0","0x1","1.0","Enter","Tab"]){expect(f.press(key),"key "+JSON.stringify(key)).toBe(false)}
- expect(f.api.view()).toBe("settings");expect(f.writes).toHaveLength(writes);
+ for(const key of ["0","9","a","10","01"," 1","1e0","0x1","1.0","Enter","Tab"]){expect(f.press(key),"key "+JSON.stringify(key)).toBe(false)}
+ expect(f.api.view()).toBe("roadmap");expect(f.writes).toHaveLength(writes);
 });
 test("view keys are ignored inside an input, a textarea, a select and an editable node, and with a modifier held (#469 R2 AC4)",()=>{
  const f=keyFixture();
@@ -100,7 +101,7 @@ test("? opens the key list once, an open sheet or task detail stops view keys, a
 });
 test("the key list names every key the page handles and the help control is labelled (#469 R2 AC4)",()=>{
  const block=/<dialog id="keys-dialog"[\s\S]*?<\/dialog>/.exec(html)![0];
- for(const text of ["1","7","?","Esc","Switch view","Show this list","Close the open sheet"])expect(block).toContain(text);
+ for(const text of ["1","8","?","Esc","Switch view","Show this list","Close the open sheet"])expect(block).toContain(text);
  expect(html).toMatch(/id="keys-open"[^>]*aria-label="Keyboard shortcuts"/);expect(html).toMatch(/id="keys-close"[^>]*aria-label="Close shortcuts"/);
 });
 
@@ -131,7 +132,7 @@ test("every icon is hidden from assistive tech and sits beside a text label, or 
   expect(text.length>0||/aria-label="[^"]+"/.test(attributes!),attributes).toBe(true);
  }
  const nav=/<nav id="dashboard-nav"[\s\S]*?<\/nav>/.exec(html)![0];
- expect([...nav.matchAll(/data-view-target="([^"]+)"/g)].map(match=>match[1])).toEqual(["board","office","stream","agents","message","memory","settings"]);
+ expect([...nav.matchAll(/data-view-target="([^"]+)"/g)].map(match=>match[1])).toEqual(["board","office","stream","agents","message","memory","settings","roadmap"]);
  for(const button of nav.matchAll(/<button\b[^>]*data-view-target[^>]*>([\s\S]*?)<\/button>/g))expect(button[1]).toMatch(/<span class="nav-label">[A-Za-z]+<\/span>/);
 });
 // AC3 on the markup and CSS side: below 1024px the nav scrolls inside itself, from 1024px it is a sidebar, and no rule needs a wide page.

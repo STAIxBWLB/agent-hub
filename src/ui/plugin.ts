@@ -55,9 +55,13 @@ export interface ConsolePlugin {
   open(ctx: { home: string; log(line: string): void; features?: readonly string[] }): Promise<ConsoleProvider>;
 }
 
-const TITLES: Record<(typeof DASHBOARD_VIEWS)[number], string> = { board: "Board", office: "Office", stream: "Stream", agents: "Agents", message: "Message", memory: "Memory", settings: "Settings" };
+const TITLES: Record<(typeof DASHBOARD_VIEWS)[number], string> = { board: "Board", office: "Office", stream: "Stream", agents: "Agents", message: "Message", memory: "Memory", settings: "Settings", roadmap: "Roadmap" };
 /** The dashboard's own actions plus the inbox verbs; the manager whitelist is still applied to each forwarded call. */
-const FORWARDED = ["start", "stop", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "model_preview", "model_confirm", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release", "worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs"] as const;
+const FORWARDED = ["start", "stop", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "model_preview", "model_confirm", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release", "worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs",
+  // #1483 R5: the roadmap view's writes and reads. The writes raise authority as the person and are confirmed like the
+  // other person actions; the three reads are bounded GitHub passes.
+  "roadmap_new", "roadmap_edit", "roadmap_link", "roadmap_unlink", "roadmap_move", "roadmap_state", "roadmap_accept", "roadmap_reject",
+  "roadmap_check", "roadmap_unplaced", "roadmap_triage"] as const;
 /** Advertised so acon lets the page send it, never forwarded: `action()` answers it through its own port (`answerVerb`), after the console's person meta is checked (#1053 T5). */
 const QUESTION_ACTIONS = ["answer"] as const;
 /** #1054 T6: the receipt actions, advertised so acon lets the inbox and the page send them, never forwarded: `action()` checks the console's person meta, then calls the dedicated `projectConsole(...).receipt` port (`receiptVerb`). */

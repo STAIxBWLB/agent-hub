@@ -85,10 +85,50 @@ function removeManifest(home: string, instanceId: string) {
   rmSync(files(home).token, { force: true });
 }
 
+/** #1483 R5: one project's public roadmap summary for `ahub ui --all`. `partial` means the hub could not answer, so the counts are a floor, not a zero. */
+export interface ProjectRoadmapSummary { total: number; byHorizon: Record<string, number>; byState: Record<string, number>; drift: number; partial: boolean }
+/** Lanes and states come from the milestone rows' own fields, so an unknown value is counted under its own name instead of dropped. */
+export function roadmapSummary(milestones: readonly Record<string, unknown>[], drift = 0): ProjectRoadmapSummary {
+  const byHorizon: Record<string, number> = {}, byState: Record<string, number> = {};
+  for (const milestone of milestones) {
+    const horizon = String(milestone.horizon ?? "later"), state = String(milestone.state ?? "proposed");
+    byHorizon[horizon] = (byHorizon[horizon] ?? 0) + 1;
+    byState[state] = (byState[state] ?? 0) + 1;
+  }
+  return { total: milestones.length, byHorizon, byState, drift, partial: false };
+}
+
 /** The manager's project listing and forwarding (#935): shared by `ahub ui --all` and the acon plugin, never widened for either. */
-export function projectConsole(options: { registry: Registry; lifecycle: Lifecycle; home: string; stopping?: () => boolean; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"]; afterStart?: ManagerOptions["afterStart"] }) {
+export function projectConsole(options: { registry: Registry; lifecycle: Lifecycle; home: string; stopping?: () => boolean; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"]; afterStart?: ManagerOptions["afterStart"]; roadmap?: boolean }) {
   const { registry, lifecycle, home } = options;
   const aliases = new Map<string, { at: number; names: string[] }>();
+  // #1483 R5: a project's roadmap is read once a minute, because the manager's page polls this listing every three seconds.
+  // It is opt-in, so the acon plugin's listing pays nothing for a field it does not show, and the whole read is bounded.
+  const roadmaps = new Map<string, { at: number; instanceId: string | null; summary: ProjectRoadmapSummary }>();
+  const roadmap = async (project: { id: string; root: string; stateDir: string }, instanceId: string | null): Promise<ProjectRoadmapSummary> => {
+    const cached = roadmaps.get(project.id);
+    if (cached && cached.instanceId === instanceId && Date.now() - cached.at < 60_000) return cached.summary;
+    const unavailable: ProjectRoadmapSummary = { total: 0, byHorizon: {}, byState: {}, drift: 0, partial: true };
+    let summary = unavailable, client: ControlClient | undefined;
+    try {
+      client = await bounded(ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root }, 3000), 4000);
+      const listed = await bounded(client.request({ t: "task", op: "hub_roadmap_list", args: {} }, 5000), 6000);
+      if (listed && listed.ok !== false) {
+        let report: any;
+        try { report = JSON.parse(String(listed.text ?? "")); } catch { report = undefined; }
+        if (Array.isArray(report?.milestones)) {
+          // The drift read is the hub's own findings count; a refusal only drops the count, never the milestones.
+          const checked = await bounded(client.request({ t: "task", op: "hub_roadmap_check", args: {} }, 15_000), 16_000).catch(() => undefined);
+          let drift = 0;
+          if (checked && checked.ok !== false) { try { const findings = JSON.parse(String(checked.text ?? ""))?.findings; drift = Array.isArray(findings) ? findings.length : 0; } catch { drift = 0; } }
+          summary = roadmapSummary(report.milestones, drift);
+        }
+      }
+    } catch { summary = unavailable; }
+    finally { client?.close(); }
+    roadmaps.set(project.id, { at: Date.now(), instanceId, summary });
+    return summary;
+  };
   const list = async () => {
     const projects = registry.list();
     for (const p of projects) if (!aliases.has(p.id) || Date.now() - aliases.get(p.id)!.at > 60_000) {
@@ -100,9 +140,12 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       catch (error) { result = { state: "unavailable", error: safeError(error) }; }
       const names = aliases.get(project.id)!.names;
       const shared = projects.some((other) => other.id !== project.id && aliases.get(other.id)!.names.some((name) => names.includes(name)));
+      const instanceId = result.state === "running" ? result.status?.instanceId ?? null : null;
       return { id: project.id, root: project.root, state: result.state,
-        instanceId: result.state === "running" ? result.status?.instanceId ?? null : null,
+        instanceId,
         peers: result.status?.peers ?? {}, tasks: result.status?.tasks ?? {},
+        // #1483 R5: a running project answers with its own public roadmap summary; a stopped one has none to read.
+        ...(instanceId && options.roadmap ? { roadmap: await roadmap(project, instanceId) } : {}),
         ...(shared ? { warning: "Native memory aliases are shared with another registered project." } : {}),
         ...(result.error ? { error: result.error } : {}) };
     }));
@@ -327,7 +370,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
     try { publicationRegistry.runtimeCaptureLocked(() => {
       assertExecutableRuntimeRoot(realPath(resolve(import.meta.dir, "../..")));
       owner = claimOwner(f.owner, instanceId, pidSignature);
-      const { list, act } = projectConsole({ registry, lifecycle, home, stopping: () => stopping, forwardTimeoutMs: options.forwardTimeoutMs, ...(options.afterStart && !options.liveTest ? { afterStart: options.afterStart } : {}) });
+      const { list, act } = projectConsole({ registry, lifecycle, home, roadmap: true, stopping: () => stopping, forwardTimeoutMs: options.forwardTimeoutMs, ...(options.afterStart && !options.liveTest ? { afterStart: options.afterStart } : {}) });
       dashboard = startDashboard({ projects: list, snapshot: (after, input = {}) => act({ ...input, action: "snapshot", after }), action: act });
       server = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024,
         async fetch(req) {

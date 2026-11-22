@@ -239,6 +239,22 @@ details.settings-group .row:last-child{border-bottom:0}
 .task-card .body{font-size:var(--text-sm)}
 .task-card .task-stage{font-size:var(--text-xs)}
 .board-columns .empty{padding:var(--space-2) 0}
+/* #1483 R5: the roadmap view. Lanes stack at 900px so the page never scrolls sideways on a phone. */
+.roadmap-lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3);padding:var(--space-4)}
+.roadmap-lane{display:flex;flex-direction:column;gap:var(--space-2);min-width:0}
+.roadmap-lane h3{font-size:var(--text-sm);color:var(--muted)}
+.milestone-card{display:flex;flex-direction:column;gap:var(--space-1);padding:var(--space-3);border:1px solid var(--line);border-radius:var(--radius-surface);background:var(--raised);cursor:pointer;text-align:left;font:inherit;color:inherit;min-width:0}
+.milestone-card:hover,.milestone-card:focus-visible{border-color:var(--accent);background:var(--hover)}
+.milestone-card .milestone-title{font-weight:600;overflow-wrap:anywhere}
+.milestone-card .milestone-outcome{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--muted);font-size:var(--text-sm)}
+.milestone-progress{height:6px;border-radius:999px;background:var(--line);overflow:hidden}
+.milestone-progress span{display:block;height:100%;background:var(--accent)}
+.roadmap-tray{display:flex;flex-direction:column;gap:var(--space-2);padding:0 var(--space-4) var(--space-4)}
+.roadmap-detail{display:flex;flex-direction:column;gap:var(--space-3)}
+.roadmap-detail h3{font-size:var(--text-sm);margin:0}
+.roadmap-detail .row-list{display:flex;flex-direction:column;gap:var(--space-1)}
+.roadmap-actions{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+@media(max-width:900px){.roadmap-lanes{grid-template-columns:minmax(0,1fr);padding:var(--space-3)}}
 .board-lane{border-top:1px solid var(--line)}
 .board-lane>h3{padding:var(--space-3) var(--space-4) 0;font-size:var(--text-lg)}
 .peer-mark{display:inline-flex;align-items:center;gap:var(--space-2)}
@@ -444,13 +460,15 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <button type="button" data-view-target="message"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><span class="nav-label">Message</span></button>
 <button type="button" data-view-target="memory"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-memory"/></svg><span class="nav-label">Memory</span></button>
 <button type="button" data-view-target="settings"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings"/></svg><span class="nav-label">Settings</span></button>
+<button type="button" data-view-target="roadmap"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-board"/></svg><span class="nav-label">Roadmap</span></button>
 </nav>
 <div class="shell-body">
 <main id="main-content" tabindex="-1">
 <p id="disconnected" class="disconnected" role="status" hidden></p>
 <div id="notice" class="notice" role="status" aria-live="polite" aria-label="Notices"></div>
-<section class="task-board-section" aria-labelledby="tasks-title" data-view="board"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="cancelled">Cancelled</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><button id="plan-open" type="button" class="primary" aria-haspopup="dialog">Plan</button><button id="board-back" type="button" hidden>Back to board</button><span id="board-focus-title" class="meta" hidden></span><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"><div class="skeleton skeleton-board" aria-hidden="true"><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div></div><p class="empty">Loading the board...</p></div></section>
+<section class="task-board-section" aria-labelledby="tasks-title" data-view="board"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="cancelled">Cancelled</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span><span id="task-scope" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><button id="plan-open" type="button" class="primary" aria-haspopup="dialog">Plan</button><button id="board-back" type="button" hidden>Back to board</button><span id="board-focus-title" class="meta" hidden></span><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-milestone-filter">Milestone<select id="task-milestone-filter"><option value="">All milestones</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"><div class="skeleton skeleton-board" aria-hidden="true"><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div></div><p class="empty">Loading the board...</p></div></section>
 <div class="stack">
+<section id="roadmap-section" aria-labelledby="roadmap-title" data-view="roadmap" hidden><div class="section-head"><h2 id="roadmap-title">Roadmap</h2><div class="filters"><button id="roadmap-new" type="button" class="primary" aria-haspopup="dialog">New milestone</button><button id="roadmap-check" type="button">Check drift</button><span id="roadmap-count" class="meta"></span></div></div><p id="roadmap-drift" class="meta" role="status" aria-live="polite"></p><div id="roadmap-lanes" class="roadmap-lanes"><p class="empty">Loading the roadmap...</p></div><section id="roadmap-unplaced" aria-labelledby="roadmap-unplaced-title" hidden><div class="section-head"><h3 id="roadmap-unplaced-title">Unplaced</h3><div class="filters"><button id="roadmap-triage" type="button">Suggest placements</button><span id="roadmap-unplaced-count" class="meta"></span></div></div><div id="roadmap-tray" class="roadmap-tray"></div></section></section>
 <section id="office-section" aria-labelledby="office-title" data-view="office" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">Office mode</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title" data-view="stream" hidden><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
 
@@ -516,8 +534,9 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <section class="plan-block" aria-labelledby="plan-h-plan"><h3 id="plan-h-plan">Plan a task</h3><form id="planning"><div class="field"><label for="planning-task">Task</label><select id="planning-task"><option value="">Select task</option></select></div><div class="split"><label>Priority<select id="planning-priority"><option value="">Default</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></label><label>Order<input id="planning-rank" type="number" min="0" step="1"></label><label>Release<select id="planning-release"><option value="">No release</option></select></label><label>Planned start<input id="planning-start" type="datetime-local" step="any"></label><label>Due<input id="planning-due" type="datetime-local" step="any"></label></div><label><input id="planning-pinned" type="checkbox">Pin against planner changes</label><label>Reason<input id="planning-reason" maxlength="1000" required></label><div class="actions"><button id="planning-save" type="submit" data-mutation="project">Save plan</button><button id="planning-undo" type="button" data-mutation="project">Undo latest plan</button><button id="planning-reload" type="button">Reload current values</button></div><p id="planning-version" class="meta"></p></form></section><section id="split-panel" class="plan-block" aria-labelledby="plan-h-split" hidden><h3 id="plan-h-split">Split the selected backlog task</h3><form id="split-backlog"><label>Part titles, one per line<textarea id="split-titles" maxlength="2408" required></textarea></label><label><input id="split-sequential" type="checkbox">Each part waits for the previous part</label><label>Reason<input id="split-reason" maxlength="1000" required></label><p class="meta">Two to eight parts. The original task retains integration and acceptance. Unused parts can be undone from its current plan.</p><button id="split-save" type="submit" data-mutation="project">Stage parts</button></form></section><section class="plan-block" aria-labelledby="plan-h-releases"><h3 id="plan-h-releases">Releases</h3><div id="releases" class="content"></div><form id="release-new"><div class="split"><label>Name<input id="release-name" maxlength="64" required></label><label>Order<input id="release-order" type="number" min="0" value="0" step="1" required></label></div><label>Goal<input id="release-goal" maxlength="1000" required></label><button type="submit" data-mutation="project">Create release</button></form><form id="release-plan"><label>Release<select id="release-edit"><option value="">Select release</option></select></label><div class="split"><label>Planned start<input id="release-start" type="datetime-local" step="any"></label><label>Cut<input id="release-cut" type="datetime-local" step="any"></label><label>Ship<input id="release-ship" type="datetime-local" step="any"></label></div><button id="release-save" type="submit" data-mutation="project">Save dates</button><button id="release-reload" type="button">Reload current release</button><p id="release-version" class="meta"></p></form></section><section id="delivery" class="plan-block" aria-labelledby="plan-h-delivery"><h3 id="plan-h-delivery">Delivery evidence (read-only)</h3><div class="field"><label for="delivery-repo">GitHub repository</label><input id="delivery-repo" maxlength="200" placeholder="owner/repository"></div><div class="field"><label for="delivery-live">Live verification issue IDs (optional)</label><input id="delivery-live" maxlength="300" placeholder="Comma-separated issue numbers"></div><div class="actions"><button id="delivery-queue" type="button">Read merge queue</button><button id="delivery-release" type="button">Read release checklist</button></div><pre id="delivery-report" class="body" aria-live="polite"></pre></section><section class="plan-block" aria-labelledby="plan-h-propose"><h3 id="plan-h-propose">Propose a task</h3><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><label><input id="backlog-proposal" type="checkbox"> Add to Backlog without offering</label><button class="primary" data-mutation="project" type="submit">Propose task</button></form></section>
 </dialog>
 <dialog id="task-detail-dialog" aria-labelledby="task-detail-title"><div class="dialog-head"><h2 id="task-detail-title">Task details</h2><button id="task-detail-close" type="button" autofocus>Close details</button></div><div id="task-detail-content"></div></dialog>
+<dialog id="roadmap-detail-dialog" aria-labelledby="roadmap-detail-title"><div class="dialog-head"><h2 id="roadmap-detail-title">Milestone</h2><button id="roadmap-detail-close" type="button" autofocus>Close milestone</button></div><div id="roadmap-detail-content"></div></dialog>
 <dialog id="keys-dialog" aria-labelledby="keys-title"><div class="dialog-head"><h2 id="keys-title">Keyboard shortcuts</h2><button type="button" id="keys-close" aria-label="Close shortcuts"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"/></svg></button></div>
-<dl class="keys-list"><div><dt><kbd>1</kbd>-<kbd>7</kbd></dt><dd>Switch view: Board, Office, Stream, Agents, Message, Memory, Settings</dd></div><div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the open sheet or task detail</dd></div></dl>
+<dl class="keys-list"><div><dt><kbd>1</kbd>-<kbd>8</kbd></dt><dd>Switch view: Board, Office, Stream, Agents, Message, Memory, Settings, Roadmap</dd></div><div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the open sheet or task detail</dd></div></dl>
 <p class="meta">Keys are ignored while you type in a field, and with Ctrl, Alt or Cmd held.</p></dialog>
 <footer>Loopback session. Private task content stays in the terminal. Reopen with <code>ahub ui</code> when your session expires.</footer>
 <script>
@@ -527,6 +546,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 /* BOARD_MODEL */
 /* ADAPTER_DISPLAY */
 /* NEEDS_MODEL */
+/* ROADMAP_MODEL */
 /* OFFICE_MODEL */
 const officeView = (() => {
   let choice = 'off';
@@ -536,7 +556,7 @@ const officeView = (() => {
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
 const officeControl = document.getElementById('office-view'); officeControl.value = officeView.get(); document.getElementById('office-section').hidden = officeView.get() === 'off'; officeControl.addEventListener('change', () => { officeView.set(officeControl.value); if (lastSnapshot) render(lastSnapshot); else document.getElementById('office-section').hidden = officeView.get() === 'off'; applyDashboardView(); });
 // dashboard-navigation-begin
-const DASHBOARD_VIEWS = ['board','office','stream','agents','message','memory','settings'];
+const DASHBOARD_VIEWS = ['board','office','stream','agents','message','memory','settings','roadmap'];
 let currentView = dashboardCookie.get('agent-hub-view', 'board');
 if (!DASHBOARD_VIEWS.includes(currentView)) currentView = 'board';
 function applyDashboardView() {
@@ -760,6 +780,13 @@ function renderProjects() {
       head.append(name, badge(state, projectBadge[state])); row.append(head); row.append(el('p', String(project.root || id), 'meta'));
       const counts = []; if (project.peers !== undefined) counts.push(String(count(project.peers)) + ' peers'); if (project.tasks !== undefined) counts.push(String(taskCount(project.tasks)) + ' tasks');
       if (counts.length) row.append(el('p', counts.join(' / '), 'meta')); if (project.warning || project.error) row.append(el('p', project.warning || project.error, 'meta'));
+      // #1483 R5: the project's public roadmap, lanes in now/next/later order; a hub that could not answer says so instead of showing zeros.
+      const roadmap = project.roadmap && typeof project.roadmap === 'object' ? project.roadmap : undefined;
+      if (roadmap) {
+        const lanes = ['now', 'next', 'later'].map((lane) => String((roadmap.byHorizon && roadmap.byHorizon[lane]) || 0)).join('/');
+        const drift = typeof roadmap.drift === 'number' && roadmap.drift > 0 ? ' / drift ' + String(roadmap.drift) : '';
+        row.append(el('p', roadmap.partial ? 'roadmap unavailable' : 'roadmap ' + String(roadmap.total || 0) + ' milestones (now/next/later ' + lanes + ')' + drift, 'meta'));
+      }
       const actions = el('div', undefined, 'actions');
       if (state === 'running' && id === selectedProjectId) {
         actions.append(el('span', 'Selected', 'badge'));
@@ -1557,8 +1584,17 @@ async function refreshReviewComments(id) {
   } catch (error) { if (taskDetailId === id) notice('Review comments unavailable: ' + error.message, true); }
 }
 // #1477: the one filter the board and its count share; a count that ignored the filter said "5 tasks" over an empty board.
+// #1483 R5: the Milestone filter narrows the task list before this predicate runs, so the predicate keeps its three
+// filters; it matches the placement the hub lists explicitly (a task linked to a milestone), and a task placed only
+// through its source issue stays out rather than silently widening the filter.
 function boardTaskVisible(task, taskFilter, ownerFilter, releaseFilter) {
   return (!taskFilter || (taskFilter === 'work' ? ['in_progress','changes_requested'].includes(task.state) : task.state === taskFilter)) && (!ownerFilter || task.owner === ownerFilter || task.reviewer === ownerFilter) && (!releaseFilter || task.release === Number(releaseFilter));
+}
+function milestoneOptions(select, rows) {
+  const selected = select.value; select.replaceChildren();
+  const all = el('option', 'All milestones'); all.value = ''; select.append(all);
+  for (const row of rows) { const option = el('option', '#' + row.id + ' ' + row.title + ' (' + row.horizon + ')'); option.value = String(row.id); select.append(option); }
+  if (rows.some(row => String(row.id) === selected)) select.value = selected;
 }
 function taskCountText(total, shown, filtered) { return (filtered ? shown + ' of ' + total : String(total)) + ' tasks'; }
 function renderBoard(snapshot, peers, ids) {
@@ -1572,13 +1608,20 @@ function renderBoard(snapshot, peers, ids) {
   const stages = new Map(progress.stages.map(stage=>[stage.id,stage])), byId = new Map(snapshot.tasks.map(task=>[task.id,task]));
   const cards = new Map(model.columns.flatMap(column=>[...column.ready,...column.waiting]).map(card=>[card.id,card]));
   const now = Date.now(), overdue = new Set(snapshot.tasks.filter(task=>task.due != null && task.due<now && !isClosedTaskState(task.state)).map(task=>task.id));
-  boardViewState={snapshot,peers,ids,cards};
+  boardViewState={snapshot,peers,ids,cards,milestoneOfTask:snapshot.milestoneOfTask || {}};
   renderPlanning(snapshot);
   const staged=$('backlog-proposal');staged.disabled=snapshot.boardCapabilities?.backlog!==true || !sameBoardContext(boardContext());
   if(snapshot.boardCapabilities?.backlog!==true)staged.checked=false;
   const peerFilter=$('task-peer-filter'), previous=peerFilter.value;
   peerOptions(peerFilter,ids,'All agents'); if (ids.includes(previous)) peerFilter.value=previous;
   const taskFilter=$('task-filter').value, ownerFilter=peerFilter.value, releaseFilter=$('task-release-filter').value, lanes=$('task-lanes').value;
+  milestoneOptions($('task-milestone-filter'), Array.isArray(snapshot.milestones) ? snapshot.milestones : []);
+  const milestoneFilter=$('task-milestone-filter').value;
+  // #1483 R5: the Milestone filter narrows the task list the board renders; `#task-scope` says so, because the count the
+  // shared predicate produces counts the narrowed set.
+  $('task-scope').textContent = milestoneFilter ? 'milestone #' + milestoneFilter + ' only' : '';
+  const milestoneScope = task => !milestoneFilter || String((boardViewState && boardViewState.milestoneOfTask[String(task.id)]) || '') === milestoneFilter;
+  if (milestoneFilter) snapshot = {...snapshot, tasks: snapshot.tasks.filter(task => milestoneScope(task))};
   const eligible=ids.filter(id=>['idle','busy'].includes(peers[id].state) && peers[id].attached!==false && peers[id].rostered!==false);
   $('task-count').textContent=taskCountText(snapshot.tasks.length,snapshot.tasks.filter(task=>boardTaskVisible(task,taskFilter,ownerFilter,releaseFilter)).length,Boolean(taskFilter||ownerFilter||releaseFilter));
   $('board-back').hidden = columnFocus === null; $('board-focus-title').hidden = columnFocus === null;
@@ -1597,9 +1640,9 @@ function renderBoard(snapshot, peers, ids) {
     }
     if (!ids.length) empty(target,'No peer status available.');
   });
-  update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,releaseFilter,lanes,showAllDone,[...overdue],columnFocus],target=>{
+  update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,releaseFilter,milestoneFilter,lanes,showAllDone,[...overdue],columnFocus],target=>{
     taskRows.clear(); const keyed=keyedStart('cards',true);
-    if(!snapshot.tasks.length)target.append(el('p','No tasks yet. Plan one with the Plan button, or run ahub task propose <title>.','empty'));
+    if(!snapshot.tasks.length)target.append(el('p',milestoneFilter?'No tasks are linked to this milestone.':'No tasks yet. Plan one with the Plan button, or run ahub task propose <title>.','empty'));
     const visible=snapshot.tasks.filter(task=>boardTaskVisible(task,taskFilter,ownerFilter,releaseFilter));
     const visibleIds=new Set(visible.map(task=>task.id));
     const owners=columnFocus ? [null] : lanes==='agents' ? [...new Set(visible.map(task=>task.owner || ''))] : lanes==='releases' ? [...new Set(visible.map(task=>task.release ?? 0))] : [null];
@@ -2008,6 +2051,282 @@ function modelControls(model, sessionUntil, unavailable = false) {
   }
   box.append(input, out); return box;
 }
+// #1483 R5: the roadmap view. Cards come from the injected roadmapModel; every management write carries the revision the
+// page rendered, so a stale page is refused with its cause named instead of overwriting another session's edit.
+let roadmapDetailId = null, roadmapNewMode = false, roadmapDrift = null, roadmapTray = null, roadmapTrayStatus = 'idle', roadmapTrayError = '', roadmapSuggestions = null;
+const ROADMAP_WRITE_STATES = ['proposed','planned','active'], ROADMAP_PERSON_STATES = ['done','dropped'], ROADMAP_LINK_KINDS = ['spec','issue','task','release'];
+function roadmapData(snapshot) { const block = snapshot && snapshot.roadmap; return block && Array.isArray(block.milestones) ? block : null; }
+function roadmapView(block, id) { return block ? block.milestones.find(view => view.id === id) : undefined; }
+function roadmapDriftCount(id) { if (!roadmapDrift || !Array.isArray(roadmapDrift.findings)) return null; return roadmapDrift.findings.filter(row => row.milestone === id).length; }
+function issueUrl(ref) { const match = /^([A-Za-z0-9-]+\/[A-Za-z0-9._-]+)#([1-9][0-9]*)$/.exec(String(ref || '')); return match ? 'https://github.com/' + match[1] + '/issues/' + match[2] : null; }
+async function roadmapPost(body) {
+  const captured = context(), payload = {...body};
+  if (managerMode) { payload.projectId = captured.projectId; payload.instanceId = captured.instanceId; }
+  const result = await post('/action', payload);
+  return captured.generation === viewGeneration ? result : null;
+}
+async function roadmapCheck(button) {
+  if (button) button.disabled = true;
+  try { const result = await roadmapPost({action:'roadmap_check'}); if (result) { roadmapDrift = result.drift || null; notice('Drift checked.'); if (lastSnapshot) render(lastSnapshot); } }
+  catch (error) { if (!stopped) notice(error.message, true); }
+  finally { if (button && !stopped) button.disabled = false; }
+}
+async function roadmapTriage(button) {
+  if (button) button.disabled = true;
+  try { const result = await roadmapPost({action:'roadmap_triage'}); if (result) { roadmapSuggestions = Array.isArray(result.suggestions) ? result.suggestions : []; notice(roadmapSuggestions.length ? roadmapSuggestions.length + ' placement suggestions' : 'No placement suggestions.'); if (lastSnapshot) render(lastSnapshot); } }
+  catch (error) { if (!stopped) notice(error.message, true); }
+  finally { if (button && !stopped) button.disabled = false; }
+}
+async function roadmapLoadTray(force) {
+  if (roadmapTrayStatus === 'loading') return;
+  if (roadmapTray && !force) return;
+  roadmapTrayStatus = 'loading'; roadmapTrayError = '';
+  try { const result = await roadmapPost({action:'roadmap_unplaced'}); if (result) roadmapTray = result.unplaced || null; }
+  catch (error) { if (!stopped) { roadmapTray = null; roadmapTrayError = error.message; } }
+  finally { roadmapTrayStatus = 'ready'; if (!stopped && lastSnapshot) renderRoadmap(lastSnapshot); }
+}
+function roadmapCard(view, block) {
+  const card = el('div', undefined, 'milestone-card'); card.tabIndex = 0; card.dataset.milestone = String(view.id);
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', '#' + view.id + ' ' + view.title + ', ' + view.state + ', ' + view.horizon + ', ' + view.progress + (view.percent === null ? '' : ', ' + view.percent + ' percent approved'));
+  card.append(el('span', view.title, 'milestone-title'), el('span', view.outcome, 'milestone-outcome'));
+  const bar = el('div', undefined, 'milestone-progress'); bar.setAttribute('aria-hidden', 'true'); const fill = el('span');
+  fill.style.width = (view.percent === null ? 0 : Math.max(0, Math.min(100, view.percent))) + '%'; bar.append(fill); card.append(bar);
+  const meta = el('div', undefined, 'card-meta');
+  meta.append(el('span', view.progress, 'meta'), badge(view.state, view.state === 'active' ? 'warn' : ''));
+  if (view.target) meta.append(el('span', 'target ' + view.target, 'meta'));
+  if (view.specText) meta.append(el('span', view.specText, 'release-chip'));
+  if (view.issueText) meta.append(el('span', view.issueText, 'meta'));
+  if (view.chips.trains) meta.append(el('span', view.chips.trains + (view.chips.trains === 1 ? ' train' : ' trains'), 'release-chip'));
+  if (view.chips.withheld) meta.append(el('span', view.chips.withheld + ' withheld', 'release-chip'));
+  const drift = roadmapDriftCount(view.id);
+  if (drift !== null) meta.append(drift ? badge('drift ' + drift, 'warn') : el('span', 'no drift', 'meta'));
+  card.append(meta);
+  if (block.person) {
+    card.draggable = true;
+    card.addEventListener('dragstart', event => { if (!canMutate() || !event.dataTransfer) return event.preventDefault(); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-agent-hub-milestone', JSON.stringify({id:view.id, revision:view.revision})); });
+  }
+  card.addEventListener('click', () => openRoadmapDetail(view.id));
+  card.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openRoadmapDetail(view.id); } });
+  return card;
+}
+function roadmapLaneDrop(box, horizon) {
+  box.addEventListener('dragover', event => { if (!event.dataTransfer || !event.dataTransfer.types.includes('application/x-agent-hub-milestone')) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; });
+  box.addEventListener('drop', event => {
+    const raw = event.dataTransfer ? event.dataTransfer.getData('application/x-agent-hub-milestone') : '';
+    if (!raw) return;
+    event.preventDefault();
+    let payload; try { payload = JSON.parse(raw); } catch { return; }
+    if (!payload || typeof payload.id !== 'number' || typeof payload.revision !== 'number') return;
+    // A drop puts the card at the end of the lane it lands in; the detail dialog's Move up/down place it exactly, and the
+    // hub renumbers the lane either way so a card's order is its position.
+    void roadmapMove(payload.id, payload.revision, horizon, Number.MAX_SAFE_INTEGER);
+  });
+}
+async function roadmapMove(id, revision, horizon, order) {
+  try { await roadmapPost({action:'roadmap_move', id, revision, horizon, order}); }
+  catch (error) { if (!stopped) notice(error.message, true); }
+}
+function renderRoadmapTray(block) {
+  const section = $('roadmap-unplaced');
+  if (!block.person) { section.hidden = true; return; }
+  section.hidden = false;
+  if (roadmapTrayStatus === 'idle') void roadmapLoadTray(false);
+  const unplaced = roadmapTray, items = unplaced ? [...(unplaced.issues || []).map(row => ({kind:'issue', ref:row.ref, text:row.ref + (row.reason ? ' (' + row.reason + ')' : '')})), ...(unplaced.tasks || []).map(row => ({kind:'task', ref:'#' + row.id, text:'#' + row.id + ' ' + row.title + (row.reason ? ' (' + row.reason + ')' : '')})), ...(unplaced.specs || []).map(row => ({kind:'spec', ref:row.id, text:row.id + (row.reason ? ' (' + row.reason + ')' : '')}))] : [];
+  const privateCount = unplaced && Number.isSafeInteger(unplaced.privateTasks) ? unplaced.privateTasks : 0;
+  $('roadmap-unplaced-count').textContent = roadmapTrayError ? 'unavailable' : unplaced ? items.length + ' unplaced' + (privateCount ? ', ' + privateCount + ' private' : '') + (unplaced.partial ? ' (partial read)' : '') : 'reading';
+  // The read's own state is part of the signature: an empty answer and "still reading" have the same items, and
+  // without it the tray kept its first paint ("Reading unplaced items...") after the hub had answered.
+  update('roadmap-tray', [unplaced ? 'loaded' : roadmapTrayStatus, items, privateCount, roadmapTrayError, roadmapSuggestions], target => {
+    if (roadmapTrayError) { empty(target, 'Unplaced items unavailable: ' + roadmapTrayError); return; }
+    for (const item of items) { const row = el('div', undefined, 'row'); row.append(el('span', item.kind, 'label'), el('span', item.text, 'meta')); target.append(row); }
+    if (privateCount) target.append(el('p', privateCount + ' private ' + (privateCount === 1 ? 'item is' : 'items are') + ' not listed.', 'meta'));
+    if (!items.length) empty(target, unplaced ? 'Everything is placed.' : 'Reading unplaced items...');
+    for (const suggestion of roadmapSuggestions || []) {
+      const row = el('div', undefined, 'row'), where = suggestion.milestone === null && suggestion.proposal ? 'new: ' + suggestion.proposal.title : '#' + suggestion.milestone;
+      row.append(el('span', 'suggestion', 'label'), el('span', suggestion.kind + ' ' + suggestion.ref + ' to ' + where, 'meta'));
+      const accept = el('button', 'Accept'); accept.type = 'button'; accept.addEventListener('click', () => void roadmapSettleSuggestion('roadmap_accept', suggestion.id, accept)); row.append(accept);
+      const reject = el('button', 'Reject'); reject.type = 'button'; reject.addEventListener('click', () => void roadmapSettleSuggestion('roadmap_reject', suggestion.id, reject)); row.append(reject);
+      target.append(row);
+    }
+  });
+}
+async function roadmapSettleSuggestion(actionName, id, button) {
+  if (button) button.disabled = true;
+  try { const result = await roadmapPost({action:actionName, suggestion:id}); if (result) { roadmapSuggestions = (roadmapSuggestions || []).filter(row => row.id !== id); notice(actionName === 'roadmap_accept' ? 'Suggestion applied.' : 'Suggestion rejected.'); if (lastSnapshot) render(lastSnapshot); } }
+  catch (error) { if (!stopped) notice(error.message, true); }
+  finally { if (button && !stopped) button.disabled = false; }
+}
+function renderRoadmap(snapshot) {
+  const block = roadmapData(snapshot);
+  if (!block) {
+    if (currentView === 'roadmap') update('roadmap-lanes', 'unavailable', target => empty(target, snapshot && snapshot.roadmap && snapshot.roadmap.unavailable ? 'Roadmap unavailable.' : 'Loading the roadmap...'));
+    return;
+  }
+  // The hub keeps the last drift check in this snapshot, so a reload shows it instead of asking for it again.
+  if (block.drift && (!roadmapDrift || roadmapDrift.at < block.drift.at)) roadmapDrift = block.drift;
+  const model = roadmapModel(block.milestones);
+  $('roadmap-count').textContent = model.cards.length + (model.cards.length === 1 ? ' milestone' : ' milestones');
+  $('roadmap-drift').textContent = roadmapDrift ? 'Drift checked ' + time(roadmapDrift.at) + ': ' + roadmapDrift.findings.length + (roadmapDrift.findings.length === 1 ? ' finding' : ' findings') + (roadmapDrift.truncated ? ' (list truncated)' : '') + (roadmapDrift.unknown && roadmapDrift.unknown.length ? ', evidence unknown for ' + roadmapDrift.unknown.length + ' rule(s)' : '') : 'Drift not checked yet: Check drift reads GitHub issue and milestone metadata for every milestone.';
+  update('roadmap-lanes', [model.lanes, block.person, roadmapDrift], target => {
+    for (const lane of model.lanes) {
+      const box = el('div', undefined, 'roadmap-lane'), head = el('div', undefined, 'section-head');
+      head.append(el('h3', lane.label + ' (' + lane.cards.length + ')')); box.append(head);
+      for (const view of lane.cards) box.append(roadmapCard(view, block));
+      if (!lane.cards.length) empty(box, block.person ? 'Drop a milestone here, or create one.' : 'No milestones.');
+      if (block.person) roadmapLaneDrop(box, lane.id);
+      target.append(box);
+    }
+  });
+  renderRoadmapTray(block);
+}
+function closeRoadmapDetail() {
+  roadmapDetailId = null; roadmapNewMode = false;
+  const dialog = $('roadmap-detail-dialog'); if (dialog.open) dialog.close();
+  $('roadmap-detail-content').replaceChildren(); signatures.delete('roadmap-detail-content');
+}
+function openRoadmapDetail(id) { if (stopped || !snapshotValid) return; roadmapNewMode = false; roadmapDetailId = id; refreshRoadmapDetail(); const dialog = $('roadmap-detail-dialog'); if (!dialog.open) dialog.showModal(); }
+function openRoadmapNew() {
+  if (stopped || !snapshotValid || !canMutate()) return;
+  roadmapNewMode = true; roadmapDetailId = null; $('roadmap-detail-title').textContent = 'New milestone';
+  update('roadmap-detail-content', ['new'], target => target.append(roadmapNewForm()));
+  const dialog = $('roadmap-detail-dialog'); if (!dialog.open) dialog.showModal();
+}
+function refreshRoadmapDetail() {
+  if (roadmapDetailId === null || roadmapNewMode) return;
+  const snapshot = lastSnapshot, block = roadmapData(snapshot), view = roadmapView(block, roadmapDetailId);
+  if (!view) return closeRoadmapDetail();
+  $('roadmap-detail-title').textContent = 'Milestone #' + view.id;
+  update('roadmap-detail-content', [view, block.person, roadmapDrift, snapshot.milestones], target => target.append(roadmapDetail(view, block, snapshot)));
+}
+function roadmapNewForm() {
+  const wrap = el('div', undefined, 'roadmap-detail'), form = el('form', undefined, 'content');
+  const field = (label, node) => { const box = el('div', undefined, 'field'); const id = 'roadmap-new-' + label.toLowerCase().replace(/[^a-z]+/g, '-'); node.id = id; const tag = el('label', label); tag.setAttribute('for', id); box.append(tag, node); return box; };
+  const title = el('input'), outcome = el('textarea'), horizon = el('select');
+  title.maxLength = 300; title.required = true; outcome.maxLength = 4000; outcome.required = true;
+  for (const value of ['now','next','later']) { const option = el('option', value); option.value = value; if (value === 'later') option.selected = true; horizon.append(option); }
+  form.append(field('Title', title), field('Outcome', outcome), field('Horizon', horizon));
+  const result = el('p', undefined, 'meta'); result.setAttribute('role', 'status');
+  const submit = el('button', 'Create milestone', 'primary'); submit.type = 'submit'; form.append(submit, result);
+  form.addEventListener('submit', async event => {
+    event.preventDefault(); submit.disabled = true; result.textContent = 'Creating...';
+    try { await roadmapPost({action:'roadmap_new', title:title.value, outcome:outcome.value, horizon:horizon.value}); result.textContent = 'Created.'; if (!stopped) { closeRoadmapDetail(); if (lastSnapshot) render(lastSnapshot); } }
+    catch (error) { if (!stopped) result.textContent = error.message; }
+    finally { submit.disabled = false; }
+  });
+  wrap.append(el('p', 'A milestone carries an outcome and a horizon; link issues, tasks, specs and releases below or from its detail.', 'meta'), form);
+  return wrap;
+}
+function roadmapDetail(view, block, snapshot) {
+  const card = roadmapModel([view]).cards[0], percent = card ? card.percent : null, progress = card ? card.progress : '';
+  const wrap = el('div', undefined, 'roadmap-detail');
+  wrap.append(el('p', view.outcome));
+  const facts = el('p', undefined, 'meta');
+  facts.append(el('span', view.state + ' / ' + view.horizon + (view.target ? ' / target ' + view.target : '') + ' / revision ' + view.revision, 'meta'));
+  wrap.append(facts);
+  const bar = el('div', undefined, 'milestone-progress'); const fill = el('span');
+  fill.style.width = (percent === null ? 0 : Math.max(0, Math.min(100, percent))) + '%'; bar.append(fill);
+  wrap.append(bar, el('p', progress, 'meta'));
+  if (block.person) wrap.append(roadmapControls(view, snapshot));
+  wrap.append(roadmapLinks(view, snapshot), roadmapHistory(view));
+  const findings = roadmapDrift && Array.isArray(roadmapDrift.findings) ? roadmapDrift.findings.filter(row => row.milestone === view.id) : [];
+  if (findings.length) {
+    const section = el('section'); section.append(el('h3', 'Drift'));
+    for (const finding of findings) { const row = el('div', undefined, 'row'); row.append(el('span', finding.cause, 'meta'), el('code', finding.remedy, 'body')); section.append(row); }
+    wrap.append(section);
+  }
+  return wrap;
+}
+function roadmapControls(view, snapshot) {
+  const section = el('section'), actions = el('div', undefined, 'roadmap-actions');
+  actions.append(el('h3', 'Manage'));
+  const states = el('select'); states.setAttribute('aria-label', 'Change the milestone state');
+  for (const state of [...ROADMAP_WRITE_STATES, ...(roadmapData(snapshot).person ? ROADMAP_PERSON_STATES : [])]) { const option = el('option', state); option.value = state; if (state === view.state) option.selected = true; states.append(option); }
+  const apply = el('button', 'Set state'); apply.type = 'button';
+  apply.addEventListener('click', () => { if (states.value === view.state) { notice('That is already the milestone state.'); return; } void roadmapState(view, states.value, apply); });
+  actions.append(states, apply);
+  const up = el('button', 'Move up'); up.type = 'button'; up.addEventListener('click', () => void roadmapMove(view.id, view.revision, view.horizon, Math.max(0, view.order - 1)));
+  const down = el('button', 'Move down'); down.type = 'button'; down.addEventListener('click', () => void roadmapMove(view.id, view.revision, view.horizon, view.order + 1));
+  actions.append(up, down);
+  section.append(actions);
+  section.append(roadmapEditForm(view));
+  return section;
+}
+async function roadmapState(view, state, button) {
+  if (button) button.disabled = true;
+  try { await roadmapPost({action:'roadmap_state', id:view.id, revision:view.revision, state}); if (!stopped) { notice('Milestone state set to ' + state + '.'); if (lastSnapshot) { refreshRoadmapDetail(); render(lastSnapshot); } } }
+  catch (error) { if (!stopped) notice(error.message, true); }
+  finally { if (button && !stopped) button.disabled = false; }
+}
+function roadmapEditForm(view) {
+  const form = el('form', undefined, 'content'), title = el('input'), outcome = el('textarea'), horizon = el('select'), target = el('input');
+  title.maxLength = 300; title.value = view.title; outcome.maxLength = 4000; outcome.value = view.outcome; target.maxLength = 10; target.placeholder = 'YYYY-MM-DD'; target.value = view.target || '';
+  for (const value of ['now','next','later']) { const option = el('option', value); option.value = value; if (value === view.horizon) option.selected = true; horizon.append(option); }
+  const labelled = (text, node) => { const box = el('div', undefined, 'field'), tag = el('label', text); tag.setAttribute('for', 'roadmap-edit-' + text.toLowerCase()); node.id = tag.getAttribute('for'); box.append(tag, node); return box; };
+  form.append(labelled('Title', title), labelled('Outcome', outcome), labelled('Horizon', horizon), labelled('Target', target));
+  const result = el('p', undefined, 'meta'); result.setAttribute('role', 'status');
+  const save = el('button', 'Save changes'); save.type = 'submit'; form.append(save, result);
+  form.addEventListener('submit', async event => {
+    event.preventDefault(); save.disabled = true;
+    const fields = {title:title.value, outcome:outcome.value, horizon:horizon.value};
+    if (target.value.trim()) fields.target = target.value.trim();
+    try { await roadmapPost({action:'roadmap_edit', id:view.id, revision:view.revision, fields}); result.textContent = 'Saved.'; if (!stopped) { refreshRoadmapDetail(); if (lastSnapshot) render(lastSnapshot); } }
+    catch (error) { if (!stopped) result.textContent = error.message; }
+    finally { save.disabled = false; }
+  });
+  return form;
+}
+function roadmapLinks(view, snapshot) {
+  const section = el('section'); section.append(el('h3', 'Linked'));
+  const rows = el('div', undefined, 'row-list');
+  for (const issue of view.issues || []) {
+    const row = el('div', undefined, 'row'), url = issueUrl(issue.ref);
+    row.append(el('span', 'issue ' + issue.ref + ' (' + issue.state + ')', 'meta'));
+    if (url) { const link = el('a', 'GitHub'); link.href = url; link.target = '_blank'; link.rel = 'noreferrer noopener'; row.append(link); }
+    rows.append(row);
+  }
+  for (const task of view.tasks || []) {
+    const row = el('div', undefined, 'row'), open = el('button', '#' + task.id + ' ' + task.title + ' (' + task.state.replaceAll('_', ' ') + ')');
+    open.type = 'button'; open.addEventListener('click', () => { closeRoadmapDetail(); openTaskDetail(task.id); }); row.append(open);
+    const boardTask = (snapshot.tasks || []).find(candidate => candidate.id === task.id);
+    if (boardTask && boardTask.sdlc && Number.isSafeInteger(boardTask.sdlc.pr)) row.append(el('span', 'PR #' + boardTask.sdlc.pr, 'release-chip'));
+    rows.append(row);
+  }
+  for (const spec of view.specs || []) rows.append(el('div', 'spec ' + spec.id + ' (' + spec.state + ')', 'row meta'));
+  for (const release of view.releases || []) rows.append(el('div', 'train #' + release.id + (release.name ? ' ' + release.name : '') + ' (' + release.state + ')', 'row meta'));
+  if (view.withheld) rows.append(el('div', view.withheld + ' member(s) withheld from this view', 'row meta'));
+  if (!rows.children.length) empty(rows, 'Nothing linked yet.');
+  section.append(rows);
+  if (roadmapData(snapshot).person) section.append(roadmapLinkForm(view));
+  return section;
+}
+function roadmapLinkForm(view) {
+  const form = el('form', undefined, 'content'), kind = el('select'), ref = el('input');
+  kind.setAttribute('aria-label', 'Link kind'); ref.maxLength = 300; ref.placeholder = 'owner/repo#12, a task id, a spec id or a release id';
+  for (const value of ROADMAP_LINK_KINDS) { const option = el('option', value); option.value = value; kind.append(option); }
+  const result = el('p', undefined, 'meta'); result.setAttribute('role', 'status');
+  const link = el('button', 'Link'); link.type = 'button'; const unlink = el('button', 'Unlink'); unlink.type = 'button';
+  const run = async (actionName, button) => {
+    if (!ref.value.trim()) { result.textContent = 'A reference is required.'; return; }
+    button.disabled = true; result.textContent = 'Working...';
+    try { await roadmapPost({action:actionName, id:view.id, revision:view.revision, kind:kind.value, ref:ref.value.trim()}); result.textContent = actionName === 'roadmap_link' ? 'Linked.' : 'Unlinked.'; if (!stopped) { refreshRoadmapDetail(); if (lastSnapshot) render(lastSnapshot); } }
+    catch (error) { if (!stopped) result.textContent = error.message; }
+    finally { button.disabled = false; }
+  };
+  link.addEventListener('click', () => void run('roadmap_link', link));
+  unlink.addEventListener('click', () => void run('roadmap_unlink', unlink));
+  const actions = el('div', undefined, 'roadmap-actions'); actions.append(kind, ref, link, unlink);
+  form.append(actions, result);
+  return form;
+}
+function roadmapHistory(view) {
+  const section = el('section'); section.append(el('h3', 'History'));
+  const rows = el('div', undefined, 'row-list');
+  for (const entry of [...(view.history || [])].reverse().slice(0, 12)) rows.append(el('div', time(entry.at) + ' ' + entry.event + ' by ' + entry.by + (entry.fields && entry.fields.length ? ' (' + entry.fields.join(', ') + ')' : '') + (entry.kind ? ' (' + entry.kind + ')' : ''), 'row meta'));
+  if (!rows.children.length) empty(rows, 'No history yet.');
+  section.append(rows);
+  return section;
+}
 function render(snapshot) {
   const modelUnavailable = renderModelAvailability(snapshot);
   renderNeedsAttention(snapshot);
@@ -2068,6 +2387,8 @@ function render(snapshot) {
   const peerSignature = JSON.stringify([ids, assignable]);
   if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), assignable, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); if (draftChoicesPending) { restoreDraft(true); draftChoicesPending = false; } }
   renderBoard(snapshot, peers, ids);
+  renderRoadmap(snapshot);
+  if (roadmapDetailId !== null) refreshRoadmapDetail();
   renderSources(snapshot.sources);
   renderApprovals(snapshot.permissions);
   renderInstructedAnswers(snapshot.answeredQuestions);
@@ -2980,6 +3301,12 @@ $('release-plan').addEventListener('submit',async event=>{event.preventDefault()
 $('task-release-filter').addEventListener('change',()=>{if(boardViewState)renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});
 $('task-peer-filter').addEventListener('change',()=>{if(boardViewState)renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});
 $('task-lanes').addEventListener('change',()=>{if(boardViewState)renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});
+$('task-milestone-filter').addEventListener('change',()=>{if(boardViewState)renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});
+$('roadmap-new').addEventListener('click',()=>openRoadmapNew());
+$('roadmap-check').addEventListener('click',event=>void roadmapCheck(event.currentTarget));
+$('roadmap-triage').addEventListener('click',event=>void roadmapTriage(event.currentTarget));
+$('roadmap-detail-close').addEventListener('click',()=>closeRoadmapDetail());
+$('roadmap-detail-dialog').addEventListener('close',()=>{roadmapDetailId=null;roadmapNewMode=false;$('roadmap-detail-content').replaceChildren();signatures.delete('roadmap-detail-content')});
 for (const [id, operation] of [['delivery-queue','sdlc_queue'],['delivery-release','sdlc_release']]) $(id).addEventListener('click', async () => {
   const repo = $('delivery-repo').value.trim();
   const liveIssues = $('delivery-live').value.trim() ? $('delivery-live').value.split(/[, ]+/).filter(Boolean).map(Number) : [];

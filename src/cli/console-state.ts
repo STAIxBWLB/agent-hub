@@ -72,6 +72,8 @@ export interface ConsoleState {
   usage?: UsageState; usageTask?: number;
   /** Absent on older hubs, null when the current hub cannot report room status. */
   rooms?: RoomStatusView[] | null; roomSelection?: string;
+  /** #1483 R5: the Roadmap panel (9): the public milestones, the drift count read when the panel opens, and why either is missing. */
+  roadmap?: ConsoleMilestone[]; roadmapKnown?: boolean; roadmapProblem?: string; roadmapDrift?: { at: number; findings: number; unknown?: number; problem?: string };
   actionLock?: { prefix: string[]; id: string; revision: number; state: string; owner?: string; reserved?: string; reviewer?: string; waiting?: boolean; syntax?: "planning" | "ownerless-return"; revisionField?: "planningRevision" | "flowRevision" };
   confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[]; prompt?: string; lock?: ConsoleState["actionLock"] } | { type: "permission_default"; peer: string; source: string };
   optionChoice?: string;
@@ -84,6 +86,12 @@ export interface ConsoleState {
   permissionDefaultsHandled: string[];
 }
 const roomsVisible = (s: Pick<ConsoleState, "rooms">) => s.rooms === null || Array.isArray(s.rooms) && s.rooms.length > 0;
+/** #1483 R5: what the Roadmap panel shows per milestone; `approved`/`total` are its task roll-up and `withheld` counts private members. */
+export interface ConsoleMilestone { id: number; title: string; horizon: string; state: string; order: number; approved: number; total: number; withheld: number }
+const ROADMAP_LANES = ["now", "next", "later"] as const;
+const laneOrder = (horizon: string) => { const at = ROADMAP_LANES.indexOf(horizon as typeof ROADMAP_LANES[number]); return at < 0 ? ROADMAP_LANES.length : at; };
+/** The Roadmap panel is offered only by a hub that advertises it, so an older hub keeps its eight tabs. */
+const roadmapVisible = (s: Pick<ConsoleState, "features">) => s.features?.includes("roadmap") === true;
 /** A detail view: text as the stream shows it, or labeled fields. */
 export type Detail = string | Record<string, unknown>;
 export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } | { type: "answer"; set: string; answers: { questionId: string; optionIds: string[]; other?: string }[] } | { type: "peer_takeover"; peer: string; standbyId: string } |
@@ -517,9 +525,10 @@ const KEYS: [string, string[]][] = [
   ["Usage", ["7 Usage panel", "Enter view a peer", "tokens today/7d/lifetime with sources", "task from Tasks (3)"]],
 ];
 /** The `?` key table: one group per panel, its keys kept whole and packed into the width after the group column. */
-export function keyTable(columns: number, attention = false, characters = false, roomsAvailable = false): Span[][] {
+export function keyTable(columns: number, attention = false, characters = false, roomsAvailable = false, roadmapAvailable = false): Span[][] {
   const lines: Span[][] = []; const pad = 12;
-  for (const [group, items] of [...KEYS, ...(roomsAvailable ? [["Rooms", ["8 Rooms panel (read only)", "j/k move", "Enter details"]] as [string, string[]]] : []), ...(attention ? [[characters ? "Pet" : "Attention", ["n next need", characters ? "P next character/off" : "P STAI/off"]] as [string, string[]]] : [])]) {
+  for (const [group, items] of [...KEYS, ...(roomsAvailable ? [["Rooms", ["8 Rooms panel (read only)", "j/k move", "Enter details"]] as [string, string[]]] : []),
+    ...(roadmapAvailable ? [["Roadmap", ["9 Roadmap panel", "Enter show a milestone", "lanes now/next/later"]] as [string, string[]]] : []), ...(attention ? [[characters ? "Pet" : "Attention", ["n next need", characters ? "P next character/off" : "P STAI/off"]] as [string, string[]]] : [])]) {
     let text = ""; let head = group;
     const flush = () => { lines.push([span(head.padEnd(pad), head ? "info" : undefined), span(text)]); head = ""; text = ""; };
     for (const item of items) { if (text && pad + Bun.stringWidth(`${text}   ${item}`) > columns) flush(); text = text ? `${text}   ${item}` : item; }
@@ -579,6 +588,8 @@ export function commandNeedsConfirmation(args: string[]): boolean {
 export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 1) return Object.entries(s.peers).map(([id, peer]) => ({ id, ...peer, budget: s.budget[id] }));
   if (s.panel === 8) return s.rooms ?? [];
+  // #1483 R5: lanes are the horizon order (now, next, later), then the milestone's own order; an unknown horizon trails.
+  if (s.panel === 9) return [...(s.roadmap ?? [])].sort((left, right) => laneOrder(left.horizon) - laneOrder(right.horizon) || left.order - right.order || left.id - right.id);
   if (s.panel === 2) return s.approvals;
   if (s.panel === 3) {
     if (s.backlogView) return s.tasks.filter(t => t.state === "backlog").sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id);
@@ -863,6 +874,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     s.panel = panel; s.selection = panel === 5 ? newestEvent(s) : 0; s.taskSelection = undefined; s.queueSelection = undefined; s.roomSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
   if (s.mode === "panels" && /^[1-7]$/.test(key) && !s.optionChoice) return switchPanel(Number(key));
   if (s.mode === "panels" && key === "8" && !s.optionChoice && roomsVisible(s)) return switchPanel(8);
+  if (s.mode === "panels" && key === "9" && !s.optionChoice && roadmapVisible(s)) return switchPanel(9);
   // Right and Left are the digit of the next or previous tab, wrapping at both ends (#309); the same guards as the
   // digits apply (the confirm, mode-choice, key-table and editing branches above returned already).
   if (s.mode === "panels" && (key === "\x1b[C" || key === "\x1b[D") && !s.optionChoice) return switchPanel(s.panel >= 6 ? key === "\x1b[C" ? 1 : 5 : (s.panel + (key === "\x1b[C" ? 0 : 3)) % 5 + 1);
@@ -956,6 +968,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   const item = selected?.id;
   if (s.mode === "panels" && row && s.detail === undefined && (key === "\r" || key === "\n")) {
     if (s.panel === 3 || s.panel === 4) effects.push({ type: "show", panel: s.panel, id: String(row.id) });
+    else if (s.panel === 9) effects.push({ type: "show", panel: 9, id: String(row.id) }); // the hub's public milestone view, with its links and roll-up
     else if (s.panel === 2) { s.requestDetail = row.id; s.detailOffset = 0; } // the row is the selected request
     else if (s.panel === 7) { s.detail = { usagePeer: row.id }; s.detailOffset = 0; } // rendered live from s.usage, so a refresh updates it
     else if (s.panel === 8) { s.roomSelection = row.name; s.detail = { roomName: row.name }; s.detailOffset = 0; }
@@ -1071,6 +1084,8 @@ export const TABLES: Record<number, string[]> = {
   6: ["GROUP", "KEY", "VALUE", "SOURCE", "APPLIES"],
   7: USAGE_HEAD,
   8: ["ROOM", "LINK", "MEMBERS", "REMOTE"],
+  // `PRIVATE` is a count: a withheld member is never named here (#1483 R5).
+  9: ["ID", "HORIZON", "STATE", "PROGRESS", "PRIVATE", "TITLE"],
 };
 const showPermissionModes = (s: ConsoleState) => Object.values(s.peers).some(peer => peer.permissionMode && peer.permissionMode !== "ask");
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
@@ -1082,6 +1097,9 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
   if (s.panel === 8) return [id(row.name, "info"), span(row.link ?? "unknown", row.link ? stateTone(row.link) : "muted"),
     span(row.memberCount === null ? "unknown" : String(row.memberCount), row.memberCount === null ? "muted" : undefined),
     span(row.remotePeers === null ? "unknown" : String(row.remotePeers.length), row.remotePeers === null ? "muted" : undefined)];
+  if (s.panel === 9) return [id(String(row.id), "info"), span(String(row.horizon ?? "later"), row.horizon === "now" ? "attention" : undefined), span(String(row.state ?? "")),
+    span(row.total ? `${row.approved}/${row.total}` : "-", row.total ? undefined : "muted"),
+    span(row.withheld ? String(row.withheld) : "-", row.withheld ? "muted" : undefined), span(String(row.title ?? ""))];
   if (s.panel === 1) {
     const b = s.budget[row.id];
     const wip = s.taskWip?.[row.id];
@@ -1239,9 +1257,11 @@ function header(s: ConsoleState, columns: number): Span[] {
   // The tabs can fill an 80-column line, which would squeeze the project name out: below that, one space before a tab instead of two (#683 U3).
   const build = (lead: string) => {
     const tabs: Span[] = [];
-    const names = ["Peers", "Approvals", "Tasks", "Queue", "Events", "Settings", "Usage", ...(roomsVisible(s) ? ["Rooms"] : [])];
-    for (const [i, name] of names.entries()) {
-      const number = i === 7 ? 8 : i + 1, active = number === s.panel, tone = active ? "strong" : "info";
+    // Each tab carries its own number, so hiding Rooms never renumbers the Roadmap panel (#1483 R5).
+    const names: [number, string][] = [[1, "Peers"], [2, "Approvals"], [3, "Tasks"], [4, "Queue"], [5, "Events"], [6, "Settings"], [7, "Usage"],
+      ...(roomsVisible(s) ? [[8, "Rooms"] as [number, string]] : []), ...(roadmapVisible(s) ? [[9, "Roadmap"] as [number, string]] : [])];
+    for (const [i, [number, name]] of names.entries()) {
+      const active = number === s.panel, tone = active ? "strong" : "info";
       tabs.push(span(active ? lead.slice(1) + "[" : lead, tone), span(`${number} ${name}`, tone));
       if (counts[i]) tabs.push(span(` ${counts[i]}`, i === 1 ? "attention" : "failure"));
       tabs.push(span(active ? "]" : " ", tone));
@@ -1364,7 +1384,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     // Options that do not fit even wrapped are shown one per line (clipped to the width, but a label is at most 80 characters) rather than dropped: no option is ever off screen.
     lines.push([span(body.head, "attention")], ...shown.map(text => [span(text)]), ...(optionLines.length <= height - 1 ? optionLines : body.options.map(option => fitLine([span(option, "info")], columns))));
   }
-  else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length, roomsVisible(s)));
+  else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length, roomsVisible(s), roadmapVisible(s)));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const usagePeer = s.panel === 7 && s.detail && typeof s.detail === "object" ? (s.detail as { usagePeer?: unknown }).usagePeer : undefined;
     const roomName = s.panel === 8 && s.detail && typeof s.detail === "object" ? (s.detail as { roomName?: unknown }).roomName : undefined;
@@ -1410,6 +1430,13 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     }
     if (s.panel === 1 && s.versions) lines.push(fitLine(versionsLine(s), columns));
     if (s.panel === 8 && s.rooms === null) lines.push(fitLine([span("Room status unavailable", "attention")], columns));
+    if (s.panel === 9) {
+      const drift = s.roadmapDrift;
+      const note = s.roadmapProblem ? `roadmap unavailable: ${s.roadmapProblem}` : !s.roadmapKnown ? "roadmap loading..."
+        : drift?.problem ? `drift: ${drift.problem}`
+        : `drift ${drift ? `${plural(drift.findings, "finding")}${drift.unknown ? `, ${drift.unknown} unknown` : ""}` : "not checked yet"}${drift ? `, ${relative(drift.at, now)}` : ""}; lanes now, next, later`;
+      lines.push(fitLine([span(note, s.roadmapProblem || drift?.problem ? "failure" : !s.roadmapKnown ? "attention" : "info")], columns));
+    }
     if (s.panel === 3 && s.backlogView) {
       lines.push(fitLine([span(s.tasksKnown === false ? "backlog loading..." : `backlog ${data.length}`, s.tasksKnown === false ? "attention" : "info")], columns));
     } else if (s.panel === 3) {
