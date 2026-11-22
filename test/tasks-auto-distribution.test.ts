@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board, type Task } from "../src/hub/board.ts";
@@ -129,4 +129,18 @@ test("AC4c: a capacity decline of a pulled reserved card returns it to backlog w
   expect(r.board.get(dropped.id)!.owner).toBe("kimi");
   await r.tasks.decline("kimi", dropped.id, "never mine");
   expect(r.board.get(dropped.id)!.reserved ?? null).toBeNull();
+});
+
+test("B: a freed slot is never offered a task of a class routing keeps that peer out of", async () => {
+  const r = await rig(true);
+  mkdirSync(join(r.cwd, ".agenthub"), { recursive: true });
+  writeFileSync(join(r.cwd, ".agenthub", "routing.toml"), '[local]\nfixed_model = "fixture"\n[classes.implement]\npeers = ["codex", "kimi"]\n[classes.review]\npeers = ["kimi"]\n');
+  r.fill("kimi");
+  const review = await r.tasks.propose("claude", { title: "review cards go to kimi only", class: "review" });
+  expect(review.owner).toBeNull(); // kimi is at its cap, and codex is not a review peer
+  (r.tasks as unknown as { queueAutoPulls: (peers: Set<string>) => void }).queueAutoPulls(new Set(["codex"]));
+  await settle();
+  expect(r.owner(review)).toBeNull();
+  const implement = await r.tasks.propose("claude", { title: "implement cards may go to codex", class: "implement" });
+  expect(implement.owner).toBe("codex");
 });

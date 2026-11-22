@@ -117,7 +117,7 @@ import { HOST_SPEC_ACCEPTANCE_CARRY, HOST_MERGE_ADOPTION, HOST_ROADMAP_DRAFT, pa
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
-import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, writesRepository, ownerRoleOfClass, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
+import { assign, expandClassPeers, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, writesRepository, ownerRoleOfClass, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
@@ -3194,10 +3194,6 @@ export class Tasks {
     }
   }
 
-  /**
-   * #1626 B: no reserved card was ready for `peer`, so offer it the first ready, unowned `proposed` task it is an eligible owner for, in the board's ready order, one per trigger.
-   * Runs on the serialized auto-pull chain through `assignOwner` as the hub with `peer` the only candidate, so every routing gate still runs. A task another offer path holds is skipped.
-   */
   /** The first ready unowned task `peer` could be offered now, or undefined. Read-only. */
   private fillPick(peer: PeerId): Task | undefined {
     if (!this.autoPullAdmitted() || this.capacityBackoff.has(peer)) return undefined;
@@ -3211,8 +3207,15 @@ export class Tasks {
     if (task.pinned || task.draft || task.needsPerson || this.isPii(task) || this.personUnassigned(task) || plannedStartPending(task, now) || this.waitsFor(task).length) return false;
     if (task.release != null && !["planning", "active"].includes(this.d.board.release(task.release)?.state ?? "")) return false;
     if (this.excluded(task).includes(peer)) return false;
-    return assign(task, this.states(), routing, { candidates: [peer], exclude: this.excluded(task), excludeOwners: this.hubOfferFull(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) }).owner === peer;
+    // `candidates: [peer]` replaces the class's peer list inside assign(), so the class list is checked here: a freed slot never takes a class routing keeps the peer out of. A class with no entry offers nothing.
+    const weights = this.weights(task.class, task);
+    if (!expandClassPeers(routing.classes[task.class]?.peers ?? [], this.states(), weights).includes(peer)) return false;
+    return assign(task, this.states(), routing, { candidates: [peer], exclude: this.excluded(task), excludeOwners: this.hubOfferFull(task), waitsFor: this.waitsFor(task), ...weights }).owner === peer;
   }
+  /**
+   * #1626 B: no reserved card was ready for `peer`, so offer it the first ready, unowned `proposed` task it is an eligible owner for, in the board's ready order, one per trigger.
+   * Runs on the serialized auto-pull chain through `assignOwner` as the hub with `peer` the only candidate, so every routing gate still runs. A task another offer path holds is skipped.
+   */
   private async fillSlot(peer: PeerId, cause: string): Promise<void> {
     const pick = this.fillPick(peer);
     if (!pick) return;
