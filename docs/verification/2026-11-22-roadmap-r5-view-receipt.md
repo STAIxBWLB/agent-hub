@@ -6,10 +6,9 @@ lanes, one card per milestone, a detail dialog and an unplaced tray.
 ## Source
 
 A scratch hub outside any git repository (`git rev-parse --show-toplevel` at its root prints "fatal: not a git repository (or any of the
-parent directories)") with its own `HOME` and
-`AGENTHUB_HOME` under `/tmp`, never the person's home and never the live hub. Three milestones (1 "Ship the roadmap view", active in
-Now with tasks 1 and 2 linked; 2 "Console roadmap panel", proposed in Next; 3 "Roadmap drift on the board", proposed in Later) and two
-backlog tasks.
+parent directories)") with its own `HOME` and `AGENTHUB_HOME` under `/tmp`, never the person's home and never the live hub. Three
+milestones (1 "Ship the roadmap view", active in Now with tasks 1 and 2 linked; 2 "Console roadmap panel", proposed in Next; 3
+"Roadmap drift on the board", proposed in Later) and two backlog tasks.
 
 Headless Google Chrome 157 over the DevTools protocol (`Target.createTarget` and `attachToTarget`, `Emulation.setDeviceMetricsOverride`,
 `Network.setCookie` for `agent-hub-theme` and `agent-hub-view`, `Page.captureScreenshot` with `captureBeyondViewport`). The dashboard
