@@ -32,6 +32,24 @@ test("delegated dashboard restrictions are ticket-bound and cannot be cleared by
 });
 afterEach(() => { for (const stop of cleanup.splice(0)) stop(); });
 
+test("#1483 R5 a live-test session reaches no roadmap action, and an ordinary one still does", async () => {
+  const f = setup();
+  const ticket = new URL(f.ui.issue(false, true)).hash.slice(1);
+  const live = await f.post("/session", { ticket });
+  const cookie = live.headers.get("set-cookie")!.split(";")[0]!;
+  // Every roadmap verb is outside the live-test allowlist, reads included: `done` and `dropped` are the person's, and the
+  // drift read and the triage model call are theirs to spend too.
+  for (const action of [{ action: "roadmap_new" }, { action: "roadmap_edit", id: 1, revision: 0 }, { action: "roadmap_link", id: 1, revision: 0 },
+    { action: "roadmap_unlink", id: 1, revision: 0 }, { action: "roadmap_move", id: 1, revision: 0, order: 0 }, { action: "roadmap_state", id: 1, revision: 0, state: "done" },
+    { action: "roadmap_accept", suggestion: 1 }, { action: "roadmap_reject", suggestion: 1 }, { action: "roadmap_check" }, { action: "roadmap_unplaced" }, { action: "roadmap_triage" }]) {
+    expect((await f.post("/action", action, { cookie })).status, JSON.stringify(action)).toBe(403);
+  }
+  expect(f.actions).toEqual([]);
+  const ordinary = await f.session();
+  expect((await f.post("/action", { action: "roadmap_edit", id: 1, revision: 0 }, { cookie: ordinary.cookie })).status).toBe(200);
+  expect(f.actions).toEqual([{ action: "roadmap_edit", id: 1, revision: 0 }]);
+});
+
 test("model authority comes only from distinct verified private sessions and is never serialized", async () => {
   let time = 1_000;
   const seen: DashboardSession[] = [];
