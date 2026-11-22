@@ -23,9 +23,15 @@ paths:
   - src/hub/restart.ts
   - src/cli/roadmap.ts
   - src/cli/roadmap-write.ts
+  - src/cli/console.ts
+  - src/cli/console-state.ts
   - src/cli/main.ts
   - src/cli/help.ts
   - src/cli/identity.ts
+  - src/hub/ui.ts
+  - src/hub/manager.ts
+  - src/ui/index.html
+  - src/ui/roadmap-model.ts
   - test/roadmap.test.ts
   - test/roadmap-board.test.ts
   - test/roadmap-daemon.test.ts
@@ -41,6 +47,9 @@ paths:
   - test/roadmap-export.test.ts
   - test/roadmap-write.test.ts
   - test/roadmap-r4-daemon.test.ts
+  - test/ui-roadmap.test.ts
+  - test/ui-roadmap-daemon.test.ts
+  - test/console-roadmap.test.ts
   - test/check-roadmap.test.ts
   - scripts/check-roadmap.mjs
 ---
@@ -284,3 +293,41 @@ A local milestone has at most one remote number per repository. R3's `milestone_
 `ahub roadmap export` renders deterministic JSON and Markdown from screened milestone views. `--write` writes only `docs/roadmap.md` and `docs/roadmap.json` in the caller's Git worktree after proving it shares the selected repository, enforcing its current deny, read-only and PII path policy and refusing symlinks or hardlinks. A partially completed two-file write is reported. `--issue <n> --apply --confirm <fingerprint>` updates that issue body only after a matching preview, under the same person/conductor policy. The fingerprint binds repository, issue and rendered body.
 
 Task state and merge changes schedule affected public milestones for an ids-only supervision notice. The existing five-minute merge-readback sweep rechecks unresolved findings, including the close-lag boundary. A durable marker suppresses a finding already delivered; an unavailable feed or evidence is retried on a later change or sweep. Private tasks are never named. `scripts/check-roadmap.mjs` is a standalone Node validator: it checks the generated JSON's schema, linked spec IDs and tracked spec paths, and checks known issue states when a GitHub token is available. `scripts/check.sh` and the hosted docs step run it. Only `docs/roadmap.md` is exempt from the documentation stamp because this validation covers the generated page; the standalone release docs checker retains its Node-only contract.
+
+## Dashboard and console surfaces (R5)
+
+R5 ([#1483](https://github.com/STAIxBWLB/agent-hub/issues/1483)) adds reading and managing milestones from the dashboard and the
+console. It adds no hub op and no write path: every dashboard write is one of R1's console ops through `ui_action`, and every console
+read is one of R1 to R4's hub tools.
+
+**The dashboard view.** `src/ui/index.html` carries the Roadmap view at key 8, listed once in `DASHBOARD_VIEWS` (`src/hub/ui.ts`) whose
+`indexOf` the page's own copy must equal: the page's list is what gates `switchView` and the digit keys, so a view missing there is
+unreachable however the tab reads. Cardinality comes from `src/ui/roadmap-model.ts`, injected into the page as source
+(`/* ROADMAP_MODEL */`), so the module's projection and the page's are the same function and a test runs the injected text in a VM to
+compare them. Three lanes (now, next, later, a horizon outside them landing in later rather than disappearing) hold one card per
+milestone: title, outcome, approval progress (unknown, never zero, with no members), spec freshness, linked issues and releases. Every
+text node is `textContent`.
+
+**Fenced writes.** A card carries the `revision` it rendered, and every write payload names it: edit, state, link, unlink and move. The
+daemon compares it against the current milestone (`roadmapFresh`) and refuses a stale page by name ("roadmap changed since this page
+loaded; reload the dashboard before editing") with nothing written. A lane move sends the horizon and the target order and is awaited
+before the lane is renumbered, so the answer describes the move it made.
+
+**Person-only affordances.** `block.person`, from the session's own authority, gates drag and drop, the ordered move buttons and the
+`done` and `dropped` states; a person-only state is shown but not offered in any other session. A private task member is a count
+(`withheld`), and the unplaced tray reports the number of private items it does not list. The tray's repaint signature includes the
+read's state, so an empty answer ("Everything is placed.") replaces the first paint.
+
+**Roadmap reads and the snapshot.** The roadmap block, and the hub's last drift check with it, are part of `uiSnapshot` only when the
+page asks for the roadmap view. `roadmap check` and the unplaced read run under a longer request timeout: both are bounded GitHub
+metadata passes, not instant page state. A page seeds its drift note from the snapshot, so a reload or a second tab shows the check the
+hub already holds instead of asking for it again.
+
+**The console panel.** `src/cli/console.ts` and `src/cli/console-state.ts` add Roadmap as panel 9, present only while the hub reports
+the `roadmap` feature. Opening it reads `hub_roadmap_list` (5 s) and adds `hub_roadmap_check` (30 s) only when no drift is held or the
+held one is older than five minutes. A row is id, horizon, state, approved/total, the withheld count and title, sorted by lane and then
+by the milestone's own order; Enter opens the milestone through `hub_roadmap_show` into the labelled detail.
+
+**`ahub ui --all`.** `projectConsole` gains an opt-in `roadmap: true` summary per project (`total`, `byHorizon`, `byState`, `drift`),
+read at most once a minute per project with each read bounded. It is opt-in because the acon provider shares `projectConsole` with
+fixture hubs, and only the manager passes it. A read that fails shows "roadmap unavailable" rather than a zero.
