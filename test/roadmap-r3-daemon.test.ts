@@ -134,7 +134,19 @@ test("decompose is the planner's model call over the wire: an ordinary agent and
   const denied = await f.op(f.ordinary, "hub_roadmap_decompose", { id: m.id });
   expect(denied.ok).toBe(false); expect(String(denied.error)).toMatch(/planner|conductor|person/);
   const extra = await f.op(f.planner, "hub_roadmap_decompose", { id: m.id, repo: "o/r" });
-  expect(extra.ok).toBe(false); expect(String(extra.error)).toContain("roadmap decompose takes a milestone id and an optional part number");
+  expect(extra.ok).toBe(false); expect(String(extra.error)).toContain("roadmap decompose takes a milestone id");
+  // A publish preview reads the holds, so it needs the host's own GitHub repository: this daemon has none, and no argument supplies one.
+  const preview = await f.op(f.planner, "hub_roadmap_decompose", { id: m.id, publish: true, repo: "o/r" });
+  expect(preview.ok).toBe(false); expect(String(preview.error)).toContain("roadmap decompose takes a milestone id");
+  const unrouted = await f.op(f.planner, "hub_roadmap_decompose", { id: m.id, publish: true });
+  expect(unrouted.ok).toBe(false); expect(String(unrouted.error)).toContain("roadmap repo needs owner/name");
+  // Apply never stands alone, and accept and publish are not one request.
+  const applyOnly = await f.op(f.planner, "hub_roadmap_decompose", { id: m.id, apply: true, confirm: "a".repeat(64) });
+  expect(applyOnly.ok).toBe(false); expect(String(applyOnly.error)).toContain("needs its publish preview");
+  const both = await f.op(f.planner, "hub_roadmap_decompose", { id: m.id, publish: true, accept: 1 });
+  expect(both.ok).toBe(false); expect(String(both.error)).toContain("not both");
+  const falsePublish = await f.op(f.planner, "hub_roadmap_decompose", { id: m.id, publish: false });
+  expect(falsePublish.ok).toBe(false); expect(String(falsePublish.error)).toContain("publish true");
   const human = await f.cli(["roadmap", "decompose", String(m.id)]);
   expect(human.code, human.err).toBe(0);
   expect(human.out).toContain(`Milestone ${m.id} decomposition`);

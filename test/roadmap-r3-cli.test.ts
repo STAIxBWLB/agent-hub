@@ -13,6 +13,9 @@ test("unplaced, triage, decompose, accept, reject and import-github parse to the
   expect(parseRoadmapArgs(["--json", "decompose", "4"])).toEqual({ op: "hub_roadmap_decompose", args: { id: 4 }, json: true });
   expect(parseRoadmapArgs(["decompose", "4", "--accept", "2"])).toEqual({ op: "hub_roadmap_decompose", args: { id: 4, accept: 2 }, json: false });
   expect(parseRoadmapArgs(["--json", "decompose", "4", "--accept=3"]).args).toEqual({ id: 4, accept: 3 });
+  expect(parseRoadmapArgs(["decompose", "4", "--publish"])).toEqual({ op: "hub_roadmap_decompose", args: { id: 4, publish: true }, json: false });
+  expect(parseRoadmapArgs(["decompose", "4", "--publish", "--apply", "--confirm", "a".repeat(64)])).toEqual({ op: "hub_roadmap_decompose", args: { id: 4, publish: true, apply: true, confirm: "a".repeat(64) }, json: false });
+  expect(parseRoadmapArgs(["--json", "decompose", "4", "--publish", "--apply", `--confirm=${"b".repeat(64)}`]).args).toEqual({ id: 4, publish: true, apply: true, confirm: "b".repeat(64) });
   expect(parseRoadmapArgs(["accept", "12"])).toEqual({ op: "hub_roadmap_edit", args: { op: "accept", suggestion: 12 }, json: false });
   expect(parseRoadmapArgs(["reject", "3"]).args).toEqual({ op: "reject", suggestion: 3 });
   expect(parseRoadmapArgs(["import-github"])).toEqual({ op: "roadmap_import_github", args: {}, json: false });
@@ -26,6 +29,9 @@ test("the new commands refuse unknown, duplicate, misplaced and malformed input 
     ["triage", "--apply"], ["triage", "--list", "--list"], ["triage", "7"],
     ["decompose"], ["decompose", "0"], ["decompose", "01"], ["decompose", "x"], ["decompose", "1", "2"], ["decompose", "--repo", "o/r"], ["decompose", "1", "--list"],
     ["decompose", "1", "--accept"], ["decompose", "1", "--accept", "0"], ["decompose", "1", "--accept", "x"], ["decompose", "1", "--accept", "2", "--accept", "3"], ["triage", "--accept", "2"],
+    ["decompose", "1", "--publish", "--publish"], ["decompose", "1", "--publish", "--accept", "2"], ["decompose", "1", "--apply", "--confirm", "a".repeat(64)],
+    ["decompose", "1", "--publish", "--apply"], ["decompose", "1", "--publish", "--confirm", "a".repeat(64)], ["decompose", "1", "--publish", "--apply", "--confirm", "abc"],
+    ["decompose", "1", "--publish", "--apply", "--confirm", "a".repeat(64), "--apply"], ["unplaced", "--publish"], ["triage", "--publish"],
     ["accept"], ["accept", "0"], ["accept", "01"], ["accept", "x"], ["accept", "1", "2"], ["accept", "1", "--json"], ["accept", "--repo", "o/r"],
     ["reject"], ["reject", "-1"], ["reject", "1", "--list"],
     ["import-github", "--list"], ["import-github", "--apply", "--apply"], ["import-github", "2"], ["import-github", "--unknown"],
@@ -100,6 +106,31 @@ test("decompose renders each part with its intake decision, its cites and the pe
   expect(renderRoadmap(payload).split("\n").every(line => Bun.stringWidth(line) <= 80)).toBe(true);
   expect(renderRoadmap({ milestone: 4, dropped: 0, saved: null, unavailable: "the milestone links no spec or issue to decompose from", parts: [] }))
     .toContain("Decompose unavailable: the milestone links no spec or issue to decompose from");
+});
+
+test("a publish preview renders each held part's action, the membership it would join and the apply line, and claims no write", () => {
+  const preview = { milestone: 4, repo: "o/r", githubMilestone: 7, publish: true, applied: false, skippedPrivate: 1, skippedUnknown: 0, created: [],
+    fingerprint: "c".repeat(64),
+    parts: [
+      { part: 1, task: 41, intake: "spec", issue: null, action: "create" },
+      { part: 2, task: 42, intake: "task", issue: null, action: "task" },
+      { part: 3, task: 43, intake: "spec", issue: 12, action: "published" },
+      { part: 4, task: 44, intake: "spec", issue: null, action: "released" },
+    ],
+    calls: [["api", "repos/o/r/issues", "--hostname", "github.com", "--method", "POST", "-f", "title=Split", "-f", "body=x", "-F", "milestone=7"]] };
+  const out = renderRoadmap(preview, 200);
+  expect(out).toContain("Milestone 4 publish preview (o/r)");
+  expect(out).toContain("part 1 (needs its own spec issue): a spec issue would be created");
+  expect(out).toContain("part 2 (straight to a task): goes straight to its held task 42, so no issue");
+  expect(out).toContain("part 3 (needs its own spec issue): already published as o/r#12");
+  expect(out).toContain("part 4 (needs its own spec issue): released already, so this hold publishes nothing");
+  expect(out).toContain("Private parts skipped: 1; a private part is never published.");
+  expect(out).toContain("Each created issue joins GitHub milestone 7.");
+  expect(out).toContain(`Apply this exact preview: ahub roadmap decompose 4 --publish --apply --confirm ${"c".repeat(64)}`);
+  expect(out).not.toContain("Created 0 issues");
+  const applied = renderRoadmap({ ...preview, applied: true, created: [{ part: 1, task: 41, issue: 12 }] }, 200);
+  expect(applied).toContain("Created 1 issue; the drafts stay held until ahub intake approve.");
+  expect(renderRoadmap({ ...preview, githubMilestone: null, parts: [], calls: [], skippedPrivate: 0 }, 200)).toContain("No GitHub milestone is bound");
 });
 
 test("an accepted part renders its draft, the part's kind and the release command, and never repeats a redacted title (AC2)", () => {

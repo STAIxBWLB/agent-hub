@@ -190,12 +190,34 @@ the same part make one draft and read the same task, and once the draft is saved
 best-effort: the caller is never refused after a board write, and a retry records a link an interrupted tail lost. Release stays
 the existing `ahub intake approve` by the person or the conductor acting for them, so no part reaches a peer before that approval
 and this command grants no release authority of its own. The reply and its notice carry the draft's id and the part's kind only:
-the result is a public view, so a part whose draft carries a PII signal reads `[withheld]` and no stored text is repeated. The
-GitHub write is part 3.
+the result is a public view, so a part whose draft carries a PII signal reads `[withheld]` and no stored text is repeated.
+
+**Publish.** `ahub roadmap decompose <id> --publish` and `hub_roadmap_decompose {id, publish}` (the same configured planner or
+unique conductor, refused during a PII or private turn) preview what the milestone's held drafts would create on GitHub, and
+write nothing: no `gh` call, no board row and no link. Only a held `spec` part creates an issue, because it is the one that needs
+its own spec issue before implementation; a `task` part is already its own held draft, a draft the person already released is
+skipped, and a private part is counted and never published. The plan is one `POST repos/<repo>/issues` per
+held spec part, carrying the part's title, its detail, the ids it cites and a `<!-- ahub-roadmap-decompose:<project>:<milestone>:<task> -->`
+marker, built by the pure `planPartPublish` (`src/hub/roadmap-decompose.ts`). The repository is the host-sampled origin
+(`Tasks.roadmapRepository`), never an argument, and a part whose answer is no longer stored is counted instead of published.
+The preview returns every planned `gh` argv and a fingerprint over the repository, the milestone, the GitHub milestone and those
+calls. `--apply --confirm <fingerprint>` runs that exact plan and is admitted only through the existing `github_write` gate
+(`Tasks.roadmapApplyAuthority`: the person, or the unique configured conductor with `roadmap.github_write = "conductor"`), the
+same gate `ahub roadmap sync` uses. One apply runs per milestone at a time: a second apply that overlaps a running one (a tool
+call that timed out and was retried with the same arguments) is refused with the cause and the next step, and each create
+re-reads the publish record first, so a part an earlier attempt already recorded is never POSTed again. Each created issue is
+recorded in `milestone_decomposition_publishes` and added to the
+milestone as an `issue` link through R1's own `linkMilestone`, so `ahub roadmap sync` keeps it in the GitHub milestone
+instead of detaching it. When the mirror has a binding for the milestone, the create itself carries the R4 membership field
+(`milestoneMembershipField`, the one construction `planRoadmapMirror` also uses), so the issue joins the GitHub milestone in the
+same call and no second link path exists; with the mirror off or no binding, the preview says the issue will join none. A `gh`
+call that fails, or an answer that is not the issue it claims, refuses and names the failure: no publish row and no link are
+written, the draft stays held, and the same preview applies again once GitHub answers.
 
 `milestone_decompositions` is additive and outside the roadmap integrity digest like a suggestion: a lost answer is asked for
 again, and no recovery format changes. `milestone_decomposition_accepts` is additive the same way: a lost accept row files the
-part again as a second draft rather than breaking a read.
+part again as a second draft rather than breaking a read. `milestone_decomposition_publishes` is additive too, so a lost publish
+row files the issue again; the issue's own marker names the draft it came from.
 
 ## Bottom-up placement (R3)
 

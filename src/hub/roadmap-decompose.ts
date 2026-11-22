@@ -1,12 +1,14 @@
 /** R2 (#1480): the decompose prompt and the strict reader of what a model answers. Pure: no clock, no I/O, no authority. */
 import { CLASSES } from "./board.ts";
-import { DECOMPOSE_LIMITS, type DecomposeIntake, type DecomposePart } from "./roadmap.ts";
+import { DECOMPOSE_LIMITS, githubRepo, milestoneId, milestoneMembershipField, type DecomposeIntake, type DecomposePart } from "./roadmap.ts";
 
 export const DECOMPOSE_ITEMS = 40;
 export const DECOMPOSE_OUTCOME_CHARS = 2000;
 export const DECOMPOSE_ITEM_CHARS = 300;
 /** Paths shown from one spec summary. The screen and the prompt read this one number, so what is screened is what is shown. */
 export const DECOMPOSE_PATHS = 6;
+/** A part title is cut to this before it becomes an issue title: a bound on what leaves the hub, not a claim about GitHub. */
+export const PART_ISSUE_TITLE_CHARS = 256;
 export interface DecomposeItem { ref: string; /** The label shown to the model: `spec <id>` or `issue <owner/repo#N>`. */ label: string; /** The only item text the model sees. */ text: string }
 export interface DecomposeMilestone { id: number; title: string; outcome: string }
 export interface DecomposeInput { milestone: DecomposeMilestone; specs: readonly DecomposeItem[]; issues: readonly DecomposeItem[] }
@@ -77,4 +79,61 @@ export function parseDecomposition(text: string, prompt: DecomposePrompt): Decom
     parts.push({ title, detail, class: taskClass, intake, cites: [...new Set(cites)] });
   }
   return { parts, dropped };
+}
+
+/**
+ * R2 (#1480) part 3: one held draft of a milestone, as the publish preview reads it. `title`/`detail`/`cites` come from the
+ * answer the accept came from; the caller screens them and leaves a part it cannot render out of this list.
+ */
+export interface PublishDraft {
+  /** The part's 1-based position, as the accept recorded it. */
+  part: number;
+  /** The held draft task the part became. */
+  task: number;
+  intake: DecomposeIntake;
+  title: string;
+  detail: string;
+  cites: readonly string[];
+  /** The issue a previous apply recorded for this draft, or null. */
+  published: number | null;
+  /** `held` while the intake hold stands; `released` once the person approved the draft. */
+  hold: "held" | "released";
+}
+/** `create`: this apply makes the issue; `published`: an earlier apply did; `task`: the draft is the work item; `released`: no hold. */
+export type PublishAction = "create" | "published" | "task" | "released";
+export interface PublishPlanPart { part: number; task: number; intake: DecomposeIntake; issue: number | null; action: PublishAction }
+export interface PublishPlan { parts: PublishPlanPart[]; calls: string[][] }
+
+/** The issue's own identity: the project, milestone and draft it was created for, readable long after the local row is gone. */
+export function partIssueMarker(project: string, milestone: number, task: number): string {
+  if (typeof project !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(project)) throw new Error("invalid roadmap project marker");
+  return `<!-- ahub-roadmap-decompose:${project}:${milestoneId(milestone)}:${milestoneId(task)} -->`;
+}
+
+/**
+ * Plan the publish of one milestone's held drafts. Only a held `spec` part creates anything: it needs its own spec issue before
+ * implementation, so the create carries the part's text and, when the milestone is bound to a GitHub milestone, the same
+ * membership field `planRoadmapMirror` writes. A `task` part is already its own work item, a released draft is no longer this
+ * hold's work and a part recorded as published is not created again. Pure: the caller owns authority, privacy and the calls.
+ */
+export function planPartPublish(input: { project: string; repo: string; milestone: number; githubMilestone: number | null; parts: readonly PublishDraft[] }): PublishPlan {
+  const repo = githubRepo(input.repo), milestone = milestoneId(input.milestone);
+  const githubMilestone = input.githubMilestone === null ? null : milestoneId(input.githubMilestone);
+  const parts: PublishPlanPart[] = [], calls: string[][] = [], seen = new Set<number>();
+  for (const draft of input.parts) {
+    const task = milestoneId(draft.task), part = milestoneId(draft.part);
+    if (seen.has(task)) throw new Error("duplicate decomposition draft");
+    seen.add(task);
+    if (draft.hold === "released") { parts.push({ part, task, intake: draft.intake, issue: draft.published, action: "released" }); continue; }
+    if (draft.published !== null) { parts.push({ part, task, intake: draft.intake, issue: milestoneId(draft.published), action: "published" }); continue; }
+    if (draft.intake === "task") { parts.push({ part, task, intake: draft.intake, issue: null, action: "task" }); continue; }
+    const title = clean(draft.title, PART_ISSUE_TITLE_CHARS), detail = clean(draft.detail, DECOMPOSE_LIMITS.detail), cites = clean(draft.cites.join(", "), DECOMPOSE_LIMITS.detail);
+    if (!title || !detail) throw new Error("a decomposition part has no text to publish");
+    const body = [detail, "", `Roadmap milestone ${milestone}, part ${part}: this part needs its own spec issue before implementation.`,
+      ...(cites ? ["", `Cites: ${cites}`] : []), "", partIssueMarker(input.project, milestone, task)].join("\n");
+    calls.push(["api", `repos/${repo}/issues`, "--hostname", "github.com", "--method", "POST", "-f", `title=${title}`, "-f", `body=${body}`,
+      ...(githubMilestone === null ? [] : milestoneMembershipField(githubMilestone))]);
+    parts.push({ part, task, intake: draft.intake, issue: null, action: "create" });
+  }
+  return { parts, calls };
 }

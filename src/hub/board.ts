@@ -664,6 +664,11 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS milestone_decomposition_accepts (
       decomposition INTEGER NOT NULL, milestone INTEGER NOT NULL, part INTEGER NOT NULL, task INTEGER NOT NULL,
       intake TEXT NOT NULL, by TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(decomposition,part))`);
+    // R2 part 3 (#1480): the one issue a published part created, additive like the accept row. A lost row publishes the part
+    // again; the issue's own marker names the draft it came from.
+    this.db.run(`CREATE TABLE IF NOT EXISTS milestone_decomposition_publishes (
+      decomposition INTEGER NOT NULL, milestone INTEGER NOT NULL, part INTEGER NOT NULL, issue INTEGER NOT NULL,
+      by TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(decomposition,part))`);
 
     this.db.run(`CREATE TABLE IF NOT EXISTS research_campaigns (
       id TEXT NOT NULL, project TEXT NOT NULL, parent_task_id INTEGER NOT NULL, revision INTEGER NOT NULL,
@@ -3116,6 +3121,26 @@ export class Board {
     this.db.query("INSERT OR IGNORE INTO milestone_decomposition_accepts(decomposition,milestone,part,task,intake,by,at) VALUES(?,?,?,?,?,?,?)")
       .run(milestoneId(row.decomposition), milestoneId(row.milestone), milestoneId(row.part), milestoneId(row.task), row.intake, actor, at);
     return this.decompositionAccept(row.decomposition, row.part)!;
+  }
+
+  /** R2 part 3: every part held for one milestone, oldest answer and lowest position first, whatever answer it came from. */
+  decompositionAcceptsFor(milestone: number): DecompositionAccept[] {
+    const rows = this.db.query("SELECT * FROM milestone_decomposition_accepts WHERE milestone=? ORDER BY decomposition, part").all(milestoneId(milestone)) as Record<string, unknown>[];
+    return rows.map(parseDecompositionAccept);
+  }
+
+  /** R2 part 3: the issue a published part created, if an earlier apply made one. */
+  decompositionPublish(decomposition: number, part: number): number | undefined {
+    const row = this.db.query("SELECT issue FROM milestone_decomposition_publishes WHERE decomposition=? AND part=?").get(milestoneId(decomposition), milestoneId(part)) as Record<string, unknown> | null;
+    return row ? milestoneId(row.issue) : undefined;
+  }
+
+  /** R2 part 3: record the issue one apply created. A repeated apply of the same part keeps the first row. */
+  recordDecompositionPublish(row: { decomposition: number; milestone: number; part: number; issue: number }, by: string, now = Date.now()): number {
+    const actor = milestoneActor(by), at = milestoneId(now);
+    this.db.query("INSERT OR IGNORE INTO milestone_decomposition_publishes(decomposition,milestone,part,issue,by,at) VALUES(?,?,?,?,?,?)")
+      .run(milestoneId(row.decomposition), milestoneId(row.milestone), milestoneId(row.part), milestoneId(row.issue), actor, at);
+    return this.decompositionPublish(row.decomposition, row.part)!;
   }
 
   /** Compare-and-set from pending: a second settle of the same suggestion changes nothing. */
