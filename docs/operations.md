@@ -738,7 +738,10 @@ The hub ignores a `conductor` on another kind, or on a peer whose effective
 the role to nobody else, so the person conducts from `ahub console`. Setting the
 conductor's start mode to `headless` is refused until the role moves, and
 `ahub doctor`'s `roles` row names the settled holders and warns about an ignored
-conductor. The conductor splits work into owned tasks,
+conductor. Its `routing classes` row warns when a rostered peer that can
+implement appears in no `[classes.*].peers` list of the routing the hub loaded,
+naming the file and the class lines to edit, because routing never offers that
+peer work automatically (#1626 C). The conductor splits work into owned tasks,
 observes `hub_status`, moves stalled work and obtains review before reporting
 results and open decisions. It does not implement the tasks it handed out.
 `hub_peer_start` starts a peer in the start mode a person set for it (see

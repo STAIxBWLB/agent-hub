@@ -365,6 +365,23 @@ export function implementers(history: readonly { by: PeerId; event: string }[] |
   return new Set((history ?? []).filter(entry => (entry.event === "accepted" || entry.event === "done") && entry.by !== "user").map(entry => entry.by));
 }
 
+/**
+ * #1626 C: `ahub doctor`'s routing row. The caller passes the peers it found rostered with implementer work; a peer that no
+ * `[classes.*].peers` list names can never be offered a task automatically, so the row says which peers those are and where the
+ * class lists live. Pure, and a warning rather than a failure: routing and the file facts come in from the caller.
+ */
+export function classListRow(implementers: readonly PeerId[], routing: Routing, file: string, present: boolean): { ok: boolean | undefined; detail: string } {
+  const listed = new Set<string>();
+  for (const policy of Object.values(routing.classes)) for (const peer of policy?.peers ?? []) listed.add(peer);
+  const missing = [...new Set(implementers)].filter(peer => !listed.has(peer)).sort();
+  if (!missing.length) return { ok: true, detail: "every rostered implementer is in a class peer list" };
+  const classes = Object.keys(routing.classes).sort();
+  const lists = classes.length ? classes.map(name => `[classes.${name}].peers`).join(", ") : "[classes.implement].peers";
+  const where = present ? file : `${file} (no such file yet, so the shipped default is in use: create it)`;
+  const them = missing.length === 1 ? "it" : "them";
+  return { ok: undefined, detail: `${missing.join(", ")} can implement but no [classes.*].peers list names ${them}, so the hub never offers ${them} a task automatically; add ${missing.join(", ")} to one of the class peer lists in ${where} (${lists})` };
+}
+
 export interface PlannerWalkInput {
   /** The settled planner holders, sorted by id. The walk sorts again, so an unsorted input cannot change the result. */
   planners: readonly PeerId[];
