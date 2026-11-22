@@ -7295,6 +7295,12 @@ export async function startDaemon(opts: DaemonOptions) {
     finally { registry?.close(); }
   }));
   startupCleanup.push(() => instructionReceipts.close());
+  instructionReceipts.seedMode(() => {
+    try {
+      const instructionDisplay = readEditable(opts.cwd, "config.local.json");
+      return instructionDisplay !== null && JSON.parse(instructionDisplay)?.instructed?.mode === "off" ? "off" : "exact";
+    } catch { return "off"; } // Unknown display state cannot re-enable a lost witness.
+  });
   const effectiveInstructionMode = () => instructionReceipts.mode();
   /**
    * Claude Code's version, from the last row of its transcript that names one (its rows carry it): the last MiB is read,

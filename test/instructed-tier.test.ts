@@ -60,7 +60,7 @@ test("the exact form policy closes unknown forms and detects task scope", async 
   expect(exactForm(["stop", "jcode"])).toBeDefined();
   expect(exactForm(["pause", "jcode"])).toBeDefined();
   expect(exactForm(["resume", "jcode"])).toBeDefined();
-  expect(exactForm(["settings", "set", "budget.gate", "0.9"])).toBeDefined();
+  for (const key of ["budget.gate", "review.gate", "review.unknown_quota", "review.max_minutes"]) expect(exactForm(["settings", "set", key, "0.9"])).toBeUndefined();
   expect(exactForm(["model", "set", "jcode", "model-1"])).toBeDefined();
   expect(exactForm(["model", "clear", "jcode"])).toBeDefined();
   expect(exactForm(["backlog", "pull", "1055"])?.taskId).toBe(1055);
@@ -322,7 +322,7 @@ test("instructed mode is machine-local and cannot be changed by a tools CLI", as
     const witness = new InstructionReceipts(witnessFile, async () => undefined);
     expect(witness.mode()).toBe("exact"); witness.setMode("off"); witness.close();
     const restarted = new InstructionReceipts(witnessFile, async () => undefined);
-    try { expect(restarted.mode()).toBe("off"); restarted.setMode("exact"); expect(restarted.mode()).toBe("exact"); } finally { restarted.close(); }
+    try { expect(restarted.mode()).toBe("off"); restarted.seedMode(() => { throw new Error("display must not be read"); }); restarted.setMode("exact"); expect(restarted.mode()).toBe("exact"); } finally { restarted.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -375,8 +375,14 @@ test("the person-disabled mode witness survives a daemon restart and a file edit
   Object.assign(process.env, { HOME: home, CLAUDE_CONFIG_DIR: join(home, "claude"), AGENTHUB_HOME: join(home, "hub"), AMEM_HOME: join(home, "mem") });
   const stateDir = stateDirFor(cwd); let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
   try {
+    writeFileSync(join(cwd, ".agenthub/config.local.json"), JSON.stringify({ instructed: { mode: "off" } }));
     daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false });
     let consoleClient = await ControlClient.connect(stateDir, { role: "console" });
+    const initial = await consoleClient.request({ t: "settings_get" });
+    expect(initial.rows.find((row: { key: string }) => row.key === "instructed.mode").value).toBe("off");
+    writeFileSync(join(cwd, ".agenthub/config.local.json"), JSON.stringify({ instructed: { mode: "exact" } }));
+    expect((await consoleClient.request({ t: "settings_get" })).rows.find((row: { key: string }) => row.key === "instructed.mode").value).toBe("off");
+    expect((await consoleClient.request({ t: "settings_set", key: "instructed.mode", value: "exact" })).ok).toBe(true);
     const localPath = join(cwd, ".agenthub/config.local.json");
     writeFileSync(localPath, "{");
     const failedOff = await consoleClient.request({ t: "settings_set", key: "instructed.mode", value: "off" });

@@ -46,7 +46,7 @@ export function exactForm(argv: readonly string[]): ExactForm | undefined {
   if (["stop", "pause", "resume"].includes(command ?? "") && argv.length === 2 && sub && /^[a-z][a-z0-9-]*$/.test(sub)) return { argv: [...argv], targetPeer: sub };
   if (command === "settings" && sub === "set" && tail.length >= 2 && tail.length <= 3) {
     const [key, value, flag] = tail;
-    if (key && value && (key === "tasks.auto_pull" || /^tasks\.wip_limits\.[a-z][a-z0-9-]*$/.test(key) || key === "tasks.queue_backpressure.max_queued" || key === "tasks.queue_backpressure.max_oldest_s" || key === "budget.gate" || key === "review.gate" || key === "review.unknown_quota" || key === "review.max_minutes") && (flag === undefined || flag === "--yes")) return { argv: [...argv] };
+    if (key && value && (key === "tasks.auto_pull" || /^tasks\.wip_limits\.[a-z][a-z0-9-]*$/.test(key) || key === "tasks.queue_backpressure.max_queued" || key === "tasks.queue_backpressure.max_oldest_s") && (flag === undefined || flag === "--yes")) return { argv: [...argv] };
   }
   return;
 }
