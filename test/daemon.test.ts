@@ -1551,7 +1551,7 @@ test("during a PII turn the local worker cannot accept with a plan, finish or re
   cleanup.push(model.stop);
   process.env.OMNIROUTE_API_KEY = "k";
   cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
-  const { console_ } = await hub({ modelUrl: model.url, cwd: tempGitProject() });
+  const { console_ } = await hub({ modelUrl: model.url, cwd: tempGitProject(), wipLimits: { local: 4 } });
   await console_.request({ t: "start", peer: "local", args: { model: "vllm/x" } });
   const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
   expect((await op("hub_task_propose", { title: "ordinary cleanup", class: "implement", owner: "local" })).text).toContain("task #1");

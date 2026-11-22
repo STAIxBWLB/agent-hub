@@ -5400,7 +5400,7 @@ export class Tasks {
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     // #1626 A: an owner choice the hub makes on its own never offers a peer that must refuse it. A person's or conductor's explicit assignment, a claim and a roster move stay as they were.
-    const hubOffer = !opts.roster && !opts.override && !opts.claim && !opts.namedOwner && !opts.conductorManual && !opts.queueOverride && !opts.plannerPull && (by === HUB || !opts.candidates);
+    const hubOffer = !opts.roster && !opts.override && !opts.claim && !opts.namedOwner && !opts.conductorManual && !opts.queueOverride && !opts.plannerPull && opts.reason !== "budget" && opts.reason !== "offline" && (by === HUB || !opts.candidates); // a pause or offline relay moves work that already has an owner, so it is not an offer
     const plannerFull = plannedMove ? this.plannerFull(task) : hubOffer ? this.hubOfferFull(task) : [];
     const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: [...plannerFull, ...this.studyExcludedOwners(task)], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}), // A self-claim hands over no envelope; reviewer admission remains automatic.
       contextOverride: !!(opts.queueOverride || opts.claim),

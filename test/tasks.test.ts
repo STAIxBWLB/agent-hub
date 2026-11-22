@@ -395,7 +395,7 @@ test("triage: a task without a class gets one from the hub's model, recorded in 
   const base = await setup();
   const asked: string[] = [];
   let onCampus = true;
-  const tasks = new Tasks({
+  const tasks = new Tasks({ wipLimit: () => 8,
     board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: () => {},
     triage: { classify: async (title) => (asked.push(title), title.includes("unclear") ? undefined : "bulk_edit"), onCampus: async () => onCampus },
   });
@@ -2127,7 +2127,7 @@ test("an escalation away is the previous owner's failure; work that waited for a
 
 test("the shadow prediction never changes assignment: routed and named work go where routing sends them; explain and the record show it", async () => {
   const recorded: { task: number; verdict: string; where: string }[] = [];
-  const { tasks } = await turnFreeRig({ ...({ recordSplit: (task, p, where) => recorded.push({ task, verdict: p.verdict, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` }), wipLimit: () => 5 });
+  const { tasks } = await turnFreeRig({ ...({ recordSplit: (task, p, where) => recorded.push({ task, verdict: p.verdict, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` }), wipLimit: () => 8 });
   const kimiPart = await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   const routed = await tasks.propose("claude", { title: "routed part", class: "implement", refs: { paths: ["src/a.ts"] } });
   expect(routed.owner).toBe("codex"); // the configured order, whatever the records say
