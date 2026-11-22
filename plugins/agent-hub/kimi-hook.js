@@ -440,23 +440,23 @@ var init_compat = __esm(() => {
     },
     qwen: {
       label: "Qwen Code",
-      verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8", "0.26.9", "0.27.0"],
+      verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8", "0.26.9", "0.27.0", "0.27.1", "0.28.3"],
       gate: "contract",
       probe: ["qwen", "--version"],
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); exact 0.26.9 and 0.27.0 repeat those account-free probes on macOS arm64. Real model turns and Linux repetition of those versions remain unverified. The historical A/B/B setter result did not identify the third request's purpose. Exact 0.26.9 and 0.27.0 pass isolated suggestions-off A/B/clear/A probes; production live-setter admission stays unavailable pending a separate decision. Another version may change those contracts.",
-      receipt: "docs/verification/2026-11-09-qwen-0270-acp.md"
+      trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); exact 0.26.9, 0.27.0, 0.27.1 and 0.28.3 repeat those account-free probes on macOS arm64. Real model turns and Linux repetition of those versions remain unverified. The historical A/B/B setter result did not identify the third request's purpose. Exact 0.26.9 and 0.27.0 pass isolated suggestions-off A/B/clear/A probes; production live-setter admission stays unavailable pending a separate decision. Another version may change those contracts.",
+      receipt: "docs/verification/2026-11-22-qwen-0283-acp.md"
     },
     "qwen-dual": {
       label: "Qwen Code dual-output TUI",
-      verified: ["0.26.1", "0.27.0", "0.27.1"],
+      verified: ["0.26.1", "0.27.0", "0.27.1", "0.28.3"],
       gate: "contract",
       probe: ["qwen", "--version"],
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "Exact 0.27.0 and 0.27.1 each repeat normal-Bus Q2 and account-free normal-mode Q3/Q5/Q6/Q7 on macOS arm64 against a matched control (0.26.1, then 0.27.0). Existing deny and external-stop limits remain. Real model/account turns, Linux and lifetime containment remain unverified; direct busy-submit characterization is separate from normal-Bus Q2.",
-      receipt: "docs/verification/2026-11-10-qwen-0271-dual-output.md"
+      trustNote: "Exact 0.27.0, 0.27.1 and 0.28.3 each repeat normal-Bus Q2 and account-free normal-mode Q3/Q5/Q6/Q7 on macOS arm64 against a matched control. Existing deny and external-stop limits remain. Real model/account turns, Linux and lifetime containment remain unverified; direct busy-submit characterization is separate from normal-Bus Q2.",
+      receipt: "docs/verification/2026-11-22-qwen-0283-dual-output.md"
     }
   };
   MAX_BYTES = 64 * 1024;
