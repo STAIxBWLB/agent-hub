@@ -259,7 +259,8 @@ async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> 
 async function push(envs: Envelope[], deliveryId?: string, generation?: string): Promise<void> {
   const parent = replyParent(envs); // reply_to on this id keeps the hop count honest
   const single = envs.length === 1;
-  const content = single ? sanitize(parent.body) : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---\n${sanitize(e.body)}`).join("\n\n");
+  const channelBody = (body: string) => { const safe = sanitize(body); return safe.startsWith("/") ? `\\${safe}` : safe; };
+  const content = single ? channelBody(parent.body) : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---\n${channelBody(e.body)}`).join("\n\n");
   const meta = {
     source: single ? parent.from : "hub-digest",
     ...(single ? {} : { sources: [...new Set(envs.map((e) => e.from))].join(",") }),

@@ -3956,8 +3956,8 @@
     {
       "id": "room-x4-claude-single-body-sanitize",
       "file": "src/adapters/claude-channel.ts",
-      "search": "  const content = single ? sanitize(parent.body) : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---\\n${sanitize(e.body)}`).join(\"\\n\\n\");",
-      "replacement": "  const content = single ? parent.body : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---\\n${sanitize(e.body)}`).join(\"\\n\\n\");",
+      "search": "  const content = single ? channelBody(parent.body) : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---\\n${channelBody(e.body)}`).join(\"\\n\\n\");",
+      "replacement": "  const content = single ? parent.body : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---\\n${channelBody(e.body)}`).join(\"\\n\\n\");",
       "testFile": "test/rooms-native-privacy.test.ts",
       "testName": "single Claude channel push quotes forged hub headers and keeps digest framing unchanged"
     },

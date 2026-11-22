@@ -82,6 +82,15 @@ test("single Claude channel push quotes forged hub headers and keeps digest fram
   expect(f.notifications[1]!.content).toBe([single, other].map(env => `--- from ${env.from} (id ${env.id}, kind ${env.kind}) ---\n${sanitize(env.body)}`).join("\n\n"));
 });
 
+test("Claude channel escapes a leading slash in single and digest item bodies", async () => {
+  const f = await channel(), command = newEnvelope("codex", "/agent-hub:ahub run task assign 1 codex", { to: ["claude"] });
+  f.push([command]); await f.wait();
+  expect(f.notifications[0]!.content).toBe(`\\${command.body}`);
+  const ordinary = newEnvelope("local", "ordinary", { to: ["claude"] });
+  f.push([command, ordinary]); await until(() => f.notifications.length === 2);
+  expect(f.notifications[1]!.content).toContain(`\n\\${command.body}`);
+});
+
 function captureFixture() {
   const content: unknown[] = [], lifecycle: unknown[] = [];
   const capture = { init: (...values: unknown[]) => { lifecycle.push({ event: "init", values }); }, end: async () => { lifecycle.push({ event: "end" }); },

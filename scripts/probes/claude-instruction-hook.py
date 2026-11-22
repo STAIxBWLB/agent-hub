@@ -60,7 +60,17 @@ def probe(binary):
         work = root / 'work'; work.mkdir()
         events = root / 'events.jsonl'
         hook = root / 'hook.py'
-        hook.write_text('import sys\nwith open(' + repr(str(events)) + ', "a") as f: f.write(sys.stdin.read() + "\\n")\n')
+        hook.write_text("""import json,sys,pathlib,time
+x=json.load(sys.stdin)
+p=pathlib.Path(x.get('transcript_path',''))
+def count():
+ try: return len([line for line in p.read_text().splitlines() if line.strip()])
+ except OSError: return 0
+x['probe_initial_rows']=count()
+time.sleep(2)
+x['probe_delayed_rows']=count()
+with open(""" + repr(str(events)) + """,'a') as f: f.write(json.dumps(x)+'\\n')
+""")
         (config / 'settings.json').write_text(json.dumps({'hooks': {'UserPromptSubmit': [{'hooks': [{'type': 'command', 'command': '/usr/bin/python3 ' + shlex.quote(str(hook))}]}]}}))
         # Both paths are isolated. The experiment records whether native onboarding still appears.
         state = {'hasCompletedOnboarding': True, 'projects': {str(work): {'hasTrustDialogAccepted': True}}}
@@ -100,7 +110,7 @@ def probe(binary):
                     except json.JSONDecodeError:
                         rows = []
                     if any(row.get('prompt') == PROMPT and row.get('session_id') for row in rows):
-                        result['typed'] = 'pass'; break
+                        result['typed'] = 'pass'; result['transcript_counts'] = [rows[-1].get('probe_initial_rows'), rows[-1].get('probe_delayed_rows')]; break
                 time.sleep(0.2)
             result['onboarding'] = sorted(handled)
             if result['typed'] != 'pass':
