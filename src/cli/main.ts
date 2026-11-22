@@ -64,7 +64,7 @@ import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, undoableDef, type SettingRow } from "../hub/settings.ts";
 import { startModeOf } from "../hub/start-mode.ts";
 import { rolesRow } from "./role-doctor.ts";
-import { currentRouting, OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
+import { classListRow, currentRouting, loadRouting, OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -3353,6 +3353,18 @@ const commands: Record<string, () => Promise<void> | void> = {
         const config = loadConfig(cwd), assigned = catalogAssignments(config.catalog_roles);
         for (const peer of Object.keys(assigned)) selectedRoles(peer, config.roles, assigned, catalog);
       } catch { row(false, "catalog roles", "invalid assignment id, shape or flow base"); }
+      // #1626 C: a rostered peer that can implement but sits in no class list never gets a task from routing. A warning, like the rows above.
+      try {
+        const config = loadConfig(cwd), scope = readInstanceRoleConfig(cwd);
+        const roster = (peer: string) => rosterAllows(config.roster, peer, config.pi.enabled, scope.instances, scope.catalog);
+        const implementers = [...new Set([...Object.keys(config.roles), ...Object.keys(config.roster)])]
+          .filter(peer => roster(peer) && ((config.roles[peer] ?? []).includes("implementer") || [...(definitionOf(peer, scope.instances)?.roles ?? [])].includes("implementer")))
+          .sort();
+        const file = join(cwd, ".agenthub", "routing.toml");
+        const result = classListRow(implementers, loadRouting(cwd), file, existsSync(file));
+        // An advisory row, so it warns rather than failing: only a row the person must repair is a fail.
+        checks.push({ name: "routing classes", section: "Config", level: result.ok === undefined ? "warn" : result.ok ? "ok" : "fail", detail: result.detail });
+      } catch (error) { row(undefined, "routing classes", `could not be checked: ${error instanceof Error ? error.message : "unknown error"}`); }
       for (const bin of DOCTOR_TOOL_PROBES) {
         const v = version(bin);
         row(!!v, bin, v ?? "not found on PATH");
