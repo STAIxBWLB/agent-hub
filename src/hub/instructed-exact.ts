@@ -9,11 +9,11 @@ export function parseExactInstruction(args: string): string[] | undefined {
   return words.slice(1);
 }
 
-/** A missing machine-local setting uses exact mode; malformed values never enable it. */
-export function instructedMode(value: unknown): "off" | "exact" {
-  if (value === undefined) return "exact";
-  if (value === "off" || value === "exact") return value;
-  throw new Error("instructed.mode must be off or exact");
+/** A missing machine-local setting uses intent mode; malformed values never enable it. */
+export function instructedMode(value: unknown): "off" | "exact" | "intent" {
+  if (value === undefined) return "intent";
+  if (value === "off" || value === "exact" || value === "intent") return value;
+  throw new Error("instructed.mode must be off, exact or intent");
 }
 
 export interface ExactForm { argv: string[]; taskId?: number; targetPeer?: string }
