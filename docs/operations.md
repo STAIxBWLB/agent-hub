@@ -61,6 +61,11 @@ its operationId on the delegated console connection; existing native ownership
 and session-identity checks remain. Record actual observations in the
 smoke ledger; the presence of this option proves no outstanding #273 live leg.
 
+
+## Claude plugin skills
+
+Claude's agent-hub plugin carries `ahub-status`, `ahub-manage`, `ahub-use` and the person-invoked `ahub` skill. `ahub doctor` checks the user plugin's skill files and reports a repair command when missing. The person types `/agent-hub:ahub` to prepare a command; it does not grant authority or create a receipt. Existing sessions can continue running an older plugin server after setup or upgrade.
+
 ## Command output
 
 `ahub status` defaults to an attention-first summary with next-step commands; `--verbose` or `--full` prints the detailed view, `--full` also keeps long identifiers whole, and `--ascii` uses ASCII markers. `board`, `budget`, `doctor`, `projects`, `queue list`, `turns`, `report` and `usage` print shared console tables and labelled details.
