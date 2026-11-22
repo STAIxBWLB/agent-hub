@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { INSTRUCTION_CONTROL_TIMEOUT_MS } from "../hub/instructed-exact.ts";
 import { assertConductorOperationLocal, authorizeConductorOperation, authorizeConductorLaunch, issueConductorOperation, preflightConductorRecovery, retireConductorOperation } from "./conductor-recovery.ts";
 import { runtimePruneHealth } from "../hub/runtime-prune-health.ts";
 import { conductorLocalOperation, conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
@@ -3123,7 +3124,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (caller.role !== "tools" || !session || liveTest) return fail("instruction requires the current managed Claude session");
       const hub = await connect();
       try {
-        const result = await hub.request({ t: "instruction_execute", session, ...(args.length > 1 ? { argv: args.slice(1) } : {}) }, 35_000);
+        const result = await hub.request({ t: "instruction_execute", session, ...(args.length > 1 ? { argv: args.slice(1) } : {}) }, INSTRUCTION_CONTROL_TIMEOUT_MS);
         if (typeof result.output === "string") process.stdout.write(result.output);
         if (result.ok !== true) fail(String(result.error ?? "instruction was not completed"));
       } finally { hub.close(); }

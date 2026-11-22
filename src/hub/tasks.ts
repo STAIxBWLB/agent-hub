@@ -1,4 +1,5 @@
 import { requireConductor } from "./conductor.ts";
+import { instructedExecution } from "./instructed-exact.ts";
 import { managedTaskPullRequest } from "./task-pr.ts";
 import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevision, milestoneLinkRef, githubRepo, MILESTONE_STATES, type Milestone, type MilestoneLinkKind, type MilestonePatch, type MilestoneState, type MilestoneSuggestion, type SuggestionItemKind, type DecomposePart, type DecomposeIntake, type MilestoneDecomposition, type DecompositionAccept } from "./roadmap.ts";
 import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
@@ -2636,6 +2637,11 @@ export class Tasks {
       const now = this.studyTime(), deadline = Date.parse(original.contract.stopPolicy.deadline);
       if (deadline <= now || deadline - now > 90 * 86_400_000) throw new PreEffectToolRefusal("study deadline must be in the next ninety days at approval");
       priv ||= latest.private || current.private;
+      const instruction = instructedExecution.getStore();
+      if (instruction?.active) {
+        instruction.current();
+        if (priv || prepared.some(unit => unit.create?.signals?.some(signal => signal === "pii" || signal === "pii_path"))) throw new PreEffectToolRefusal("an instructed study approval cannot create private work; run it in a terminal");
+      }
       if (priv && [...current.adopted.values(), ...current.reused.values()].some(task => !this.isPii(task)))
         throw new PreEffectToolRefusal("a private study cannot retain a public task without changing its authority");
       for (const unit of prepared) if (unit.create) {
@@ -2647,6 +2653,7 @@ export class Tasks {
       const mode = this.d.coordination?.();
       let result: ReturnType<Board["activateCampaign"]>;
       requestCheck();
+      instruction?.beginStudy?.(); // The synchronous board transaction now owns the screened binding.
       try { result = this.d.board.activateCampaign(id, revision, this.d.project, by, now, prepared, current.parent.history.length, priv, { eligibleOwners: this.studyEligibleOwners(original.contract) }); }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "study approval was not saved"); }
       for (const child of result.children) {

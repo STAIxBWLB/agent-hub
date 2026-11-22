@@ -62,6 +62,11 @@ Rulings of hub task 1072 (the conductor, 2026-11-22), per key, not calibrated:
 - `instruction-receipt.ts` `MAX_OPERATIONS`: safety floor, bounds authority.
 - `instruction-receipt.ts` `MAX_RECEIPTS`: safety floor, bounds rows per external hook event.
 
+Rulings of hub task 1078 (the conductor, 2026-11-23), per key, not calibrated:
+
+- `INSTRUCTION_CHILD_TIMEOUT_MS`: operational, the existing child deadline moved to an export.
+- `INSTRUCTION_CONTROL_TIMEOUT_MS`: operational, the derived control-call deadline with transport slack.
+
 Rulings of hub task 1065 (the conductor, 2026-11-22), per key, not calibrated:
 
 - `daemon.ts` `drain` `64 * 1024`: safety floor, caps external process output.

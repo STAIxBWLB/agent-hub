@@ -214,7 +214,7 @@ export interface PiiScreenDeps {
 }
 
 /** With triage (8 s) and a brief (2 x 2 s), a proposal answers within 20 s, under the plugin's 30 s control timeout. */
-const SCREEN_TIMEOUT_MS = 8_000;
+export const SCREEN_TIMEOUT_MS = 8_000;
 /** On campus, the share of the deadline the on-device model gets before the gateway takes over (a cold load, an error). */
 const DEVICE_SHARE = 0.6;
 /**
