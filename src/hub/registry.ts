@@ -38,7 +38,7 @@ export function projectFromRow(raw: Record<string, unknown>): Project {
   return project;
 }
 
-const idFor = (root: string) => `p_${createHash("sha256").update(root).digest("hex").slice(0, 24)}`;
+export const idFor = (root: string) => `p_${createHash("sha256").update(root).digest("hex").slice(0, 24)}`;
 // Preserve the original identifier of missing legacy checkouts as a reservation.
 const legacyRoot = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
 const canonicalState = canonicalPath;

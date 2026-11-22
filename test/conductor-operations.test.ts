@@ -142,7 +142,7 @@ test("operational CLI roster settings queue logs export and doctor work as condu
     const privateTask=board.propose("user",{title:"PRIVATE_TITLE_CANARY",class:"plan",signals:["pii_path"]});
     appendFileSync(join(f.stateDir,"hub.log"),`task #${privateTask.id} PRIVATE_TITLE_CANARY\npublic operational marker\n`);
     appendFileSync(join(f.stateDir,"events.jsonl"),JSON.stringify({v:1,at:new Date().toISOString(),type:"task",id:privateTask.id,event:"proposed",class:"plan",pii:true,title:"PRIVATE_TITLE_CANARY",body:"PRIVATE_BODY_CANARY"})+"\n");
-    for(const args of [["roster","add","kimi"],["roster","remove","kimi","--yes"],["settings","set","task_sweep.enabled","false"],["doctor","--orphans","--kill","--json"],["logs"],["export"]]) {
+    for(const args of [["roster","add","kimi","--yes"],["roster","remove","kimi","--yes"],["settings","set","task_sweep.enabled","false"],["doctor","--orphans","--kill","--json"],["logs"],["export"]]) {
       const result=await runOperationalCli(f.root,args);expect(result.code,result.stderr).toBe(0);expect(result.stdout).not.toMatch(/PRIVATE_TITLE_CANARY|PRIVATE_BODY_CANARY/);
       const refused=await runOperationalCli(f.root,args,"claude");expect(refused.code).toBe(1);expect(refused.stderr).toMatch(/conductor/);expect(refused.stderr).toContain("console");
     }
