@@ -1539,7 +1539,7 @@ async function turnFreeRig(extra: Partial<ConstructorParameters<typeof Tasks>[0]
   const told: string[] = [];
   // Every peer starts inside a native turn: its done is a tool call of that turn.
   const state = { capable: new Set(["claude", "codex", "kimi"]), working: new Set(peerIds), tree: "t1", offers: 0, acked: [] as string[], current: true };
-  const tasks = new Tasks({ escalateAfter: PIN_TWO,
+  const tasks = new Tasks({ wipLimit: () => 8, escalateAfter: PIN_TWO, // #1626 A: automatic offers honour WIP, and these rigs offer several tasks to one peer
     board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: (l) => ctx.notices.push(l), tell: (peer, line) => told.push(`${peer}|${line}`), turnFree: () => true,
     capable: (p) => state.capable.has(p),
     idle: (p) => !state.working.has(p),
@@ -2827,7 +2827,7 @@ test("a second rejection whose escalation lifts a silent cohort returns the save
 });
 
 test("propose, assignTo, decline and a manual escalation each print exactly one console notice and keep their error (#297)", async () => {
-  const { tasks, bus, notices, board } = await setup();
+  const { tasks, bus, notices, board } = await setup(undefined, undefined, undefined, 8);
   const undelivered = () => notices.filter((l) => l.includes("delivery is not confirmed")).length;
   const failing = (id: string) => {
     const p = bus.publish.bind(bus);

@@ -154,7 +154,7 @@ test("sweep: explicit opt-in reassigns owner within routing constraints, reviewe
 });
 
 test("sweep: an auto-reassign whose assignment cannot publish is noticed as saved-but-unconfirmed and the sweep goes on (#297)", async () => {
-  const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, unaccepted_min: 1, review_min: 1, ladder_min: 1, auto_reassign: true } });
+  const f = await fixture({ wipLimit: () => 8, sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, unaccepted_min: 1, review_min: 1, ladder_min: 1, auto_reassign: true } });
   const first = f.make();
   // Its own path, or the overlap cohort silences the second task's sweep (turn-free coordination).
   const m2 = f.board.propose("user", { title: "other work", class: "implement", refs: { paths: ["b.ts"] } });
@@ -292,7 +292,7 @@ for (const unavailable of ["offline", "paused"] as const) test(`ready-unassigned
 });
 
 test("ready-unassigned sweep continues after a saved assignment delivery failure", async () => {
-  const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1, auto_reassign: true } });
+  const f = await fixture({ wipLimit: () => 8, sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, ready_min: 1, ladder_min: 1, auto_reassign: true } });
   const first = f.board.propose("user", { title: "ready one", class: "implement", refs: { paths: ["one.ts"] } });
   const second = f.board.propose("user", { title: "ready two", class: "implement", refs: { paths: ["two.ts"] } });
   const at = Math.max(first.created, second.created) + 61_000;
