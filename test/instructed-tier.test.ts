@@ -237,7 +237,12 @@ test("the daemon executes one confirmed assignment through its inherited install
       // An agent's direct file edit cannot re-enable a mode the person disabled.
       expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);
       const reenable = await ControlClient.connect(stateDir, { role: "console" });
-      try { expect((await reenable.request({ t: "settings_set", key: "instructed.mode", value: "exact" })).ok).toBe(true); } finally { reenable.close(); }
+      try {
+        expect((await reenable.request({ t: "settings_set", key: "instructed.mode", value: "exact" })).ok).toBe(true);
+        local.instructed.mode = "off"; writeFileSync(localConfig, JSON.stringify(local));
+        const view = await reenable.request({ t: "settings_get" });
+        expect(view.rows.find((row: { key: string }) => row.key === "instructed.mode").value).toBe("exact");
+      } finally { reenable.close(); }
       const read = new Board(join(stateDir, "hub.db"));
       let privateId: number;
       try {
@@ -370,7 +375,13 @@ test("the person-disabled mode witness survives a daemon restart and a file edit
   try {
     daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false });
     let consoleClient = await ControlClient.connect(stateDir, { role: "console" });
-    expect((await consoleClient.request({ t: "settings_set", key: "instructed.mode", value: "off" })).ok).toBe(true);
+    const localPath = join(cwd, ".agenthub/config.local.json");
+    writeFileSync(localPath, "{");
+    const failedOff = await consoleClient.request({ t: "settings_set", key: "instructed.mode", value: "off" });
+    expect(failedOff.ok).toBe(false); expect(failedOff.error).toContain("witness is off");
+    const failedExact = await consoleClient.request({ t: "settings_set", key: "instructed.mode", value: "exact" });
+    expect(failedExact.ok).toBe(false); expect(failedExact.error).toContain("witness unchanged");
+    writeFileSync(localPath, JSON.stringify({ instructed: { mode: "exact" } }));
     const older = consoleClient.features.filter(feature => feature !== "instructed_exact");
     const recovery = await consoleClient.request({ t: "recovery", op: "prepare", expectedInstanceId: consoleClient.instanceId, operationId: "mode-witness-floor", targetFeatures: older });
     expect(recovery.ok).toBe(false); expect(recovery.error).toContain("target lacks instructed_exact");

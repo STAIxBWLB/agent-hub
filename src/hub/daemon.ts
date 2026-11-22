@@ -7295,7 +7295,7 @@ export async function startDaemon(opts: DaemonOptions) {
     finally { registry?.close(); }
   }));
   startupCleanup.push(() => instructionReceipts.close());
-  const effectiveInstructionMode = () => instructionReceipts.mode() === "off" || loadConfig(opts.cwd).instructed?.mode === "off" ? "off" : "exact";
+  const effectiveInstructionMode = () => instructionReceipts.mode();
   /**
    * Claude Code's version, from the last row of its transcript that names one (its rows carry it): the last MiB is read,
    * opened without blocking and only as a regular file, and the last version found is kept for a tail of big rows.
@@ -10654,7 +10654,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (row.key === "planner") return { ...row, hint: planner };
       if (row.key !== "instructed.mode") return row;
       const { pending: _pending, ...rest } = row;
-      return { ...rest, file: "hub.db", source: "person witness", value: instructionReceipts.mode() === "off" || !stored || stored.instructed?.mode === "off" ? "off" : "exact", fileValue: stored?.instructed?.mode ?? null, note: "Only the person's terminal changes the witness; config.local.json can only narrow it." };
+      return { ...rest, file: "hub.db", source: "person witness", value: instructionReceipts.mode(), fileValue: stored?.instructed?.mode ?? null, note: "Only the person's terminal changes the witness; config.local.json is a display copy." };
     }), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
@@ -10810,10 +10810,16 @@ export async function startDaemon(opts: DaemonOptions) {
     if (def.key === "instructed.mode") {
       if (authority !== "terminal" || instructedExecution.getStore()?.active || (value !== "off" && value !== "exact")) return { ok: false, error: "instructed.mode is changed only by the person in a terminal, to off or exact" };
       const before = instructionReceipts.mode();
-      instructionReceipts.setMode(value);
+      if (value === "off") instructionReceipts.setMode(value);
+      try {
+        writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, def.path.join(".")));
+      } catch (error) {
+        if (value === "off" && before !== value) recordSetting(def.key, before, value, source);
+        return { ok: false, error: `instructed.mode: ${value === "off" ? "witness is off; " : "witness unchanged; "}display copy could not be written: ${(error as Error).message}` };
+      }
+      if (value === "exact") instructionReceipts.setMode(value);
       if (before !== value) recordSetting(def.key, before, value, source);
-      const effective = effectiveInstructionMode();
-      return { ok: true, text: `instructed.mode: witness ${value}; effective ${effective}${effective !== value ? "; config.local.json narrows the mode" : ""}` };
+      return { ok: true, text: `instructed.mode: witness ${value}; config.local.json is a display copy` };
     }
     // #1408 R2: the conductor needs an interactive session, so its start mode cannot be set to headless while it holds the role. The refusal comes before any write, from the running policy.
     const modeRefusal = conductorStartModeRefusal(def, value);
@@ -11039,7 +11045,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", `For a busy peer, use ahub roster remove ${peer} --now explicitly; this stops its owned runtime or detaches its native session during the active turn.`, ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...tasks.rosterPreview(peer).map(move => sanitize(`task ${move.title}: ${move.to ? `${move.role} offered to ${move.to} if removed now` : `${move.role} stays with ${peer}; no eligible replacement`}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
       } catch (error) { return { ok: false, error: sanitize((error as Error).message) }; }
     }
-    if (def.key === "instructed.mode") return { ok: true, lines: [`The person witness is ${instructionReceipts.mode()}; the effective mode is ${effectiveInstructionMode()}.`, "Only a person's terminal changes the witness; config.local.json can only narrow it."] };
+    if (def.key === "instructed.mode") return { ok: true, lines: [`The person witness and effective mode are ${instructionReceipts.mode()}.`, "Only a person's terminal changes the witness; config.local.json is a display copy."] };
     if (def.key === "scoped_grants.protect_instructions") return { ok: true, lines: ["Applies now to scoped writes and edits of AGENTS.md, CLAUDE.md and QWEN.md, including symlinks and folded spellings.", "true asks a person; false keeps these documents grantable (the default). Explicit approval and never-ask keep their meaning."] };
     if (def.group === "Permissions") {
       const peer = def.path.at(-1)!;
