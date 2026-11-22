@@ -10103,10 +10103,10 @@ export async function startDaemon(opts: DaemonOptions) {
     return rawId;
   }
   /** One move renumbers its lane, so a card's `order` is its position and a drag and a Move button agree. */
-  function roadmapMove(id: number, horizon: string | undefined, order: number) {
+  async function roadmapMove(id: number, horizon: string | undefined, order: number) {
     const view = tasks.milestoneShow(USER, id), fields: Record<string, unknown> = { order };
     if (horizon === "now" || horizon === "next" || horizon === "later") if (horizon !== view.horizon) fields.horizon = horizon;
-    if (Object.keys(fields).length) tasks.milestoneEdit(USER, id, view.revision, fields);
+    if (Object.keys(fields).length) await tasks.milestoneEdit(USER, id, view.revision, fields);
     const lane = (fields.horizon === undefined ? view.horizon : fields.horizon) as string;
     const others = tasks.milestoneList(USER).filter(row => row.id !== id && row.horizon === lane).sort((left, right) => left.order - right.order || left.id - right.id).map(row => row.id);
     const at = Math.min(Math.max(order, 0), others.length);
@@ -11096,7 +11096,7 @@ export async function startDaemon(opts: DaemonOptions) {
               if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roadmap changes" };
               const id = roadmapFresh(a.id, a.revision);
               if (typeof a.order !== "number" || !Number.isSafeInteger(a.order) || a.order < 0) return bad;
-              roadmapMove(id, typeof a.horizon === "string" ? a.horizon : undefined, a.order);
+              await roadmapMove(id, typeof a.horizon === "string" ? a.horizon : undefined, a.order);
               return { ok: true, milestones: tasks.milestoneList(USER) };
             }
             case "roadmap_state": {
