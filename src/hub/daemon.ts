@@ -7340,7 +7340,8 @@ export async function startDaemon(opts: DaemonOptions) {
   instructionReceipts.seedMode(() => {
     try {
       const instructionDisplay = readEditable(opts.cwd, "config.local.json");
-      return instructionDisplay !== null && JSON.parse(instructionDisplay)?.instructed?.mode === "off" ? "off" : "exact";
+      const value = instructionDisplay === null ? undefined : JSON.parse(instructionDisplay)?.instructed?.mode;
+      return value === "off" || value === "exact" || value === "intent" || value === undefined ? value : "off";
     } catch { return "off"; } // Unknown display state cannot re-enable a lost witness.
   });
   const effectiveInstructionMode = () => instructionReceipts.mode();

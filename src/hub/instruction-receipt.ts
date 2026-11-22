@@ -86,10 +86,11 @@ export class InstructionReceipts {
     this.db.run("CREATE TABLE IF NOT EXISTS instructed_mode (id INTEGER PRIMARY KEY CHECK (id = 1), mode TEXT NOT NULL)");
   }
   close(): void { this.exactLeases.clear(); this.db.close(); }
-  /** A new witness inherits only an off display copy; a retained witness always wins. */
-  seedMode(display: () => "off" | "exact" | "intent"): void {
+  /** A new witness inherits an off or exact display copy; a retained witness always wins. */
+  seedMode(display: () => "off" | "exact" | "intent" | undefined): void {
     if (this.db.query("SELECT 1 FROM instructed_mode WHERE id = 1").get()) return;
-    if (display() === "off") this.db.query("INSERT OR IGNORE INTO instructed_mode(id, mode) VALUES(1, 'off')").run();
+    const value = display();
+    if (value === "off" || value === "exact") this.db.query("INSERT OR IGNORE INTO instructed_mode(id, mode) VALUES(1, ?)").run(value);
   }
   /** Missing witness uses the shipped default; malformed retained state never enables the tier. */
   mode(): "off" | "exact" | "intent" {

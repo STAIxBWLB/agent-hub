@@ -582,3 +582,33 @@ test("implicit intent allows recovery to an older target with a narrower exact d
     rmSync(root, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("a lost witness seeds off or exact from the display but leaves intent and absence implicit", async () => {
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os"), { join } = await import("node:path");
+  const { Database } = await import("bun:sqlite"), { realPath } = await import("../src/hub/project.ts");
+  const { startDaemon } = await import("../src/hub/daemon.ts"), { ControlClient, stateDirFor } = await import("../src/hub/control-client.ts");
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-intent-seed-"))), home = join(root, "home"); mkdirSync(home);
+  const keys = ["HOME", "CLAUDE_CONFIG_DIR", "AGENTHUB_HOME", "AMEM_HOME"] as const, previous = keys.map(key => process.env[key]);
+  Object.assign(process.env, { HOME: home, CLAUDE_CONFIG_DIR: join(home, "claude"), AGENTHUB_HOME: join(home, "hub"), AMEM_HOME: join(home, "mem") });
+  try {
+    for (const [name, display, expected] of [["absent", undefined, undefined], ["intent", "intent", undefined], ["exact", "exact", "exact"], ["off", "off", "off"]] as const) {
+      const cwd = join(root, name); mkdirSync(cwd); mkdirSync(join(cwd, ".agenthub"));
+      writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: false } }));
+      if (display !== undefined) writeFileSync(join(cwd, ".agenthub/config.local.json"), JSON.stringify({ instructed: { mode: display } }));
+      const stateDir = stateDirFor(cwd), daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false });
+      try {
+        const client = await ControlClient.connect(stateDir, { role: "console" });
+        try {
+          const view = await client.request({ t: "settings_get" });
+          expect(view.rows.find((row: { key: string }) => row.key === "instructed.mode").value).toBe(expected ?? "intent");
+        } finally { client.close(); }
+        const db = new Database(join(stateDir, "hub.db"), { readonly: true });
+        try { expect((db.query("SELECT mode FROM instructed_mode WHERE id = 1").get() as { mode: string } | null)?.mode).toBe(expected); } finally { db.close(); }
+      } finally { await daemon.stop(); }
+    }
+  } finally {
+    keys.forEach((key, index) => previous[index] === undefined ? delete process.env[key] : process.env[key] = previous[index]);
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 20_000);
