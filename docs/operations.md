@@ -958,12 +958,12 @@ themes. The Office scene keeps its own rules until R5.
 ### Dashboard app shell and keys (#469 R2)
 
 From 1024px up, a sticky top bar holds the project context, the connection status (a coloured dot and its text, green when live
-and red when disconnected or closed), the attention badge, the theme switch and a shortcuts button; the seven views sit in a
+and red when disconnected or closed), the attention badge, the theme switch and a shortcuts button; the eight views sit in a
 left sidebar with an icon and a label, and the approval count still rides on Agents. Below 1024px the same nav is one row of
 tabs that scrolls sideways inside itself, so the page never scrolls sideways. The view names, their order, the
-`agent-hub-view` cookie and every id are unchanged.
+`agent-hub-view` cookie and every id are unchanged; Roadmap is the eighth view, added by R5 (#1483).
 
-Keys: `1` to `7` switch to Board, Office, Stream, Agents, Message, Memory and Settings, `?` opens the key list, and `Esc` closes
+Keys: `1` to `8` switch to Board, Office, Stream, Agents, Message, Memory, Settings and Roadmap, `?` opens the key list, and `Esc` closes
 the key list or the task detail (both are native dialogs). View keys are ignored while you type in an input, a textarea or a
 select, with Ctrl, Alt or Cmd held, and while a dialog is open. Icons come from one inline SVG sprite of nine Tabler icons;
 the MIT notice is in `THIRD_PARTY_NOTICES.md`. Nothing is fetched and no package is added.
@@ -1076,10 +1076,10 @@ the directory 0700, the file 0600, replaced atomically) naming the installed mod
 up to date` or why it was not registered. acon reads the file at its next start and marks the
 plugin stale when the module changed after setup, so run `ahub setup` again after each upgrade.
 
-- **Panels.** The plugin's panels are the dashboard's seven views, and the panel is the `ahub ui`
+- **Panels.** The plugin's panels are the dashboard's eight views, and the panel is the `ahub ui`
   page itself, following acon's theme. It reaches project hubs only through the manager's own
   listing and forwarding (`ahub ui --all`): registered project and instance ids, the manager's
-  closed action list and the seven view names. There is no new protocol. An answer, a result
+  closed action list and the eight view names. There is no new protocol. An answer, a result
   receipt or a review comment sent from acon goes through a manager port of its own (`answer`,
   `receipt`, `consoleControl`) that needs acon's verified person `meta`.
 - **Inbox.** acon's inbox lists each running project's pending approvals (Allow once / Deny,
@@ -6431,7 +6431,7 @@ tokens remain character-independent. Native glyph width and tmux are unverified.
 
 ## Dashboard views and attention (#391, replaces the #280 in-page character)
 
-Top buttons select Board, Office, Stream, Agents, Message, Memory or Settings
+Top buttons select Board, Office, Stream, Agents, Message, Memory, Settings or Roadmap
 within the same page. The selected view and board column focus use the shared
 host-scoped cookie helper; the URL fragment remains reserved for the session
 ticket. Sections are hidden rather than fetched separately. Projects and
