@@ -30,7 +30,7 @@ async function fixture() {
   const roles: Record<string, string[]> = { claude: ["conductor", "planner"] };
   const routing = parseRouting('[local]\nfixed_model="fixture"\n[classes.implement]\npeers=["codex","kimi"]\n[classes.review]\npeers=["claude"]\n');
   let mode: "off" | "advise" = "off";
-  const tasks = new Tasks({ board, bus, routing: () => routing, cwd, project: "context-test", roles, notify: () => {}, now: () => now,
+  const tasks = new Tasks({ wipLimit: () => 8, board, bus, routing: () => routing, cwd, project: "context-test", roles, notify: () => {}, now: () => now,
     contextAdmission: () => ({ policy: { max_used: config.max_assignment_used ?? 0, stale_min: config.stale_min }, peers: Object.fromEntries(Object.keys(sessions).map(peer => [peer, windows.admission(peer, sessions[peer], bus.stateOf(peer) !== "offline")])) }),
     sdlc: { config: () => ({ ...sdlcConfig(undefined), mode }) },
   });

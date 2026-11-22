@@ -601,7 +601,7 @@ test("daemon escalation, idle sweep and digest routing skip an off-roster candid
   writeFileSync(join(root, ".agenthub/routing.toml"), '[local]\nfixed_model = "dgx/coding"\n[classes.implement]\npeers = ["claude", "kimi", "codex", "local"]\nescalate_to = ["kimi", "local"]\nlocal_allowed = true\n');
   let now = Date.now();
   const sweep = { ...DEFAULT_CONFIG.task_sweep, enabled: true, interval_s: 1, unaccepted_min: 1, ladder_min: 1, auto_reassign: true };
-  const hub = await legacyHub(root, false, { kimi: false }, { roles, task_sweep: sweep }, 0, { taskSweepNow: () => now });
+  const hub = await legacyHub(root, false, { kimi: false }, { roles, task_sweep: sweep, tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { claude: 4, codex: 4, kimi: 4, local: 4 } } }, 0, { taskSweepNow: () => now });
   const peers = Object.fromEntries(["claude", "codex", "local", "kimi"].map(id => [id, new RosterReplacementPeer(id)]));
   const view = async (id: number) => JSON.parse((await hub.client.request({ t: "task", op: "task_show", args: { id } })).text);
   try {

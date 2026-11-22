@@ -145,7 +145,7 @@ function siblingOrder(states: Readonly<Record<string, PeerState>>, opts: Instanc
   return (a, b) => Number(states[a] !== "idle") - Number(states[b] !== "idle") || count(opts.wip, a) - count(opts.wip, b) || count(opts.load, a) - count(opts.load, b);
 }
 /** A class kind expands once; an explicitly declared instance remains an exact id. */
-function expandClassPeers(peers: readonly PeerId[], states: Readonly<Record<string, PeerState>>, opts: InstanceRoutingOptions): PeerId[] {
+export function expandClassPeers(peers: readonly PeerId[], states: Readonly<Record<string, PeerState>>, opts: InstanceRoutingOptions): PeerId[] {
   if (!hasInstances(opts)) return [...peers];
   return [...new Set(peers.flatMap(peer => {
     const kind = (opts.adapterCatalog?.kindOf ?? kindOf)(peer, opts.instances);

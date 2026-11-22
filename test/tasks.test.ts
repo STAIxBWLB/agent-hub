@@ -395,7 +395,7 @@ test("triage: a task without a class gets one from the hub's model, recorded in 
   const base = await setup();
   const asked: string[] = [];
   let onCampus = true;
-  const tasks = new Tasks({
+  const tasks = new Tasks({ wipLimit: () => 8,
     board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: () => {},
     triage: { classify: async (title) => (asked.push(title), title.includes("unclear") ? undefined : "bulk_edit"), onCampus: async () => onCampus },
   });
@@ -1539,7 +1539,7 @@ async function turnFreeRig(extra: Partial<ConstructorParameters<typeof Tasks>[0]
   const told: string[] = [];
   // Every peer starts inside a native turn: its done is a tool call of that turn.
   const state = { capable: new Set(["claude", "codex", "kimi"]), working: new Set(peerIds), tree: "t1", offers: 0, acked: [] as string[], current: true };
-  const tasks = new Tasks({ escalateAfter: PIN_TWO,
+  const tasks = new Tasks({ wipLimit: () => 8, escalateAfter: PIN_TWO, // #1626 A: automatic offers honour WIP, and these rigs offer several tasks to one peer
     board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: (l) => ctx.notices.push(l), tell: (peer, line) => told.push(`${peer}|${line}`), turnFree: () => true,
     capable: (p) => state.capable.has(p),
     idle: (p) => !state.working.has(p),
@@ -2127,7 +2127,7 @@ test("an escalation away is the previous owner's failure; work that waited for a
 
 test("the shadow prediction never changes assignment: routed and named work go where routing sends them; explain and the record show it", async () => {
   const recorded: { task: number; verdict: string; where: string }[] = [];
-  const { tasks } = await turnFreeRig({ ...({ recordSplit: (task, p, where) => recorded.push({ task, verdict: p.verdict, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` }), wipLimit: () => 5 });
+  const { tasks } = await turnFreeRig({ ...({ recordSplit: (task, p, where) => recorded.push({ task, verdict: p.verdict, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` }), wipLimit: () => 8 });
   const kimiPart = await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   const routed = await tasks.propose("claude", { title: "routed part", class: "implement", refs: { paths: ["src/a.ts"] } });
   expect(routed.owner).toBe("codex"); // the configured order, whatever the records say
@@ -2827,7 +2827,7 @@ test("a second rejection whose escalation lifts a silent cohort returns the save
 });
 
 test("propose, assignTo, decline and a manual escalation each print exactly one console notice and keep their error (#297)", async () => {
-  const { tasks, bus, notices, board } = await setup();
+  const { tasks, bus, notices, board } = await setup(undefined, undefined, undefined, 8);
   const undelivered = () => notices.filter((l) => l.includes("delivery is not confirmed")).length;
   const failing = (id: string) => {
     const p = bus.publish.bind(bus);

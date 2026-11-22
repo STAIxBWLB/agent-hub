@@ -41,9 +41,8 @@ test("a capacity decline excludes the owner only from its own reroute, and a lat
   const back = await r.tasks.decline("codex", task.id, "no capacity now; stage it after the current task", true);
   expect(back.history.findLast(h => h.event === "declined")).toMatchObject({ by: "codex", from: "codex", capacity: true });
   expect(r.board.get(task.id)).toMatchObject({ owner: null }); // that move's own reroute skipped codex, and nobody else can take it
-  // The planner returns it to the backlog, reserved for codex (as the planner did on #229); capacity then exists again.
-  const returned = await r.tasks.returnUntouchedToBacklog("claude", { id: task.id, revision: back.planningRevision ?? 0, reason: "staged after the current task" });
-  await r.tasks.planBacklog("claude", { id: task.id, revision: returned.planningRevision ?? 0, fields: { reserved: "codex" }, reason: "codex asked to stage it" });
+  // #1626 A3: the hub itself returned it to the backlog with its reservation for codex, so no planner step is needed; capacity then exists again.
+  expect(r.board.get(task.id)).toMatchObject({ state: "backlog", reserved: "codex" });
   const pulled = await r.tasks.pullPlanned("claude", { id: task.id, revision: r.board.get(task.id)!.planningRevision ?? 0, reason: "capacity exists now" });
   expect(pulled).toMatchObject({ state: "proposed", reserved: "codex" });
   await r.tasks.releaseReady();
@@ -101,8 +100,10 @@ test("hub_backlog_plan refuses a reservation for a peer that declined the task f
   const r2 = await rig();
   const soft = await pulledToCodex(r2, "soft");
   const back2 = await r2.tasks.decline("codex", soft.id, "capacity", true);
-  const returned2 = await r2.tasks.returnUntouchedToBacklog("claude", { id: soft.id, revision: back2.planningRevision ?? 0, reason: "back" });
-  const planned = await r2.tasks.planBacklog("claude", { id: soft.id, revision: returned2.planningRevision ?? 0, fields: { reserved: "codex" }, reason: "reserve codex" });
+  // #1626 A3: a capacity decline keeps the reservation, so the card is already back in the backlog reserved for codex.
+  expect(back2.id).toBe(soft.id);
+  expect(r2.board.get(soft.id)).toMatchObject({ state: "backlog", reserved: "codex" });
+  const planned = await r2.tasks.planBacklog("claude", { id: soft.id, revision: r2.board.get(soft.id)!.planningRevision ?? 0, fields: { reserved: "codex" }, reason: "reserve codex" });
   expect(planned.reserved).toBe("codex");
 });
 

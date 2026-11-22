@@ -1948,8 +1948,8 @@
     {
       "id": "planner-offer-capacity-recheck",
       "file": "src/hub/tasks.ts",
-      "search": "const plannerFull = plannedMove ? this.plannerFull(task) : [];",
-      "replacement": "const plannerFull: string[] = [];",
+      "search": "const plannerFull = plannedMove ? this.plannerFull(task) : hubOffer ? this.hubOfferFull(task) : [];",
+      "replacement": "const plannerFull = hubOffer ? this.hubOfferFull(task) : [];",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner offers recheck reserved capacity and refuse another peer's slot (#263)"
     },
@@ -2660,7 +2660,7 @@
     {
       "id": "planner-decline-slot-release",
       "file": "src/hub/tasks.ts",
-      "search": "...(planned ? { reserved: null } : {})",
+      "search": "...(planned && !keep ? { reserved: null } : {})",
       "replacement": "...{}",
       "testFile": "test/planner-pull.test.ts",
       "testName": "declined planner pulls release the old WIP slot and reroute when another peer attaches"

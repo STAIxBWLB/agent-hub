@@ -64,7 +64,8 @@ async function rig(screen: "off" | "local", screener?: (text: string) => Promise
   const screened: string[] = [];
   const triaged: string[] = [];
   const board = new Board(join(dir, "hub.db"));
-  const tasks = new Tasks({ ...(wipLimit === undefined ? {} : { wipLimit: () => wipLimit! }),
+  const tasks = new Tasks({ wipLimit: () => wipLimit ?? 8, // #1626 A: automatic offers honour WIP, and these cases offer several tasks to one peer
+   
     board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l),
     triage: { classify: async (title) => (triaged.push(title), "implement"), onCampus: async () => true },
     ...(screener ? { piiScreen: (text: string) => (screened.push(text), screener(text)) } : {}),

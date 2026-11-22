@@ -117,7 +117,7 @@ import { HOST_SPEC_ACCEPTANCE_CARRY, HOST_MERGE_ADOPTION, HOST_ROADMAP_DRAFT, pa
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
-import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, writesRepository, ownerRoleOfClass, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
+import { assign, expandClassPeers, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, writesRepository, ownerRoleOfClass, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
@@ -913,7 +913,9 @@ export class Tasks {
       if (d.bus.stateOf(peer) === "idle") this.autoPullForAttachment(peer);
     };
     d.bus.tap((e) => {
-      if (e.t === "state" && e.state === "offline") this.autoPullAttached.delete(e.peer);
+      if (e.t === "state" && e.state === "offline") { this.autoPullAttached.delete(e.peer); this.capacityBackoff.delete(e.peer); }
+      // #1626 A2: the back-off ends at the peer's next idle state, and that idle is a trigger to offer it work (B).
+      if (e.t === "state" && e.state === "idle" && this.capacityBackoff.delete(e.peer) && this.d.autoPull?.() === true && (this.topReservedReady(e.peer, undefined, true) || this.fillPick(e.peer))) this.queueAutoPulls(new Set([e.peer]), "idle after a capacity decline");
       if (e.t === "state" && e.state === "idle" && !this.autoPullAttached.has(e.peer) && this.d.autoPull?.() === true) {
         this.autoPullForAttachment(e.peer);
       }
@@ -937,7 +939,8 @@ export class Tasks {
   private autoPullForAttachment(peer: PeerId): void {
     if (this.autoPullAttached.has(peer) || this.d.autoPull?.() !== true) return;
     this.autoPullAttached.add(peer);
-    if (this.topReservedReady(peer, undefined, true)) this.queueAutoPulls(new Set([peer]), "peer available");
+    // #1626 B: a ready unowned task also starts a pull, so a reservation is not needed.
+    if (this.topReservedReady(peer, undefined, true) || this.fillPick(peer)) this.queueAutoPulls(new Set([peer]), "peer available");
   }
 
   isPii = (task: Pick<Task, "signals">) => task.signals.includes("pii_path") || (task.signals.includes("pii") && this.d.routing().constraints.pii === "local_only");
@@ -3172,7 +3175,7 @@ export class Tasks {
   private async autoPull(peer: PeerId, cause: string): Promise<void> {
     if (!this.autoPullAdmitted()) return;
     const card = this.topReservedReady(peer, undefined, true);
-    if (!card) return;
+    if (!card) { await this.fillSlot(peer, cause); return; }
     // The planner of record is the card's own: its bound planner, else the first current holder, and it must be rostered. A private card never gets here (topReservedReady skips it).
     const planner = this.taskPlanner(card)[0];
     if (!planner || !this.d.bus.isRostered(planner)) return;
@@ -3191,6 +3194,47 @@ export class Tasks {
     }
   }
 
+  /** The first ready unowned task `peer` could be offered now, or undefined. Read-only. */
+  private fillPick(peer: PeerId): Task | undefined {
+    if (!this.autoPullAdmitted() || this.capacityBackoff.has(peer)) return undefined;
+    const now = this.d.now?.() ?? Date.now();
+    let routing: Routing;
+    try { routing = this.d.routing(); } catch { return undefined; }
+    return this.d.board.list("proposed").filter(task => this.fillEligible(task, peer, routing, now)).sort(this.readyOrder)[0];
+  }
+  private fillEligible(task: Task, peer: PeerId, routing: Routing, now: number, mine = false): boolean {
+    if (task.state !== "proposed" || task.owner || (!mine && (this.offered.has(task.id) || this.readyInFlight.has(task.id))) || (task.reserved && task.reserved !== peer)) return false;
+    if (task.pinned || task.draft || task.needsPerson || this.isPii(task) || this.personUnassigned(task) || plannedStartPending(task, now) || this.waitsFor(task).length) return false;
+    if (task.release != null && !["planning", "active"].includes(this.d.board.release(task.release)?.state ?? "")) return false;
+    if (this.excluded(task).includes(peer)) return false;
+    // `candidates: [peer]` replaces the class's peer list inside assign(), so the class list is checked here: a freed slot never takes a class routing keeps the peer out of. A class with no entry offers nothing.
+    const weights = this.weights(task.class, task);
+    if (!expandClassPeers(routing.classes[task.class]?.peers ?? [], this.states(), weights).includes(peer)) return false;
+    return assign(task, this.states(), routing, { candidates: [peer], exclude: this.excluded(task), excludeOwners: this.hubOfferFull(task), waitsFor: this.waitsFor(task), ...weights }).owner === peer;
+  }
+  /**
+   * #1626 B: no reserved card was ready for `peer`, so offer it the first ready, unowned `proposed` task it is an eligible owner for, in the board's ready order, one per trigger.
+   * Runs on the serialized auto-pull chain through `assignOwner` as the hub with `peer` the only candidate, so every routing gate still runs. A task another offer path holds is skipped.
+   */
+  private async fillSlot(peer: PeerId, cause: string): Promise<void> {
+    const pick = this.fillPick(peer);
+    if (!pick) return;
+    // The check and the slot are one synchronous step, as in offerReady: a second offer must see this one as taking the slot.
+    this.offered.add(pick.id); this.readyInFlight.set(pick.id, peer);
+    try {
+      const fresh = this.d.board.get(pick.id);
+      if (!fresh || !this.autoPullAdmitted() || !this.fillEligible(fresh, peer, this.d.routing(), this.d.now?.() ?? Date.now(), true)) return;
+      const ready = fresh.history.at(-1)?.event === "ready" ? fresh : this.d.board.update(fresh.id, HUB, "ready", {}, `auto_pull: ${cause} for ${peer}`);
+      await this.assignOwner(ready, HUB, { candidates: [peer], current: () => { if (!this.autoPullAdmitted()) throw new PreEffectToolRefusal("auto pull is no longer admitted"); } });
+    } catch (e) {
+      if (e instanceof PreEffectToolRefusal || e instanceof AssignmentUndeliveredError || !this.autoPullAdmitted()) return;
+      this.releaseNotice(`task ${this.publicTitle(pick)}: auto_pull for ${peer} could not offer it: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.readyInFlight.delete(pick.id);
+      if (!this.d.board.get(pick.id)?.owner) this.offered.delete(pick.id);
+    }
+  }
+
   /** #784 AC3: the read-only breakdown of `wip` for status, the console and the dashboard: one grouped query for every peer. Admission still reads `wip()`. */
   wipBreakdown(peers: readonly PeerId[]): Record<string, { wip: number; active: number; reviewWait: number; reserved: number; wipLimit: number }> {
     const grouped = this.d.board.plannerWipBreakdown();
@@ -3203,6 +3247,21 @@ export class Tasks {
     const pending = [...(task.deps ?? [])], seen = new Set<number>();
     while (pending.length) { const id = pending.pop()!; if (id === prerequisite) return true; if (seen.has(id)) continue; seen.add(id); pending.push(...(this.d.board.get(id)?.deps ?? [])); }
     return false;
+  }
+  /**
+   * Peers that capacity-declined and have not reported idle since (#1626 A2). A TUI or headless agent works one task per turn, so it declines an offer far below its WIP cap while mid-turn.
+   * ponytail: kept in memory, not derived from history. A restart reattaches every peer idle, which is exactly when the back-off ends, so nothing is lost; deriving it from history would need an idle marker the board does not record.
+   */
+  private readonly capacityBackoff = new Set<PeerId>();
+  /** #1626 A: peers a hub-initiated offer skips: at the WIP cap (counting offers not yet accepted and in flight, as `reservedHold` does), a held queue, or backing off after a capacity decline. */
+  private hubOfferFull(task: Task): PeerId[] {
+    const full = new Set(this.plannerFull(task));
+    for (const peer of Object.keys(this.states())) {
+      if (this.capacityBackoff.has(peer)) { full.add(peer); continue; }
+      const flying = [...this.readyInFlight].filter(([id, p]) => p === peer && id !== task.id && !this.d.board.get(id)?.owner).length;
+      if (this.wip(peer, task.id) + (this.pendingClaims.get(peer) ?? 0) + flying >= this.wipLimit(peer)) full.add(peer);
+    }
+    return [...full];
   }
   private plannerFull(task: Task): PeerId[] {
     return Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; });
@@ -5343,7 +5402,9 @@ export class Tasks {
     }
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
-    const plannerFull = plannedMove ? this.plannerFull(task) : [];
+    // #1626 A: an owner choice the hub makes on its own never offers a peer that must refuse it. A person's or conductor's explicit assignment, a claim and a roster move stay as they were.
+    const hubOffer = !opts.roster && !opts.override && !opts.claim && !opts.namedOwner && !opts.conductorManual && !opts.queueOverride && !opts.plannerPull && this.plannerPullRecord(task)?.pull !== true && opts.reason !== "budget" && opts.reason !== "offline" && (by === HUB || !opts.candidates); // a pause or offline relay moves work that already has an owner, so it is not an offer
+    const plannerFull = plannedMove ? this.plannerFull(task) : hubOffer ? this.hubOfferFull(task) : [];
     const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: [...plannerFull, ...this.studyExcludedOwners(task)], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}), // A self-claim hands over no envelope; reviewer admission remains automatic.
       contextOverride: !!(opts.queueOverride || opts.claim),
       ...(opts.queueOverride || opts.claim ? { queueOverride: opts.queueOverride ?? "owner" as const } : {}) });
@@ -9289,8 +9350,26 @@ export class Tasks {
     // The owner it is declined for goes on the entry, also when the console declines for it: `excluded()` keeps it out (#207).
     const capacityBefore = this.capacityBefore(task);
     const planned = this.plannerPullRecord(task)?.pull === true;
-    const back = this.d.board.update(task.id, by, "declined", { ...(["in_progress", "changes_requested"].includes(task.state) ? { state: "proposed" as const } : {}), ...(planned ? { reserved: null } : {}) }, reason, task.owner ? { from: task.owner, ...(capacity === true ? { capacity: true as const } : {}) } : {});
+    const record = this.plannerPullRecord(task);
+    // #1626 A3: a capacity decline of a pulled card keeps the planner's reservation and returns the card to backlog; any other decline clears it as before.
+    const keep = planned && capacity === true && !!task.owner && ["proposed", "in_progress"].includes(task.state) && !taskHasWorkEvidence(task);
+    // #1626 A2: the decliner is not offered another task by the hub until it next reports idle. A peer already idle gets no back-off: no later idle edge would end it.
+    if (capacity === true && task.owner && this.d.bus.stateOf(task.owner) !== "idle") this.capacityBackoff.add(task.owner);
+    const back = this.d.board.update(task.id, by, "declined", { ...(["in_progress", "changes_requested"].includes(task.state) ? { state: "proposed" as const } : {}), ...(planned && !keep ? { reserved: null } : {}) }, reason, task.owner ? { from: task.owner, ...(capacity === true ? { capacity: true as const } : {}) } : {});
     if (planned) this.offered.delete(task.id);
+    if (keep) {
+      this.d.notify(`task ${this.publicTitle(back)} declined (capacity only) by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}; back in backlog with its reservation`);
+      this.releaseHubWorktree(task, task.owner ?? by);
+      try {
+        const returned = this.d.board.update(back.id, HUB, "backlog returned untouched", { state: "backlog", owner: null, reviewer: null, reserved: record?.previous.reserved ?? back.reserved ?? null }, "capacity decline: back in backlog with its reservation", {}, back.history.length);
+        this.cohorts.leave(task.id);
+        this.withdrawRoleRequest(task, returned, "owner");
+        this.incomingBacklog.add(task.id);
+        return returned;
+      } finally {
+        this.writePlannerNotices(this.d.board.get(task.id) ?? back, capacityBefore);
+      }
+    }
     this.d.notify(`task ${this.publicTitle(back)} declined${capacity === true ? " (capacity only)" : ""} by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
     this.releaseHubWorktree(task, task.owner ?? by);
     // A capacity decline is not in excluded(), so this move's own reroute leaves the decliner out explicitly.

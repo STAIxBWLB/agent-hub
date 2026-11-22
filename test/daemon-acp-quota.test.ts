@@ -62,7 +62,7 @@ async function fixture(args: string[] = [], recordProtocol = false, routingOptio
 }
 
 test("a Kimi quota refusal pauses before safe requeue and automatically relays tasks and routing (#306)", async () => {
-  const { dir, daemon, console_, implementer, tools } = await fixture([], false, { wipLimits: { kimi: 2 } });
+  const { dir, daemon, console_, implementer, tools } = await fixture([], false, { wipLimits: { kimi: 2, codex: 4 } });
   for (const id of [1, 2]) {
     expect((await console_.request({ t: "task", op: "hub_task_propose", args: {
       title: `implement piece ${id}`, class: "implement", owner: "kimi", refs: { paths: [`piece${id}.ts`] },
@@ -163,7 +163,7 @@ test("repeated early budget overrides leave only one pending resume notice (#306
 
 
 test("the delivered coalesced resume notice retains moves across two unread refusal cycles (#306)", async () => {
-  const { dir, daemon, console_, tools, implementer } = await fixture(["--quota-refusals", "3"], true, { wipLimits: { kimi: 2 } });
+  const { dir, daemon, console_, tools, implementer } = await fixture(["--quota-refusals", "3"], true, { wipLimits: { kimi: 2, codex: 4 } });
   for (const id of [1, 2]) {
     expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: `retain move ${id}`, class: "implement", owner: "kimi", refs: { paths: [`move${id}.ts`] } } })).ok).toBe(true);
     expect((await tools.request({ t: "task", op: "hub_task_accept", args: { id } })).ok).toBe(true);
