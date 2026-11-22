@@ -163,6 +163,15 @@ test("the exact form policy closes unknown forms and detects task scope", async 
 });
 
 
+test("instructed handoff remains closed in exact and intent modes", async () => {
+  const { exactForm } = await import("../src/hub/instructed-exact.ts");
+  const { intentForm } = await import("../src/hub/instructed-intent.ts");
+  for (const argv of [["task", "handoff", "--project", "other", "implement", "typed title"], ["task", "handoff", "other", "typed title"]]) {
+    expect(exactForm(argv)).toBeUndefined();
+    expect(intentForm(argv)).toBeUndefined();
+  }
+});
+
 test("runtime guard refuses project roots, sandbox roots and any checkout ancestor", async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
