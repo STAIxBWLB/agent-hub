@@ -232,7 +232,9 @@ test("the daemon executes one confirmed assignment through its inherited install
       const localConfig = join(cwd, ".agenthub", "config.local.json");
       const local = JSON.parse(readFileSync(localConfig, "utf8")); local.instructed = { mode: "off" }; writeFileSync(localConfig, JSON.stringify(local));
       await Bun.sleep(5);
-      expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);
+      const disabled = await tools.request({ t: "instruction_execute", session }, 35_000);
+      expect(disabled.ok).toBe(false); expect(disabled.error).toContain("instructed.mode is off");
+      expect(disabled.error).toContain("ahub settings set instructed.mode exact"); expect(disabled.error).not.toContain(offArgs);
       local.instructed.mode = "exact"; writeFileSync(localConfig, JSON.stringify(local));
       // An agent's direct file edit cannot re-enable a mode the person disabled.
       expect((await tools.request({ t: "instruction_execute", session }, 35_000)).ok).toBe(false);

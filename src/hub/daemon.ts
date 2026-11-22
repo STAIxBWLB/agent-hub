@@ -12739,10 +12739,18 @@ export async function startDaemon(opts: DaemonOptions) {
         const peer = c.peer, session = msg.session, socket = sock;
         const initialSession = claudeSession(peer), owner = claudeLaunchProof.owner(peer), generation = owner?.sessionGeneration;
         const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
+        class InstructionRefusal extends Error {}
+        const sessionRefusal = `this Claude session changed or was not started by ahub claude. The person starts a managed session in this project:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub claude\n\`\`\`\n\nSuccess: a new managed Claude session starts; type the instruction again there.`;
+        const modeRefusal = `instructed.mode is off. The person turns it on in a terminal:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub settings set instructed.mode exact\n\`\`\`\n\nSuccess: the command reports witness exact; type the instruction again.`;
+        const receiptRefusal = "no usable instruction receipt; type the /agent-hub:ahub command again. A receipt is used once and expires after 10 minutes.";
+        const runtimeRefusal = "the installed hub runtime is unavailable or inside a project or peer write root; install the hub package and start a new managed session with ahub claude";
         const current = () => {
           const observed = claudeSession(peer), latest = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
           const checks = { socket: socket.readyState === WebSocket.OPEN && socket.data === c && !c.closed && c.role === "tools" && c.peer === peer, lifecycle: !stopping && !recoveryActive() && !bus.isRecoveryHeld, policy: membershipAllowed(peer) && !readOnlyPeer(peer) && !turns.get(peer)?.private && !contextPii(peer) && !board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && (task.signals.includes("pii") || task.signals.includes("pii_path"))), owner: !!owner && owner.attached && owner.state !== "offline" && !owner.claiming && bus.peers.get(peer) === owner && !!generation && owner.sessionGeneration === generation, session: observed.sessionId === session && observed.sessionId === initialSession.sessionId && observed.transcriptPath === initialSession.transcriptPath && observed.launchId === initialSession.launchId, launch: !!launch?.privateRecord && !!launch.launcherPid && !!launch.launcherSignature && launch.launchId === observed.launchId && !!latest?.privateRecord && latest.launchId === launch.launchId && latest.launcherPid === launch.launcherPid && latest.launcherSignature === launch.launcherSignature && processLiveness(launch.launcherPid, launch.launcherSignature) === "live", mode: effectiveInstructionMode() === "exact" };
-          if (Object.values(checks).some(value => !value)) throw new Error(`instruction session unavailable: ${Object.entries(checks).filter(([, value]) => !value).map(([key]) => key).join(",")}`);
+          if (!checks.mode) throw new InstructionRefusal(modeRefusal);
+          if (!checks.lifecycle) throw new InstructionRefusal("the hub is stopping or recovering; retry after ahub status shows it running");
+          if (!checks.policy) throw new InstructionRefusal("a private turn or private task is active for this peer, or its access is restricted; run the command in a terminal");
+          if (!checks.socket || !checks.owner || !checks.session || !checks.launch) throw new InstructionRefusal(sessionRefusal);
         };
         void (async () => {
           try {
@@ -12752,7 +12760,7 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!instructedRuntimeReady()) return { ok: false, error: `the loaded hub runtime is inside a project or peer write root, or its location is unknown. The person installs the hub package before restarting the session:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && bun add -g @staix/agent-hub\n\`\`\`\n\nSuccess: the package is installed globally. The person then starts the managed session:\n\n\`\`\`sh\ncd ${shellQuote(opts.cwd)} && ahub claude\n\`\`\`\n\nSuccess: the installed hub starts Claude; type the instruction again.` };
             const receipt = await instructionReceipts.forPeer(peer).confirmReceipt(session, Date.now());
             current();
-            if (!receipt) return { ok: false, error: "no confirmable instruction receipt" };
+            if (!receipt) return { ok: false, error: receiptRefusal };
             const argv = parseExactInstruction(receipt.args), form = argv && exactForm(argv);
             if (!argv) {
               const raw = receipt.args.startsWith("run ") ? receipt.args.slice("run ".length).trim() : "";
@@ -12763,22 +12771,26 @@ export async function startDaemon(opts: DaemonOptions) {
             const taskId = form.taskId;
             const guarded = () => {
               current();
-              if (!instructedRuntimeReady()) throw new Error("instructed runtime unavailable");
-              if (taskId !== undefined) { const task = board.get(taskId); if (!task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) throw new Error("instruction task is unavailable"); }
-              if (form.targetPeer && board.list().some(task => (task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) && (task.owner === form.targetPeer || task.reviewer === form.targetPeer || task.reserved === form.targetPeer))) throw new Error("instruction peer has private work");
+              if (!instructedRuntimeReady()) throw new InstructionRefusal(runtimeRefusal);
+              if (taskId !== undefined) { const task = board.get(taskId); if (!task || task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) throw new InstructionRefusal("the command targets unavailable or private work; run the command in a terminal"); }
+              if (form.targetPeer && board.list().some(task => (task.signals.includes("pii") || task.signals.includes("pii_path") || tasks.isPii(task)) && (task.owner === form.targetPeer || task.reviewer === form.targetPeer || task.reserved === form.targetPeer))) throw new InstructionRefusal("the command targets private work; run the command in a terminal");
             };
             guarded();
-            if (!instructionReceipts.consumeExact(receipt.id, Date.now())) return { ok: false, error: "instruction receipt is closed" };
-            if (!event({ type: "agent_cli", peer, command: cliCommandLabel(argv[0]!, argv.slice(1), adapterCatalog), refused: false, instructed: true, instructionReceipt: receipt.id })) { instructionReceipts.finishExact(receipt.id); return { ok: false, error: "instruction audit unavailable" }; }
+            if (!instructionReceipts.consumeExact(receipt.id, Date.now())) return { ok: false, error: receiptRefusal };
+            if (!event({ type: "agent_cli", peer, command: cliCommandLabel(argv[0]!, argv.slice(1), adapterCatalog), refused: false, instructed: true, instructionReceipt: receipt.id })) { instructionReceipts.finishExact(receipt.id); return { ok: false, error: "instruction audit is unavailable; check hub status and run the command in a terminal" }; }
             let revoked = false;
             const binding: InstructedExecution = { peer, receipt: receipt.id, active: true, ...(taskId === undefined ? {} : { taskId }), current: () => {
               if (revoked) throw new Error("instruction authority revoked");
-              try { guarded(); if (!instructionReceipts.exactCurrent(receipt.id, Date.now())) throw new Error("instruction receipt expired or stopped"); }
+              try { guarded(); if (!instructionReceipts.exactCurrent(receipt.id, Date.now())) throw new InstructionRefusal(receiptRefusal); }
               catch (error) { revoked = true; throw error; }
             } };
             try { return await launchInstructed(argv, binding); }
+            catch (error) {
+              if (error instanceof InstructionRefusal) throw error;
+              throw new InstructionRefusal("the hub could not complete instructed execution; inspect the target before running the command in a terminal because an effect may have occurred");
+            }
             finally { binding.active = false; instructionReceipts.finishExact(receipt.id); }
-          } catch { return { ok: false, error: "instruction unavailable; inspect the session and retry with a new instruction" }; }
+          } catch (error) { return { ok: false, error: error instanceof InstructionRefusal ? error.message : "instruction execution failed unexpectedly; inspect hub status and run the command in a terminal" }; }
         })().then(reply, () => reply({ ok: false, error: "instruction unavailable" }));
         return;
       }
