@@ -51,6 +51,7 @@ R1x is the conductor's ruling on the review of PR #1212, not a calibrated rule: 
 Rulings of hub task 1072 (the conductor, 2026-11-22), per key, not calibrated:
 
 - `claude-profile-hook.ts` `timeout=5`: operational, native hook deadline.
+- `scripts/probes/claude-instruction-hook.py` `sleep=0.1#2`: operational, probe polling latency under R2.
 - `instruction-hook.ts` `MAX_HOOK_BYTES`: safety floor, bounds raw input.
 - `main.ts` instruction-hook `size > 1024 * 1024`: safety floor, bounds raw input.
 - `claude-launch-proof.ts` `launcherSignature.length <= 256`: safety floor, bounds input from another process's file.

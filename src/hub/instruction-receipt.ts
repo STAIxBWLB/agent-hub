@@ -106,6 +106,7 @@ export class InstructionReceipts {
     if (!evidence || evidence.session !== session || evidence.peer !== peer) return;
     this.db.query("UPDATE instruction_receipts SET state = 'closed' WHERE state != 'closed' AND (created <= ? OR created > ?)").run(now - MAX_AGE_MS, now);
     const rows = this.db.query("SELECT * FROM instruction_receipts WHERE session = ? AND state = 'pending' ORDER BY created, id").all(session) as Row[];
+    if (rows.length === 0) return;
     const boundEvidence = { ...rows[0], session, home: evidence.home, cwd: evidence.cwd, transcript: evidence.transcript } as Row;
     const tail = transcriptTail(boundEvidence); if (tail === undefined) return;
     const lines = tail.split("\n");

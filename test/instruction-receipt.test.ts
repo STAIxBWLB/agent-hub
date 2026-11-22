@@ -207,6 +207,11 @@ test("daemon refuses forged session evidence and never publishes prompt text", a
         writeFileSync(fake, JSON.stringify({ type: "user", uuid: recordId, sessionId: session, promptId: secondId, version: "2.1.329", timestamp: new Date().toISOString(), cwd, isSidechain: false, origin: { kind: "human" }, message: { role: "user", content: "<command-message>agent-hub:ahub</command-message>\n<command-name>/agent-hub:ahub</command-name>\n<command-args>show status</command-args>" } }) + "\n");
         // A forged facts message and a fabricated transcript without a managed launch prove nothing.
         expect(await captured!.forPeer("claude").confirmReceipt(session, Date.now())).toBeUndefined();
+        const foreignSession = "f1d605d8-a169-413b-8da2-6bffe44e028e";
+        expect((await tools.request({ t: "instruction_hook", op: "pending", session: foreignSession, promptId: secondId, transcript: fake, home: config, cwd, hash: instructionHash("show status") })).ok).toBe(true);
+        expect((await tools.request({ t: "instruction_hook", op: "stop", session: foreignSession })).ok).toBe(false);
+        const inspect = new Database(join(stateDir, "hub.db"), { readonly: true });
+        try { expect((inspect.query("SELECT state FROM instruction_receipts WHERE session = ?").get(foreignSession) as { state: string }).state).toBe("pending"); } finally { inspect.close(); }
         expect((await tools.request({ t: "instruction_hook", op: "stop", session })).ok).toBe(true);
         const launchId = "fixture-managed-launch", launchFile = join(stateDir, "claude-launch.json");
         writeFileSync(launchFile, JSON.stringify({ instanceId, launchId, permissionHook: true, launcherPid: process.pid, launcherSignature: "stale-signature" }), { mode: 0o600 });

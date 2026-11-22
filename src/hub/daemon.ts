@@ -12545,7 +12545,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (Object.keys(msg).some(key => !fields.includes(key))) return void reply({ ok: false });
         if (c.role !== "tools" || !peer || !isFixedBuiltinDefinition(adapter) || adapter?.transport !== "claude-channel" || stopping || recoveryActive()) return void reply({ ok: false });
         if (msg.op === "stop") {
-          if (typeof msg.session !== "string") return void reply({ ok: false });
+          if (typeof msg.session !== "string" || claudeSession(peer).sessionId !== msg.session || bus.stateOf(peer) === "offline") return void reply({ ok: false });
           instructionReceipts.stop(msg.session, peer);
           return void reply({ ok: true });
         }
