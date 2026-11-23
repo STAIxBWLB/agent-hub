@@ -188,6 +188,8 @@ per peer (`#id [pii]` for a private task, never a title). The panel asks the hub
 `usage unavailable`. The numbers come from the roll-up of `ahub usage`, so the console and the CLI agree. A request folds the event log first, within 250 ms;
 when a very large log is not folded yet the answer carries `behind: true`, the panel says `still catching up` and `ahub usage` prints a warning on stderr, so a partial number is never shown as the whole.
 
+Tab `9 Roadmap` (#1483 R5) appears while the hub reports the `roadmap` feature. It lists Now, Next and Later lanes with each milestone's approved/total progress, and Enter opens the milestone. It reads only while open: the list on each refresh, the drift check at most every five minutes. `ahub ui --all` shows a per-project roadmap summary read at most once a minute.
+
 The dashboard's Usage view (#683 U4) sits in the Agents view, under Usage budgets, and shows the same roll-up: the lifetime, without-cache and cache-read totals with
 the peers whose figure is unknown, the last 14 UTC days as stacked columns per peer (a day with no record is a `no record` column, never zero), a limits table with the
 open pauses and the last 20 pause, resume and reset events, and a task table (state, owner, PR, input, output, cache read, cache write, total). Every figure names its
@@ -1816,8 +1818,9 @@ from, or it already refused the task). A peer the task was declined for (by
 itself or by the console) or escalated away from after repeated
 changes_requested or by hand stays excluded on every later reroute. A decline
 with `capacity: true` (`hub_task_decline`, "no room right now") is the
-exception: it skips that owner for this move only, and a later reroute or
-planner pull may offer the task to it again (#531). An owner
+exception: it skips that owner, and the hub offers that peer no task of its own
+choosing until the peer next reports idle; a capacity decline of a planner-pulled
+card returns it to backlog with its reservation kept (#531, #1626). An owner
 released as gone, or moved by the hub after a failed delivery or inference, is
 excluded only from that move and may get the task again from its reservation
 later. Your own `ahub task assign` is not blocked by those exclusions, and it
@@ -3810,7 +3813,7 @@ why. Unreserved cards, cards reserved for another peer and private (PII) cards a
 never pulled. One card per trigger, as the hub for the card's own planner of record:
 the history entry reads `by: hub` with that planner and a reason of the form
 `auto_pull: <cause> for <peer>; hub acted for planner <planner>`. The cause is
-`capacity released`, `backlog planned`, `backlog ready` or `peer available`. A hub that
+`capacity released`, `backlog planned`, `backlog ready` or `peer available`. When no reserved card is ready, the idle or freed peer is offered the first ready, unowned proposed task it is eligible for, one per trigger, through the ordinary routing gates and only for classes whose routing list names it (#1626). Every owner choice the hub makes on its own also skips a peer at its WIP cap, with a held queue, or backing off after a capacity decline; an explicit person or conductor assignment is unchanged. A hub that
 is paused for recovery pulls nothing, also when the setting is turned off or recovery begins while a pull is already waiting on its screening: that pull writes nothing, and a recovery waits for pulls in flight. A committed `config.json` cannot turn it on: like
 the other machine-local policies it is ignored there with a log line.
 
@@ -3962,7 +3965,7 @@ The [0.27.0 ACP receipt](verification/2026-11-09-qwen-0270-acp.md) records passi
 ACP/permission/lifecycle checks after explicit runtime-state fence rulings, separately preserving earlier
 controller preflight failures. Its [model-setter check](verification/2026-11-09-qwen-0270-model-setter-1317.md)
 observed A/B/B after acknowledged B/A setters, but retained no latest-USER binding for the third request, whose purpose remains unknown. The [suggestions-off repeat](verification/2026-11-11-qwen-setter-suggestions-off.md) records ordinary A/B/A on both 0.26.9 and 0.27.0. Basic ACP 0.27.0 remains independently admitted; this setter evidence proposes a separate admission and enables nothing.
-The production Qwen setter remains unavailable; `qwen-dual` is verified separately (0.26.1, 0.27.0 and 0.27.1).
+The production Qwen setter remains unavailable; `qwen-dual` is verified separately (0.26.1, 0.27.0, 0.27.1 and 0.28.3).
 
 ### Receipt automation audit (#1248 T0)
 
@@ -5900,7 +5903,8 @@ selected roster and existing capabilities; the TUI is always a person's start.
 The [2026-11-10 account-free receipt](verification/2026-11-10-qwen-0270-dual-output.md)
 qualifies exact 0.27.0 against matched private 0.26.1 on macOS arm64; the
 [0.27.1 receipt](verification/2026-11-10-qwen-0271-dual-output.md) repeats the same
-Q2 and Q3/Q5/Q6/Q7 suite on exact 0.27.1 against matched 0.27.0. Normal-Bus
+Q2 and Q3/Q5/Q6/Q7 suite on exact 0.27.1 against matched 0.27.0, and the
+[0.28.3 receipt](verification/2026-11-22-qwen-0283-dual-output.md) repeats the suite on exact 0.28.3. Normal-Bus
 Q2 has two user/final-Stop/ordinary-provider turns after owned stop; Q3's five
 permission cases, unread-FIFO Q5, same-session/no-replay/assistant-context Q6 and
 identity/guard Q7 also passed, with final closure and protected/artifact/source
@@ -5912,7 +5916,7 @@ turns, this repository's live dual-output TUI use, Linux and lifetime containmen
 remain unverified; the basic ACP/setter contracts and automation eligibility are
 separate.
 
-Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)), 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)), 0.26.4 ([0.26.4 ACP receipt](verification/2026-10-31-qwen-0264-acp.md)), 0.26.5 ([0.26.5 ACP receipt](verification/2026-11-03-qwen-0265-acp.md)), 0.26.8 ([0.26.8 ACP receipt](verification/2026-11-06-qwen-0268-acp.md)), 0.26.9 ([0.26.9 ACP receipt](verification/2026-11-08-qwen-0269-acp.md)) and 0.27.0 ([0.27.0 ACP receipt](verification/2026-11-09-qwen-0270-acp.md)). The separate [0.26.4](verification/2026-10-31-qwen-0264-dual-output.md), [0.26.5](verification/2026-11-03-qwen-0265-dual-output.md), and [0.26.8](verification/2026-11-06-qwen-0268-dual-output.md) dual-output attempts did not establish their queued-turn criterion, those versions remain unverified by `qwen-dual`; exact 0.27.0 and 0.27.1 have the separate matched receipts above. A CLI version label alone
+Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)), 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)), 0.26.4 ([0.26.4 ACP receipt](verification/2026-10-31-qwen-0264-acp.md)), 0.26.5 ([0.26.5 ACP receipt](verification/2026-11-03-qwen-0265-acp.md)), 0.26.8 ([0.26.8 ACP receipt](verification/2026-11-06-qwen-0268-acp.md)), 0.26.9 ([0.26.9 ACP receipt](verification/2026-11-08-qwen-0269-acp.md)) 0.27.0 ([0.27.0 ACP receipt](verification/2026-11-09-qwen-0270-acp.md)), and 0.27.1 and 0.28.3 ([0.28.3 ACP receipt](verification/2026-11-22-qwen-0283-acp.md), which also records the 0.27.1 control). The separate [0.26.4](verification/2026-10-31-qwen-0264-dual-output.md), [0.26.5](verification/2026-11-03-qwen-0265-dual-output.md), and [0.26.8](verification/2026-11-06-qwen-0268-dual-output.md) dual-output attempts did not establish their queued-turn criterion, those versions remain unverified by `qwen-dual`; exact 0.27.0 and 0.27.1 have the separate matched receipts above. A CLI version label alone
 is insufficient: startup verifies its native identity/version and advertised mode
 ids before any prompt. The earlier local installation reported CLI 0.25.0 while
 its package/ACP source said 0.24.1; that was not a ready identity. The 0.26.0 receipt
@@ -6174,7 +6178,7 @@ Use the revision actually returned by `show`; the numbers above are examples.
 New/edit also accept `--order` and `--parent`; `--target none` or `--parent none`
 clears that field. `unlink <id> <kind> <ref>` removes a link. The configured
 planners, current unique conductor and the person may edit. Only the person
-records `state <id> done|dropped`; live-test delegation cannot write milestone
+records `state <id> done|dropped`, in a terminal or through an instructed managed Claude session whose confirmed prompt names the milestone id literally (see instructed mode above), and that history entry records `instructed`, `instructedPeer` and `instructionReceipt`; live-test delegation cannot write milestone
 content. Terminal milestones are final.
 
 Explicit task links take precedence over issue inheritance across all milestones.
@@ -6221,8 +6225,7 @@ so a second run supersedes the first. Proposing intakes, links and publishes not
 `ahub roadmap decompose <id> --accept <part>` holds one proposed part as a backlog
 intake draft linked to the milestone, carrying its spec or task kind; nothing offers,
 pulls or routes it until the person releases it with `ahub intake approve`, and
-accepting the same part again returns the same draft. No part becomes a spec issue on
-GitHub. See the [decomposition contract](design/roadmap.md#decomposition-r2).
+accepting the same part again returns the same draft. `ahub roadmap decompose <id> --publish` previews one GitHub issue per held `spec` part and writes nothing; `--apply --confirm <fingerprint>` creates them behind `roadmap.github_write` (the person, or the unique conductor when it is set to `conductor`) and links each to the milestone. A `task` part, a released draft and a private part get no issue. A second apply creates nothing, an overlapping apply is refused, and a failed `gh` call leaves the draft held with nothing linked. See the [decomposition contract](design/roadmap.md#decomposition-r2).
 
 ## Planning and phased releases (#263)
 
