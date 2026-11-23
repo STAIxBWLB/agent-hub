@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Let the recovery package accept agent-mem 0.37.0 and later, which declares exactly the pinned `@staix/cli-output`, so `ahub upgrade`, restart staging and conductor recovery work on a fresh install; any other dependency, a range or a nested `node_modules` is still refused. Closes #1664, hub task 1083.
+
 ## 0.46.0
 
 - Release N-1 for 0.46.x is published 0.45.0, which declares agent-mem `>=0.33.0 <1.0.0`; its fixture lock pins the 0.33.0 that the 0.45.0 release resolved, with control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package, and the matrix now records the declared range apart from the resolved version; the separate protocol-16 fixture stays at 0.25.0. The isolated compatibility fixture covers old clients and plugins against the new daemon and new clients and plugins against the old daemon; it does not prove live-agent, rollback, or shared-home compatibility. The protocol window is unchanged; the daemon adds the `instructed_intent`, `instructed_exact` and `roadmap_instructed` features, and a recovery target without `roadmap_instructed` (0.45.0) is refused while an instructed milestone history entry is retained. The CLI adds `ahub instructed run`, the internal `ahub instruction-hook`, `ahub setup --undo`, `ahub init --no-jcode-home`, the `ahub roster add` preflight with `--yes`, `ahub roadmap decompose --publish` and `ahub budget execution configure --reason`; a 0.45.0 CLI does not offer these. The MCP tool set is unchanged; only the `hub_roadmap_decompose` and `hub_task_decline` descriptions changed. The declared agent-mem range is unchanged, and no memory home or sync format floor is raised.
