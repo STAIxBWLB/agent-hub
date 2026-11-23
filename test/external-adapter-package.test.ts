@@ -18,8 +18,9 @@ test("A4 an external package runs the exported kit using only the actual npm tar
     expect(spawnSync("tar", ["-xzf", join(root, artifact.filename), "-C", extracted], { encoding: "utf8", timeout: 5000 }).status).toBe(0);
     const scope = join(root, "node_modules", "@staix"); mkdirSync(scope, { recursive: true });
     renameSync(join(extracted, "package"), join(scope, "agent-hub"));
-    // Install only the already exact-pinned published runtime dependency. Never copy an ancestor node_modules tree.
+    // Supply only the declared published first-party runtime dependencies, never an ancestor node_modules tree.
     symlinkSync(realPath(join(source, "node_modules", "@staix", "agent-mem")), join(scope, "agent-mem"));
+    symlinkSync(realPath(join(source, "node_modules", "@staix", "cli-output")), join(scope, "cli-output"));
     writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
     const module = `import {ADAPTER_API,AcpPeer} from "@staix/agent-hub/adapter";
 export const definition={api:ADAPTER_API,kind:"kit-fixture",family:"kit-fixture",displayName:"Kit fixture",transport:"acp",roles:["implementer"],optional:true,defaultOnRoster:false,
@@ -87,6 +88,6 @@ for(const decoy of [false,true]) test("installed daemon binds its own SDK outsid
     expect(output).toContain("P4 kit-fixture: transport delivery, synchronous occupancy and owned teardown");
     expect(output).toContain("watchdog cancellation fences the consumed late native result");
     const manifest = JSON.parse(readFileSync(join(scope, "agent-hub", "package.json"), "utf8"));
-    expect(Object.keys(manifest.dependencies)).toEqual(["@staix/agent-mem"]);
+    expect(Object.keys(manifest.dependencies).sort()).toEqual(["@staix/agent-mem", "@staix/cli-output"]);
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true }); }
 }, 40_000);

@@ -43,8 +43,9 @@ export function exactVersion(version: string): string {
 }
 
 const MEMORY_ASSETS = ["src", "bin", "package.json", "README.md", "LICENSE"] as const;
+const OUTPUT_ASSETS = ["src", "package.json", "README.md", "LICENSE"] as const;
 
-/** The sole runtime dependency is a bounded first-party package, never an arbitrary dependency tree. */
+/** Runtime dependencies are limited to the reviewed first-party packages, never an arbitrary dependency tree. */
 function memoryRuntime(root: string, dependencyRoot?: string): string | undefined {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const deps = pkg.dependencies ?? {};
@@ -52,7 +53,7 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
   const declared = deps["@staix/agent-mem"];
   // #1611: a current package declares a floor range `>=X.Y.Z <M.0.0`; a package staged under #1605 declares `~X.Y.Z` and one before it an exact
   // version, so a cached release still verifies (legacy forms need no host API); compound ranges, `^`, `*` and prereleases stay refused.
-  if (Object.keys(deps).length !== 1 || typeof declared !== "string" || !(/^~?\d+\.\d+\.\d+$/.test(declared) || isAgentMemFloorRange(declared))) throw new Error("unsupported runtime dependencies in recovery package");
+  if (Object.keys(deps).some(name => !["@staix/agent-mem", "@staix/cli-output"].includes(name)) || typeof declared !== "string" || !(/^~?\d+\.\d+\.\d+$/.test(declared) || isAgentMemFloorRange(declared))) throw new Error("unsupported runtime dependencies in recovery package");
   let dir = dependencyRoot ? join(dependencyRoot, "node_modules/@staix/agent-mem")
     : dirname(createRequire(join(root, "package.json")).resolve("@staix/agent-mem"));
   if (dependencyRoot && !existsSync(dir)) throw new Error("memory runtime dependency is unavailable");
@@ -84,14 +85,43 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
   }
 }
 
+/** Resolve only the declared exact output package, including in an isolated retained or staged install. */
+function outputRuntime(root: string, dependencyRoot?: string): string | undefined {
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const declared = pkg.dependencies?.["@staix/cli-output"];
+  if (declared === undefined) return undefined;
+  if (typeof declared !== "string" || !/^\d+\.\d+\.\d+$/.test(declared)) throw new Error("output runtime dependency must be an exact version");
+  let dir = dependencyRoot ? join(dependencyRoot, "node_modules/@staix/cli-output")
+    : dirname(createRequire(join(root, "package.json")).resolve("@staix/cli-output"));
+  if (dependencyRoot && !existsSync(dir)) throw new Error("output runtime dependency is unavailable");
+  if (dependencyRoot) for (const name of ["node_modules", "node_modules/@staix", "node_modules/@staix/cli-output"]) {
+    if (lstatSync(join(dependencyRoot, name)).isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
+  }
+  for (;;) {
+    const manifest = join(dir, "package.json");
+    if (existsSync(manifest)) {
+      const output = JSON.parse(readFileSync(manifest, "utf8"));
+      if (output.name === "@staix/cli-output") {
+        if (output.version !== declared || Object.keys(output.dependencies ?? {}).length) throw new Error("output runtime dependency identity/version mismatch");
+        return realPath(dir);
+      }
+    }
+    const parent = dirname(dir);
+    if (dependencyRoot || parent === dir) throw new Error("output runtime dependency is unavailable");
+    dir = parent;
+  }
+}
+
 export function preserveRuntimeDependencies(root: string, destination: string): void {
-  const memory = memoryRuntime(root);
-  if (!memory) return;
-  const target = join(destination, "node_modules/@staix/agent-mem");
-  mkdirSync(target, { recursive: true });
-  for (const name of MEMORY_ASSETS) {
-    if (lstatSync(join(memory, name)).isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
-    cpSync(join(memory, name), join(target, name), { recursive: true, dereference: false });
+  const memory = memoryRuntime(root), output = outputRuntime(root);
+  for (const [source, packageName, assets] of [[memory, "agent-mem", MEMORY_ASSETS], [output, "cli-output", OUTPUT_ASSETS]] as const) {
+    if (!source) continue;
+    const target = join(destination, "node_modules/@staix", packageName);
+    mkdirSync(target, { recursive: true });
+    for (const name of assets) {
+      if (lstatSync(join(source, name)).isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
+      cpSync(join(source, name), join(target, name), { recursive: true, dereference: false });
+    }
   }
 }
 
@@ -106,12 +136,18 @@ export function packageDigest(root: string, options: { ownDependencies?: boolean
       else file(join(directory, item.name), name);
     }
   };
-  // Only runtime assets and the exact first-party package; never private state or unrelated dependencies.
+  // Only runtime assets and the resolved first-party packages; never private state or unrelated dependencies.
   for (const name of ["src", "plugins", "templates", ".claude-plugin"]) visit(join(root, name), `${name}/`);
   hash.update(readFileSync(join(root, "package.json")));
   const memory = memoryRuntime(root, options.ownDependencies ? root : options.dependencyRoot);
   if (memory) for (const name of MEMORY_ASSETS) {
     const path = join(memory, name), stat = lstatSync(path), prefix = `node_modules/@staix/agent-mem/${name}`;
+    if (stat.isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
+    if (stat.isDirectory()) visit(path, `${prefix}/`); else file(path, prefix);
+  }
+  const output = outputRuntime(root, options.ownDependencies ? root : options.dependencyRoot);
+  if (output) for (const name of OUTPUT_ASSETS) {
+    const path = join(output, name), stat = lstatSync(path), prefix = `node_modules/@staix/cli-output/${name}`;
     if (stat.isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
     if (stat.isDirectory()) visit(path, `${prefix}/`); else file(path, prefix);
   }
@@ -131,7 +167,7 @@ export function recoveryPackageOptions(kind: "restart" | "upgrade", root: string
   if (kind === "restart") return { ownDependencies: true };
   if (kind !== "upgrade") throw new Error("unsupported recovery package kind");
   const canonical = realPath(root);
-  // Project captures own the exact dependency and keep the registry install separate below this version.
+  // Project captures own their resolved dependencies and keep the registry install separate below this version.
   if (canonical === root && /^source-[a-f0-9]{64}$/.test(basename(canonical)) && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(basename(dirname(canonical)))
     && basename(dirname(dirname(canonical))) === "releases") return { ownDependencies: true };
   const dependencyRoot = resolve(canonical, "../../..");

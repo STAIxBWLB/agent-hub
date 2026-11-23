@@ -24,7 +24,7 @@ export function readRecoveryPresentationFlags(
     else if (flag?.kind === "verbose") { verbose = true; flags.push(arg); }
     else args.push(arg);
   }
-  const resolved = resolveColor(color, terminal);
+  const resolved = resolveColor(color, terminal, "ahub");
   if (resolved instanceof Error) throw resolved;
   const columns = terminal.columns !== undefined && Number.isFinite(terminal.columns) && terminal.columns > 0 ? Math.floor(terminal.columns) : 80;
   return { args, flags, json, options: { columns, color: resolved, verbose, now } };

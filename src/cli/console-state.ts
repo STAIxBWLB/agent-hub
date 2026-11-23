@@ -1,3 +1,4 @@
+import { Report as SharedReport, paint as sharedPaint } from "@staix/cli-output";
 import { consoleNeeds, characterAttentionLine, attentionCommand } from "./attention.ts";
 import { CHARACTERS, petFrame, petSize, petFooterRows, type CharacterId, type PetSize, type PetPose } from "../pet/frame.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
@@ -135,6 +136,7 @@ export function permissionDefaultText(row: Pick<PermissionDefault, "peer" | "sou
   return `never-ask default for ${row.peer} from ${quoted(row.source)}\n${permissionBoundary(row.peer, undefined, createProjectAdapterCatalog())}\nUntil you answer y, this default stays ask. y enables; n cancels for this hub; Esc defers.`;
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
+// Preserve the hub's control and header policy for non-Report output.
 export function terminalText(value: unknown): string {
   return sanitize(String(value ?? "")
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "")
@@ -155,11 +157,7 @@ export const TONE_ROLE: Readonly<Partial<Record<Tone, Role>>> = Object.freeze({
   info: "accent", strong: "header", success: "success", attention: "warning", failure: "error", muted: "hint", number: "value",
 });
 export function paint(line: Span[], color: boolean): string {
-  return line.map(span => {
-    const text = terminalText(span.text);
-    const sgr = span.role && Object.hasOwn(ROLE_SGR, span.role) ? ROLE_SGR[span.role] : span.tone && Object.hasOwn(PALETTE, span.tone) ? PALETTE[span.tone] : undefined;
-    return color && sgr && text ? sgr + text + SGR_RESET : text;
-  }).join("");
+  return sharedPaint(line.map(({ tone, ...span }) => ({ ...span, text: terminalText(span.text), ...(tone ? { style: tone } : {}) })), color, PALETTE);
 }
 /** Console stream headers only. Tokenize sanitized text; bodies and command output stay plain. */
 export function streamTokens(value: string, eventTone?: Tone, kind?: string): Span[] {
@@ -243,6 +241,7 @@ export function wrapStreamTokens(value: string, columns: number, tone?: Tone, ki
  * and summary line. Blank lines follow the standard: exactly one before each section, none after it, never two in a row, none at the
  * end. Lines are Span arrays; `paint(line, color)` prints them. The builder never colors by itself: it names roles.
  */
+// Shared Report supplies matching primitives; local layout preserves header-aware wrapping: STAIxBWLB/cli-output#29.
 export class Report {
   private readonly out: Span[][] = [];
   /** `columns` undefined means no wrap width: standard v1 wraps on a pipe only when COLUMNS is set, so a script reading `ahub doctor | grep` gets whole lines. */
@@ -254,13 +253,13 @@ export class Report {
   private push(line: Span[]) { this.out.push(line); }
   /** ` <tool> <Report>` in `header`, then one line of context in `hint` on the same line. At most one per report. */
   header(tool: string, name: string, context?: string): this {
-    this.push([{ text: ` ${tool} ${name}`, role: "header" }, ...(context ? [{ text: `  ${context}`, role: "hint" as const }] : [])]);
+    this.out.push(...new SharedReport(this.columns, this.ascii).header(tool, name, context).lines());
     return this;
   }
   /** One blank line, then `▸ <Name>` (ASCII `> <Name>`) in `section`, with an optional count in `hint`. */
   section(name: string, count?: string): this {
     if (this.out.length && this.out.at(-1)!.length) this.push([]);
-    this.push([{ text: `${this.ascii ? SECTION_MARKER.ascii : SECTION_MARKER.glyph} ${name}`, role: "section" }, ...(count ? [{ text: ` (${count})`, role: "hint" as const }] : [])]);
+    this.out.push(...new SharedReport(this.columns, this.ascii).section(name, count).lines());
     return this;
   }
   /**
@@ -303,19 +302,13 @@ export class Report {
   }
   /** `    →  <command>` in `accent`: complete and copyable, never shortened. */
   next(command: string): this {
-    this.push([{ text: "    " }, { text: `${markerCell("next", this.ascii)} ${terminalText(command)}`, role: "accent" }]);
+    this.out.push(...new SharedReport(this.columns, this.ascii, { sanitize: terminalText, sanitizeFirst: true, wrapNext: false }).next(command).lines());
     return this;
   }
   /** The last line of a check command: `✗ 2 failed  ⚠ 3 warnings  ✓ 18 ok`, zero counts omitted, unknowns as `? 2 unknown`. */
   summary(counts: { failed?: number; warnings?: number; unknown?: number; ok?: number }): this {
-    const parts: Span[] = [];
-    const add = (n: number | undefined, name: MarkerName, word: string) => {
-      if (!n) return;
-      if (parts.length) parts.push({ text: "  " });
-      parts.push({ text: `${this.ascii ? MARKERS[name].ascii : MARKERS[name].glyph} ${n} ${word}`, role: MARKERS[name].role });
-    };
-    add(counts.failed, "fail", "failed"); add(counts.warnings, "warn", counts.warnings === 1 ? "warning" : "warnings"); add(counts.unknown, "unknown", "unknown"); add(counts.ok, "ok", "ok");
-    if (parts.length) { if (this.out.length) this.push([]); this.push(parts); }
+    const lines = new SharedReport(this.columns, this.ascii).summary(counts).lines();
+    if (lines.length) { if (this.out.length) this.push([]); this.out.push(...lines); }
     return this;
   }
   lines(): Span[][] { return this.out.map(line => line.map(item => ({ ...item }))); }
@@ -362,6 +355,7 @@ export function fit(value: unknown, columns: number): string {
  * at whitespace, which they drop; only a word longer than a whole line is split. A tab counts as one space.
  * Lines come out sanitized: a width counts the `> ` that sanitize() puts before a line starting like a hub header.
  */
+// Preserve hub header-aware chunk widths until STAIxBWLB/cli-output#29.
 export function wrap(value: unknown, columns: number, hang = 4): string[] {
   const lines: string[] = [];
   const half = Math.floor(columns / 2);
@@ -1165,6 +1159,7 @@ function roomDetail(row: RoomStatusView): Record<string, unknown> {
  * widest cell or header (Bun.stringWidth, at most a third of the width, wider cells cut with the marker); the last column
  * takes the rest. One-shot callers may supply widths for already-wrapped cells; console defaults stay unchanged.
  */
+// Local tables retain width-dependent clipping and heading styles: STAIxBWLB/cli-output#30.
 export function table(head: string[], rows: Span[][], columns: number, explicitWidths?: readonly number[]): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const width = (cell: Span | undefined) => Bun.stringWidth(flat(cell?.text));

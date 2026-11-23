@@ -95,7 +95,7 @@ function labeled(text: string): Detail {
 /** One terminal client, no daemon ownership. All text crosses terminalText before writing. */
 export async function runConsole(options: ConsoleOptions): Promise<void> {
   const { client } = options; const terminal = options.terminal ?? nativeTerminal();
-  const color = options.color ?? resolveColor(undefined, streamEnv(terminal.isTTY)) === true;
+  const color = options.color ?? resolveColor(undefined, streamEnv(terminal.isTTY), "ahub") === true;
   let state = initialConsoleState(!!options.panels); state.project = basename(options.cwd);
   let pet = loadPetConfig(options.cwd);
   let petSignature = JSON.stringify([pet.enabled, pet.character, pet.size, pet.glyphs, pet.blink, pet.bell]);

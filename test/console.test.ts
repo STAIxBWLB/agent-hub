@@ -159,9 +159,9 @@ describe("console colors", () => {
       ["auto", { isTTY: true, NO_COLOR: "1" }, false],
       ["always", { isTTY: false, TERM: "dumb", NO_COLOR: "1" }, true],
       ["never", { isTTY: true }, false],
-    ] as const) expect(resolveColor(flag, env)).toBe(want);
-    expect(resolveColor("rainbow", { isTTY: true })).toBeInstanceOf(Error);
-    expect(resolveColor("", { isTTY: true })).toBeInstanceOf(Error);
+    ] as const) expect(resolveColor(flag, env, "ahub")).toBe(want);
+    expect(resolveColor("rainbow", { isTTY: true }, "ahub")).toBeInstanceOf(Error);
+    expect(resolveColor("", { isTTY: true }, "ahub")).toBeInstanceOf(Error);
   });
   test("stream token tones distinguish peers, task keyword, values and both reference kinds", () => {
     const examples = [

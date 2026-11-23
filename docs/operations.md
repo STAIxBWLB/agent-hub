@@ -6917,8 +6917,10 @@ continuation uses only bounded current actor/privacy checks; unrelated public
 board writes do not invalidate it. Changed or unreadable authority evidence
 stops the next effect and leaves the operation for the person.
 
-An upgrade digest includes the exact staged `@staix/agent-mem` package from its
-hoisted install; a restart digest includes its verified source dependency.
+An upgrade digest includes the exact staged `@staix/agent-mem` and, when declared,
+`@staix/cli-output` packages from their hoisted install; a restart digest includes
+their verified source dependencies. Legacy packages without the output dependency
+keep their original digest.
 Protected or restart-bound source config/routing edits that have not been
 accepted remain person-only. The replacement validates the captured inputs
 before adapter imports and uses the sealed source fallback for startup routing.

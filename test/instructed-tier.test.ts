@@ -217,6 +217,8 @@ test("the daemon executes confirmed exact and intent commands through its inheri
   const memoryFile = fileURLToPath(import.meta.resolve("@staix/agent-mem"));
   mkdirSync(join(install, "node_modules", "@staix"), { recursive: true });
   cpSync(dirname(dirname(memoryFile)), join(install, "node_modules", "@staix", "agent-mem"), { recursive: true });
+  const outputFile = fileURLToPath(import.meta.resolve("@staix/cli-output"));
+  cpSync(dirname(dirname(outputFile)), join(install, "node_modules", "@staix", "cli-output"), { recursive: true });
   mkdirSync(join(cwd, ".agenthub"));
   writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: true }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: false }, tasks: { wip_limits: { claude: 8 } } }));
   writeFileSync(join(cwd, ".agenthub/routing.toml"), readFileSync(join(repo, "templates/routing.toml"), "utf8").replace('pii = "local_only"', 'pii = "off"').replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"'));
