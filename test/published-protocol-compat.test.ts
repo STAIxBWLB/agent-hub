@@ -13,12 +13,12 @@ import { SYNTHETIC_CLAUDE_PARENT_COMMAND, syntheticClaudeParentEvidenceSetup } f
 
 // Installed separately by the gate with its own frozen lock. No fixture package is installed or fetched by a test.
 // The bounded preservation helper copies unchanged executable assets and each release's exact amem dependency to unique
-// scratch inodes, then verifies the same package digest. It never copies an entire node_modules tree.
+// scratch inodes, then verifies the same package digest. memoryRange is what the release declares; memoryVersion is what its fixture lock resolves. It never copies an entire node_modules tree.
 // The old daemon and self-contained plugin need only their own core; the current source plugin uses the root's
 // verified SDK1.30.0. Neither installed nor copied old source is patched.
 const PUBLISHED_FIXTURES = [
-  { directory: "protocol-v16", version: "0.25.0", memoryVersion: "0.18.0", protocol: 16, role: "protocol floor" },
-  { directory: "release-n-1", version: "0.44.0", memoryVersion: "0.30.0", protocol: 17, role: "release N-1" },
+  { directory: "protocol-v16", version: "0.25.0", memoryRange: "0.18.0", memoryVersion: "0.18.0", protocol: 16, role: "protocol floor" },
+  { directory: "release-n-1", version: "0.45.0", memoryRange: ">=0.33.0 <1.0.0", memoryVersion: "0.33.0", protocol: 17, role: "release N-1" },
 ] as const;
 type PublishedFixture = typeof PUBLISHED_FIXTURES[number];
 const CURRENT_ROOT = join(import.meta.dir, "..");
@@ -48,7 +48,7 @@ function published(entry: PublishedFixture): Promise<Published> {
     result = (async () => {
       const installedRoot = join(import.meta.dir, "fixtures", entry.directory, "node_modules/@staix/agent-hub");
       expect(metadata(join(import.meta.dir, "fixtures", entry.directory))).toMatchObject({ private: true, dependencies: { "@staix/agent-hub": entry.version } });
-      expect(metadata(installedRoot)).toMatchObject({ name: "@staix/agent-hub", version: entry.version, dependencies: { "@staix/agent-mem": entry.memoryVersion } });
+      expect(metadata(installedRoot)).toMatchObject({ name: "@staix/agent-hub", version: entry.version, dependencies: { "@staix/agent-mem": entry.memoryRange } });
       expect(packageFor(Bun.resolveSync("@staix/agent-mem", join(installedRoot, "src")), "@staix/agent-mem").version).toBe(entry.memoryVersion);
       expect(packageFor(Bun.resolveSync("@modelcontextprotocol/sdk/server/index.js", CURRENT_ROOT), "@modelcontextprotocol/sdk").version).toBe("1.30.0");
       const parent = mkdtempSync(join(tmpdir(), "ahub-published-runtime-")); preservedParents.push(parent);
