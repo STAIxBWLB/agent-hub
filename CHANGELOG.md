@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Pin `@staix/cli-output` 0.1.3 and use its header-aware wrapping for compatible inputs while preserving existing console output. Refs #1640, hub task 1082.
 - Use the first-party `@staix/cli-output` standard-v1 tokens and color rules on an exact 0.1.2 pin while preserving hub output. Refs #1640, hub task 1077.
 - Document and pin the instructed cross-project handoff refusal in both modes: the destination cannot check receipt revocation at its write. Refs #1622, hub task 1080.
 - Admit `roadmap state <id> done|dropped` in intent and exact instructed mode: the milestone id must be literal in the person's prompt, the milestone history records the same `instructed`, `instructedPeer` and `instructionReceipt` keys task history does, and a recovery target must advertise the new `roadmap_instructed` feature while any such entry is retained. Final verdict, no undo. Refs #1622, hub task 1081.

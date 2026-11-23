@@ -16,7 +16,7 @@ paths:
 
 # CLI output standard v1
 
-The canonical standard is the first-party package's [standard-v1.md](https://github.com/STAIxBWLB/cli-output/blob/v0.1.2/docs/standard-v1.md). The notes below describe the hub's implementation and compatibility boundaries. The hub uses shared Report primitives and paint while retaining its header-aware wrapping pending [cli-output issue 29](https://github.com/STAIxBWLB/cli-output/issues/29), and its table clipping and heading styles pending [issue 30](https://github.com/STAIxBWLB/cli-output/issues/30).
+The canonical standard is the first-party package's [standard-v1.md](https://github.com/STAIxBWLB/cli-output/blob/v0.1.3/docs/standard-v1.md). The notes below describe the hub's implementation and compatibility boundaries. The hub uses shared Report primitives, paint and wrapping. A fallback preserves legacy code-point splitting and non-positive widths pending [cli-output issue 36](https://github.com/STAIxBWLB/cli-output/issues/36); the existing table stays local pending [issue 37](https://github.com/STAIxBWLB/cli-output/issues/37).
 
 Version 1. This is a contract for the `ahub` family and every CLI under development; a change to it bumps the version. It is committed under the design-spec vocabulary as `type: module` because `ahub specs check` accepts only goal, architecture, module and submodule (issue #1484 asked for `type: contract`; the validator's fixed vocabulary wins, and the `contract` tag marks the intent).
 

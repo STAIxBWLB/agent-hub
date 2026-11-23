@@ -1,4 +1,4 @@
-import { Report as SharedReport, paint as sharedPaint } from "@staix/cli-output";
+import { Report as SharedReport, paint as sharedPaint, wrap as sharedWrap } from "@staix/cli-output";
 import { consoleNeeds, characterAttentionLine, attentionCommand } from "./attention.ts";
 import { CHARACTERS, petFrame, petSize, petFooterRows, type CharacterId, type PetSize, type PetPose } from "../pet/frame.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
@@ -241,7 +241,7 @@ export function wrapStreamTokens(value: string, columns: number, tone?: Tone, ki
  * and summary line. Blank lines follow the standard: exactly one before each section, none after it, never two in a row, none at the
  * end. Lines are Span arrays; `paint(line, color)` prints them. The builder never colors by itself: it names roles.
  */
-// Shared Report supplies matching primitives; local layout preserves header-aware wrapping: STAIxBWLB/cli-output#29.
+// Shared Report supplies matching primitives; layout uses shared wrapping with the legacy fallback below.
 export class Report {
   private readonly out: Span[][] = [];
   /** `columns` undefined means no wrap width: standard v1 wraps on a pipe only when COLUMNS is set, so a script reading `ahub doctor | grep` gets whole lines. */
@@ -355,14 +355,21 @@ export function fit(value: unknown, columns: number): string {
  * at whitespace, which they drop; only a word longer than a whole line is split. A tab counts as one space.
  * Lines come out sanitized: a width counts the `> ` that sanitize() puts before a line starting like a hub header.
  */
-// Preserve hub header-aware chunk widths until STAIxBWLB/cli-output#29.
+const wrapGraphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 export function wrap(value: unknown, columns: number, hang = 4): string[] {
+  const text = terminalText(value);
+  // A bare chunk ending in "--- from" becomes a header marker when table padding follows it.
+  const quoteChunk = (chunk: string) => sanitize(chunk + " ").slice(0, -1);
+  let complex = false;
+  if (/[^\p{ASCII}]/u.test(text)) for (const { segment } of wrapGraphemes.segment(text)) {
+    if (segment !== Array.from(segment)[0]) { complex = true; break; }
+  }
+  if (Number.isFinite(columns) && columns >= 1 && !complex) return sharedWrap(text, columns, hang, quoteChunk);
+  // Retain code-point splitting and non-positive widths for legacy output: STAIxBWLB/cli-output#36.
   const lines: string[] = [];
   const half = Math.floor(columns / 2);
-  // A bare chunk ending in "--- from" becomes a header marker when table padding follows it.
-  const quoteChunk = (text: string) => sanitize(text + " ").slice(0, -1);
-  const width = (text: string) => Bun.stringWidth(quoteChunk(text));
-  for (const part of terminalText(value).replace(/\t/g, " ").split("\n")) {
+  const width = (chunk: string) => Bun.stringWidth(quoteChunk(chunk));
+  for (const part of text.replace(/\t/g, " ").split("\n")) {
     const indent = /^\s*/.exec(part)![0];
     const lead = Math.min(Bun.stringWidth(indent), half);
     const pad = " ".repeat(Math.min(lead + hang, half));
@@ -1159,7 +1166,7 @@ function roomDetail(row: RoomStatusView): Record<string, unknown> {
  * widest cell or header (Bun.stringWidth, at most a third of the width, wider cells cut with the marker); the last column
  * takes the rest. One-shot callers may supply widths for already-wrapped cells; console defaults stay unchanged.
  */
-// Local tables retain width-dependent clipping and heading styles: STAIxBWLB/cli-output#30.
+// Local tables retain styled separators, untouched final cells and narrow STAGE geometry: STAIxBWLB/cli-output#37.
 export function table(head: string[], rows: Span[][], columns: number, explicitWidths?: readonly number[]): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const width = (cell: Span | undefined) => Bun.stringWidth(flat(cell?.text));

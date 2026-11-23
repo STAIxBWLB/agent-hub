@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Report as PackageReport, errorLine, errorSpans, lineSpans, paint as packagePaint, terminalText as packageText, wrap as packageWrap, wrapSpans as packageWrapSpans } from "@staix/cli-output";
 import { sanitize } from "../src/hub/envelope.ts";
 import { renderHelp } from "../src/cli/help.ts";
-import { PALETTE, Report, TONE_ROLE, paint } from "../src/cli/console-state.ts";
+import { PALETTE, Report, TONE_ROLE, paint, table, wrap } from "../src/cli/console-state.ts";
 import { errorLines, failureExitCode } from "../src/cli/error-format.ts";
 import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, SGR_RESET, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
 
@@ -91,10 +91,12 @@ test("published standard v1 fixtures match the hub and package", async () => {
         case "kv": shared.kv(op.rows, op.indent, op.options); if (op.options || op.indent) packageOnly = true; else local.kv(op.rows); break;
         case "bullet": shared.bullet(op.marker, op.text, op.nested); local.bullet(op.marker, op.text, op.nested); break;
         case "next": shared.next(op.command); local.next(op.command); if (file.startsWith("next-")) hasWrappedCommand = true; break;
-        // The hub table keeps its existing styled cells and geometry: STAIxBWLB/cli-output#30.
+        // The hub table keeps its existing styled cells and geometry: STAIxBWLB/cli-output#37.
         case "table": shared.table(op.head, op.rows, op.flexible, op.options); hasTable = true; break;
         case "append": shared.append(op.lines); packageOnly = true; break;
         case "line": shared.line(op.text); if (op.lines) expect(lineSpans(op.text, fixture.input.columns ?? undefined).map(line => packagePaint(line, false))).toEqual(op.lines); packageOnly = true; break;
+        case "note": shared.note(op.text, op.role); local.note(op.text, op.role); break;
+        case "note": shared.note(op.text, op.role); local.note(op.text, op.role); break;
         case "summary": shared.summary(op.counts); local.summary(op.counts); break;
         default: throw new Error(`unknown standard fixture operation ${op.op}`);
       }
@@ -116,6 +118,16 @@ test("hub report keeps legacy command and sanitization behavior while using shar
   const shared = new PackageReport().header("ahub", "Check").section("Results").summary({ ok: 2 });
   expect(hub.lines()).toEqual(shared.lines());
   expect(paint([{ text: "peer", tone: "peerClaude" }], true)).toBe(PALETTE.peerClaude + "peer" + SGR_RESET);
+});
+
+test("legacy wrap and table edges retain their existing output", () => {
+  expect(wrap("👩‍💻🇰🇷y", 3, 0)).toEqual(["👩‍💻🇰", "🇷y"]);
+  expect(wrap("ab", 0, 0)).toEqual(["a", "b"]);
+  expect(wrap("--- from x --- from x", 14, 0)).toEqual(["> --- from x", "> --- from x"]);
+  const lines = table(["name", "value"], [[{ text: "x".repeat(30), tone: "peerClaude" }, { text: "ok" }]], 60).map(line => paint(line, true));
+  expect(lines).toEqual([`${PALETTE.info}name                      ${SGR_RESET}${PALETTE.info}value${SGR_RESET}`, `${PALETTE.peerClaude}${"x".repeat(21)}...  ${SGR_RESET}ok`]);
+  const multiline = table(["name", "value"], [[{ text: "alpha" }, { text: "one\ntwo" }]], 40).map(line => paint(line, false));
+  expect(multiline[1]).toBe("alpha  one\ntwo");
 });
 
 describe("CLI output standard v1: roles", () => {
