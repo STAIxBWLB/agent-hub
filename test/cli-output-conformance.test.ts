@@ -96,7 +96,6 @@ test("published standard v1 fixtures match the hub and package", async () => {
         case "append": shared.append(op.lines); packageOnly = true; break;
         case "line": shared.line(op.text); if (op.lines) expect(lineSpans(op.text, fixture.input.columns ?? undefined).map(line => packagePaint(line, false))).toEqual(op.lines); packageOnly = true; break;
         case "note": shared.note(op.text, op.role); local.note(op.text, op.role); break;
-        case "note": shared.note(op.text, op.role); local.note(op.text, op.role); break;
         case "summary": shared.summary(op.counts); local.summary(op.counts); break;
         default: throw new Error(`unknown standard fixture operation ${op.op}`);
       }
