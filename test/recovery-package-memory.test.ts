@@ -147,7 +147,7 @@ test("recovery accepts agent-mem declaring exactly the pinned cli-output and ref
   declare({ "@staix/cli-output": pin });
   const before = plan(f.root), preserved = preserveSource(before, f.home);
   expect(packageDigest(preserved)).toBe(before.sourceDigest);
-  for (const bad of [{ "@staix/cli-output": "0.0.1" }, { "@staix/cli-output": `^${pin}` }, { "@staix/cli-output": pin, extra: "1.0.0" }]) {
+  for (const bad of [{ "@staix/cli-output": "0.0.1" }, { "@staix/cli-output": `^${pin}` }, { "@staix/cli-output": pin, extra: "1.0.0" }] as Record<string, string>[]) {
     declare(bad);
     expect(() => packageDigest(f.root)).toThrow("identity/version mismatch");
   }
