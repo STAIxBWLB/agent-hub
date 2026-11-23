@@ -14721,7 +14721,7 @@ var init_package = __esm(() => {
     },
     dependencies: {
       "@staix/agent-mem": ">=0.33.0 <1.0.0",
-      "@staix/cli-output": "0.1.2"
+      "@staix/cli-output": "0.1.3"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
