@@ -225,6 +225,7 @@ When adding or updating an adapter, verify each item before opening a PR:
 
 - [ ] **T0 Receipt Recorded**: Document native CLI version, observed hook payloads, and protocol outputs in `docs/verification/YYYY-MM-DD-<kind>-t0.md`.
 - [ ] **Registered in ADAPTERS**: the definition is declared under `src/adapters/definitions/` (or its own directory) with explicit `displayName`, `family`, `transport`, `trust` and `projection`, and listed in `ADAPTERS` (`src/adapters/registry.ts`). The peer lists are derived from it. The hand-kept cross-release copies in `src/hub/peer-catalog.ts` and `src/hub/start-mode.ts` and the pinned tests listed in `docs/agent-notes/adapters.md` change with it, and the PR names them as expected test changes.
+- [ ] **Hub skills host**: for a builtin kind that reads a user skill directory, add it to `SKILL_HOSTS` and `hostSkillDir` in `src/adapters/definitions/native-cli-skills.ts` and record the directory's source in `docs/agent-notes/adapters.md` ("Other hosts' user skill directories"); for one that reads none, add it to the exclusions in `test/skills-install.test.ts`, which fails while `SKILL_HOSTS` differs from `SUPPORTED_PEERS` minus claude and local.
 - [ ] **Config Path Protection**: Agent configuration directories added to `AGENT_CONFIG_SEGMENTS` in `src/hub/permission-mode.ts`.
 - [ ] **PII Safety Verified**: Cloud models have `trust.onPrem: false`; verify PII markers refuse routing to this peer.
 - [ ] **Process Group Teardown**: Daemon-spawned processes use process groups and exit cleanly on stop.

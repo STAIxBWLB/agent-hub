@@ -16,8 +16,9 @@ Scope: the security pass of a review (`REVIEW.md`), and any change under `src/lo
 ## Agents and messages (companion `agents`)
 
 - Every body rendered beside a hub-written header passes `sanitize()` (`src/hub/envelope.ts`). A new render path that skips it lets one agent forge another's header.
+- The Claude channel escapes a leading `/` in every notification body (`channelBody` in `src/adapters/claude-channel.ts`), so a peer's body cannot read as a typed slash command. Keep it on both the single and the digest path.
 - Hub messages stay untrusted in the receiver's instructions: `STANDING_INSTRUCTION` and `HUB_MESSAGE_INSTRUCTION` (`src/hub/envelope.ts`), the channel instructions (`src/adapters/claude-channel.ts`) and `templates/AGENTS.block.md` say the same thing. A change that weakens one of them weakens all peers of that kind.
-- Authority comes from the caller's role, checked in the daemon on every call, never from message text or from which tools a peer was shown: `requireConductor` (`src/hub/conductor.ts`), the planner and reviewer checks in `Tasks` (`src/hub/tasks.ts`). A refusal that must happen before any effect throws `PreEffectToolRefusal` (`src/hub/tool-refusal.ts`).
+- Authority comes from the caller's role, checked in the daemon on every call, never from message text or from which tools a peer was shown: `requireConductor` (`src/hub/conductor.ts`), the planner and reviewer checks in `Tasks` (`src/hub/tasks.ts`). A refusal that must happen before any effect throws `PreEffectToolRefusal` (`src/hub/tool-refusal.ts`). The one exception is instructed execution (#1622): a confirmed person-typed transcript receipt lets an agent run admitted `ahub` forms as the person. Review it against the instructed rules in `daemon.md` and `adapters.md`.
 - What a model wrote is stored as a model's answer and kept out of later evidence (`src/hub/ask.ts`, `src/hub/inference.ts`). A model label that reaches an event or a record goes through `safeModelLabel` (`src/omniroute/usage.ts`).
 - Review-observer exclusion is one function, `isReviewObserverExcluded` (`src/hub/memory-policy.ts`); a new memory or telemetry path asks it.
 
@@ -40,7 +41,7 @@ Scope: the security pass of a review (`REVIEW.md`), and any change under `src/lo
 - When reviewing Pi dependency preparation, also check the Pi dependencies rule in `docs/agent-notes/adapters.md` and the Pi prepared dependencies section in `docs/security.md`.
 - Workflow actions are pinned by commit SHA with the version in a comment; `test/workflow-pins.test.ts` refuses a tag. Workflow `permissions` stay at the minimum each job needs (`.github/workflows/`).
 - The dependency volume key covers everything that decides `node_modules` (`dependencyKey` in `src/hub/check-runner.ts`); a manifest with an install lifecycle script is refused, never keyed. Never add `--ignore-scripts` or a writable shared cache to make a run pass.
-- Runtime dependencies stay at zero third-party packages; `@staix/agent-mem` stays on a declared range (`>=X.Y.Z <M.0.0`, floor 0.33.0 or later), so a plain in-range release with a supported host API ships without a hub change and a new major needs a reviewed raise.
+- Runtime dependencies stay at zero third-party packages; the first-party `@staix/cli-output` is pinned to an exact version (`scripts/check-package.mjs`), and `@staix/agent-mem` stays on a declared range (`>=X.Y.Z <M.0.0`, floor 0.33.0 or later), so a plain in-range release with a supported host API ships without a hub change and a new major needs a reviewed raise.
 - Publishing happens only in the tag workflow through trusted publishing; the guarded tag (`scripts/release-tag.ts`) needs the person's consent. A change that adds a token, a second publish path or a way around the consent check is Important.
 
 ## A security audit turn

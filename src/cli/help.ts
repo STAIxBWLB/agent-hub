@@ -68,7 +68,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub status [--json] [--full] [--verbose] [--ascii] [--color=auto|always|never]", "is the hub OK, and what to do next: an Attention list (each item with its next command), then the hub, peers and tasks; --verbose or --full prints every detail (model backends, specs, queue pressure, schedules, per-peer notes)"],
     ["ahub status --all [--json] [--color=auto|always|never]", "show every registered project"],
     ["ahub logs [-f]", "person: last 100 hub.log lines (-f starts at 10); conductor: bounded public lines and follow while authority remains"],
-    ["ahub doctor [--json] [--full] [--ascii] [--color=auto|always|never]", "check the tools, daemon, plugin, gateway, models, memory library and memory capture setup (read from `amem setup <tool> --json`, a preview) this project uses, the runtime capture pruning ledger, whether the shared config.json tracking matches the AGENTS.md roles sentence, and who holds conductor, planner and reviewer as the loader settled them (a warning, never a failure); warn when the CLI or plugin is older than its running daemon"],
+    ["ahub doctor [--json] [--full] [--ascii] [--color=auto|always|never]", "check the tools, daemon, plugin, gateway, models, memory library and memory capture setup (read from `amem setup <tool> --json`, a preview) this project uses, the runtime capture pruning ledger, whether the shared config.json tracking matches the AGENTS.md roles sentence, and who holds conductor, planner and reviewer as the loader settled them (a warning, never a failure), the hub skills of the Claude plugin and every other agent host (installed, stale, missing, modified, foreign or linked, with a repair command), and any rostered implementer that no routing class lists (a warning); warn when the CLI or plugin is older than its running daemon"],
     ["ahub doctor --stale-anchors [--json]", "read-only bounded report of public memory symbol anchors at current HEAD; private or unavailable evidence stays unknown"],
     ["ahub doctor --orphans [--kill] [--json] [--color=auto|always|never]", "person: inspect missing-root registrations; conductor --kill: selected project only; signed hub ownership is required before any stop"],
     ["ahub agents [--json]", "show each gated agent CLI's installed version and verdict (verified, in-line, trusted, refused or unknown)"],
@@ -168,7 +168,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub remember <text...>", "save a note to the memory all agents share"],
   ]],
   ["Budget", [
-    ["ahub budget [--json] [--full] [--color=auto|always|never]", "quota windows per peer with each number's kind (native, count, manual) and source, why a peer shows no number, who is paused until when, and the reviewer quota admission rule"],
+    ["ahub budget [--json] [--full] [--color=auto|always|never]", "quota windows per peer with each number's kind (native, count, manual) and source, what is left and when the window would reach its limit at the recent hourly burn rate (or why there is no forecast), why a peer shows no number, who is paused until when, and the reviewer quota admission rule"],
     ["ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]", "feed a reading by hand (also: test the relay)"],
     ["ahub budget resume <peer>", "override a budget pause; readings are ignored for that peer until the window resets"],
     ["ahub budget execution status [id] [--json] [--color=auto|always|never]", "read execution counters and limits"],

@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.45.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.46.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 Inspect bounded task and attempt metadata with `ahub lineage show`; admit external
@@ -37,7 +37,9 @@ its PID and keeps waiting for readiness. Completed starts write phase timings to
 `hub.log`; [startup diagnostics](docs/operations.md#install-and-start) explains
 the 120-second outer bound and the next step for unconfirmed readiness.
 
-`ahub setup` also registers agent-hub as a plugin of the family console
+`ahub setup` also installs the hub's own skills for Codex, Kimi, Qwen, Jcode, Pi and agy behind a
+`.ahub-skill.json` marker (`ahub setup --undo` removes only unmodified trees it wrote), and registers
+agent-hub as a plugin of the family console
 ([agent-console](https://github.com/STAIxBWLB/agent-console), `acon ui`): the same dashboard
 appears as a panel for every registered project, and pending approvals, reviews assigned
 to you, questions agents ask you and, where acon supports them, unread results reach the
@@ -91,7 +93,8 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   optional control bands turn a breach into a backlog card. `ahub roadmap` groups
   work into board-backed milestones with computed task, cached issue, spec and
   train progress; private tasks appear only as counts. Planner/conductor edits
-  are separate from the person's done/dropped decisions ([roadmap](docs/design/roadmap.md)). Work that belongs to
+  are separate from the person's done/dropped decisions ([roadmap](docs/design/roadmap.md)). The dashboard's Roadmap view and the
+  console's Roadmap panel show its lanes and progress. Work that belongs to
   another project running agent-hub on this machine goes onto that project's board
   with `ahub task handoff` (agents: `hub_task_handoff`), and its state changes come
   back as task messages.
@@ -155,7 +158,10 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   still ask. Every message records its sender's origin, and a session that is not
   the project's own peer appears as `<peer>~<origin>` with none of that peer's
   roles: sessions are distinguishable, which is provenance, not authentication.
-  Budgets pause an
+  A managed Claude session can run hub commands on the person's typed instruction
+  (`/agent-hub:ahub`); a project with no retained choice starts in `intent` mode, and the
+  person changes it from a terminal with `ahub settings set instructed.mode off|exact|intent`.
+  Budgets forecast when each quota window would reach its limit (`ahub budget`) and pause an
   agent before it runs out of quota (at 99% of a window by default, the
   `budget.gate` setting), a reviewer is skipped when its known usage reaches 80% or
   its quota is unknown (`review.gate`, `review.unknown_quota`), and recovery never
