@@ -56,7 +56,7 @@ A project whose hub is stopped is upgraded without starting it: `ahub upgrade
 
 ## Upgrading to 0.46.0
 
-TODO(agent): say what changes for a person who upgrades, or that nothing does until they use something new.
+A managed Claude session can now run hub commands on your instruction: `/agent-hub:ahub run <command>` runs the exact command you typed, and `/agent-hub:ahub <what you want>` lets the agent pick supported commands, at most ten per instruction. A project with no retained choice starts in `intent` mode; turn it off from a terminal with `ahub settings set instructed.mode off`, or narrow it with `exact`. Spending, permission, trust, release and merge, deletion, identity, PII tasks and private turns stay closed in every mode (operations guide, "Claude plugin skills"). `ahub setup` now also installs the hub's skills into the user skill directories of Codex, Kimi, Qwen, Jcode, Pi and agy behind a `.ahub-skill.json` marker, and `ahub setup --undo` removes only unmodified trees it wrote. A new `ahub init` creates a separate hub-owned jcode home unless you pass `--no-jcode-home`. Automatic task offers now skip a peer at its WIP cap or with a held queue, and skip a peer that declined for capacity until it next reports idle. `ahub budget` and the Usage views forecast when each quota window would run out. Console output uses the shared `@staix/cli-output` package, pinned exactly at 0.1.3, with output unchanged. Jcode 1.0.x launches as in-line. The declared agent-mem range and the memory formats are unchanged.
 
 `ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.46.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
