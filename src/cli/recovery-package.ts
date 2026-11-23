@@ -75,7 +75,10 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
           if (!agentMemHostApiOk(host.min, host.version))
             throw new Error(`memory runtime host API ${host.min ?? "missing"}..${host.version ?? "missing"} does not intersect the supported ${AGENT_MEM_HOST_API_RANGE[0]}..${AGENT_MEM_HOST_API_RANGE[1]}`);
         }
-        if (!accepted || Object.keys(memory.dependencies ?? {}).length) throw new Error("memory runtime dependency identity/version mismatch");
+        // #1664: agent-mem 0.37.0+ declares exactly the hub's own pinned @staix/cli-output (hashed once by outputRuntime); nothing else, and no nested node_modules the digest would not cover.
+        const memoryDeps = Object.entries(memory.dependencies ?? {}), outputPin = deps["@staix/cli-output"];
+        const depsOk = memoryDeps.length === 0 || (memoryDeps.length === 1 && typeof outputPin === "string" && memoryDeps[0]?.[0] === "@staix/cli-output" && memoryDeps[0][1] === outputPin);
+        if (!accepted || !depsOk || existsSync(join(dir, "node_modules"))) throw new Error("memory runtime dependency identity/version mismatch");
         return realPath(dir);
       }
     }

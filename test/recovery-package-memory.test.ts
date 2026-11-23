@@ -135,3 +135,23 @@ test("#1611 a legacy ~ staged package keeps its check with no host API requireme
   writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { "@staix/agent-mem": "~0.32.1" } }));
   expect(packageDigest(f.root)).toBeTypeOf("string");
 });
+
+test("recovery accepts agent-mem declaring exactly the pinned cli-output and refuses anything else (#1664)", () => {
+  const f = fixture(), manifest = join(f.dependency, "package.json"), original = JSON.parse(readFileSync(manifest, "utf8"));
+  const pin = hubPackage.dependencies["@staix/cli-output"];
+  const hub = { ...f.manifest, dependencies: { ...f.manifest.dependencies, "@staix/cli-output": pin } };
+  writeFileSync(join(f.root, "package.json"), JSON.stringify(hub));
+  const output = join(f.root, "node_modules/@staix/cli-output");
+  cpSync(dirname(dirname(fileURLToPath(import.meta.resolve("@staix/cli-output")))), output, { recursive: true });
+  const declare = (dependencies: Record<string, string>) => writeFileSync(manifest, JSON.stringify({ ...original, dependencies }));
+  declare({ "@staix/cli-output": pin });
+  const before = plan(f.root), preserved = preserveSource(before, f.home);
+  expect(packageDigest(preserved)).toBe(before.sourceDigest);
+  for (const bad of [{ "@staix/cli-output": "0.0.1" }, { "@staix/cli-output": `^${pin}` }, { "@staix/cli-output": pin, extra: "1.0.0" }]) {
+    declare(bad);
+    expect(() => packageDigest(f.root)).toThrow("identity/version mismatch");
+  }
+  declare({ "@staix/cli-output": pin });
+  mkdirSync(join(f.dependency, "node_modules/nested"), { recursive: true });
+  expect(() => packageDigest(f.root)).toThrow("identity/version mismatch");
+});
