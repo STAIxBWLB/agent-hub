@@ -15,13 +15,14 @@ function fixture(memory = true) {
   const base = mkdtempSync(join(tmpdir(), "ahub-runtime-memory-")); roots.push(base);
   const root = join(base, "runtime"), home = join(base, "home");
   for (const dir of ["src", "plugins", "templates", ".claude-plugin"]) mkdirSync(join(root, dir), { recursive: true });
-  const manifest = { name: "@staix/agent-hub", version: "0.0.0", ...(memory ? { dependencies: { "@staix/agent-mem": hubPackage.dependencies["@staix/agent-mem"] } } : {}) };
+  const manifest = { name: "@staix/agent-hub", version: "0.0.0", ...(memory ? { dependencies: { "@staix/agent-mem": hubPackage.dependencies["@staix/agent-mem"], "@staix/cli-output": hubPackage.dependencies["@staix/cli-output"] } } : {}) };
   writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
   for (const name of ["README.md", "LICENSE", "CHANGELOG.md"]) writeFileSync(join(root, name), "fixture\n");
   const dependency = join(root, "node_modules/@staix/agent-mem");
   if (memory) {
     const published = dirname(dirname(fileURLToPath(import.meta.resolve("@staix/agent-mem"))));
     cpSync(published, dependency, { recursive: true });
+    cpSync(dirname(dirname(fileURLToPath(import.meta.resolve("@staix/cli-output")))), join(root, "node_modules/@staix/cli-output"), { recursive: true });
     mkdirSync(join(root, "node_modules/unrelated"));
     writeFileSync(join(root, "node_modules/unrelated/private.txt"), "must not copy");
     writeFileSync(join(dependency, "private-extra.txt"), "not a published runtime asset");
@@ -54,7 +55,7 @@ test("recovery refuses mismatched, ranged, transitive and symlinked memory runti
   writeFileSync(manifest, JSON.stringify({ ...original, dependencies: { unexpected: "1.0.0" } }));
   expect(() => packageDigest(f.root)).toThrow("identity/version mismatch");
   writeFileSync(manifest, JSON.stringify(original));
-  writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { "@staix/agent-mem": `^${hubPackage.dependencies["@staix/agent-mem"].slice(2).split(" ")[0]}` } }));
+  writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { ...f.manifest.dependencies, "@staix/agent-mem": `^${hubPackage.dependencies["@staix/agent-mem"].slice(2).split(" ")[0]}` } }));
   expect(() => packageDigest(f.root)).toThrow("unsupported runtime dependencies");
   writeFileSync(join(f.root, "package.json"), JSON.stringify(f.manifest));
   symlinkSync("index.ts", join(f.dependency, "src/linked.ts"));
@@ -132,17 +133,13 @@ test("#1611 a legacy ~ staged package keeps its check with no host API requireme
   const f = fixture(), manifest = join(f.dependency, "package.json"), published = JSON.parse(readFileSync(manifest, "utf8"));
   writeFileSync(manifest, JSON.stringify({ ...published, version: "0.32.1" }));
   setHostApi(f.dependency, undefined, undefined);
-  writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { "@staix/agent-mem": "~0.32.1" } }));
+  writeFileSync(join(f.root, "package.json"), JSON.stringify({ ...f.manifest, dependencies: { ...f.manifest.dependencies, "@staix/agent-mem": "~0.32.1" } }));
   expect(packageDigest(f.root)).toBeTypeOf("string");
 });
 
 test("recovery accepts agent-mem declaring exactly the pinned cli-output and refuses anything else (#1664)", () => {
   const f = fixture(), manifest = join(f.dependency, "package.json"), original = JSON.parse(readFileSync(manifest, "utf8"));
   const pin = hubPackage.dependencies["@staix/cli-output"];
-  const hub = { ...f.manifest, dependencies: { ...f.manifest.dependencies, "@staix/cli-output": pin } };
-  writeFileSync(join(f.root, "package.json"), JSON.stringify(hub));
-  const output = join(f.root, "node_modules/@staix/cli-output");
-  cpSync(dirname(dirname(fileURLToPath(import.meta.resolve("@staix/cli-output")))), output, { recursive: true });
   const declare = (dependencies: Record<string, string>) => writeFileSync(manifest, JSON.stringify({ ...original, dependencies }));
   declare({ "@staix/cli-output": pin });
   const before = plan(f.root), preserved = preserveSource(before, f.home);
