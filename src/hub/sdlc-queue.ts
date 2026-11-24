@@ -10,7 +10,7 @@ export interface DeliveryTask {
   latestHead?: string;
   /** Host-derived verdict binding, never inferred from a mutable lifecycle receipt. */
   approval?: { head?: string; latestHead?: string; mismatch: boolean; current: boolean };
-  plan?: { paths?: string[]; out_of_scope?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] };
+  plan?: { paths?: string[]; out_of_scope?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[]; /** #1645 T4: the review scope the plan review recorded, compared against the tier's own minimum. */ planReview?: { scope?: string; reviewers?: number } };
   findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView;
   /** #1403 A2: the latest security pass an approving or rejecting verdict recorded, bound to the head it reviewed. */
   securityPass?: SecurityPassRecord;

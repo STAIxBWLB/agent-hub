@@ -60,7 +60,7 @@ import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { evalAdvice, evalGapBlockers, evalRequiredChecks, readEvalFor } from "./eval-gate.ts";
 import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequestLine, SECURITY_CHECKLIST, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
-import { deriveRiskTier, withoutRisk, type RiskRecord } from "./risk-tier.ts";
+import { deriveRiskTier, riskLine, riskPlanFloor, riskView, withoutRisk, type RiskCard, type RiskRecord, type RiskView } from "./risk-tier.ts";
 import { AUDIT_PROFILES, applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, needsVerification, parseUnitReports, seedLedger, settlementRefusal, SETTLEMENTS, unitId, verificationRefusal, type AuditFinding, type AuditProfile, type AuditSummary, type CarryLookup, type PublicAuditFinding } from "./security-audit.ts";
 import type { AuditSource } from "./audit-source.ts";
 import { SURVEY_FOCUS, SURVEY_LIMITS, parseSurveyFindings, parseSurveyVetDecisions, publicSurveyFinding, surveyBrief, surveyFindingKey, surveyObject, surveyPath, surveyInputAt, surveyInputProblem,
@@ -1484,7 +1484,11 @@ export class Tasks {
     const ownerBinding = history.findLast(h => h.owner === task.owner && ["assigned", "reassigned", "escalated", "backlog pulled"].includes(h.event));
     const reviewerBinding = history.findLast(h => ["assigned", "reassigned", "escalated", "done", "reviewer changed", "reviewer unavailable"].includes(h.event));
     const reviewComments = this.d.board.reviewCommentCounts(task.id, task.created);
-    const rest = { ...taskRest, ...(Object.values(reviewComments).some(Boolean) ? { reviewComments } : {}),
+    // #1645 T4: `hub_task_show` reads the tier the same way the review request does, derived at the head the tier itself names. Not for a private task: the
+    // receipt stays redacted as it is today, so nothing about a PII card is added to a view.
+    const view = this.isPii(task) ? undefined : this.riskViewFor(task, task.sdlc?.risk?.head);
+    const risk = view ? riskLine(view) : undefined;
+    const rest = { ...taskRest, ...(risk ? { risk } : {}), ...(Object.values(reviewComments).some(Boolean) ? { reviewComments } : {}),
       ...(plannerBinding?.plannerReason && ["rotation", "named", "kept", "none"].includes(plannerBinding.plannerReason) ? { plannerReason: plannerBinding.plannerReason } : {}),
       ...(ownerBinding?.reason && TASK_MOVE_REASONS.includes(ownerBinding.reason) ? { ownerReason: ownerBinding.reason === "manual" && ownerBinding.event === "reassigned" && ownerBinding.by !== HUB ? "named" : ownerBinding.reason } : {}),
       ...(reviewerBinding?.reviewerReason && ["rotation", "implementer skip", "unavailable skip", "same-family fallback"].includes(reviewerBinding.reviewerReason) ? { reviewerReason: reviewerBinding.reviewerReason } : reviewerBinding?.event === "reviewer changed" && reviewerBinding.reason === "manual" ? { reviewerReason: "named" } : {}),
@@ -7761,10 +7765,18 @@ export class Tasks {
     let scope: CostPlan;
     try { scope = cleanCostPlan({ ...task.plan, ...("review" in raw ? { review: raw.review } : {}), ...("ci" in raw ? { ci: raw.ci } : {}) }, { review: "review" in raw ? "" : "plan", ci: "ci" in raw ? "" : "plan" }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof CostScopeError ? error.message : "invalid review or CI cost scope"); }
-    const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined), mode = config.mode;
     if (!scope.review || !scope.ci) {
       if (mode === "enforce") throw new PreEffectToolRefusal("review and CI cost scope required for a new plan receipt");
       if (mode === "advise") this.releaseNotice(`task ${this.publicTitle(task)}: cost scope unspecified`);
+    }
+    // #1645 T4, AC5: a plan's review metadata is cost metadata and may ask for more than the floor, never less. No tier exists before a filed inventory,
+    // so the plan review compares against the floor; where a tier does exist the review request, the brief and the merge gate pass that tier's minimum.
+    // Only a `[risk]` project is checked, so AC4 keeps every other project's plan reviews byte for byte.
+    const floor = config.risk ? riskPlanFloor(scope.review) : undefined;
+    if (floor) {
+      if (mode === "enforce") throw new PreEffectToolRefusal(`${floor}; name at least one reviewer in review.reviewers (or drop scope none), then call hub_plan_review again`);
+      if (mode === "advise") this.releaseNotice(`task ${this.publicTitle(task)}: ${floor}`);
     }
     const flow = task.history.length, withheld = await this.withholds("note", raw.reason, task);
     this.plannerWriteAuthority(by);
@@ -7780,7 +7792,6 @@ export class Tasks {
     const current = this.need(task.id, false, true, true);
     const authorship = this.planReviewAuthority(by, current);
     if (current.history.length !== flow || (current.planningRevision ?? 0) !== revision) throw new PreEffectToolRefusal("plan review changed during readback");
-    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     let updated = this.d.board.update(current.id, by, "plan reviewed", { ...(Object.keys(scope).length ? { plan: { ...current.plan, ...scope } } : {}), sdlc: { ...current.sdlc, stage: current.sdlc?.stage ?? lifecycleStage(config, "plan"),
       planReview: { planner: by, ...authorship, planningRevision: revision, recordedAt: Date.now(), ...(Object.keys(scope).length ? { scope } : {}), ...(issue ? { issue } : {}) } } }, raw.reason.trim(), { ...authorship, ...(withheld ? { withheld: true } : {}) }, flow);
     this.planReviewRequests.delete(updated.id);
@@ -7853,7 +7864,7 @@ export class Tasks {
 
   /** The board as the merge queue and the guarded merge read it (#786): ids, dependencies, privacy, receipts, findings and plans. */
   private deliveryLinks(config: SdlcConfig): DeliveryTask[] {
-    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), latestHead: this.reviewHead(t), approval: approvalBinding(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), ...(config.mode === "off" || !config.security || this.isPii(t) ? {} : { securityPass: t.history.findLast(entry => entry.securityPass && !entry.withheld && (entry.event === "approved" || entry.event === "changes_requested"))?.securityPass }), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), out_of_scope: this.planPaths(t, "out_of_scope") ?? t.plan?.out_of_scope, revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
+    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), latestHead: this.reviewHead(t), approval: approvalBinding(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), ...(config.mode === "off" || !config.security || this.isPii(t) ? {} : { securityPass: t.history.findLast(entry => entry.securityPass && !entry.withheld && (entry.event === "approved" || entry.event === "changes_requested"))?.securityPass }), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), out_of_scope: this.planPaths(t, "out_of_scope") ?? t.plan?.out_of_scope, revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t), ...(t.sdlc?.planReview?.scope?.review ? { planReview: t.sdlc.planReview.scope.review } : {}) } }));
   }
 
   /**
@@ -8698,6 +8709,21 @@ export class Tasks {
   private riskForFiling(evidence: PrEvidence | undefined, head: string | undefined): RiskRecord | undefined {
     const config = this.d.sdlc?.config();
     return config?.risk ? deriveRiskTier(config.risk, config.security?.paths ?? [], evidence, head) : undefined;
+  }
+  /**
+   * #1645 T3: the tier of the head under judgment, with the verifier card the board holds for it. It reads the tier the filing recorded and never
+   * derives one (the inventory is read once, at done), and it answers `undefined` when the receipt carried no tier or the tier belongs to another
+   * head, so a review of a moved head makes no tier claim at all. The cards are the board as it is at this read: a verifier approved later is not
+   * retroactive, because the verdict that already passed is a statement about the board it saw.
+   */
+  private riskViewFor(task: Task, head: string | undefined): RiskView | undefined {
+    const repo = task.sdlc?.repo ?? task.refs.repo;
+    return riskView(task.sdlc?.risk, this.riskCards(), { ...(repo ? { repo } : {}), ...(task.refs.branch ? { branch: task.refs.branch } : {}), head, implementer: task.owner });
+  }
+  /** The board's cards as `riskVerifier` reads them: identity, state, owner, and the refs that say which change each one verified. */
+  private riskCards(): RiskCard[] {
+    return this.d.board.list().map(card => ({ id: card.id, class: card.class, state: card.state, owner: card.owner,
+      ...(card.refs.repo ? { repo: card.refs.repo } : {}), ...(card.refs.branch ? { branch: card.refs.branch } : {}), ...(card.refs.commit ? { commit: card.refs.commit } : {}) }));
   }
   private planReport(task: Task, evidence?: PrEvidence) {
     const rawReport = planConformance(this.isPii(task) ? undefined : this.planPaths(task), this.isPii(task) ? undefined : evidence, this.planPaths(task, "out_of_scope") ?? task.plan?.out_of_scope);
@@ -10546,12 +10572,17 @@ export class Tasks {
     if (this.isPii(task)) return "";
     const approval = approvalText(approvalBinding(task));
     const spec = this.currentSpecReport(task);
-    const prefix = (brief: string) => [approval, spec ? renderSpecTaskReport(spec) : "", brief].filter(Boolean).join("\n");
+    // #1645 T4: the tier belongs in the brief the reviewer reads, and it survives a brief that cannot be built, because it comes from the receipt
+    // rather than from the worktree. It is derived at the head the tier itself names, so the line never describes a head the filing did not classify.
+    const view = this.riskViewFor(task, task.sdlc?.risk?.head);
+    const risk = view ? riskLine(view) : undefined;
+    // `withRisk` is false on the path that puts the same line inside the brief, so a request never carries it twice.
+    const prefix = (brief: string, withRisk = true) => [approval, withRisk && risk ? risk : "", spec ? renderSpecTaskReport(spec) : "", brief].filter(Boolean).join("\n");
     if (!task.refs.commit) return prefix("");
     try {
       const brief = this.d.reviewBrief?.(task);
       if (!brief) return prefix("");
-      return prefix("unavailable" in brief ? `Review brief unavailable: ${brief.unavailable}.` : sanitize(renderReviewBrief(brief)));
+      return prefix("unavailable" in brief ? `Review brief unavailable: ${brief.unavailable}.` : sanitize(renderReviewBrief({ ...brief, ...(risk ? { risk } : {}) })), false);
     } catch { return prefix("Review brief unavailable: it could not be built."); }
   }
 
@@ -10725,6 +10756,17 @@ export class Tasks {
       await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task), undefined, securityRecord && { ...securityRecord, head: reviewedHead ?? findingHead }); task = valid();
       const record = this.evalRecords.get(task.id); this.evalRecords.delete(task.id);
       if (record) note = `${note ?? ""}\n${record}`.trim();
+      // #1645 T3, AC3: the tier's own minimum, at the verdict and beside the security pass, before any board write. `enforce` refuses, naming the
+      // card that satisfies it; `advise` puts the same line in the verdict's note and allows the approval. The continuation is written here rather
+      // than beside the rule in `risk-tier.ts`, because `scripts/refusal-inventory.ts` reads a command only from the site that throws it.
+      // No `[risk]` table and no tier for this head are both `undefined`, so AC4 keeps today's verdicts byte for byte.
+      const risk = this.riskViewFor(task, reviewedHead ?? findingHead ?? this.findingHead(task));
+      if (risk && risk.minimum.verifier && !risk.verifier) {
+        const line = riskLine(risk);
+        const branch = risk.branch ?? "the branch of this change";
+        if (this.d.sdlc.config().mode === "enforce") throw new PreEffectToolRefusal(`${line}; a high task needs a verifier card by another peer at this head, so call hub_task_propose (class test, refs.branch ${branch}, refs.commit ${risk.head}), have a peer other than the implementer complete it, then approve again`);
+        note = `${note ?? ""}\n${line}`.trim();
+      }
     } else if (verdict === "approved" && this.d.sdlc?.config().mode === "off" && this.d.sdlc?.gh && task.sdlc?.repo && task.sdlc.pr
       && this.ownerReviewHead(task) && !this.isPii(task)) {
       const expected = reviewedHead ?? this.ownerReviewHead(task) ?? this.findingHead(task);
