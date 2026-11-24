@@ -79,7 +79,7 @@ import { loadPetConfig, PET_WINDOW_RETIRED_NOTICE, stripLegacyPetWindow } from "
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, policyRealPath, matchesPolicy } from "./path-policy.ts";
 import { CodeFacts, type CodeFactResult, type CodeSymbol } from "./code-facts.ts";
-import { gitAuditSource } from "./audit-source.ts";
+import { gitAuditSource, checkoutAuditSource } from "./audit-source.ts";
 import { buildReviewBrief, withCodeSymbols } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
@@ -3179,6 +3179,12 @@ export async function startDaemon(opts: DaemonOptions) {
     // R3 (#1481): the hub's own model, public text only (the caller screened it), never PII and never trusted: Tasks parses and checks the answer.
     roadmapModel: (system, user, allowed) => inference ? inference.complete(system, user, 2000, { interactive: true, timeoutMs: 20_000, allowed }) : Promise.resolve(undefined),
     auditSource: gitAuditSource(opts.cwd), // #1403 A4
+    // #1646 T2: a verdict's evidence names the checkout its reviewer read. The reviewing session reports its own cwd at hello;
+    // that path is read only when this host proves it a worktree of this repository, and it never proves isolation or grants any.
+    reviewerCheckout: peer => {
+      const attached = bus.peers.get(peer), root = attached && isWsPeer(attached) ? attached.sessionCwd : undefined;
+      return root ? checkoutAuditSource(opts.cwd, root) : undefined;
+    },
     sdlc: {
       config: () => lifecycleConfig,
       gh: (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound),

@@ -325,8 +325,9 @@ export interface HistoryEntry {
   /** Immutable artifact head of this verdict, including when lifecycle gates are off. */
   reviewedHead?: string;
   /**
-   * #1646: what the reviewer's checkout held at this verdict, read by the hub for the reviewed paths of the brief. It
-   * stays out of `sdlc`, whose JSON the approval's coverage receipt hashes.
+   * #1646: what the checkout the reviewer read held at this verdict, read by the hub for the reviewed paths of the brief, with
+   * `source` naming that checkout (the reviewing session's own, or the project's). It stays out of `sdlc`, whose JSON the
+   * approval's coverage receipt hashes.
    */
   checkout?: ReviewCheckoutEvidence;
   /**
@@ -2826,18 +2827,19 @@ export class Board {
       if (!["approved", "changes_requested"].includes(event) || patch.state !== event) throw new Error("unmet criteria require a saved review verdict");
       unmetCriteria = criterionIdList(extra.unmetCriteria);
     }
-    // #1646: what the reviewer's checkout held, bounded like the brief it was read for. A malformed record is refused, never
+    // #1646: what the checkout the reviewer read held, bounded like the brief it was read for. A malformed record is refused, never
     // quietly dropped: evidence that reads as absent would be indistinguishable from a checkout nobody read.
     let checkout: ReviewCheckoutEvidence | undefined;
     if (extra.checkout !== undefined) {
       if (!["approved", "changes_requested"].includes(event) || patch.state !== event) throw new Error("checkout evidence requires a saved review verdict");
-      const { head, differing, untracked } = extra.checkout as Partial<Record<keyof ReviewCheckoutEvidence, unknown>>;
+      const { source, head, differing, untracked } = extra.checkout as Partial<Record<keyof ReviewCheckoutEvidence, unknown>>;
       const paths = (value: unknown): string[] | undefined => Array.isArray(value) && value.length <= 500
         && value.every(path => typeof path === "string" && path.length > 0 && path.length <= 1024 && !/[\p{Cc}]/u.test(path)) ? value : undefined;
       const differingPaths = paths(differing), untrackedPaths = paths(untracked);
+      if (source !== "peer-cwd" && source !== "project-root") throw new Error("invalid checkout evidence source");
       if (differingPaths === undefined || untrackedPaths === undefined) throw new Error("invalid checkout evidence paths");
       if (head !== null && !(typeof head === "string" && /^[a-f0-9]{40}$/.test(head))) throw new Error("invalid checkout head");
-      checkout = { head, differing: differingPaths, untracked: untrackedPaths };
+      checkout = { source, head, differing: differingPaths, untracked: untrackedPaths };
     }
     if (extra.planDeparture && (by !== "user" || event !== "plan departure accepted")) throw new Error("plan departure acceptance is person-only");
     const trackPlan = this.trackPlanRevisions?.() === true, hasDeparture = task.history.some(h => h.planDeparture);

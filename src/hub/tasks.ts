@@ -254,6 +254,12 @@ export interface TasksDeps {
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh; reportPolicy?: (head: string, repo: string) => ReleaseReportPolicy | undefined };
   /** #1403 A4: read-only git for the security audit (the checkout's head and changed paths); absent means the audit commands are unavailable. */
   auditSource?: AuditSource;
+  /**
+   * #1646 T2: a read-only reader for the checkout a reviewing session reported for itself, resolved and proven by the host to be a
+   * worktree of this repository. Absent means the hub knows no such checkout, so the verdict's evidence names the project
+   * checkout instead. The path comes from the host's own socket record, never from a tool argument.
+   */
+  reviewerCheckout?: (peer: PeerId) => AuditSource | undefined;
   /** #785 P1b: the per-head CI watcher's bounds; tests shorten them, the defaults are `CI_WATCH_*` in `ci-watch.ts`. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   /** #785 P1c: `tasks.auto_pull`, read for every automatic pull trigger; absent or false pulls nothing. */
@@ -1223,13 +1229,21 @@ export class Tasks {
   }
 
   /**
-   * #1646 T2: what the reviewer's checkout held, read from the brief's own reviewed paths. A port that cannot answer, or a
+   * #1646 T2: what the checkout the reviewer read held, read from the brief's own reviewed paths. The reviewing session's own
+   * checkout is read and named when the host resolved one; otherwise the project checkout is read and named as such, so a later
+   * count separates a reviewer that read other bytes from a hub that looked at the root. A port that cannot answer, or a known
    * checkout it cannot read, leaves the verdict with no evidence: an unread checkout is unknown, never clean.
    */
-  private checkoutEvidence(brief: ReviewBrief): ReviewCheckoutEvidence | undefined {
-    const source = this.d.auditSource;
-    const reads = source?.readsAt?.(brief.head, brief.reviewable.map(file => file.path));
-    return reads ? { head: source?.head() ?? null, differing: reads.differing, untracked: reads.untracked } : undefined;
+  private checkoutEvidence(brief: ReviewBrief, reviewer: PeerId): ReviewCheckoutEvidence | undefined {
+    const paths = brief.reviewable.map(file => file.path);
+    const peer = this.d.reviewerCheckout?.(reviewer);
+    if (peer) {
+      const reads = peer.readsAt?.(brief.head, paths);
+      // The hub knows where this reviewer read: when that checkout cannot answer, the project checkout is not a substitute.
+      return reads ? { source: "peer-cwd", head: peer.head() ?? null, differing: reads.differing, untracked: reads.untracked } : undefined;
+    }
+    const root = this.d.auditSource, reads = root?.readsAt?.(brief.head, paths);
+    return reads ? { source: "project-root", head: root?.head() ?? null, differing: reads.differing, untracked: reads.untracked } : undefined;
   }
 
   private findingTextAllowed(task: Task, items: readonly ReviewFinding[]): boolean {
@@ -10606,7 +10620,7 @@ export class Tasks {
         const effective = typeof head === "string" ? head : t.sdlc?.reviewedHead;
         if (effective !== undefined && effective !== brief.head && enforce) throw new PreEffectToolRefusal(`coverage: the verdict ${typeof head === "string" ? "names" : "inherits"} head ${effective}, but the review brief is for ${brief.head} (the commit under review)`);
         covered = { commit: t.refs.commit, receipt: JSON.stringify(t.sdlc ?? null) };
-        checkout = this.checkoutEvidence(brief);
+        checkout = this.checkoutEvidence(brief, by);
         const gap = coverageGap(brief, coverage);
         if (gap.length && enforce) throw new PreEffectToolRefusal(`coverage: ${gap.length} reviewable path(s) of the review brief are not accounted for: ${list(gap)}. Pass coverage {reviewed, skipped: [{path, reason}]}.`);
         if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${list(gap)}`.trim();

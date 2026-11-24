@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Record on a review verdict what the reviewer's checkout held: for the files the review brief lists, which differ from the reviewed commit and which the checkout holds untracked, with that checkout's own head, so an approval cannot certify a SHA whose content was not what was read. An unreadable checkout records no evidence rather than a clean one. Refs #1646, hub task 1092.
+- Record on a review verdict what the checkout the reviewer read held: for the files the review brief lists, which differ from the reviewed commit and which the checkout holds untracked, with that checkout's own head and which checkout it was, the reviewing session's own when the hub knows it and otherwise the project checkout. An unreadable checkout records no evidence rather than a clean one. Refs #1646, hub task 1092.
 
 - Add a shrink-only unused-export ratchet: `bun scripts/unused-exports.ts --check` fails on an export of `src/` that nothing imports, or that only tests import, unless `scripts/unused-exports.baseline.json` knows it, and a baseline entry that is gone or used now must leave it. Entry points come from `package.json` and the bundles `scripts/build.mjs` builds, and a name reached only through a string is declared with a `// used-by: <file>` comment above its declaration. `scripts/check.sh` runs it with the once-only steps, and one seed turns it red (Refs #1649, hub task 1093).
 

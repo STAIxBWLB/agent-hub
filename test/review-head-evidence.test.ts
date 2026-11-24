@@ -10,23 +10,25 @@ import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { buildReviewBrief, type ReviewBrief } from "../src/hub/review-brief.ts";
-import { gitAuditSource } from "../src/hub/audit-source.ts";
+import { gitAuditSource, checkoutAuditSource } from "../src/hub/audit-source.ts";
 
-// #1646 T2: a verdict records what the reviewer's checkout held. The evidence is read by the hub, never by the reviewer,
-// and it is stored on the verdict's history entry, out of the `sdlc` receipt the approval's coverage pins.
+// #1646 T2: a verdict records what the checkout its reviewer read held, and says which checkout that was. The evidence is read
+// by the hub, never by the reviewer, and it is stored on the verdict's history entry, out of the `sdlc` receipt the approval's
+// coverage pins.
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const f of cleanup.splice(0).reverse()) f(); });
 const scratch = (prefix: string) => { const dir = mkdtempSync(join(tmpdir(), prefix)); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 const policy = { privatePath: () => false, nameable: () => true };
+const gitAt = (dir: string, ...args: string[]): string => {
+  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+  expect(r.status).toBe(0);
+  return r.stdout.trim();
+};
 
-/** A checkout left at `main` while `head` is another commit, and `dirty` says which reviewed files carry uncommitted edits. */
+/** A checkout left at `main` while `head` is another commit. */
 function fixture(): { dir: string; head: string; base: string; git: (...args: string[]) => string } {
   const dir = scratch("ahub-review-checkout-");
-  const git = (...args: string[]) => {
-    const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
-    expect(r.status).toBe(0);
-    return r.stdout.trim();
-  };
+  const git = (...args: string[]) => gitAt(dir, ...args);
   git("init", "-q", "-b", "main");
   writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
   writeFileSync(join(dir, "b.ts"), "export const b = 1;\n");
@@ -67,11 +69,32 @@ test("AC1: a dirty reviewed path is stored on the verdict, naming that path and 
   const approved = await f.tasks.review("claude", f.t.id, "approved", "looks fine", undefined, undefined, { reviewed: ["a.ts"] });
   const entry = verdictEntry(f.board, f.t.id);
   // The checkout stands at `base`, not at the reviewed head: the edited file differs, and the head's new file is absent.
-  expect(entry.checkout).toEqual({ head: base, differing: ["a.ts", "new.ts"], untracked: [] });
+  expect(entry.checkout).toEqual({ source: "project-root", head: base, differing: ["a.ts", "new.ts"], untracked: [] });
   expect(approved.state).toBe("approved");
   // The public view carries the same evidence, so a reader sees what was read without opening the board.
   const view = f.tasks.publicView(f.board.get(f.t.id)!, true) as { history: { event: string; checkout?: unknown }[] };
-  expect(view.history.findLast(h => h.event === "approved")!.checkout).toEqual({ head: base, differing: ["a.ts", "new.ts"], untracked: [] });
+  expect(view.history.findLast(h => h.event === "approved")!.checkout).toEqual({ source: "project-root", head: base, differing: ["a.ts", "new.ts"], untracked: [] });
+});
+
+test("the reviewer's own checkout is the one read, and the record says so", async () => {
+  const { dir, head } = fixture();
+  // A reviewer here reads in its own worktree of this repository, at the reviewed head, with its own uncommitted edit.
+  const review = join(scratch("ahub-review-peer-"), "co");
+  gitAt(dir, "worktree", "add", "-q", "--detach", review, head);
+  writeFileSync(join(review, "a.ts"), "export const a = 9;\n");
+  const f = await rig(dir, head, { auditSource: gitAuditSource(dir), reviewerCheckout: () => checkoutAuditSource(dir, review) });
+  await f.tasks.review("claude", f.t.id, "approved", "ok", undefined, undefined, { reviewed: ["a.ts"] });
+  // The project checkout stands at `base` and would report a.ts and new.ts; the evidence names the reviewer's checkout instead.
+  expect(verdictEntry(f.board, f.t.id).checkout).toEqual({ source: "peer-cwd", head, differing: ["a.ts"], untracked: [] });
+});
+
+test("a reviewer checkout the hub knows but cannot read records nothing, never the project checkout", async () => {
+  const { dir, head } = fixture();
+  writeFileSync(join(dir, "a.ts"), "export const a = 5;\n"); // the project checkout would report this path
+  const unread = { head: () => undefined, resolve: () => undefined, changed: () => undefined, readsAt: () => undefined };
+  const f = await rig(dir, head, { auditSource: gitAuditSource(dir), reviewerCheckout: () => unread });
+  await f.tasks.review("claude", f.t.id, "approved", "ok", undefined, undefined, { reviewed: ["a.ts"] });
+  expect("checkout" in verdictEntry(f.board, f.t.id)).toBe(false);
 });
 
 test("an untracked reviewed path is recorded too, and a path outside the brief is never named", async () => {
@@ -82,7 +105,7 @@ test("an untracked reviewed path is recorded too, and a path outside the brief i
   writeFileSync(join(dir, "c.ts"), "export const c = 1;\n"); // untracked, but the brief does not review it
   const f = await rig(dir, head, { auditSource: gitAuditSource(dir) });
   await f.tasks.review("claude", f.t.id, "approved", "looks fine", undefined, undefined, { reviewed: ["a.ts", "new.ts"] });
-  expect(verdictEntry(f.board, f.t.id).checkout).toEqual({ head: base, differing: ["a.ts"], untracked: ["new.ts"] });
+  expect(verdictEntry(f.board, f.t.id).checkout).toEqual({ source: "project-root", head: base, differing: ["a.ts"], untracked: ["new.ts"] });
 });
 
 test("an unread checkout records no evidence at all, never an empty one", async () => {
@@ -115,5 +138,20 @@ test("a brief with no reviewable file still records the checkout it was read fro
   const brief = (readable: ReviewBrief): ReviewBrief => ({ ...readable, reviewable: [], unlisted: [], excluded: [], ruleGroups: [] });
   const f = await rig(dir, head, { auditSource: gitAuditSource(dir), reviewBrief: task => brief(buildReviewBrief(dir, task.refs.commit, policy) as ReviewBrief) });
   await f.tasks.review("claude", f.t.id, "approved", "ok", undefined, undefined, { reviewed: [] });
-  expect(verdictEntry(f.board, f.t.id).checkout).toEqual({ head: base, differing: [], untracked: [] });
+  expect(verdictEntry(f.board, f.t.id).checkout).toEqual({ source: "project-root", head: base, differing: [], untracked: [] });
+});
+
+test("the reader answers only for a worktree of this repository, never the project checkout or another repository", () => {
+  const { dir, head } = fixture();
+  const review = join(scratch("ahub-review-peer-"), "co");
+  gitAt(dir, "worktree", "add", "-q", "--detach", review, head);
+  expect(checkoutAuditSource(dir, review)!.head()).toBe(head);
+  // The project checkout is read as the project's, and a path that is no worktree of it names no checkout at all.
+  expect(checkoutAuditSource(dir, dir)).toBeUndefined();
+  expect(checkoutAuditSource(dir, join(dir, "absent"))).toBeUndefined();
+  const foreign = scratch("ahub-foreign-checkout-");
+  gitAt(foreign, "init", "-q", "-b", "main");
+  writeFileSync(join(foreign, "a.ts"), "export const a = 1;\n");
+  gitAt(foreign, "add", "."); gitAt(foreign, "commit", "-qm", "foreign");
+  expect(checkoutAuditSource(dir, foreign)).toBeUndefined();
 });
