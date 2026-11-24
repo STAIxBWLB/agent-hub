@@ -164,10 +164,11 @@ This issue holds the canonical v1 text. The first `ahub` PR commits it as `docs/
 
 ## Command and renderer inventory
 
-The [generated inventory](cli-output-inventory.md) joins the built-in dispatch
-keys, native adapter commands and rendered help. Regenerate it with
-`bun scripts/cli-output-inventory.ts --write` and verify with
-`bun scripts/cli-output-inventory.ts --check`.
+The [2026-11-25 inventory snapshot](cli-output-inventory.md) joins the built-in
+dispatch keys, native adapter commands and rendered help. Refresh the snapshot with
+`bun scripts/cli-output-inventory.ts --write` and compare it with the current checkout using
+`bun scripts/cli-output-inventory.ts --check`. A newer checkout may differ from
+the dated snapshot as help and renderers change.
 
 - Help at 80 columns spans 90 dispatch entries and 92 documented command words.
   The duplicate overview rows are `backlog` and `check-path`. The global

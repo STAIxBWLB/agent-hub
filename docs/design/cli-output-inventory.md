@@ -1,5 +1,7 @@
 # CLI output inventory
 
+Snapshot recorded 2026-11-25 for #1654 T1.
+
 Generated from the built-in dispatch table, adapter entries and HELP. Width is measured in terminal cells on color-off help at 80 columns.
 Overview summaries are recorded verbatim for the T2 grammar pass. Help-only entries include global forms.
 
