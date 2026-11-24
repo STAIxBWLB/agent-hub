@@ -200,119 +200,159 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | agents | Delegated / no direct output call |
 | doctor | fail (2), console.log (3), formatMemoryStaleAnchors (1), printOutput (2), renderOrphanCleanup (1), renderDoctor (1) |
 
+## Inline literal output
+
+Widths for single literal strings emitted directly from CLI handlers. No wrapping is applied by these call sites.
+Interpolated and daemon-supplied strings require runtime fixtures. They are counted above but have no width here.
+
+| Command | Text source | Stream | Literal width |
+| --- | --- | --- | ---: |
+| recovery | src/cli/main.ts:1035 | stdout | 29 |
+| recovery | src/cli/main.ts:1068 | stdout | 60 |
+| projects | src/cli/main.ts:1160 | stdout | 45 |
+| ui | src/cli/main.ts:1176 | stdout | 57 |
+| ui | src/cli/main.ts:1191 | stderr | 112 |
+| ui | src/cli/main.ts:1196 | stdout | 76 |
+| init | src/cli/main.ts:1317 | stderr | 115 |
+| models | src/cli/main.ts:1584 | stdout | 11 |
+| say | src/cli/main.ts:1608 | stdout | 46 |
+| roadmap | src/cli/main.ts:1812 | stdout | 46 |
+| deliverables | src/cli/main.ts:2047 | stdout | 70 |
+| sdlc | src/cli/main.ts:2152 | stdout | 29 |
+| ask | src/cli/main.ts:2463 | stdout | 9 |
+| ask | src/cli/main.ts:2466 | stdout | 54 |
+| roster | src/cli/main.ts:2583 | stdout | 19 |
+| roster | src/cli/main.ts:2590 | stdout | 19 |
+| autonomy | src/cli/main.ts:2641 | stdout | 75 |
+| settings | src/cli/main.ts:2734 | stdout | 39 |
+| settings | src/cli/main.ts:2747 | stdout | 33 |
+| settings | src/cli/main.ts:2778 | stdout | 33 |
+| answer | src/cli/main.ts:2823 | stdout | 17 |
+| bench | src/cli/main.ts:2964 | stdout | 107 |
+| usage | src/cli/main.ts:3148 | stderr | 121 |
+| undo | src/cli/main.ts:3284 | stdout | 103 |
+| undo | src/cli/main.ts:3289 | stdout | 53 |
+| kill | src/cli/main.ts:3306 | stdout | 18 |
+| kill | src/cli/main.ts:3310 | stdout | 11 |
+| reset | src/cli/main.ts:3324 | stdout | 36 |
+| reset | src/cli/main.ts:3348 | stdout | 56 |
+| reset | src/cli/main.ts:3354 | stdout | 39 |
+| reset | src/cli/main.ts:3357 | stdout | 11 |
+| reset | src/cli/main.ts:3392 | stdout | 96 |
+
 ## Renderer candidates
 
 Source scan for top-level render and format functions. The file shows where the text originates. Layout references are direct, and indirect composition needs manual review.
 Fixture widths are color-off at 80 columns. Unmeasured entries need fixtures before T3 or T4 makes a conformance claim.
 The separate report-by-task fixture measures 79 cells.
 
-| File and renderer | Report | Direct layout references | Fixture width |
-| --- | --- | --- | ---: |
-| src/cli/autonomy.ts:renderAutonomyStatus | - | Inline / indirect | Unmeasured |
-| src/cli/capabilities-output.ts:renderCapabilities | - | blank, grid, heading, pair | 116 |
-| src/cli/console-state.ts:renderConsole | - | paint | Unmeasured |
-| src/cli/console-state.ts:renderConsoleLines | - | table, wrap | Unmeasured |
-| src/cli/handoff-output.ts:renderHandoffReceipt | - | blank, heading, pair | 139 |
-| src/cli/handoff-output.ts:renderHandoffs | - | grid, heading | 110 |
-| src/cli/help.ts:renderCommandHelp | Direct | LayoutReport, wrap | Unmeasured |
-| src/cli/help.ts:renderHelp | - | paint | Unmeasured |
-| src/cli/help.ts:renderOverview | Direct | LayoutReport, blank, paint, wrap | Unmeasured |
-| src/cli/intake-output.ts:renderIntake | - | blank, grid, heading, pair | 79 |
-| src/cli/intake-output.ts:renderIntakeChange | - | grid, heading | 48 |
-| src/cli/learn-output.ts:renderLearnList | - | blank, grid, heading | 53 |
-| src/cli/learn-output.ts:renderLearnChange | - | blank, heading, pair | 63 |
-| src/cli/output.ts:renderRuntimeModels | - | Inline / indirect | 0 |
-| src/cli/output.ts:renderRoster | - | Inline / indirect | 0 |
-| src/cli/output.ts:renderRoles | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderStatus | - | Inline / indirect | 60 |
-| src/cli/output.ts:renderStatusDefault | Direct | LayoutReport, heading | 65 |
-| src/cli/output.ts:renderBacklog | - | table | 52 |
-| src/cli/output.ts:renderBoard | - | Inline / indirect | 80 |
-| src/cli/output.ts:renderBudget | - | Inline / indirect | 74 |
-| src/cli/output.ts:renderBoardColumns | - | Inline / indirect | 80 |
-| src/cli/output.ts:renderDoctor | Direct | LayoutReport | 15 |
-| src/cli/output.ts:renderProjects | - | Inline / indirect | 37 |
-| src/cli/output.ts:renderQueue | - | Inline / indirect | 22 |
-| src/cli/output.ts:renderTurns | - | moment | 67 |
-| src/cli/output.ts:renderOrphans | - | Inline / indirect | 54 |
-| src/cli/output.ts:renderOrphanCleanup | - | Inline / indirect | 25 |
-| src/cli/output.ts:renderQueueShow | - | Inline / indirect | 17 |
-| src/cli/output.ts:renderModelsStatus | - | Inline / indirect | 12 |
-| src/cli/output.ts:renderExecutionBudgetStatus | - | Inline / indirect | 16 |
-| src/cli/output.ts:renderReport | Direct | Report, moment | 79 |
-| src/cli/output.ts:renderUsage | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderLimits | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderTotal | - | table | Unmeasured |
-| src/cli/pet.ts:renderPet | - | Inline / indirect | Unmeasured |
-| src/cli/roadmap.ts:renderRoadmap | - | wrap | Unmeasured |
-| src/cli/schedule-output.ts:renderScheduleList | - | blank, grid, heading, moment, pair | 82 |
-| src/cli/schedule-output.ts:renderScheduleRun | - | heading, pair | 27 |
-| src/cli/schedule-output.ts:renderScheduleChange | - | heading, pair | 17 |
-| src/cli/sdlc-output.ts:renderSdlcConfiguration | - | heading, pair | 68 |
-| src/cli/sdlc-output.ts:renderSdlcSurvey | - | heading, pair | 23 |
-| src/cli/sdlc-output.ts:renderSdlcQueue | - | blank, grid, heading, pair | 30 |
-| src/cli/sdlc-output.ts:renderSdlcAudit | - | heading, pair | 51 |
-| src/cli/sdlc-output.ts:renderSdlcRelease | - | blank, grid, heading, moment, pair | 71 |
-| src/cli/sdlc-output.ts:renderSdlcMetrics | - | blank, grid, heading, moment, pair | 80 |
-| src/cli/sdlc-output.ts:renderSdlcCosts | - | blank, grid, heading, wrap | 37 |
-| src/cli/sdlc-output.ts:renderAuthorization | - | blank, heading, moment, pair | 44 |
-| src/cli/sdlc-output.ts:renderSdlcMerge | - | blank, heading, pair | 30 |
-| src/cli/settings-edit.ts:renderEditPreview | - | Inline / indirect | Unmeasured |
-| src/cli/source-output.ts:renderSourceAdd | - | heading, pair | 49 |
-| src/cli/source-output.ts:renderSourceList | - | blank, grid, heading, moment, pair | 62 |
-| src/cli/study-output.ts:renderStudyList | - | blank, grid, heading | 114 |
-| src/cli/study-output.ts:renderStudyShow | - | blank, grid, heading, pair | 31 |
-| src/cli/study-output.ts:renderStudyReceipt | - | blank, grid, heading, pair | 71 |
-| src/cli/study-output.ts:renderExperiments | - | blank, grid, heading, pair | 78 |
-| src/cli/study-output.ts:renderStudyEvidence | - | heading, pair | 77 |
-| src/cli/study-output.ts:renderSynthesisReadiness | - | heading, pair | 101 |
-| src/cli/tail-render.ts:renderTailEvent | - | Inline / indirect | Unmeasured |
-| src/cli/task-output.ts:renderTaskShow | - | Inline / indirect | 52 |
-| src/cli/task-output.ts:renderTaskCancel | - | heading, pair | 52 |
-| src/cli/task-output.ts:renderBacklogResult | - | blank, grid, heading, pair | 52 |
-| src/cli/task-output.ts:renderGroom | - | blank, grid, heading, pair | 50 |
-| src/cli/task-output.ts:renderReleaseList | - | blank | 41 |
-| src/cli/task-output.ts:renderReleaseShow | - | Inline / indirect | 41 |
-| src/cli/upgrade-output.ts:renderUpgradePlan | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-output.ts:renderStoppedPlan | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-output.ts:renderStoppedResults | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-output.ts:renderRecoveryStatus | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-output.ts:renderBudgetResult | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderStep | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderPlan | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderOperation | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderBlocked | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderMenu | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderWait | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderSummary | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-restore-state.ts:renderRestoreTransitionTable | - | table | Unmeasured |
-| src/cli/watch.ts:renderActivity | - | paint, wrap | Unmeasured |
-| src/cli/worktrees-output.ts:renderWorktrees | - | blank, grid, heading, moment | 32 |
-| src/cli/worktrees-output.ts:renderTidyPreview | - | blank, grid, heading, pair | 41 |
-| src/cli/worktrees-output.ts:renderTidyResult | - | grid, heading | 30 |
-| src/hub/bench.ts:formatRuns | - | Inline / indirect | Unmeasured |
-| src/hub/bench.ts:formatReport | - | Inline / indirect | Unmeasured |
-| src/hub/bench.ts:formatCompare | - | Inline / indirect | Unmeasured |
-| src/hub/checkpoint-fields.ts:renderCheckpoint | - | Inline / indirect | Unmeasured |
-| src/hub/claude-failure-stage.ts:formatClaudeFailure | - | Inline / indirect | Unmeasured |
-| src/hub/delivery-hints.ts:renderHeldHint | - | Inline / indirect | Unmeasured |
-| src/hub/delivery-public.ts:renderHeldInbox | - | Inline / indirect | Unmeasured |
-| src/hub/dogfood.ts:formatDogfood | - | Inline / indirect | Unmeasured |
-| src/hub/envelope.ts:renderDigest | - | Inline / indirect | Unmeasured |
-| src/hub/guidance-variants.ts:renderGuidanceVariantV1 | - | Inline / indirect | Unmeasured |
-| src/hub/invocations.ts:renderInvocationResult | - | Inline / indirect | Unmeasured |
-| src/hub/memory-profile-check.ts:formatMemoryProfileCheck | - | Inline / indirect | Unmeasured |
-| src/hub/memory-stale-anchors.ts:formatMemoryStaleAnchors | - | Inline / indirect | Unmeasured |
-| src/hub/report.ts:formatUsage | - | Inline / indirect | Unmeasured |
-| src/hub/report.ts:formatReport | - | Inline / indirect | Unmeasured |
-| src/hub/report.ts:formatPerson | - | Inline / indirect | Unmeasured |
-| src/hub/report.ts:formatTaskReport | - | Inline / indirect | Unmeasured |
-| src/hub/research.ts:formatResearch | - | Inline / indirect | Unmeasured |
-| src/hub/research.ts:formatAddons | - | Inline / indirect | Unmeasured |
-| src/hub/review-brief.ts:renderFindingAnchor | - | Inline / indirect | Unmeasured |
-| src/hub/review-brief.ts:renderSpecTaskReport | - | Inline / indirect | Unmeasured |
-| src/hub/review-brief.ts:renderCodeSymbols | - | Inline / indirect | Unmeasured |
-| src/hub/review-brief.ts:renderReviewBrief | - | Inline / indirect | Unmeasured |
-| src/hub/review-comments.ts:renderReviewComment | - | Inline / indirect | Unmeasured |
-| src/hub/schedules.ts:formatInZone | - | Inline / indirect | Unmeasured |
-| src/hub/ui.ts:renderDashboard | - | Inline / indirect | Unmeasured |
+| File and renderer | Text source | Report | Direct layout references | Fixture width or scope |
+| --- | --- | --- | --- | --- |
+| src/cli/autonomy.ts:renderAutonomyStatus | CLI | - | Inline / indirect | 77 |
+| src/cli/capabilities-output.ts:renderCapabilities | CLI | - | blank, grid, heading, pair | 116 |
+| src/cli/console-state.ts:renderConsole | CLI | - | paint | Full-screen console |
+| src/cli/console-state.ts:renderConsoleLines | CLI | - | table, wrap | Full-screen console |
+| src/cli/handoff-output.ts:renderHandoffReceipt | CLI | - | blank, heading, pair | 139 |
+| src/cli/handoff-output.ts:renderHandoffs | CLI | - | grid, heading | 110 |
+| src/cli/help.ts:renderCommandHelp | CLI | Direct | LayoutReport, wrap | 80 |
+| src/cli/help.ts:renderHelp | CLI | - | paint | 79 |
+| src/cli/help.ts:renderOverview | CLI | Direct | LayoutReport, blank, paint, wrap | 79 |
+| src/cli/intake-output.ts:renderIntake | CLI | - | blank, grid, heading, pair | 79 |
+| src/cli/intake-output.ts:renderIntakeChange | CLI | - | grid, heading | 48 |
+| src/cli/learn-output.ts:renderLearnList | CLI | - | blank, grid, heading | 53 |
+| src/cli/learn-output.ts:renderLearnChange | CLI | - | blank, heading, pair | 63 |
+| src/cli/output.ts:renderRuntimeModels | CLI | - | Inline / indirect | 0 |
+| src/cli/output.ts:renderRoster | CLI | - | Inline / indirect | 0 |
+| src/cli/output.ts:renderRoles | CLI | - | Inline / indirect | 75 |
+| src/cli/output.ts:renderStatus | CLI | - | Inline / indirect | 60 |
+| src/cli/output.ts:renderStatusDefault | CLI | Direct | LayoutReport, heading | 65 |
+| src/cli/output.ts:renderBacklog | CLI | - | table | 52 |
+| src/cli/output.ts:renderBoard | CLI | - | Inline / indirect | 80 |
+| src/cli/output.ts:renderBudget | CLI | - | Inline / indirect | 74 |
+| src/cli/output.ts:renderBoardColumns | CLI | - | Inline / indirect | 80 |
+| src/cli/output.ts:renderDoctor | CLI | Direct | LayoutReport | 15 |
+| src/cli/output.ts:renderProjects | CLI | - | Inline / indirect | 37 |
+| src/cli/output.ts:renderQueue | CLI | - | Inline / indirect | 22 |
+| src/cli/output.ts:renderTurns | CLI | - | moment | 67 |
+| src/cli/output.ts:renderOrphans | CLI | - | Inline / indirect | 54 |
+| src/cli/output.ts:renderOrphanCleanup | CLI | - | Inline / indirect | 25 |
+| src/cli/output.ts:renderQueueShow | CLI | - | Inline / indirect | 17 |
+| src/cli/output.ts:renderModelsStatus | CLI | - | Inline / indirect | 12 |
+| src/cli/output.ts:renderExecutionBudgetStatus | CLI | - | Inline / indirect | 16 |
+| src/cli/output.ts:renderReport | CLI | Direct | Report, moment | 79 |
+| src/cli/output.ts:renderUsage | CLI | - | Inline / indirect | 61 |
+| src/cli/output.ts:renderLimits | CLI | - | Inline / indirect | 38 |
+| src/cli/output.ts:renderTotal | CLI | - | table | 78 |
+| src/cli/pet.ts:renderPet | CLI | - | Inline / indirect | 21 |
+| src/cli/roadmap.ts:renderRoadmap | CLI | - | wrap | 23 |
+| src/cli/schedule-output.ts:renderScheduleList | CLI | - | blank, grid, heading, moment, pair | 82 |
+| src/cli/schedule-output.ts:renderScheduleRun | CLI | - | heading, pair | 27 |
+| src/cli/schedule-output.ts:renderScheduleChange | CLI | - | heading, pair | 17 |
+| src/cli/sdlc-output.ts:renderSdlcConfiguration | CLI | - | heading, pair | 68 |
+| src/cli/sdlc-output.ts:renderSdlcSurvey | CLI | - | heading, pair | 23 |
+| src/cli/sdlc-output.ts:renderSdlcQueue | CLI | - | blank, grid, heading, pair | 30 |
+| src/cli/sdlc-output.ts:renderSdlcAudit | CLI | - | heading, pair | 51 |
+| src/cli/sdlc-output.ts:renderSdlcRelease | CLI | - | blank, grid, heading, moment, pair | 71 |
+| src/cli/sdlc-output.ts:renderSdlcMetrics | CLI | - | blank, grid, heading, moment, pair | 80 |
+| src/cli/sdlc-output.ts:renderSdlcCosts | CLI | - | blank, grid, heading, wrap | 37 |
+| src/cli/sdlc-output.ts:renderAuthorization | CLI | - | blank, heading, moment, pair | 44 |
+| src/cli/sdlc-output.ts:renderSdlcMerge | CLI | - | blank, heading, pair | 30 |
+| src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |
+| src/cli/source-output.ts:renderSourceAdd | CLI | - | heading, pair | 49 |
+| src/cli/source-output.ts:renderSourceList | CLI | - | blank, grid, heading, moment, pair | 62 |
+| src/cli/study-output.ts:renderStudyList | CLI | - | blank, grid, heading | 114 |
+| src/cli/study-output.ts:renderStudyShow | CLI | - | blank, grid, heading, pair | 31 |
+| src/cli/study-output.ts:renderStudyReceipt | CLI | - | blank, grid, heading, pair | 71 |
+| src/cli/study-output.ts:renderExperiments | CLI | - | blank, grid, heading, pair | 78 |
+| src/cli/study-output.ts:renderStudyEvidence | CLI | - | heading, pair | 77 |
+| src/cli/study-output.ts:renderSynthesisReadiness | CLI | - | heading, pair | 101 |
+| src/cli/tail-render.ts:renderTailEvent | CLI | - | Inline / indirect | 17 |
+| src/cli/task-output.ts:renderTaskShow | CLI | - | Inline / indirect | 52 |
+| src/cli/task-output.ts:renderTaskCancel | CLI | - | heading, pair | 52 |
+| src/cli/task-output.ts:renderBacklogResult | CLI | - | blank, grid, heading, pair | 52 |
+| src/cli/task-output.ts:renderGroom | CLI | - | blank, grid, heading, pair | 50 |
+| src/cli/task-output.ts:renderReleaseList | CLI | - | blank | 41 |
+| src/cli/task-output.ts:renderReleaseShow | CLI | - | Inline / indirect | 41 |
+| src/cli/upgrade-output.ts:renderUpgradePlan | CLI | - | Inline / indirect | 55 |
+| src/cli/upgrade-output.ts:renderStoppedPlan | CLI | - | Inline / indirect | 56 |
+| src/cli/upgrade-output.ts:renderStoppedResults | CLI | - | Inline / indirect | 60 |
+| src/cli/upgrade-output.ts:renderRecoveryStatus | CLI | - | Inline / indirect | 46 |
+| src/cli/upgrade-output.ts:renderBudgetResult | CLI | - | Inline / indirect | 27 |
+| src/cli/upgrade-presentation.ts:renderStep | CLI | - | Inline / indirect | 50 |
+| src/cli/upgrade-presentation.ts:renderPlan | CLI | - | Inline / indirect | 26 |
+| src/cli/upgrade-presentation.ts:renderOperation | CLI | - | Inline / indirect | 46 |
+| src/cli/upgrade-presentation.ts:renderBlocked | CLI | - | Inline / indirect | 76 |
+| src/cli/upgrade-presentation.ts:renderMenu | CLI | - | Inline / indirect | 17 |
+| src/cli/upgrade-presentation.ts:renderWait | CLI | - | Inline / indirect | 80 |
+| src/cli/upgrade-presentation.ts:renderSummary | CLI | - | Inline / indirect | 75 |
+| src/cli/upgrade-restore-state.ts:renderRestoreTransitionTable | CLI | - | table | 320 |
+| src/cli/watch.ts:renderActivity | CLI | - | paint, wrap | 31 |
+| src/cli/worktrees-output.ts:renderWorktrees | CLI | - | blank, grid, heading, moment | 32 |
+| src/cli/worktrees-output.ts:renderTidyPreview | CLI | - | blank, grid, heading, pair | 41 |
+| src/cli/worktrees-output.ts:renderTidyResult | CLI | - | grid, heading | 30 |
+| src/hub/bench.ts:formatRuns | Hub | - | Inline / indirect | 77 |
+| src/hub/bench.ts:formatReport | Hub | - | Inline / indirect | 99 |
+| src/hub/bench.ts:formatCompare | Hub | - | Inline / indirect | 99 |
+| src/hub/checkpoint-fields.ts:renderCheckpoint | Hub | - | Inline / indirect | 19 |
+| src/hub/claude-failure-stage.ts:formatClaudeFailure | Hub | - | Inline / indirect | 51 |
+| src/hub/delivery-hints.ts:renderHeldHint | Hub | - | Inline / indirect | 43 |
+| src/hub/delivery-public.ts:renderHeldInbox | Hub | - | Inline / indirect | 0 |
+| src/hub/dogfood.ts:formatDogfood | Hub | - | Inline / indirect | 43 |
+| src/hub/envelope.ts:renderDigest | Hub | - | Inline / indirect | 1483 |
+| src/hub/guidance-variants.ts:renderGuidanceVariantV1 | Hub | - | Inline / indirect | Guidance payload for agents |
+| src/hub/invocations.ts:renderInvocationResult | Hub | - | Inline / indirect | 109 |
+| src/hub/memory-profile-check.ts:formatMemoryProfileCheck | Hub | - | Inline / indirect | 27 |
+| src/hub/memory-stale-anchors.ts:formatMemoryStaleAnchors | Hub | - | Inline / indirect | 59 |
+| src/hub/report.ts:formatUsage | Hub | - | Inline / indirect | Internal report section, no separate view |
+| src/hub/report.ts:formatReport | Hub | - | Inline / indirect | 81 |
+| src/hub/report.ts:formatPerson | Hub | - | Inline / indirect | 14 |
+| src/hub/report.ts:formatTaskReport | Hub | - | Inline / indirect | 116 |
+| src/hub/research.ts:formatResearch | Hub | - | Inline / indirect | 106 |
+| src/hub/research.ts:formatAddons | Hub | - | Inline / indirect | 108 |
+| src/hub/review-brief.ts:renderFindingAnchor | Hub | - | Inline / indirect | 32 |
+| src/hub/review-brief.ts:renderSpecTaskReport | Hub | - | Inline / indirect | 57 |
+| src/hub/review-brief.ts:renderCodeSymbols | Hub | - | Inline / indirect | Measured within review brief |
+| src/hub/review-brief.ts:renderReviewBrief | Hub | - | Inline / indirect | 160 |
+| src/hub/review-comments.ts:renderReviewComment | Hub | - | Inline / indirect | Owner-facing hub delivery |
+| src/hub/schedules.ts:formatInZone | Hub | - | Inline / indirect | 16 |
+| src/hub/ui.ts:renderDashboard | Hub | - | Inline / indirect | Web dashboard |

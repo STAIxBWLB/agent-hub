@@ -188,10 +188,12 @@ the dated snapshot as help and renderers change.
   from human report formatting. Inspect daemon text case by case before
   changing any transport response.
 - The direct-call table includes JSON and stderr sites. The renderer source
-  scan records candidate locations and direct layout references. Widths are
-  measured for the help forms and the named host-free renderer fixtures.
-  Unmeasured renderers still need fixtures and output-path attribution before
-  the inventory can serve as the T4 conformance baseline.
+  scan records whether the CLI or hub authors each named renderer and
+  measures representative host-free output. It labels helper-only, console
+  and dashboard rows separately. The inline table measures direct literal
+  output by source location and stream. Interpolated output and daemon
+  pass-through branches still need end-to-end fixtures before T4 can claim
+  conformance.
 
 ## Acceptance criteria (this repository)
 
