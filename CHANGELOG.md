@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Resolve `@staix/agent-mem` 0.38.0 in `bun.lock` so the repository's tests and CI run on the version a fresh install resolves; the declared range `>=0.33.0 <1.0.0` is unchanged. Refs #1664, hub task 1084.
+
 - Let the recovery package accept agent-mem 0.37.0 and later, which declares exactly the pinned `@staix/cli-output`, so `ahub upgrade`, restart staging and conductor recovery work on a fresh install; any other dependency, a range or a nested `node_modules` is still refused. Closes #1664, hub task 1083.
 
 ## 0.46.0

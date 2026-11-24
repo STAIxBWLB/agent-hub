@@ -23,7 +23,7 @@
 
     "@staix/agent-console": ["@staix/agent-console@0.2.0", "", { "bin": { "acon": "bin/acon.js" } }, "sha512-FSthEczbMWG2XSfxlMSZjtNkOcRj3J9xmtDdPBpE3uAvp1N8ZW74K3OxJAQ8ustESgJ6ahAJ/DLTaQLqhLmLGA=="],
 
-    "@staix/agent-mem": ["@staix/agent-mem@0.33.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-Z6b9ie0Lu9TvTnmw9JZj8okQm54KnrxHoY7rEg6PwUfTd3LwrWKwNnuIA+LZswktXgGBO11K8GkRzCRMHFdSNQ=="],
+    "@staix/agent-mem": ["@staix/agent-mem@0.38.0", "", { "dependencies": { "@staix/cli-output": "0.1.3" }, "bin": { "amem": "bin/amem.js" } }, "sha512-3q3i7hg5VdxgUidiNBCzmgRg57y4QOpJ02/aqnKnYJfXvIvgWsxLbbRLHzHJNsjXKNElSASuN2UOmFiMmVT50Q=="],
 
     "@staix/cli-output": ["@staix/cli-output@0.1.3", "", {}, "sha512-VccPNw9TOTGjAu1g7sICmID/AIzDJkgZnU9M2/1VjvrGaetBTCVO44RH163yXpyu4NtfC8Cm0t2do+XTlNEEig=="],
 
