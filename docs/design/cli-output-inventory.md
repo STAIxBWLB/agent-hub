@@ -207,70 +207,70 @@ The separate report-by-task fixture measures 79 cells.
 | File and renderer | Report | Direct layout references | Fixture width |
 | --- | --- | --- | ---: |
 | src/cli/autonomy.ts:renderAutonomyStatus | - | Inline / indirect | Unmeasured |
-| src/cli/capabilities-output.ts:renderCapabilities | - | blank, grid, heading, pair | Unmeasured |
+| src/cli/capabilities-output.ts:renderCapabilities | - | blank, grid, heading, pair | 116 |
 | src/cli/console-state.ts:renderConsole | - | paint | Unmeasured |
 | src/cli/console-state.ts:renderConsoleLines | - | table, wrap | Unmeasured |
-| src/cli/handoff-output.ts:renderHandoffReceipt | - | blank, heading, pair | Unmeasured |
-| src/cli/handoff-output.ts:renderHandoffs | - | grid, heading | Unmeasured |
+| src/cli/handoff-output.ts:renderHandoffReceipt | - | blank, heading, pair | 139 |
+| src/cli/handoff-output.ts:renderHandoffs | - | grid, heading | 110 |
 | src/cli/help.ts:renderCommandHelp | Direct | LayoutReport, wrap | Unmeasured |
 | src/cli/help.ts:renderHelp | - | paint | Unmeasured |
 | src/cli/help.ts:renderOverview | Direct | LayoutReport, blank, paint, wrap | Unmeasured |
-| src/cli/intake-output.ts:renderIntake | - | blank, grid, heading, pair | Unmeasured |
-| src/cli/intake-output.ts:renderIntakeChange | - | grid, heading | Unmeasured |
-| src/cli/learn-output.ts:renderLearnList | - | blank, grid, heading | Unmeasured |
-| src/cli/learn-output.ts:renderLearnChange | - | blank, heading, pair | Unmeasured |
-| src/cli/output.ts:renderRuntimeModels | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderRoster | - | Inline / indirect | Unmeasured |
+| src/cli/intake-output.ts:renderIntake | - | blank, grid, heading, pair | 79 |
+| src/cli/intake-output.ts:renderIntakeChange | - | grid, heading | 48 |
+| src/cli/learn-output.ts:renderLearnList | - | blank, grid, heading | 53 |
+| src/cli/learn-output.ts:renderLearnChange | - | blank, heading, pair | 63 |
+| src/cli/output.ts:renderRuntimeModels | - | Inline / indirect | 0 |
+| src/cli/output.ts:renderRoster | - | Inline / indirect | 0 |
 | src/cli/output.ts:renderRoles | - | Inline / indirect | Unmeasured |
 | src/cli/output.ts:renderStatus | - | Inline / indirect | 60 |
 | src/cli/output.ts:renderStatusDefault | Direct | LayoutReport, heading | 65 |
-| src/cli/output.ts:renderBacklog | - | table | Unmeasured |
-| src/cli/output.ts:renderBoard | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderBudget | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderBoardColumns | - | Inline / indirect | Unmeasured |
+| src/cli/output.ts:renderBacklog | - | table | 52 |
+| src/cli/output.ts:renderBoard | - | Inline / indirect | 80 |
+| src/cli/output.ts:renderBudget | - | Inline / indirect | 74 |
+| src/cli/output.ts:renderBoardColumns | - | Inline / indirect | 80 |
 | src/cli/output.ts:renderDoctor | Direct | LayoutReport | 15 |
 | src/cli/output.ts:renderProjects | - | Inline / indirect | 37 |
-| src/cli/output.ts:renderQueue | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderTurns | - | moment | Unmeasured |
-| src/cli/output.ts:renderOrphans | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderOrphanCleanup | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderQueueShow | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderModelsStatus | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderExecutionBudgetStatus | - | Inline / indirect | Unmeasured |
+| src/cli/output.ts:renderQueue | - | Inline / indirect | 22 |
+| src/cli/output.ts:renderTurns | - | moment | 67 |
+| src/cli/output.ts:renderOrphans | - | Inline / indirect | 54 |
+| src/cli/output.ts:renderOrphanCleanup | - | Inline / indirect | 25 |
+| src/cli/output.ts:renderQueueShow | - | Inline / indirect | 17 |
+| src/cli/output.ts:renderModelsStatus | - | Inline / indirect | 12 |
+| src/cli/output.ts:renderExecutionBudgetStatus | - | Inline / indirect | 16 |
 | src/cli/output.ts:renderReport | Direct | Report, moment | 79 |
 | src/cli/output.ts:renderUsage | - | Inline / indirect | Unmeasured |
 | src/cli/output.ts:renderLimits | - | Inline / indirect | Unmeasured |
 | src/cli/output.ts:renderTotal | - | table | Unmeasured |
 | src/cli/pet.ts:renderPet | - | Inline / indirect | Unmeasured |
 | src/cli/roadmap.ts:renderRoadmap | - | wrap | Unmeasured |
-| src/cli/schedule-output.ts:renderScheduleList | - | blank, grid, heading, moment, pair | Unmeasured |
-| src/cli/schedule-output.ts:renderScheduleRun | - | heading, pair | Unmeasured |
-| src/cli/schedule-output.ts:renderScheduleChange | - | heading, pair | Unmeasured |
-| src/cli/sdlc-output.ts:renderSdlcConfiguration | - | heading, pair | Unmeasured |
-| src/cli/sdlc-output.ts:renderSdlcSurvey | - | heading, pair | Unmeasured |
-| src/cli/sdlc-output.ts:renderSdlcQueue | - | blank, grid, heading, pair | Unmeasured |
-| src/cli/sdlc-output.ts:renderSdlcAudit | - | heading, pair | Unmeasured |
-| src/cli/sdlc-output.ts:renderSdlcRelease | - | blank, grid, heading, moment, pair | Unmeasured |
-| src/cli/sdlc-output.ts:renderSdlcMetrics | - | blank, grid, heading, moment, pair | Unmeasured |
-| src/cli/sdlc-output.ts:renderSdlcCosts | - | blank, grid, heading, wrap | Unmeasured |
-| src/cli/sdlc-output.ts:renderAuthorization | - | blank, heading, moment, pair | Unmeasured |
-| src/cli/sdlc-output.ts:renderSdlcMerge | - | blank, heading, pair | Unmeasured |
+| src/cli/schedule-output.ts:renderScheduleList | - | blank, grid, heading, moment, pair | 82 |
+| src/cli/schedule-output.ts:renderScheduleRun | - | heading, pair | 27 |
+| src/cli/schedule-output.ts:renderScheduleChange | - | heading, pair | 17 |
+| src/cli/sdlc-output.ts:renderSdlcConfiguration | - | heading, pair | 68 |
+| src/cli/sdlc-output.ts:renderSdlcSurvey | - | heading, pair | 23 |
+| src/cli/sdlc-output.ts:renderSdlcQueue | - | blank, grid, heading, pair | 30 |
+| src/cli/sdlc-output.ts:renderSdlcAudit | - | heading, pair | 51 |
+| src/cli/sdlc-output.ts:renderSdlcRelease | - | blank, grid, heading, moment, pair | 71 |
+| src/cli/sdlc-output.ts:renderSdlcMetrics | - | blank, grid, heading, moment, pair | 80 |
+| src/cli/sdlc-output.ts:renderSdlcCosts | - | blank, grid, heading, wrap | 37 |
+| src/cli/sdlc-output.ts:renderAuthorization | - | blank, heading, moment, pair | 44 |
+| src/cli/sdlc-output.ts:renderSdlcMerge | - | blank, heading, pair | 30 |
 | src/cli/settings-edit.ts:renderEditPreview | - | Inline / indirect | Unmeasured |
-| src/cli/source-output.ts:renderSourceAdd | - | heading, pair | Unmeasured |
-| src/cli/source-output.ts:renderSourceList | - | blank, grid, heading, moment, pair | Unmeasured |
-| src/cli/study-output.ts:renderStudyList | - | blank, grid, heading | Unmeasured |
-| src/cli/study-output.ts:renderStudyShow | - | blank, grid, heading, pair | Unmeasured |
-| src/cli/study-output.ts:renderStudyReceipt | - | blank, grid, heading, pair | Unmeasured |
-| src/cli/study-output.ts:renderExperiments | - | blank, grid, heading, pair | Unmeasured |
-| src/cli/study-output.ts:renderStudyEvidence | - | heading, pair | Unmeasured |
-| src/cli/study-output.ts:renderSynthesisReadiness | - | heading, pair | Unmeasured |
+| src/cli/source-output.ts:renderSourceAdd | - | heading, pair | 49 |
+| src/cli/source-output.ts:renderSourceList | - | blank, grid, heading, moment, pair | 62 |
+| src/cli/study-output.ts:renderStudyList | - | blank, grid, heading | 114 |
+| src/cli/study-output.ts:renderStudyShow | - | blank, grid, heading, pair | 31 |
+| src/cli/study-output.ts:renderStudyReceipt | - | blank, grid, heading, pair | 71 |
+| src/cli/study-output.ts:renderExperiments | - | blank, grid, heading, pair | 78 |
+| src/cli/study-output.ts:renderStudyEvidence | - | heading, pair | 77 |
+| src/cli/study-output.ts:renderSynthesisReadiness | - | heading, pair | 101 |
 | src/cli/tail-render.ts:renderTailEvent | - | Inline / indirect | Unmeasured |
-| src/cli/task-output.ts:renderTaskShow | - | Inline / indirect | Unmeasured |
-| src/cli/task-output.ts:renderTaskCancel | - | heading, pair | Unmeasured |
-| src/cli/task-output.ts:renderBacklogResult | - | blank, grid, heading, pair | Unmeasured |
-| src/cli/task-output.ts:renderGroom | - | blank, grid, heading, pair | Unmeasured |
-| src/cli/task-output.ts:renderReleaseList | - | blank | Unmeasured |
-| src/cli/task-output.ts:renderReleaseShow | - | Inline / indirect | Unmeasured |
+| src/cli/task-output.ts:renderTaskShow | - | Inline / indirect | 52 |
+| src/cli/task-output.ts:renderTaskCancel | - | heading, pair | 52 |
+| src/cli/task-output.ts:renderBacklogResult | - | blank, grid, heading, pair | 52 |
+| src/cli/task-output.ts:renderGroom | - | blank, grid, heading, pair | 50 |
+| src/cli/task-output.ts:renderReleaseList | - | blank | 41 |
+| src/cli/task-output.ts:renderReleaseShow | - | Inline / indirect | 41 |
 | src/cli/upgrade-output.ts:renderUpgradePlan | - | Inline / indirect | Unmeasured |
 | src/cli/upgrade-output.ts:renderStoppedPlan | - | Inline / indirect | Unmeasured |
 | src/cli/upgrade-output.ts:renderStoppedResults | - | Inline / indirect | Unmeasured |
@@ -285,9 +285,9 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/upgrade-presentation.ts:renderSummary | - | Inline / indirect | Unmeasured |
 | src/cli/upgrade-restore-state.ts:renderRestoreTransitionTable | - | table | Unmeasured |
 | src/cli/watch.ts:renderActivity | - | paint, wrap | Unmeasured |
-| src/cli/worktrees-output.ts:renderWorktrees | - | blank, grid, heading, moment | Unmeasured |
-| src/cli/worktrees-output.ts:renderTidyPreview | - | blank, grid, heading, pair | Unmeasured |
-| src/cli/worktrees-output.ts:renderTidyResult | - | grid, heading | Unmeasured |
+| src/cli/worktrees-output.ts:renderWorktrees | - | blank, grid, heading, moment | 32 |
+| src/cli/worktrees-output.ts:renderTidyPreview | - | blank, grid, heading, pair | 41 |
+| src/cli/worktrees-output.ts:renderTidyResult | - | grid, heading | 30 |
 | src/hub/bench.ts:formatRuns | - | Inline / indirect | Unmeasured |
 | src/hub/bench.ts:formatReport | - | Inline / indirect | Unmeasured |
 | src/hub/bench.ts:formatCompare | - | Inline / indirect | Unmeasured |

@@ -5,7 +5,17 @@ import { BUILTIN_CLI_ENTRIES } from "../src/adapters/registry.ts";
 import { HELP, INTERNAL_COMMANDS, helpCommands, helpFlags, helpOverviewRows, renderHelp } from "../src/cli/help.ts";
 
 import { paint } from "../src/cli/console-state.ts";
-import { renderDoctor, renderProjects, renderReport, renderStatus, renderStatusDefault } from "../src/cli/output.ts";
+import * as outputViews from "../src/cli/output.ts";
+import * as sdlc from "../src/cli/sdlc-output.ts";
+import * as study from "../src/cli/study-output.ts";
+import * as task from "../src/cli/task-output.ts";
+import * as worktrees from "../src/cli/worktrees-output.ts";
+import * as handoff from "../src/cli/handoff-output.ts";
+import * as intake from "../src/cli/intake-output.ts";
+import * as learn from "../src/cli/learn-output.ts";
+import * as schedule from "../src/cli/schedule-output.ts";
+import * as sourceViews from "../src/cli/source-output.ts";
+import { renderCapabilities } from "../src/cli/capabilities-output.ts";
 import { summarize, summarizeByTask } from "../src/hub/report.ts";
 
 const root = join(import.meta.dir, "..");
@@ -67,14 +77,67 @@ for (const [command, { handler }] of dispatch) {
 
 const now = Date.UTC(2026, 10, 24);
 const status = { pid: 1234, version: "0.46.1", controlPort: 4600, cwd: "/project", peers: {} };
-const fixtures = {
-  renderDoctor: renderDoctor([{ section: "Tools", level: "ok", name: "bun", detail: "1.4.4" }], columns, now),
-  renderStatusDefault: renderStatusDefault(status, columns, now),
-  renderStatus: renderStatus(status, columns, now, true),
-  renderProjects: renderProjects([{ id: "p_example", root: "/project", state: "stopped" }], columns, now),
-  renderReport: renderReport(summarize([]), columns, now),
+const card = { id: 17, title: "Validate the project handoff before the release", state: "in_progress", class: "implement", created: now };
+const release = { id: 7, name: "Small release", state: "active", tasks: [card] };
+const project = { id: "p_example", root: "/project", state: "stopped" };
+const finding = { name: "bun", detail: "1.4.4", level: "ok", section: "Tools" } as const;
+const fixtures: Readonly<Record<string, ReturnType<typeof outputViews.renderReport>>> = {
+  renderDoctor: outputViews.renderDoctor([finding], columns, now),
+  renderStatusDefault: outputViews.renderStatusDefault(status, columns, now),
+  renderStatus: outputViews.renderStatus(status, columns, now, true),
+  renderProjects: outputViews.renderProjects([project], columns, now),
+  renderReport: outputViews.renderReport(summarize([]), columns, now),
+  renderBacklog: outputViews.renderBacklog([card], columns, now),
+  renderBoard: outputViews.renderBoard([card], columns, now),
+  renderBoardColumns: outputViews.renderBoardColumns([card], {}, columns, now),
+  renderBudget: outputViews.renderBudget({ budget: {} }, columns, now),
+  renderOrphans: outputViews.renderOrphans([{ project, pids: [status.pid] }], columns, now),
+  renderOrphanCleanup: outputViews.renderOrphanCleanup({}, columns, now),
+  renderQueue: outputViews.renderQueue([], columns, now),
+  renderQueueShow: outputViews.renderQueueShow({ id: "delivery-a", state: "queued", peer: "codex" }, columns, now),
+  renderTurns: outputViews.renderTurns([], columns, now),
+  renderModelsStatus: outputViews.renderModelsStatus({}, columns, now),
+  renderExecutionBudgetStatus: outputViews.renderExecutionBudgetStatus({}, columns, now),
+  renderRuntimeModels: outputViews.renderRuntimeModels([], columns),
+  renderRoster: outputViews.renderRoster([], columns),
+  renderTaskShow: task.renderTaskShow(card, columns, now),
+  renderTaskCancel: task.renderTaskCancel({ ...card, cancelled: { reason: "Superseded" } }, columns, now),
+  renderBacklogResult: task.renderBacklogResult("plan", card, columns, now),
+  renderGroom: task.renderGroom({ items: [{ task: card.id, kind: "stale" }] }, columns, now),
+  renderReleaseList: task.renderReleaseList([release], columns, now),
+  renderReleaseShow: task.renderReleaseShow(release, columns, now),
+  renderWorktrees: worktrees.renderWorktrees({ live: [{ path: project.root, branch: "feature" }] }, columns, now),
+  renderTidyPreview: worktrees.renderTidyPreview({ entries: [], removable: [] }, columns),
+  renderTidyResult: worktrees.renderTidyResult([], columns),
+  renderSdlcConfiguration: sdlc.renderSdlcConfiguration({ by: "user" }, columns),
+  renderSdlcSurvey: sdlc.renderSdlcSurvey({ task: card.id }, columns),
+  renderSdlcQueue: sdlc.renderSdlcQueue({}, columns, now),
+  renderSdlcAudit: sdlc.renderSdlcAudit({}, columns, now),
+  renderSdlcRelease: sdlc.renderSdlcRelease({}, columns, now),
+  renderSdlcMetrics: sdlc.renderSdlcMetrics({}, columns, now),
+  renderSdlcCosts: sdlc.renderSdlcCosts({}, columns, now),
+  renderAuthorization: sdlc.renderAuthorization({}, columns, now),
+  renderSdlcMerge: sdlc.renderSdlcMerge({}, columns, now),
+  renderStudyList: study.renderStudyList({}, columns),
+  renderStudyShow: study.renderStudyShow({}, columns),
+  renderStudyReceipt: study.renderStudyReceipt("draft", {}, columns),
+  renderExperiments: study.renderExperiments({}, columns),
+  renderStudyEvidence: study.renderStudyEvidence({}, columns),
+  renderSynthesisReadiness: study.renderSynthesisReadiness({}, columns),
+  renderHandoffReceipt: handoff.renderHandoffReceipt({ project: project.id, task: card.id }, columns),
+  renderHandoffs: handoff.renderHandoffs({ handoffs: [] }, columns),
+  renderIntake: intake.renderIntake({}, columns),
+  renderIntakeChange: intake.renderIntakeChange("approve", {}, columns),
+  renderLearnList: learn.renderLearnList({}, columns),
+  renderLearnChange: learn.renderLearnChange("accept", {}, columns),
+  renderScheduleList: schedule.renderScheduleList([], columns, now),
+  renderScheduleRun: schedule.renderScheduleRun({}, columns),
+  renderScheduleChange: schedule.renderScheduleChange("pause", [], columns, now),
+  renderSourceAdd: sourceViews.renderSourceAdd({}, columns),
+  renderSourceList: sourceViews.renderSourceList([], columns, now),
+  renderCapabilities: renderCapabilities({}, columns),
 };
-const reportByTask = renderReport(summarizeByTask([]), columns, now, true);
+const reportByTask = outputViews.renderReport(summarizeByTask([]), columns, now, true);
 const rendererRows: string[] = [];
 const layout = /\b(Report|LayoutReport|heading|pair|grid|table|blank|moment|printOutput|errorLines|paint|wrap)\b/g;
 for (const dir of ["src/cli", "src/hub"]) {
@@ -85,7 +148,7 @@ for (const dir of ["src/cli", "src/hub"]) {
       if (!ts.isFunctionDeclaration(statement) || !statement.name || !statement.body || !/^(?:render|format)[A-Z]/.test(statement.name.text)) continue;
       const symbol = statement.name.text;
       const elements = [...new Set(statement.body.getText(source).match(layout) ?? [])].sort();
-      const fixture = Object.hasOwn(fixtures, symbol) && path === "src/cli/output.ts" ? fixtures[symbol as keyof typeof fixtures] : undefined;
+      const fixture = dir === "src/cli" ? fixtures[symbol] : undefined;
       const measure = fixture ? String(width(fixture.map(line => paint(line, false)).join("\n"))) : "Unmeasured";
       rendererRows.push(row(path + ":" + symbol, elements.some(element => element === "Report" || element === "LayoutReport") ? "Direct" : "-", elements.join(", ") || "Inline / indirect", measure));
     }
