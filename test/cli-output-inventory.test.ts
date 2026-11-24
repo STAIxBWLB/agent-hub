@@ -7,7 +7,7 @@ test("the CLI inventory renders the host-free help and output measurements", () 
   expect(run.exitCode, run.stderr.toString()).toBe(0);
   const report = run.stdout.toString();
   expect(report).toContain("| roadmap | main.ts |");
-  expect(report).toMatch(/src\/cli\/output.ts:renderDoctor \| Direct \|[^\n]+\| \d+ \|/);
+  expect(report).toMatch(/src\/cli\/output.ts:renderDoctor \| CLI \| Direct \|[^\n]+\| \d+ \|/);
 });
 
 test("CLI inventory numeric contracts are classified", async () => {

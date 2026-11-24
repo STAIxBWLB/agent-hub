@@ -19,6 +19,7 @@ import {
   renderQueue,
   renderQueueShow,
   renderReport,
+  renderRoles,
   renderRoster,
   renderRuntimeModels,
   renderStatus,
@@ -60,6 +61,9 @@ import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "../
 import { renderSourceAdd, renderSourceList } from "../src/cli/source-output.ts";
 import { renderCapabilities } from "../src/cli/capabilities-output.ts";
 import { summarize, summarizeByTask } from "../src/hub/report.ts";
+
+import { renderRoadmap } from "../src/cli/roadmap.ts";
+import { renderBudgetResult } from "../src/cli/upgrade-output.ts";
 
 const root = join(import.meta.dir, "..");
 const parse = (path: string) => ts.createSourceFile(path, readFileSync(join(root, path), "utf8"), ts.ScriptTarget.Latest, true);
@@ -143,6 +147,8 @@ const fixtures: Readonly<Record<string, ReturnType<typeof renderReport>>> = {
   renderExecutionBudgetStatus: renderExecutionBudgetStatus({}, columns, now),
   renderRuntimeModels: renderRuntimeModels([], columns),
   renderRoster: renderRoster([], columns),
+  renderRoles: renderRoles({ peers: [{ peer: "codex", roles: ["implementer"] }], planner: null, reviewFallback: null }, columns),
+  renderBudgetResult: renderBudgetResult("configure", {}, columns, now),
   renderTaskShow: renderTaskShow(card, columns, now),
   renderTaskCancel: renderTaskCancel({ ...card, cancelled: { reason: "Superseded" } }, columns, now),
   renderBacklogResult: renderBacklogResult("plan", card, columns, now),
@@ -181,6 +187,17 @@ const fixtures: Readonly<Record<string, ReturnType<typeof renderReport>>> = {
   renderCapabilities: renderCapabilities({}, columns),
 };
 const reportByTask = renderReport(summarizeByTask([]), columns, now, true);
+const textWidths = new Map([
+  ["src/cli/help.ts:renderHelp", width(renderHelp(columns, false))],
+  ["src/cli/help.ts:renderOverview", width(renderHelp(columns, false))],
+  ["src/cli/help.ts:renderCommandHelp", Math.max(...[...documented].map(name => width(renderHelp(columns, false, name))))],
+  ["src/cli/roadmap.ts:renderRoadmap", width(renderRoadmap({ milestones: [] }, columns))],
+]);
+const excluded = new Map([
+  ["src/cli/console-state.ts:renderConsole", "Full-screen console"],
+  ["src/cli/console-state.ts:renderConsoleLines", "Full-screen console"],
+  ["src/hub/ui.ts:renderDashboard", "Web dashboard"],
+]);
 const rendererRows: string[] = [];
 const layout = /\b(Report|LayoutReport|heading|pair|grid|table|blank|moment|printOutput|errorLines|paint|wrap)\b/g;
 for (const dir of ["src/cli", "src/hub"]) {
@@ -192,8 +209,11 @@ for (const dir of ["src/cli", "src/hub"]) {
       const symbol = statement.name.text;
       const elements = [...new Set(statement.body.getText(source).match(layout) ?? [])].sort();
       const fixture = dir === "src/cli" ? fixtures[symbol] : undefined;
-      const measure = fixture ? String(width(fixture.map(line => paint(line, false)).join("\n"))) : "Unmeasured";
-      rendererRows.push(row(path + ":" + symbol, elements.some(element => element === "Report" || element === "LayoutReport") ? "Direct" : "-", elements.join(", ") || "Inline / indirect", measure));
+      const location = path + ":" + symbol;
+      const measure = fixture ? String(width(fixture.map(line => paint(line, false)).join("\n")))
+        : textWidths.has(location) ? String(textWidths.get(location))
+        : excluded.get(location) ?? "Unmeasured";
+      rendererRows.push(row(location, dir === "src/cli" ? "CLI" : "Hub", elements.some(element => element === "Report" || element === "LayoutReport") ? "Direct" : "-", elements.join(", ") || "Inline / indirect", measure));
     }
   }
 }
@@ -215,7 +235,7 @@ const output = [
   "Source scan for top-level render and format functions. The file shows where the text originates. Layout references are direct, and indirect composition needs manual review.",
   "Fixture widths are color-off at 80 columns. Unmeasured entries need fixtures before T3 or T4 makes a conformance claim.",
   "The separate report-by-task fixture measures " + taskReportWidth + " cells.", "",
-  "| File and renderer | Report | Direct layout references | Fixture width |", "| --- | --- | --- | ---: |", ...rendererRows, "",
+  "| File and renderer | Text source | Report | Direct layout references | Fixture width or scope |", "| --- | --- | --- | --- | --- |", ...rendererRows, "",
 ].join("\n");
 const file = "docs/design/cli-output-inventory.md";
 switch (process.argv[2]) {
