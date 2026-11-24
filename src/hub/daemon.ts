@@ -6481,7 +6481,9 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!piiTurn && !reviewTurn && !tasks.isPii(reviewed) && verdict && !verdict.withheld && typeof a.note === "string" && a.note && verdict.note?.startsWith(a.note)) {
           citeMemory(by, a.note, `review:${reviewed.id}:${reviewed.history.indexOf(verdict)}`, [newEnvelope(by, "", { refs: { task: String(reviewed.id) } })]);
         }
-        return line(reviewed);
+        return reviewed.reopenedWithoutReason?.length
+          ? line(reviewed) + "\nreopenedWithoutReason: " + JSON.stringify(reviewed.reopenedWithoutReason)
+          : line(reviewed);
       }
       case "hub_remember": {
         const { message: saved, outcome } = await tasks.rememberOutcome(by, a);
