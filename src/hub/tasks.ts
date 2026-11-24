@@ -127,6 +127,7 @@ import { mainCheckoutWarning } from "./main-checkout.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import type { TaskWorktreePort } from "./task-worktree.ts";
 import { coverageGap, renderReviewBrief, renderSpecTaskReport, type BriefFile, type ReviewBrief } from "./review-brief.ts";
+import type { ReviewCheckoutEvidence } from "./review-checkout.ts";
 import { DEFAULT_SPECS_CONFIG, type SpecsConfig } from "./specs-config.ts";
 import type { SpecsCheckReport, SpecsCoverReport } from "./specs.ts";
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
@@ -1221,6 +1222,16 @@ export class Tasks {
     return resolveFindingHead(task.sdlc, reviewedHead ? { head: reviewedHead } : undefined, task.refs.commit);
   }
 
+  /**
+   * #1646 T2: what the reviewer's checkout held, read from the brief's own reviewed paths. A port that cannot answer, or a
+   * checkout it cannot read, leaves the verdict with no evidence: an unread checkout is unknown, never clean.
+   */
+  private checkoutEvidence(brief: ReviewBrief): ReviewCheckoutEvidence | undefined {
+    const source = this.d.auditSource;
+    const reads = source?.readsAt?.(brief.head, brief.reviewable.map(file => file.path));
+    return reads ? { head: source?.head() ?? null, differing: reads.differing, untracked: reads.untracked } : undefined;
+  }
+
   private findingTextAllowed(task: Task, items: readonly ReviewFinding[]): boolean {
     return this.candidateTextAllowed(JSON.stringify(items), task)
       && items.every(item => (!item.path || !matchesPolicy(this.d.cwd, item.path, this.d.piiPaths ?? [], true))
@@ -1458,6 +1469,7 @@ export class Tasks {
       ...(h.reviewerFamily ? { reviewerFamily: screenHistoryText(h.reviewerFamily, "reviewer family") } : {}),
       ...(h.reviewerReason ? { reviewerReason: h.reviewerReason } : {}),
       ...(h.reviewedHead ? { reviewedHead: h.reviewedHead } : {}),
+      ...(h.checkout ? { checkout: h.checkout } : {}),
       ...(h.reviewScope === "code" ? { reviewScope: "code" as const } : {}),
       ...(h.evidenceOnly ? { evidenceOnly: true as const } : {}),
       ...(h.unmetCriteria?.length ? { unmetCriteria: h.unmetCriteria } : {}),
@@ -10498,6 +10510,8 @@ export class Tasks {
     // #520: what the coverage was checked against, pinned through every await: the commit and the lifecycle receipt (the
     // inherited reviewedHead lives there).
     let covered: { commit: string | undefined; receipt: string } | undefined;
+    // #1646: the reviewer's checkout at this verdict, read from the brief's own files; absent when it could not be read.
+    let checkout: ReviewCheckoutEvidence | undefined;
     let conformanceIdentity: string | undefined;
     let reviewRound: number | undefined;
     let withdrawalRevision: number | undefined;
@@ -10592,6 +10606,7 @@ export class Tasks {
         const effective = typeof head === "string" ? head : t.sdlc?.reviewedHead;
         if (effective !== undefined && effective !== brief.head && enforce) throw new PreEffectToolRefusal(`coverage: the verdict ${typeof head === "string" ? "names" : "inherits"} head ${effective}, but the review brief is for ${brief.head} (the commit under review)`);
         covered = { commit: t.refs.commit, receipt: JSON.stringify(t.sdlc ?? null) };
+        checkout = this.checkoutEvidence(brief);
         const gap = coverageGap(brief, coverage);
         if (gap.length && enforce) throw new PreEffectToolRefusal(`coverage: ${gap.length} reviewable path(s) of the review brief are not accounted for: ${list(gap)}. Pass coverage {reviewed, skipped: [{path, reason}]}.`);
         if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${list(gap)}`.trim();
@@ -10667,7 +10682,7 @@ export class Tasks {
     // #507b: unmet items that start with a recorded criterion id name that criterion. The ids come from the checklist on the board as it is at this
     // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
-    const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(securityRecord && !pii ? { securityPass: { ...securityRecord, ...((reviewedHead ?? findingHead) ? { head: (reviewedHead ?? findingHead)! } : {}) } } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...(checkout ? { checkout } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(securityRecord && !pii ? { securityPass: { ...securityRecord, ...((reviewedHead ?? findingHead) ? { head: (reviewedHead ?? findingHead)! } : {}) } } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const capacity = this.capacityBefore(task);
       this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);

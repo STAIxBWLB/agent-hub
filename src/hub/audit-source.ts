@@ -12,6 +12,11 @@ export interface AuditSource {
   resolve(ref: string): string | undefined;
   /** Repository-relative paths that differ between `from` and `to`, or undefined when they cannot be listed completely. */
   changed(from: string, to: string): string[] | undefined;
+  /**
+   * #1646: among `paths`, those the checkout's worktree holds differently from `reviewed`, and those it holds as
+   * untracked files. Undefined when either read is incomplete: an unread checkout is unknown, never clean.
+   */
+  readsAt?(reviewed: string, paths: readonly string[]): { differing: string[]; untracked: string[] } | undefined;
   /** Local origin/HEAD remote-tracking commit, never a checkout HEAD or guessed branch. */
   defaultTip?(): string | undefined;
   /** Unique local common ancestor; shallow, missing, unrelated or ambiguous history is unknown. */
@@ -61,6 +66,22 @@ export function gitAuditSource(cwd: string): AuditSource {
       if (r.status !== 0 || typeof r.stdout !== "string") return undefined;
       const paths = r.stdout.split("\0").filter(Boolean);
       return paths.length > MAX_CHANGED_PATHS ? undefined : paths;
+    },
+    readsAt: (reviewed, paths) => {
+      if (!SHA.test(reviewed) || commit(reviewed) !== reviewed) return undefined;
+      // Only the caller's own list, and only names git accepts as pathspecs: never a flag, never a control character.
+      const scoped = [...new Set(paths.filter(path => typeof path === "string" && path && !path.startsWith("-") && !/[\p{Cc}]/u.test(path)))];
+      if (!scoped.length) return { differing: [], untracked: [] };
+      // The reviewed commit against the worktree (index and unstaged alike), then the files git does not track yet.
+      const diff = run(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", reviewed, "--", ...scoped]);
+      if (diff.status !== 0 || typeof diff.stdout !== "string") return undefined;
+      const others = run(["ls-files", "--others", "--exclude-standard", "-z", "--", ...scoped]);
+      if (others.status !== 0 || typeof others.stdout !== "string") return undefined;
+      // A reviewed path the checkout does not track is reported once, as untracked: git also diffs such a file by path
+      // when it happens to exist, and one state per path keeps the evidence readable.
+      const untracked = others.stdout.split("\0").filter(Boolean), loose = new Set(untracked);
+      const differing = diff.stdout.split("\0").filter(path => path && !loose.has(path));
+      return differing.length > MAX_CHANGED_PATHS || untracked.length > MAX_CHANGED_PATHS ? undefined : { differing, untracked };
     },
   };
 }
