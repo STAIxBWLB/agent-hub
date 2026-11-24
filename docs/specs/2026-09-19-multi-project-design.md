@@ -46,7 +46,13 @@ console authorization, dashboard validation and PII redaction.
 - Only the owning instance removes runtime files or releases a claim. Stop waits
   for owned children; uncertain ownership and incomplete shutdown are explicit errors.
 - Expose `projects`, `status --all`, and `projects remove <id>` (stopped metadata
-  only). Moved roots are new registrations; never merge by basename.
+  only). A moved root gets a new registration by default. The person may keep
+  the existing port and state by previewing and confirming `ahub projects move`
+  before starting it at the new path (#1424). The old hub and every hub with
+  affected handoff rows must be stopped. Registry writer admission fences new
+  starts while the move backs up and re-keys stores. If interrupted, the registry
+  identity decides whether to restore the backed-up stores before the next start.
+  Never merge by basename.
 
 ### Unified dashboard
 
