@@ -163,6 +163,12 @@
         "src/cli/help.ts"
       ]
     },
+    "docs/friction.md": {
+      "verifiedAgainst": "13e3b4071cd24cfbfaffa934074fbdf4aaa32c18",
+      "paths": [
+        "scripts/benchmarks/friction"
+      ]
+    },
     "docs/influences.md": {
       "verifiedAgainst": "bfa5c3b99459168cbda7966069535a7b4c7b3c5d",
       "paths": [
