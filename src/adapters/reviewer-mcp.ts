@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { HubTool } from "../hub/hub-tools.ts";
 import { sanitize } from "../hub/envelope.ts";
 
-export type ReviewerToolName = "hub_review" | "hub_task_show" | "hub_review_file";
+export type ReviewerToolName = "hub_review" | "hub_task_show";
 export interface ReviewerMcpSession { config: string; close(): void }
 export interface ReviewerMcpOptions {
   task: number;
@@ -13,9 +13,7 @@ export interface ReviewerMcpOptions {
   /** Diagnostic metadata only; never tool arguments or successful result text. */
   onTool?(name: ReviewerToolName, refusal?: string): void;
 }
-const NAMES: readonly ReviewerToolName[] = ["hub_review", "hub_task_show", "hub_review_file"];
-/** #1646 T3: a reviewer whose sandbox cannot read the checkout reads its brief files here, bound to the same task and cap. */
-const isReviewerTool = (name: unknown): name is ReviewerToolName => typeof name === "string" && (NAMES as readonly string[]).includes(name);
+const NAMES: readonly ReviewerToolName[] = ["hub_review", "hub_task_show"];
 const BODY_CAP = 256 * 1024, RESULT_CAP = 4 * 1024 * 1024;
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 
@@ -63,7 +61,7 @@ export function createReviewerMcpSession(options: ReviewerMcpOptions): ReviewerM
       if (body.method !== "tools/call") return error("method unavailable", -32601);
       if (!record(body.params)) return error("tool parameters required");
       const name = body.params.name;
-      if (!isReviewerTool(name)) return error("tool unavailable");
+      if (name !== "hub_review" && name !== "hub_task_show") return error("tool unavailable");
       const observe = (refusal?: string) => { try { options.onTool?.(name, refusal); } catch { /* Diagnostics never change tool authority or results. */ } };
       const refuse = (message: string, code?: number) => { observe(message); return error(message, code); };
       observe();

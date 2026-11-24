@@ -3579,7 +3579,7 @@ var init_codex_review_isolation = __esm(() => {
   init_compat();
   init_child_process();
   init_project();
-  TOOLS = ["hub_review", "hub_task_show", "hub_review_file"];
+  TOOLS = ["hub_review", "hub_task_show"];
   VersionRefusal = class VersionRefusal extends Error {
   };
   CAP = 128 * 1024;
@@ -3606,7 +3606,7 @@ var init_codex_review_isolation = __esm(() => {
     toolTrace(event) {
       const row = event;
       const item = row?.item;
-      if (row?.type !== "item.completed" || item?.type !== "mcp_tool_call" || item.server !== "agent-hub" || item.tool !== "hub_review" && item.tool !== "hub_task_show" && item.tool !== "hub_review_file")
+      if (row?.type !== "item.completed" || item?.type !== "mcp_tool_call" || item.server !== "agent-hub" || item.tool !== "hub_review" && item.tool !== "hub_task_show")
         return;
       const failure = typeof item.error === "string" ? item.error : item.error?.message;
       const refused = item.result?.isError === true && Array.isArray(item.result.content) ? item.result.content.filter((value) => value?.type === "text" && typeof value.text === "string").map((value) => value.text).join(`

@@ -29,7 +29,7 @@ if(a[0] === "features" && a[1] === "list") {
  if(mode === "collision") rows.push({name:"agent-hub",enabled:true,transport:{type:"stdio",command:"/usr/bin/false"}});
  if(mode === "drift" && overridden) rows.push({name:"new-ambient",enabled:true,transport:{type:"stdio",command:"/usr/bin/false"}});
  console.log(JSON.stringify(rows));
-} else if(a[0] === "mcp" && a[1] === "get") console.log(JSON.stringify({name:"agent-hub",enabled:true,transport:{type:"stdio",command:mode === "hubcommand" ? "/bin/echo" : "/usr/bin/false",args:[],env:{}},enabled_tools:mode === "tools" ? ["hub_send"] : ["hub_review","hub_task_show","hub_review_file"]}));
+} else if(a[0] === "mcp" && a[1] === "get") console.log(JSON.stringify({name:"agent-hub",enabled:true,transport:{type:"stdio",command:mode === "hubcommand" ? "/bin/echo" : "/usr/bin/false",args:[],env:{}},enabled_tools:mode === "tools" ? ["hub_send"] : ["hub_review","hub_task_show"]}));
 else if(a[0] === "sandbox") console.log(mode === "sandbox" ? "READ_ALLOWED" : "AHUB_CODEX_PUBLIC_READ\\nAHUB_CODEX_PRIVATE_DENIED\\nAHUB_CODEX_WRITE_DENIED" + (mode === "glob" ? "" : "\\nAHUB_CODEX_GLOB_PRIVATE_DENIED\\nAHUB_CODEX_ALIAS_PRIVATE_DENIED" + (mode === "core" ? "" : "\\nAHUB_CODEX_CORE_NAME_DENIED\\nAHUB_CODEX_CORE_STATE_DENIED" + (mode === "host" ? "" : "\\nAHUB_CODEX_HOST_CONFIG_DENIED\\nAHUB_CODEX_HOST_KUBE_DENIED\\nAHUB_CODEX_HOST_DOCKER_DENIED\\nAHUB_CODEX_HOST_ALIAS_DENIED"))));
 else if(a[0] === "debug") console.log(mode === "catalog" ? "x".repeat(256000) : mode === "catalogoverflow" ? "x".repeat(4200000) : "{}");
 else process.exit(1);
@@ -56,8 +56,8 @@ test("Codex isolation proves bounded MCP and sandbox before returning fixed ephe
     const override = result.args.find(arg => arg.startsWith("mcp_servers="))!;
     const configured = Bun.TOML.parse(override) as { mcp_servers: Record<string, { enabled?: boolean; enabled_tools?: string[]; tools?: Record<string, { approval_mode: string }>; default_tools_approval_mode?: string }> };
     expect(configured.mcp_servers.ambient?.enabled).toBe(false);
-    expect(configured.mcp_servers["agent-hub"]?.enabled_tools).toEqual(["hub_review", "hub_task_show", "hub_review_file"]);
-    expect(configured.mcp_servers["agent-hub"]?.tools).toEqual({ hub_review: { approval_mode: "approve" }, hub_task_show: { approval_mode: "approve" }, hub_review_file: { approval_mode: "approve" } });
+    expect(configured.mcp_servers["agent-hub"]?.enabled_tools).toEqual(["hub_review", "hub_task_show"]);
+    expect(configured.mcp_servers["agent-hub"]?.tools).toEqual({ hub_review: { approval_mode: "approve" }, hub_task_show: { approval_mode: "approve" } });
     for (const [name, server] of Object.entries(configured.mcp_servers)) {
       expect(server.default_tools_approval_mode).toBeUndefined();
       if (name !== "agent-hub") expect(server.tools).toBeUndefined();
