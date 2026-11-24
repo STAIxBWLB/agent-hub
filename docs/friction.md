@@ -41,4 +41,6 @@ Add an entry to `JOURNEYS` in `scripts/benchmarks/friction/journeys.ts`: an `id`
 
 ## Status
 
-Report only. It is not part of `scripts/check.sh`; a gate comes after two stable weeks with no dead end on main. The corpus holds the first two of the twelve seed journeys (project not initialised, daemon not running); the rest follow once the owner confirms the seed list. Current numbers are in the latest `results.json` of the nightly job, not copied here.
+Report only. It is not part of `scripts/check.sh`; a gate comes after two stable weeks with no dead end on main. The corpus holds twelve journeys, nine of which run; three are listed as skipped with a reason and never counted (queue full: the cap is a startup setting; unresolved review threads at merge: needs a full fake GitHub pull-request read; spec changed after acceptance: the edit cannot be re-read through the assign path). A second peer comes from a config patch that adds `roles.worker1`, since the hub admits only `claude` as a plain channel peer. Hub-tool steps (`{tool, peer, args}`) run through the measured binary's own control client.
+
+First run on main (binary 0.46.1, corpus v2, 2026-11-24): in_band 2, out_of_band 6, dead_end 1, by_design 0. The one dead end is `handoff-to-unregistered-project`: the refusal points at `ahub projects`, which lists projects but cannot register the missing one, so the retry is refused again. It is tracked on #1644, not fixed here. Later numbers are in the latest `results.json` of the nightly job.

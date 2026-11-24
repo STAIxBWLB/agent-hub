@@ -51,11 +51,17 @@ export function continuationOf(output: string): Continuation | undefined {
 
 const PROSE_STOP = new Set(["there", "first", "then", "again", "now", "before", "after", "once", "if", "and", "or", "to", "so", "because"]);
 
-export interface Classification { class: FrictionClass; continuation?: string; retried?: StepRun }
+export interface Classification { class: FrictionClass; continuation?: string; retried?: StepRun; /** a hub tool the block names (`hub_task_done`): not runnable from the text alone, so it never makes a block in_band, but a reader needs to know it names one */ namesTool?: string }
+
+/** The first hub tool a block names. A tool takes arguments the text rarely gives, so the runner does not run it; the report only says it is there. */
+export function namedTool(output: string): string | undefined {
+  return /\bhub_[a-z][a-z0-9_]*\b/.exec(output)?.[0];
+}
 
 /**
  * Classify one block. `runContinuation` executes a continuation in the same isolated hub; `retry` repeats the blocked step.
- * Progress means the repeated step is no longer blocked: it exits zero.
+ * Progress means the continuation itself succeeded and the repeated step either passes or is now stopped by a different refusal
+ * (a flow with several gates clears one and meets the next). The same refusal again, or a continuation that failed, is no progress.
  */
 export async function classifyBlock(
   block: StepRun,
@@ -63,9 +69,10 @@ export async function classifyBlock(
   retry: () => Promise<StepRun>,
 ): Promise<Classification> {
   if (BY_DESIGN_MARKER.test(block.output)) return { class: "by_design" };
-  const continuation = continuationOf(block.output);
-  if (!continuation) return { class: "out_of_band" };
-  await runContinuation(continuation.argv);
+  const tool = namedTool(block.output), continuation = continuationOf(block.output);
+  if (!continuation) return { class: "out_of_band", ...(tool ? { namesTool: tool } : {}) };
+  const ran = await runContinuation(continuation.argv);
   const retried = await retry();
-  return retried.exitCode === 0 ? { class: "in_band", continuation: continuation.text, retried } : { class: "dead_end", continuation: continuation.text, retried };
+  const advanced = ran.exitCode === 0 && (retried.exitCode === 0 || retried.output.trim() !== block.output.trim());
+  return { class: advanced ? "in_band" : "dead_end", continuation: continuation.text, retried, ...(tool ? { namesTool: tool } : {}) };
 }
