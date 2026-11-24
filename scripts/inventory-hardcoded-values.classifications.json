@@ -22,7 +22,7 @@
   "scripts/benchmarks/friction/classify.ts:continuationOf:inline:words.length < 2=2#0": "contract",
   "scripts/benchmarks/friction/compare.ts:short:inline:digest.slice=12#0": "contract",
   "scripts/benchmarks/friction/run.ts:<module>:inline:report.binary.digest.slice=12#0": "contract",
-  "scripts/benchmarks/friction/run.ts:CORPUS_VERSION:constant:CORPUS_VERSION=1#0": "contract",
+  "scripts/benchmarks/friction/run.ts:CORPUS_VERSION:constant:CORPUS_VERSION=2#0": "contract",
   "scripts/benchmarks/friction/run.ts:STEP_TIMEOUT_MS:constant:STEP_TIMEOUT_MS=30000#0": "safety floor",
   "scripts/benchmarks/friction/run.ts:UNEXPECTED_EXCERPT_CHARS:constant:UNEXPECTED_EXCERPT_CHARS=160#0": "contract",
   "scripts/benchmarks/kimi-review-watch-1284.ts:<anonymous>:inline:parentPort!.postMessage=2#0": "contract",

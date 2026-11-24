@@ -18,7 +18,7 @@ export interface StepResult { argv: string[]; exitCode: number; class?: Friction
 export interface JourneyResult { id: string; guards: string; blocks: Record<FrictionClass, number>; steps: StepResult[]; skipped?: string }
 export interface Report { corpusVersion: number; binary: { path: string; version: string; digest: string }; totals: Record<FrictionClass, number>; journeys: JourneyResult[] }
 
-export const CORPUS_VERSION = 1;
+export const CORPUS_VERSION = 2;
 const CLASSES: FrictionClass[] = ["in_band", "out_of_band", "dead_end", "by_design"];
 const zero = (): Record<FrictionClass, number> => ({ in_band: 0, out_of_band: 0, dead_end: 0, by_design: 0 });
 const STEP_TIMEOUT_MS = 30_000;
