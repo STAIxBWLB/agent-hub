@@ -3127,7 +3127,7 @@ export async function startDaemon(opts: DaemonOptions) {
     catalog,
     sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
     projectedReview: task => reviewProjection(task),
-    reviewMaterials: (task, requests) => reviewMaterials(task, requests),
+    reviewMaterials,
     ownerWrites: (task, since) => ownerWriteEvidence(task, since),
     ownerAccepted: task => captureOwnerWriteStart(task),
     prepareReviewBrief: async task => {
