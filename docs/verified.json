@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "482feea1951d5e3280597097283413b12a4ee5a3",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "482feea1951d5e3280597097283413b12a4ee5a3",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "482feea1951d5e3280597097283413b12a4ee5a3",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "482feea1951d5e3280597097283413b12a4ee5a3",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/adding-an-ai-tool.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "482feea1951d5e3280597097283413b12a4ee5a3",
       "paths": [
         "src/adapters/registry-types.ts",
         "src/adapters/registry.ts",
@@ -62,7 +62,7 @@
       ]
     },
     "docs/addons/claude-mem.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "482feea1951d5e3280597097283413b12a4ee5a3",
       "paths": [
         "src/hub/tooling.ts",
         "src/adapters/definitions/native-policy-aux.ts",
@@ -183,7 +183,7 @@
       ]
     },
     "docs/memory.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "482feea1951d5e3280597097283413b12a4ee5a3",
       "paths": [
         "package.json",
         "src/memory/",
@@ -368,7 +368,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "482feea1951d5e3280597097283413b12a4ee5a3",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -527,7 +527,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "482feea1951d5e3280597097283413b12a4ee5a3",
       "paths": [
         "test/",
         "scripts/check.sh",
