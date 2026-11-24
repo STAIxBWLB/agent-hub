@@ -792,7 +792,6 @@
   "src/hub/progress.ts#progressDimensions",
   "src/hub/project-runtime-state.ts#PROJECT_RUNTIME_FILE",
   "src/hub/project-runtime-state.ts#RuntimeProject",
-  "src/hub/project-runtime-state.ts#parseProjectRuntime",
   "src/hub/project-runtime.ts#verifyProjectRuntime",
   "src/hub/provenance.ts#ConnectionIdentity",
   "src/hub/provenance.ts#sameOrigin",
