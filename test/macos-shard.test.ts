@@ -205,7 +205,7 @@ function runGate(env: Record<string, string>, ...args: string[]) {
     return { code: run.exitCode, out: run.stdout.toString(), err: run.stderr.toString(), steps: all.filter(line => !line.startsWith("bun-test-sees") && !line.startsWith("bun-tsc-sees")), seen: all.filter(line => line.startsWith("bun-test-sees")), tsc: all.filter(line => line.startsWith("bun-tsc-sees")) };
   } finally { rmSync(repo, { recursive: true, force: true }); }
 }
-const ONCE = ["check-docs.mjs", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/inventory-hardcoded-values.ts --check", "bun scripts/unused-exports.ts --check", "bun scripts/readme-facts.ts", "bun scripts/build.mjs --check", "check-package.mjs"];
+const ONCE = ["check-docs.mjs", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/inventory-hardcoded-values.ts --check", "bun scripts/unused-exports.ts --check", "bun scripts/refusal-inventory.ts --check", "bun scripts/readme-facts.ts", "bun scripts/build.mjs --check", "check-package.mjs"];
 
 test("#1318 Darwin typecheck alone gets the measured 5120 MiB heap and preserves existing NODE_OPTIONS", () => {
   const darwin = runGate({ FAKE_UNAME_S: "Darwin", NODE_OPTIONS: "--trace-warnings" });
@@ -222,7 +222,7 @@ test("#1318 Darwin typecheck alone gets the measured 5120 MiB heap and preserves
 test("#548 an unsharded gate runs every step once, in order, then the whole suite, and ends `check: OK`, as before", () => {
   const run = runGate({});
   expect(run.code).toBe(0);
-  expect(run.steps.filter(step => !step.startsWith("check-owned"))).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/inventory-hardcoded-values.ts --check", "bun scripts/unused-exports.ts --check", "bun scripts/readme-facts.ts", "bun scripts/build.mjs --check", "check-package.mjs", "bun test --timeout 20000"]);
+  expect(run.steps.filter(step => !step.startsWith("check-owned"))).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/inventory-hardcoded-values.ts --check", "bun scripts/unused-exports.ts --check", "bun scripts/refusal-inventory.ts --check", "bun scripts/readme-facts.ts", "bun scripts/build.mjs --check", "check-package.mjs", "bun test --timeout 20000"]);
   expect(run.out).toContain("check: OK");
   expect(run.out).not.toContain("shard");
 });
@@ -231,7 +231,7 @@ test("#548 shard 1 runs the once-only steps and its slice of the suite on the co
   const run = runGate({ AHUB_CHECK_SHARD: "1/4" });
   expect(run.code).toBe(0);
   const steps = run.steps.filter(step => !step.startsWith("check-owned"));
-  expect(steps).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/inventory-hardcoded-values.ts --check", "bun scripts/unused-exports.ts --check", "bun scripts/readme-facts.ts", "bun scripts/build.mjs --check", "check-package.mjs", "warm-git --version", "bun test --timeout 20000 --shard=1/4 --timings=scripts/test-timings.json"]);
+  expect(steps).toEqual(["check-docs.mjs", "bun install --frozen-lockfile", "bun x tsc --noEmit", "bun scripts/check-roles.ts", "bun scripts/inventory-hardcoded-values.ts --check", "bun scripts/unused-exports.ts --check", "bun scripts/refusal-inventory.ts --check", "bun scripts/readme-facts.ts", "bun scripts/build.mjs --check", "check-package.mjs", "warm-git --version", "bun test --timeout 20000 --shard=1/4 --timings=scripts/test-timings.json"]);
   expect(run.out.trim().split("\n").at(-1)).toBe("check: OK (shard 1/4)");
 });
 

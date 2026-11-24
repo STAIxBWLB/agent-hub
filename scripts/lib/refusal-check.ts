@@ -9,6 +9,7 @@ type RefusalSite = {
   carrier: Carrier;
   message: TextShape;
   next?: TextShape;
+  marker?: string;
 };
 
 function textShape(node: ts.Expression | undefined): TextShape {
@@ -24,6 +25,7 @@ function textShape(node: ts.Expression | undefined): TextShape {
 export function collectRefusals(file: string, text: string): RefusalSite[] {
   const source = parseSource(file, text);
   const sites: RefusalSite[] = [];
+  const lines = text.split(/\r?\n/);
 
   function walk(node: ts.Node): void {
     if ((ts.isNewExpression(node) || ts.isCallExpression(node)) && ts.isIdentifier(node.expression)) {
@@ -32,8 +34,10 @@ export function collectRefusals(file: string, text: string): RefusalSite[] {
         ? name : ts.isCallExpression(node) && name === "fail" && file === "src/cli/main.ts" ? name : undefined;
       if (carrier) {
         const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-        const [message, , , next] = node.arguments ?? [];
-        sites.push({ file, line, carrier, message: textShape(message),
+        const [, marker] = lines[line - 2]?.match(/^\s*\/\/\s*refusal:by-design\b(.*)$/) ?? [];
+        const [first, second, , next] = node.arguments ?? [];
+        const message = carrier === "HandoffRefusal" ? second : first;
+        sites.push({ file, line, carrier, message: textShape(message), ...(marker === undefined ? {} : { marker: marker.trim() }),
           ...(carrier === "fail" && next ? { next: textShape(next) } : {}) });
       }
     }
@@ -41,4 +45,32 @@ export function collectRefusals(file: string, text: string): RefusalSite[] {
   }
   walk(source);
   return sites;
+}
+
+type ContinuationSurface = {
+  commandFlags: ReadonlyMap<string, ReadonlySet<string>>;
+  tools: ReadonlySet<string>;
+};
+
+export function inspectContinuations(fragments: readonly string[], surface: ContinuationSurface): { found: boolean; errors: string[] } {
+  const text = fragments.join(" <value> ");
+  const errors: string[] = [];
+  let found = false;
+  for (const match of text.matchAll(/\bhub_[a-z][a-z0-9_]*\b/g)) {
+    found = true;
+    if (!surface.tools.has(match[0])) errors.push("unknown tool " + match[0]);
+  }
+  for (const match of text.matchAll(/\bahub[ \t]+([a-z][a-z0-9-]*|--[a-z][a-z0-9-]*)([^;\n`"()]*?)(?=[;\n`"()]|\bahub\b|$)/g)) {
+    found = true;
+    const [, command, tail = ""] = match;
+    const flags = surface.commandFlags.get(command!);
+    if (!flags) {
+      errors.push("unknown command ahub " + command);
+      continue;
+    }
+    for (const flag of tail.matchAll(/(?<![-\w])--[a-z][a-z0-9-]*/g)) {
+      if (!flags.has(flag[0])) errors.push("unknown flag " + flag[0] + " for ahub " + command);
+    }
+  }
+  return { found, errors: [...new Set(errors)] };
 }
