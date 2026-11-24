@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { canonicalPath, hubHome, projectRoot } from "./project.ts";
+import { recoverProjectMove } from "./project-move.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 
 const BASE_PORT = 4600;
@@ -68,7 +69,7 @@ export class Registry {
       try { this.db.run("ALTER TABLE projects ADD COLUMN pid_signature TEXT"); }
       catch (error) { if (!/duplicate column/i.test((error as Error).message)) throw error; } // a concurrent open added it
     }
-    this.importLegacy();
+    this.runtimeCaptureLocked(() => this.importLegacy());
   }
 
   register(root: string, stateDir?: string): Project {
@@ -94,7 +95,7 @@ export class Registry {
         throw new Error(`cannot register ${canonicalRoot}: ${(error as Error).message}`);
       }
     });
-    runTx(tx as Tx);
+    this.runtimeCaptureLocked(tx);
     return this.get(id)!;
   }
 
@@ -108,7 +109,17 @@ export class Registry {
 
   /** Serialize capture publication, durable project references and pruning with registry writers. */
   runtimeCaptureLocked<T>(fn: () => T): T {
-    return this.db.inTransaction ? fn() : this.db.transaction(fn).immediate();
+    return this.db.inTransaction ? fn() : this.db.transaction(() => {
+      recoverProjectMove(this);
+      return fn();
+    }).immediate();
+  }
+
+  replaceMovedProject(previous: Project, next: Project): void {
+    if (!this.db.inTransaction) throw new Error("project move requires the registry writer transaction");
+    const changed = this.db.query("UPDATE projects SET id = ?, root = ?, state_dir = ?, instance_id = NULL, pid = NULL, pid_signature = NULL, claimed_at = NULL WHERE id = ? AND root = ? AND state_dir = ?")
+      .run(next.id, next.root, next.stateDir, previous.id, previous.root, previous.stateDir);
+    if (changed.changes !== 1) throw new Error("old project registration changed; preview the move again");
   }
 
   allocate(root: string): number {
@@ -141,7 +152,7 @@ export class Registry {
         .run(instanceId, pid, signature ? `${instanceId} ${signature}` : null, Date.now(), id);
       claimed = true;
     });
-    runTx(tx as Tx);
+    this.runtimeCaptureLocked(tx);
     return claimed;
   }
 
@@ -168,7 +179,7 @@ export class Registry {
       }
       this.db.query("DELETE FROM projects WHERE id = ?").run(id);
     });
-    runTx(tx as Tx);
+    this.runtimeCaptureLocked(tx);
   }
 
   close(): void {

@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add `ahub projects move` to keep a moved project's port, board, delivery history and handoff links. Preview first and stop every affected hub before confirming. Refs #1424, hub task 1100.
+
 - Remove the Qwen dual-output compat-receipt timing flake: the fixture now consumes submits from a poll as well as `fs.watch`, and the proof deadline is a hang guard instead of a 4 s wall-clock bound, so a loaded runner no longer fails at the `first-held` checkpoint. Refs #1669, hub task 1089.
 
 ## 0.46.1

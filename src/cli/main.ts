@@ -77,6 +77,7 @@ import { factsHook } from "./facts-hook.ts";
 import { parseInstructionHook } from "./instruction-hook.ts";
 import { hubHome, projectContext, projectRoot, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
+import { applyProjectMove, previewProjectMove } from "../hub/project-move.ts";
 import { datasetInputFor, exportResearchDataset, projectFamilyOf } from "../hub/research-dataset.ts";
 import { readEvidence } from "../hub/research-record.ts";
 import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
@@ -1123,6 +1124,35 @@ const commands: Record<string, () => Promise<void> | void> = {
   version: () => console.log(VERSION),
 
   projects: async () => {
+    if (args[0] === "move") {
+      if (caller.role !== "console" || liveTest) fail("moving a project is person-only; run ahub projects move from your terminal");
+      const { one, rest } = takeFlags(args.slice(1), ["--state", "--confirm"], []);
+      const [old, root] = rest;
+      if (rest.length !== 2 || !old || !root || rest.some(arg => arg.startsWith("--")) ||
+          Object.values(one).some(value => !value || value.startsWith("--")))
+        fail("usage: ahub projects move <old-id|old-root> <new-root> [--state <dir>] [--confirm <fingerprint>]");
+      const registry = new Registry();
+      try {
+        const confirm = one["--confirm"];
+        const plan = confirm === undefined
+          ? previewProjectMove(registry, old, root, one["--state"])
+          : applyProjectMove(registry, old, root, one["--state"], confirm);
+        const lines = [`${plan.old.id} -> ${plan.next.id}`, `${plan.old.root} -> ${plan.next.root}`,
+          `State: ${plan.next.stateDir}`, `Base port kept: ${plan.old.basePort}`];
+        for (const store of plan.stores) {
+          lines.push(`Database ${store.project.id}: ${store.file}`);
+          for (const change of store.rewrites) lines.push(`  ${change.table}.${change.column}: ${change.count}`);
+        }
+        for (const marker of plan.markers) lines.push(`  ${basename(marker.file)}: 1 (${marker.after === undefined ? "archived" : "rebound"})`);
+        lines.push("Autonomy consent is dropped. Run ahub autonomy on from the new root to grant it again.",
+          "Memory project keys and recovery history are left at their original identities.",
+          `Backup ${confirm === undefined ? "directory (on confirm)" : "saved at"}: ${plan.archive}`,
+          "Undo: stop the affected hubs and follow the restore.json mapping in the backup. See Multiple projects and worktrees in the operations guide.");
+        if (confirm === undefined) lines.push(`Confirm by repeating the command with --confirm ${plan.fingerprint}`);
+        console.log(terminalText(lines.join("\n")));
+      } finally { registry.close(); }
+      return;
+    }
     if (args[0] === "remove") {
       if (args.length !== 2) fail("usage: ahub projects remove <id>");
       const registry = new Registry();

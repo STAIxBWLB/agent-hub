@@ -1056,7 +1056,7 @@ when a project stops; `ahub ui --all --stop` stops only the manager. Existing
 `ahub projects --json` returns machine-readable live status. Use a listed ID or a
 path with `--project`; the selector must precede the command. `ahub projects remove
 <id>` forgets a stopped registration without deleting project data. A moved root
-gets a new registration. Missing roots remain visible until removed.
+gets a new registration unless you re-key it first. Missing roots remain visible until removed.
 
 Runtime state stays in each project's `.agenthub/state/`. The machine registry is
 `~/.agenthub/registry.db`; existing `ports.json` allocations are imported once.
@@ -1079,6 +1079,37 @@ Before upgrading an older hub, inspect the plan with the matching CLI.
 Incompatible or unverified processes are shown explicitly and are never killed by
 PID-name matching. See the operations guide and the
 [multi-project specification](specs/2026-09-19-multi-project-design.md).
+
+### Move an existing registration
+
+Stop the old hub before moving the repository. After moving it, run
+`ahub projects move <old-id|old-root> <new-root>` from your terminal.
+This previews the preserved port, database row and marker counts, and the
+registered projects with handoff references to the old ID. Use `--state <dir>`
+if the moved state is outside the new root's `.agenthub/state` directory.
+Stop every hub named by the preview refusal. If the old hub is still running
+and cannot be reached at its registered path, move the directory back and
+stop the hub there. Settle any pending deliveries before moving.
+
+Repeat the preview command with its `--confirm <fingerprint>` flag before
+running `ahub up` at the new root. The move checks the preview again, backs up
+all affected databases and markers under `.agenthub/archive/move-<UTC time>/`,
+and changes the registry while preserving the port. An interrupted apply
+is restored on the next registry operation if its registry transaction did
+not commit.
+
+The move rebinds both incoming and outgoing handoff references. It leaves memory
+project keys and archived recovery history at their original identities and
+archives the current Pi recovery bookmark if present. Run `ahub autonomy on`
+from the new root if you want to grant autonomy there.
+
+For a manual restore, stop every affected hub, save a fresh backup, and use
+the archive's `restore.json` to map database backups and marker copies to
+their destinations. A whole-file SQLite restore requires the destination DB
+and its WAL/SHM files to be closed and moved aside before copying the backup.
+Keep any unrelated registry changes by restoring only the moved registration
+from the registry backup. Move the repository back to its original root
+before restarting the restored registration.
 
 ## acon console plugin (#935, #1012)
 
