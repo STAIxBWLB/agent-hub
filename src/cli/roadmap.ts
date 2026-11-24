@@ -131,7 +131,7 @@ export function parseRoadmapArgs(argv: readonly string[]): RoadmapArgs {
     if (word.startsWith("-")) return usage("unknown roadmap option");
     operands.push(word);
   }
-  if (json && command !== "list" && command !== "show") return usage("roadmap --json is available on list and show only");
+  if (json && command !== "list" && command !== "show") return usage("ahub roadmap --json works with list, show, check and export. Run ahub help roadmap for usage");
   if (command === "list") {
     if (operands.length) return usage("roadmap list takes no operands");
     return { op: "hub_roadmap_list", args: {}, json };

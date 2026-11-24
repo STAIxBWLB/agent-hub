@@ -7,6 +7,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Let a planner name why work is split off: an optional `reason` on `hub_task_propose` (explore, parallel, context, verify, capability, person) is stored on the task and shown by `hub_task_show`, `hub_task_list`, `ahub task show` and the board, an unknown value is refused naming the allowed values, `parallel` siblings with overlapping `refs.paths` are refused before any task exists, and `ahub sdlc metrics` groups task count, review rounds and tokens by reason with `unset` as its own group. The planner role text gains one sentence. Refs #1647, hub task 1109.
 
 - Require a screened reason to reopen a settled review finding in enforce mode. Advise reports missing reasons, and reasoned reopenings after person acceptance notify the person. Refs #1657, hub task 1095.
+- List each command once in the help overview, add examples for version, kill, down and tail, and clarify which roadmap operations accept JSON (Refs #1654, hub task 1106).
 
 - Record on a review verdict what the checkout the reviewer read held: for the files the review brief lists, which differ from the reviewed commit and which the checkout holds untracked, with that checkout's own head and which checkout it was, the reviewing session's own when the hub knows it and otherwise the project checkout. An unreadable checkout records no evidence rather than a clean one. Refs #1646, hub task 1092.
 

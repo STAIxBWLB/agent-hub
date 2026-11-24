@@ -132,6 +132,14 @@ describe("ahub help (#212)", () => {
     expect(overview).not.toMatch(/--json|--color=/); // flags belong to `ahub help <command>`
   });
 
+  test("the overview lists each command word once and bare commands have examples", () => {
+    const names = helpOverviewRows().flatMap(row => row.name.split("|"));
+    expect(new Set(names).size).toBe(names.length);
+    for (const command of ["version", "--version", "kill", "down", "tail"]) {
+      expect(sectionsOf(renderHelp(80, false, command)), command).toContain("Examples");
+    }
+  });
+
   /** The commands a person types that take an argument, a flag or a subcommand: `ahub version | --version` is two spellings, not arguments. */
   const takesArguments = (command: string) => HELP.some(entry => helpCommands(entry).includes(command) && /[<\[|]|\.\.\./.test(entry.usage.replace(/^ahub \S+/, "")) && !/^ahub (?:version \| --version|--version)$/.test(entry.usage));
   const sectionsOf = (text: string) => text.split("\n").filter(line => line.startsWith("▸ ")).map(line => line.slice(2).replace(/ \(\d+\)$/, ""));

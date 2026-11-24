@@ -171,15 +171,14 @@ dispatch keys, native adapter commands and rendered help. Refresh the snapshot w
 the dated snapshot as help and renderers change.
 
 - Help at 80 columns spans 90 dispatch entries and 92 documented command words.
-  The duplicate overview rows are `backlog` and `check-path`. The global
+  The overview lists `backlog` and `check-path` once each. The global
   `--project` and `--live-test` forms account for the two help-only words.
-  The detailed help rows record repeated Details, missing examples, uppercase
-  operands and samples of bracket groups that wrap. T2 owns the corrections.
-- Roadmap's parser explicitly refuses `ahub roadmap new ... --json` with
-  "roadmap --json is available on list and show only". The `check` and
-  `export` branches dispatch to a separate parser before that restriction
-  and accept JSON where documented. T2 owns the contradictory wording.
-  This inventory changes neither JSON support nor exit status.
+  Detailed help includes examples for `version`, `kill`, `down` and `tail`.
+  Repeated usage in Details, uppercase operands and wrapping inside bracket
+  groups remain on the T2 checklist.
+- The roadmap usage error for `ahub roadmap new ... --json` names all four
+  read operations that accept JSON (`list`, `show`, `check` and `export`).
+  JSON support and exit status are unchanged.
 - Human report layout is mixed. Doctor uses the shared report primitives but
   starts at its first section. Detailed status and project-list output still
   use their earlier layout. The CLI renders structured task tool results,

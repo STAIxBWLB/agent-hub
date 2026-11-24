@@ -245,7 +245,7 @@ export function helpCommands(entry: HelpEntry): string[] {
 
 
 /**
- * CLI output standard v1, Help: the overview lists each command once per group as `  <name>  <one-line summary>` in two aligned columns; the long text, every usage form
+ * CLI output standard v1, Help: the overview lists each command once as `  <name>  <one-line summary>` in two aligned columns; the long text, every usage form
  * and every flag are in `ahub help <command>`. A summary is at most SUMMARY_MAX cells. A command not named here (the native agents, whose text comes from their
  * adapter definitions, never from a table that names a peer) takes the first clause of its description. `<group>/<command>` wins over `<command>` where one name
  * means two things (`backlog`, `check-path`).
@@ -292,12 +292,11 @@ function firstClause(description: string, max: number): string {
 /** One overview row: the command words an entry documents (`pause|resume`), and its one-line summary. */
 export interface OverviewRow { section: string; name: string; summary: string }
 export function helpOverviewRows(entries: readonly HelpEntry[] = HELP): OverviewRow[] {
-  const shown = new Map<string, Set<string>>(), rows: OverviewRow[] = [];
+  const shown = new Set<string>(), rows: OverviewRow[] = [];
   for (const entry of entries) {
-    const seen = shown.get(entry.section) ?? shown.set(entry.section, new Set()).get(entry.section)!;
-    const fresh = helpCommands(entry).filter(word => !seen.has(word));
+    const fresh = helpCommands(entry).filter(word => !shown.has(word));
     if (!fresh.length) continue;
-    fresh.forEach(word => seen.add(word));
+    fresh.forEach(word => shown.add(word));
     const own = (word: string) => SUMMARIES[`${entry.section}/${word}`] ?? SUMMARIES[word];
     const summary = own(fresh[0]!) ?? entry.summary ?? firstClause(entry.description, SUMMARY_MAX);
     rows.push({ section: entry.section, name: fresh.join("|").replace(/^version\|--version$/, "version|--version"), summary: Bun.stringWidth(summary) > SUMMARY_MAX ? firstClause(summary, SUMMARY_MAX) : summary });
@@ -314,10 +313,11 @@ export const EXAMPLES: Readonly<Record<string, readonly string[]>> = {
   specs: ["ahub specs check --require-fresh", "ahub specs covers src/cli/help.ts"], worktrees: ["ahub worktrees tidy"], "--project": ["ahub --project ../other-repo status"],
   projects: ["ahub projects --json"], "--live-test": ["ahub --live-test status"], setup: ["ahub setup --agents claude,codex"], init: ["ahub init --profile dev --sdlc advise --dry-run --json"],
   instructed: ["ahub instructed run", "ahub instructed run task assign 12 claude"],
-  help: ["ahub help task"], completion: ["ahub completion zsh"],
+  help: ["ahub help task"], version: ["ahub version"], "--version": ["ahub --version"], completion: ["ahub completion zsh"],
   up: ["ahub up --no-console"], console: ["ahub console --panels"], pet: ["ahub pet --short"],
   sdlc: ["ahub sdlc status 12", "ahub sdlc explain 12 --json"], backlog: ["ahub backlog list --full", "ahub backlog return 12 3 waiting on a spec"],
   status: ["ahub status --verbose"], logs: ["ahub logs -f"], doctor: ["ahub doctor --json"], agents: ["ahub agents --json"],
+  kill: ["ahub kill"], down: ["ahub down"], tail: ["ahub tail"],
   reset: ["ahub reset"], restart: ["ahub restart --dry-run"], upgrade: ["ahub upgrade --dry-run"], recovery: ["ahub recovery status"],
   role: ["ahub role list"], stop: ["ahub stop pi"], peer: ["ahub peer takeover codex"], models: ["ahub models status"],
   say: ["ahub say @codex please rebase on main"], watch: ["ahub watch kimi"], permission: ["ahub permission codex ask-when-needed"],

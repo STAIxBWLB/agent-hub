@@ -11,19 +11,19 @@ Overview width: 79 cells. Dispatch entries: 90. Help command words: 92.
 | --- | --- | ---: | --- | --- | --- | --- |
 | --live-test | Help only | 75 | Projects / user-authorized console delegation (person only) (48) | Yes | --project | Repeated forms |
 | --project | Help only | 76 | Projects / run a command against another project (37) | Yes | - | Repeated forms |
-| --version | main.ts | 61 | Projects / print the installed version (27) | No | --version | Repeated forms |
+| --version | main.ts | 61 | Projects / print the installed version (27) | Yes | --version | Repeated forms |
 | agents | main.ts | 79 | Daemon and runtime / show each agent CLI's version and verdict (41) | Yes | --json --revoke | Repeated forms |
 | agy | adapter | 79 | Agents / start optional Antigravity CLI in this terminal (47) | Yes | --print-command --dry-run | Repeated forms |
 | answer | main.ts | 80 | Messages and approvals / list and answer open hub_ask questions (38) | Yes | --other --instructed --json --color | Repeated forms, Bracket wraps |
 | ask | main.ts | 79 | Tasks and review / answer from the board, memory and the log (41) | Yes | --remember | Repeated forms |
 | autonomy | main.ts | 77 | Messages and approvals / apply the autonomy preset (25) | Yes | --all-projects --yes --json | Repeated forms |
-| backlog | main.ts | 80 | Daemon and runtime / return accepted untouched work to the backlog (45) · Tasks and review / plan, pull and return backlog cards (35) | Yes | --reserved --unreserve --json --color --full | Duplicate overview, Repeated forms, Bracket wraps |
+| backlog | main.ts | 80 | Daemon and runtime / return accepted untouched work to the backlog (45) | Yes | --reserved --unreserve --json --color --full | Repeated forms, Bracket wraps |
 | bench | main.ts | 80 | History and reports / run a benchmark suite against attached peers (44) | Yes | --arm --repeat --tasks --addon --memory --json --suite --mixed --format | Repeated forms, Bracket wraps, Uppercase operand |
 | board | main.ts | 79 | Tasks and review / show the task board, import open issues (39) | Yes | --label --milestone --repo --ready --columns --release --release-id --handoffs --json --full --color | Repeated forms, Bracket wraps |
 | broker | main.ts | 80 | Tasks and review / run the ciphertext relay for rooms (34) | Yes | --hostname --port --public-url --owner --state-dir --yes | Repeated forms, Bracket wraps |
 | budget | main.ts | 80 | Budget / quota windows per peer and why one is paused (44) | Yes | --json --full --color --resets-in --window --reason | Repeated forms |
 | capabilities | main.ts | 80 | Tasks and review / list the skills each attached peer offers (41) | Yes | --json --color | Repeated forms |
-| check-path | main.ts | 80 | History and reports / other owners' open tasks that claim a file (42) · Hooks / Claude PreToolUse hook for file claims (38) | Yes | --peer --hook | Duplicate overview, Repeated forms |
+| check-path | main.ts | 80 | History and reports / other owners' open tasks that claim a file (42) | Yes | --peer --hook | Repeated forms |
 | claude | adapter | 80 | Agents / launch Claude Code with the hub channel (39) | Yes | --print-command --unattended --as | Repeated forms |
 | codex | adapter | 80 | Agents / start the Codex adapter and attach the TUI (42) | Yes | --print-command --unattended --as | Repeated forms |
 | completion | main.ts | 73 | Projects / print a shell completion script (31) | Yes | - | Repeated forms |
@@ -31,7 +31,7 @@ Overview width: 79 cells. Dispatch entries: 90. Help command words: 92.
 | daemon | main.ts | 78 | Daemon and runtime / internal: the detached hub process (34) | No | --unattended | Internal, Repeated forms |
 | deliverables | main.ts | 80 | Tasks and review / what each task delivered and a reviewer approved (48) | Yes | --task --approved --check --json --color | Repeated forms |
 | doctor | main.ts | 80 | Daemon and runtime / check tools, daemon, plugin, models and memory (46) | Yes | --json --full --ascii --color --stale-anchors --orphans --kill | Repeated forms |
-| down | main.ts | 77 | Daemon and runtime / stop this project's hub (same as kill) (38) | No | - | Repeated forms |
+| down | main.ts | 77 | Daemon and runtime / stop this project's hub (same as kill) (38) | Yes | - | Repeated forms |
 | export | main.ts | 80 | History and reports / events as JSON lines (20) | Yes | --since | Repeated forms |
 | facts | main.ts | 79 | Hooks / Claude hook for turn-free facts (31) | No | --hook | Internal, Repeated forms |
 | goal | main.ts | 80 | History and reports / long-term tasks and who holds them (34) | Yes | --all --json --milestone --depends --shared --force | Repeated forms |
@@ -42,7 +42,7 @@ Overview width: 79 cells. Dispatch entries: 90. Help command words: 92.
 | instruction-hook | main.ts | 79 | Projects / internal Claude prompt and Stop hook (36) | No | - | Repeated forms |
 | intake | main.ts | 80 | Tasks and review / turn a plain request into a draft backlog card (46) | Yes | --source --json --color | Repeated forms |
 | jcode | adapter | 80 | Agents / start optional Jcode, in its TUI or headless (44) | Yes | --mode --model --provider-profile --session-id --print-command --as | Repeated forms, Bracket wraps |
-| kill | main.ts | 57 | Daemon and runtime / stop this project's hub (23) | No | - | Repeated forms |
+| kill | main.ts | 57 | Daemon and runtime / stop this project's hub (23) | Yes | - | Repeated forms |
 | kimi | adapter | 80 | Agents / start Kimi in its own TUI, or headless over ACP (47) | Yes | --print-command --mode --model --as | Repeated forms |
 | learn | main.ts | 80 | Tasks and review / review recurring-criterion candidates (37) | Yes | --all --accepted --json --color | Repeated forms |
 | lineage | main.ts | 80 | History and reports / execution metadata and evidence strengths (41) | Yes | --task --attempt --root --task-scope --task-created --cursor --nodes --edges --bytes --json --revision --ref --from | Repeated forms, Bracket wraps, Uppercase operand |
@@ -89,7 +89,7 @@ Overview width: 79 cells. Dispatch entries: 90. Help command words: 92.
 | status | main.ts | 80 | Daemon and runtime / is the hub OK, and what to do next (34) | Yes | --json --full --verbose --ascii --color --all | Repeated forms |
 | stop | main.ts | 76 | Agents / stop a hub-owned headless peer (30) | Yes | - | Repeated forms |
 | study | main.ts | 80 | Tasks and review / research campaign contracts (27) | Yes | --reason --json --color --revision --task --after --campaign --attempt --events-after --plan --baseline --variant | Repeated forms |
-| tail | main.ts | 80 | Messages and approvals / live stream of messages and states (34) | No | - | Repeated forms |
+| tail | main.ts | 80 | Messages and approvals / live stream of messages and states (34) | Yes | - | Repeated forms |
 | task | main.ts | 80 | Tasks and review / put tasks on the board and move them along (42) | Yes | --class --owner --path --after --urgent --needs-network --needs-worktree --backlog --detail --list --sync --project --issue --task --duplicate-ok --key --json --color --full --role --revision --model --model-said --manifest --disposition --reason --superseded-by --created | Repeated forms, Bracket wraps, Uppercase operand |
 | title | main.ts | 77 | Messages and approvals / rename a Pi or local-worker session (35) | Yes | - | Repeated forms |
 | turns | main.ts | 80 | History and reports / recent turns and the files each changed (39) | Yes | --limit --json --color | Repeated forms, Uppercase operand |
@@ -98,7 +98,7 @@ Overview width: 79 cells. Dispatch entries: 90. Help command words: 92.
 | up | main.ts | 80 | Daemon and runtime / start the daemon and this project's default agents (50) | Yes | --unattended --no-console --no-agents | Repeated forms |
 | upgrade | main.ts | 80 | Daemon and runtime / review and upgrade this project (31) | Yes | --project --all-stopped --to --dry-run --yes --json --verbose --color | Repeated forms |
 | usage | main.ts | 80 | History and reports / tokens per group from the roll-up (33) | Yes | --since --by --json --color --peer --limit | Repeated forms |
-| version | main.ts | 61 | Projects / print the installed version (27) | No | --version | Repeated forms |
+| version | main.ts | 61 | Projects / print the installed version (27) | Yes | --version | Repeated forms |
 | watch | main.ts | 80 | Messages and approvals / watch a headless ACP peer's activity (36) | Yes | --no-thoughts --color | Repeated forms |
 | worktrees | main.ts | 79 | Projects / list worktrees, preview and confirm cleanup (43) | Yes | --json --confirm | Repeated forms |
 
