@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyBlock, continuationOf, splitCommand, type StepRun } from "../../scripts/benchmarks/friction/classify.ts";
+import { classifyBlock, continuationOf, namedTool, splitCommand, type StepRun } from "../../scripts/benchmarks/friction/classify.ts";
 import { JOURNEYS } from "../../scripts/benchmarks/friction/journeys.ts";
 import { runCorpus, sandboxEnv } from "../../scripts/benchmarks/friction/run.ts";
 
@@ -36,6 +36,21 @@ test("a block whose continuation clears it is in_band, and one that does not is 
 test("a block with no continuation is out_of_band, and one that says it is closed on purpose is by_design", async () => {
   expect((await classifyBlock(run(1, "it did not work"), never, never)).class).toBe("out_of_band");
   expect((await classifyBlock(run(1, "closed by design; person only"), never, never)).class).toBe("by_design");
+});
+
+test("a block that names a hub tool is reported with it and never runs it", async () => {
+  expect(namedTool("call hub_task_done with the head")).toBe("hub_task_done");
+  expect(namedTool("nothing here")).toBeUndefined();
+  expect((await classifyBlock(run(1, "call hub_task_done with the head"), never, never)).namesTool).toBe("hub_task_done");
+});
+
+test("every journey has a guard reference, and a skipped one says why", () => {
+  expect(JOURNEYS.length).toBeGreaterThanOrEqual(10);
+  for (const j of JOURNEYS) {
+    expect(j.guards.length).toBeGreaterThan(0);
+    if (j.skip !== undefined) expect(j.skip.length).toBeGreaterThan(20);
+  }
+  expect(JOURNEYS.filter(j => j.skip !== undefined).length).toBeGreaterThan(0);
 });
 
 test("the sandbox environment inherits nothing from the person's shell except PATH", () => {
