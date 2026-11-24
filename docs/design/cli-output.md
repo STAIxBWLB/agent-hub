@@ -162,6 +162,37 @@ Glyphs are semantic; each pairs with one role. Code uses named constants, never 
 
 This issue holds the canonical v1 text. The first `ahub` PR commits it as `docs/design/cli-output.md` (design spec frontmatter, `type: contract`); later changes amend that file with a version bump. Each other repository gets its own issue that links here and lists its gaps; it is done when the five conformance checks pass. dot's style is the reference for the look, and dot gets its own conformance issue like every other CLI.
 
+## Command and renderer inventory
+
+The [2026-11-25 inventory snapshot](cli-output-inventory.md) joins the built-in
+dispatch keys, native adapter commands and rendered help. Refresh the snapshot with
+`bun scripts/cli-output-inventory.ts --write` and compare it with the current checkout using
+`bun scripts/cli-output-inventory.ts --check`. A newer checkout may differ from
+the dated snapshot as help and renderers change.
+
+- Help at 80 columns spans 90 dispatch entries and 92 documented command words.
+  The duplicate overview rows are `backlog` and `check-path`. The global
+  `--project` and `--live-test` forms account for the two help-only words.
+  The detailed help rows record repeated Details, missing examples, uppercase
+  operands and samples of bracket groups that wrap. T2 owns the corrections.
+- Roadmap's parser explicitly refuses `ahub roadmap new ... --json` with
+  "roadmap --json is available on list and show only". The `check` and
+  `export` branches dispatch to a separate parser before that restriction
+  and accept JSON where documented. T2 owns the contradictory wording.
+  This inventory changes neither JSON support nor exit status.
+- Human report layout is mixed. Doctor uses the shared report primitives but
+  starts at its first section. Detailed status and project-list output still
+  use their earlier layout. The CLI renders structured task tool results,
+  while a non-JSON reply falls through as daemon text via `showToolText`.
+  T3 should keep raw export, stream events, and completion payloads separate
+  from human report formatting. Inspect daemon text case by case before
+  changing any transport response.
+- The direct-call table includes JSON and stderr sites. The renderer source
+  scan records candidate locations and direct layout references. Widths are
+  measured for the help forms and the named host-free renderer fixtures.
+  Unmeasured renderers still need fixtures and output-path attribution before
+  the inventory can serve as the T4 conformance baseline.
+
 ## Acceptance criteria (this repository)
 
 - AC1: `docs/design/cli-output.md` holds this standard. `src/cli/console-state.ts` exposes the nine roles and the marker table; `Tone` stays as the TUI's vocabulary through a mapping onto roles. A test fails on raw SGR literals in `src/cli/` and `src/hub/` human-output code outside `console-state.ts`, with an allowlist for the identity palettes (`src/ui/peer-palette.ts`, `src/adapters/definitions/native-display.ts`) and the full-screen console (`src/cli/console.ts`).
