@@ -25,6 +25,9 @@ import {
   renderStatus,
   renderStatusDefault,
   renderTurns,
+  renderLimits,
+  renderTotal,
+  renderUsage,
 } from "../src/cli/output.ts";
 import {
   renderAuthorization,
@@ -60,10 +63,25 @@ import { renderLearnChange, renderLearnList } from "../src/cli/learn-output.ts";
 import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "../src/cli/schedule-output.ts";
 import { renderSourceAdd, renderSourceList } from "../src/cli/source-output.ts";
 import { renderCapabilities } from "../src/cli/capabilities-output.ts";
-import { summarize, summarizeByTask } from "../src/hub/report.ts";
+import { formatReport, formatTaskReport, summarize, summarizeByTask } from "../src/hub/report.ts";
 
 import { renderRoadmap } from "../src/cli/roadmap.ts";
-import { renderBudgetResult } from "../src/cli/upgrade-output.ts";
+import { renderBudgetResult, renderStoppedResults } from "../src/cli/upgrade-output.ts";
+
+import { renderAutonomyStatus } from "../src/cli/autonomy.ts";
+import { renderEditPreview } from "../src/cli/settings-edit.ts";
+import { renderTailEvent } from "../src/cli/tail-render.ts";
+import { formatRuns } from "../src/hub/bench.ts";
+import { renderCheckpoint } from "../src/hub/checkpoint-fields.ts";
+import { renderHeldHint } from "../src/hub/delivery-hints.ts";
+import { renderHeldInbox } from "../src/hub/delivery-public.ts";
+import { formatAddons } from "../src/hub/research.ts";
+
+import { renderPet } from "../src/cli/pet.ts";
+import { renderMenu, renderStep } from "../src/cli/upgrade-presentation.ts";
+import { formatClaudeFailure } from "../src/hub/claude-failure-stage.ts";
+import { renderDigest } from "../src/hub/envelope.ts";
+import { renderInvocationResult } from "../src/hub/invocations.ts";
 
 const root = join(import.meta.dir, "..");
 const parse = (path: string) => ts.createSourceFile(path, readFileSync(join(root, path), "utf8"), ts.ScriptTarget.Latest, true);
@@ -128,6 +146,8 @@ const card = { id: 17, title: "Validate the project handoff before the release",
 const release = { id: 7, name: "Small release", state: "active", tasks: [card] };
 const project = { id: "p_example", root: "/project", state: "stopped" };
 const finding = { name: "bun", detail: "1.4.4", level: "ok", section: "Tools" } as const;
+const missingUsage = { value: null, source: "unknown" } as const;
+const presentation = { columns, color: false, now: () => now };
 const fixtures: Readonly<Record<string, ReturnType<typeof renderReport>>> = {
   renderDoctor: renderDoctor([finding], columns, now),
   renderStatusDefault: renderStatusDefault(status, columns, now),
@@ -184,6 +204,10 @@ const fixtures: Readonly<Record<string, ReturnType<typeof renderReport>>> = {
   renderScheduleChange: renderScheduleChange("pause", [], columns, now),
   renderSourceAdd: renderSourceAdd({}, columns),
   renderSourceList: renderSourceList([], columns, now),
+  renderUsage: renderUsage({ by: "peer", rows: [], coverage: { records: 0, withUsage: 0, withoutUsage: 0 }, throughOffset: 0 }, columns),
+  renderLimits: renderLimits({ history: [], total: 0, shown: 0, truncated: false, omitted: 0, limit: 1, maxLimit: 1, open: [], endedUnknown: [] }, undefined, columns),
+  renderTotal: renderTotal({ since: null, peers: [], overall: { tokens: missingUsage, withoutCache: missingUsage, cacheRead: missingUsage },
+    unknownPeers: { tokens: [], withoutCache: [], cacheRead: [] } }, columns),
   renderCapabilities: renderCapabilities({}, columns),
 };
 const reportByTask = renderReport(summarizeByTask([]), columns, now, true);
@@ -192,6 +216,23 @@ const textWidths = new Map([
   ["src/cli/help.ts:renderOverview", width(renderHelp(columns, false))],
   ["src/cli/help.ts:renderCommandHelp", Math.max(...[...documented].map(name => width(renderHelp(columns, false, name))))],
   ["src/cli/roadmap.ts:renderRoadmap", width(renderRoadmap({ milestones: [] }, columns))],
+  ["src/cli/autonomy.ts:renderAutonomyStatus", width(renderAutonomyStatus({ environment: "dev", runtime: "stopped", peers: [] }, "/fixture-home")!.join("\n"))],
+  ["src/cli/settings-edit.ts:renderEditPreview", width(renderEditPreview({ lines: ["Project configuration preview"], confirm: "example" }).join("\n"))],
+  ["src/cli/tail-render.ts:renderTailEvent", width(renderTailEvent({ t: "state", peer: "codex", state: "idle" }))],
+  ["src/hub/bench.ts:formatRuns", width(formatRuns([]).join("\n"))],
+  ["src/hub/checkpoint-fields.ts:renderCheckpoint", width(renderCheckpoint("Review ready", { done: "Verified the change" }))],
+  ["src/hub/delivery-hints.ts:renderHeldHint", width(renderHeldHint({ count: 1, rows: [], truncated: true }, now))],
+  ["src/hub/delivery-public.ts:renderHeldInbox", width(renderHeldInbox({ count: 1, rows: [], truncated: true }))],
+  ["src/hub/report.ts:formatReport", width(formatReport(summarize([])).join("\n"))],
+  ["src/hub/report.ts:formatTaskReport", width(formatTaskReport(summarizeByTask([])).join("\n"))],
+  ["src/hub/research.ts:formatAddons", width(formatAddons([]).join("\n"))],
+  ["src/cli/pet.ts:renderPet", width(renderPet({ unavailable: true }))],
+  ["src/cli/upgrade-output.ts:renderStoppedResults", width(renderStoppedResults([{ id: project.id, root: project.root, outcome: "retargeted", to: status.version }], presentation).join("\n"))],
+  ["src/cli/upgrade-presentation.ts:renderStep", width(renderStep("Verify restored runtime", "waiting", undefined, presentation).join("\n"))],
+  ["src/cli/upgrade-presentation.ts:renderMenu", width(renderMenu([{ key: "q", label: "Quit recovery" }], presentation).join("\n"))],
+  ["src/hub/claude-failure-stage.ts:formatClaudeFailure", width(formatClaudeFailure({}, false))],
+  ["src/hub/envelope.ts:renderDigest", width(renderDigest([], false))],
+  ["src/hub/invocations.ts:renderInvocationResult", width(renderInvocationResult({ target: "codex", capabilityId: "review", id: "invocation-a", outcome: "completed", body: "Review complete" }).body)],
 ]);
 const excluded = new Map([
   ["src/cli/console-state.ts:renderConsole", "Full-screen console"],

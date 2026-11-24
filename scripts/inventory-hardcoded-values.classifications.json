@@ -233,6 +233,8 @@
   "scripts/cli-output-inventory.ts:<module>:inline:property.getText(main).slice=80#0": "contract",
   "scripts/cli-output-inventory.ts:columns:constant:columns=80#0": "contract",
   "scripts/cli-output-inventory.ts:controlPort:inline:controlPort=4600#0": "test seam",
+  "scripts/cli-output-inventory.ts:limit:inline:limit=1#0": "test seam",
+  "scripts/cli-output-inventory.ts:maxLimit:inline:maxLimit=1#0": "test seam",
   "scripts/cli-output-inventory.ts:notes:inline:summaries.length > 1=1#0": "contract",
   "scripts/compat-prepare.ts:ASSET_CAP:constant:ASSET_CAP=64 * 1024 * 1024#0": "safety floor",
   "scripts/compat-prepare.ts:JSON_CAP:constant:JSON_CAP=4 * 1024 * 1024#0": "safety floor",

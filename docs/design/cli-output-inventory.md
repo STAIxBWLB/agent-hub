@@ -208,7 +208,7 @@ The separate report-by-task fixture measures 79 cells.
 
 | File and renderer | Text source | Report | Direct layout references | Fixture width or scope |
 | --- | --- | --- | --- | --- |
-| src/cli/autonomy.ts:renderAutonomyStatus | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/autonomy.ts:renderAutonomyStatus | CLI | - | Inline / indirect | 77 |
 | src/cli/capabilities-output.ts:renderCapabilities | CLI | - | blank, grid, heading, pair | 116 |
 | src/cli/console-state.ts:renderConsole | CLI | - | paint | Full-screen console |
 | src/cli/console-state.ts:renderConsoleLines | CLI | - | table, wrap | Full-screen console |
@@ -240,10 +240,10 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/output.ts:renderModelsStatus | CLI | - | Inline / indirect | 12 |
 | src/cli/output.ts:renderExecutionBudgetStatus | CLI | - | Inline / indirect | 16 |
 | src/cli/output.ts:renderReport | CLI | Direct | Report, moment | 79 |
-| src/cli/output.ts:renderUsage | CLI | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderLimits | CLI | - | Inline / indirect | Unmeasured |
-| src/cli/output.ts:renderTotal | CLI | - | table | Unmeasured |
-| src/cli/pet.ts:renderPet | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/output.ts:renderUsage | CLI | - | Inline / indirect | 61 |
+| src/cli/output.ts:renderLimits | CLI | - | Inline / indirect | 38 |
+| src/cli/output.ts:renderTotal | CLI | - | table | 78 |
+| src/cli/pet.ts:renderPet | CLI | - | Inline / indirect | 21 |
 | src/cli/roadmap.ts:renderRoadmap | CLI | - | wrap | 23 |
 | src/cli/schedule-output.ts:renderScheduleList | CLI | - | blank, grid, heading, moment, pair | 82 |
 | src/cli/schedule-output.ts:renderScheduleRun | CLI | - | heading, pair | 27 |
@@ -257,7 +257,7 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/sdlc-output.ts:renderSdlcCosts | CLI | - | blank, grid, heading, wrap | 37 |
 | src/cli/sdlc-output.ts:renderAuthorization | CLI | - | blank, heading, moment, pair | 44 |
 | src/cli/sdlc-output.ts:renderSdlcMerge | CLI | - | blank, heading, pair | 30 |
-| src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |
 | src/cli/source-output.ts:renderSourceAdd | CLI | - | heading, pair | 49 |
 | src/cli/source-output.ts:renderSourceList | CLI | - | blank, grid, heading, moment, pair | 62 |
 | src/cli/study-output.ts:renderStudyList | CLI | - | blank, grid, heading | 114 |
@@ -266,7 +266,7 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/study-output.ts:renderExperiments | CLI | - | blank, grid, heading, pair | 78 |
 | src/cli/study-output.ts:renderStudyEvidence | CLI | - | heading, pair | 77 |
 | src/cli/study-output.ts:renderSynthesisReadiness | CLI | - | heading, pair | 101 |
-| src/cli/tail-render.ts:renderTailEvent | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/tail-render.ts:renderTailEvent | CLI | - | Inline / indirect | 17 |
 | src/cli/task-output.ts:renderTaskShow | CLI | - | Inline / indirect | 52 |
 | src/cli/task-output.ts:renderTaskCancel | CLI | - | heading, pair | 52 |
 | src/cli/task-output.ts:renderBacklogResult | CLI | - | blank, grid, heading, pair | 52 |
@@ -275,14 +275,14 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/task-output.ts:renderReleaseShow | CLI | - | Inline / indirect | 41 |
 | src/cli/upgrade-output.ts:renderUpgradePlan | CLI | - | Inline / indirect | Unmeasured |
 | src/cli/upgrade-output.ts:renderStoppedPlan | CLI | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-output.ts:renderStoppedResults | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/upgrade-output.ts:renderStoppedResults | CLI | - | Inline / indirect | 60 |
 | src/cli/upgrade-output.ts:renderRecoveryStatus | CLI | - | Inline / indirect | Unmeasured |
 | src/cli/upgrade-output.ts:renderBudgetResult | CLI | - | Inline / indirect | 27 |
-| src/cli/upgrade-presentation.ts:renderStep | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/upgrade-presentation.ts:renderStep | CLI | - | Inline / indirect | 50 |
 | src/cli/upgrade-presentation.ts:renderPlan | CLI | - | Inline / indirect | Unmeasured |
 | src/cli/upgrade-presentation.ts:renderOperation | CLI | - | Inline / indirect | Unmeasured |
 | src/cli/upgrade-presentation.ts:renderBlocked | CLI | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderMenu | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/upgrade-presentation.ts:renderMenu | CLI | - | Inline / indirect | 17 |
 | src/cli/upgrade-presentation.ts:renderWait | CLI | - | Inline / indirect | Unmeasured |
 | src/cli/upgrade-presentation.ts:renderSummary | CLI | - | Inline / indirect | Unmeasured |
 | src/cli/upgrade-restore-state.ts:renderRestoreTransitionTable | CLI | - | table | Unmeasured |
@@ -290,25 +290,25 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/worktrees-output.ts:renderWorktrees | CLI | - | blank, grid, heading, moment | 32 |
 | src/cli/worktrees-output.ts:renderTidyPreview | CLI | - | blank, grid, heading, pair | 41 |
 | src/cli/worktrees-output.ts:renderTidyResult | CLI | - | grid, heading | 30 |
-| src/hub/bench.ts:formatRuns | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/bench.ts:formatRuns | Hub | - | Inline / indirect | 77 |
 | src/hub/bench.ts:formatReport | Hub | - | Inline / indirect | Unmeasured |
 | src/hub/bench.ts:formatCompare | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/checkpoint-fields.ts:renderCheckpoint | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/claude-failure-stage.ts:formatClaudeFailure | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/delivery-hints.ts:renderHeldHint | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/delivery-public.ts:renderHeldInbox | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/checkpoint-fields.ts:renderCheckpoint | Hub | - | Inline / indirect | 19 |
+| src/hub/claude-failure-stage.ts:formatClaudeFailure | Hub | - | Inline / indirect | 51 |
+| src/hub/delivery-hints.ts:renderHeldHint | Hub | - | Inline / indirect | 43 |
+| src/hub/delivery-public.ts:renderHeldInbox | Hub | - | Inline / indirect | 0 |
 | src/hub/dogfood.ts:formatDogfood | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/envelope.ts:renderDigest | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/envelope.ts:renderDigest | Hub | - | Inline / indirect | 1483 |
 | src/hub/guidance-variants.ts:renderGuidanceVariantV1 | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/invocations.ts:renderInvocationResult | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/invocations.ts:renderInvocationResult | Hub | - | Inline / indirect | 109 |
 | src/hub/memory-profile-check.ts:formatMemoryProfileCheck | Hub | - | Inline / indirect | Unmeasured |
 | src/hub/memory-stale-anchors.ts:formatMemoryStaleAnchors | Hub | - | Inline / indirect | Unmeasured |
 | src/hub/report.ts:formatUsage | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/report.ts:formatReport | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/report.ts:formatReport | Hub | - | Inline / indirect | 81 |
 | src/hub/report.ts:formatPerson | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/report.ts:formatTaskReport | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/report.ts:formatTaskReport | Hub | - | Inline / indirect | 116 |
 | src/hub/research.ts:formatResearch | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/research.ts:formatAddons | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/research.ts:formatAddons | Hub | - | Inline / indirect | 108 |
 | src/hub/review-brief.ts:renderFindingAnchor | Hub | - | Inline / indirect | Unmeasured |
 | src/hub/review-brief.ts:renderSpecTaskReport | Hub | - | Inline / indirect | Unmeasured |
 | src/hub/review-brief.ts:renderCodeSymbols | Hub | - | Inline / indirect | Unmeasured |
