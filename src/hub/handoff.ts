@@ -116,7 +116,11 @@ export function resolveTarget(name: string, projects: readonly RegisteredProject
   let resolved: string | undefined;
   try { resolved = typed.startsWith("/") || typed.startsWith("~") || typed.startsWith(".") ? canonical(typed) : undefined; } catch { resolved = undefined; }
   const match = projects.find(project => project.id === typed || (resolved !== undefined && project.root === resolved));
-  if (!match) throw new HandoffRefusal("unregistered", "that project is not in this machine's agent-hub registry; run `ahub projects` to see the registered ones, or `ahub up` in that project once");
+  if (!match) {
+    // A typed path that exists is registered from here by `ahub --project <path> init` (it writes the registration); an id names only a registered project, so it cannot be registered from its id.
+    const register = resolved !== undefined && /^[\w./~+@%-]+$/.test(resolved) ? ` register it with \`ahub --project ${resolved} init\`, then start its hub with \`ahub up\` there and hand the task off again;` : " give its repository path (an id names only a registered project) and register it with `ahub --project <path> init`;";
+    throw new HandoffRefusal("unregistered", `that project is not in this machine's agent-hub registry;${register} \`ahub projects\` lists the registered ones`);
+  }
   if (match.id === self.id || match.root === self.root) throw new HandoffRefusal("same_project", "that is this project: a task for this project goes through hub_task_propose");
   return match;
 }
