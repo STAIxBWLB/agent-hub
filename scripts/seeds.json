@@ -4496,6 +4496,22 @@
       "replacement": "export const PROJECT_LIMITS: LimitsConfig = { sender_per_min: 12, pair_per_min: 6, important_per_hour: 6, repeat_window_s: 120 };\nexport const SEEDED_UNREFERENCED_EXPORT = \"seeded\";",
       "testFile": "test/unused-exports.test.ts",
       "testName": "this checkout: the committed baseline passes the check and is sorted with no duplicate"
+    },
+    {
+      "id": "refusal-missing-continuation",
+      "file": "src/hub/spec-read.ts",
+      "search": "function validRepo(repo: string): void { if (!isGitHubRepository(repo)) throw new PreEffectToolRefusal(\"other repository\"); }",
+      "replacement": "function validRepo(repo: string): void { if (!isGitHubRepository(repo)) throw new PreEffectToolRefusal(\"other repository\"); }\nfunction seededRefusal() { throw new PreEffectToolRefusal(\"seeded missing continuation\"); }",
+      "testFile": "test/refusal-inventory.test.ts",
+      "testName": "the committed refusal baseline passes on the checked-out source"
+    },
+    {
+      "id": "refusal-missing-flag",
+      "file": "src/hub/tasks.ts",
+      "search": "        if (!ports) throw new PreEffectToolRefusal(\"execution reference storage is unavailable; inspect ahub status before retrying\");",
+      "replacement": "        if (!ports) throw new PreEffectToolRefusal(\"execution reference storage is unavailable; inspect ahub status --seeded-invalid before retrying\");",
+      "testFile": "test/refusal-inventory.test.ts",
+      "testName": "the committed refusal baseline passes on the checked-out source"
     }
   ]
 }
