@@ -4,11 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runQwenDualBusQ2, type Q2NativePorts, type Q2Request } from "../scripts/compat-receipts/proofs/qwen-dual-bus-q2.ts";
 
+// #1669: an idle run takes about 0.16 s; the bound is a hang guard, never a duration assertion (tests.md, #531/#559).
+// Half the gate's 20 s test timeout leaves the finally-block cleanup room after a real hang fails at the in-flight checkpoint.
+const PROOF_HANG_GUARD_MS = 10_000;
+
 // These controls write synthetic event files. No Qwen executable, account, model, PTY or real HOME is used.
 function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user-count" | "late-provider" | "late-user" | "late-orphan" | "late-partial" | "initial-provider-late-user") {
   const root = mkdtempSync(join(tmpdir(), "qwen-dual-q2-control-"));
   let input = "", output = "", offset = 0, released = false, closed = false;
-  let watcher: FSWatcher | undefined, fault: unknown;
+  let watcher: FSWatcher | undefined, poller: ReturnType<typeof setInterval> | undefined, fault: unknown;
   let held!: () => void;
   const firstHeld = new Promise<void>(resolve => { held = resolve; });
   const requests: Q2Request[] = [], submitsAtRelease: number[] = [];
@@ -18,7 +22,7 @@ function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user
   const stop = { type: "stream_event", event: { type: "message_stop" } };
   const records = () => readFileSync(input, "utf8").split("\n").filter(Boolean).map(row => JSON.parse(row));
   const consume = () => {
-    if (closed) return;
+    if (closed || fault) return;
     try {
       const rows = records();
       for (; offset < rows.length; offset++) {
@@ -46,6 +50,9 @@ function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user
       input = launch.args[launch.args.indexOf("--input-file") + 1]!;
       output = launch.args[launch.args.indexOf("--json-file") + 1]!;
       watcher = watch(input, consume);
+      // #1669: fs.watch can coalesce or shed an append under load, which left the fixture waiting for a submit it never saw.
+      // The poll is the receipt the watch stands for, so the first-held barrier cannot stall on event delivery alone.
+      poller = setInterval(consume, 2); poller.unref?.();
       write({ type: "system", subtype: "session_start", session_id: "fixture-q2-session", data: {
         version: "0.26.1", protocol_version: 2, supported_events: ["user", "assistant", "stream_event", "control_request", "control_response"],
       } });
@@ -58,7 +65,7 @@ function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user
     },
     requests: () => requests,
     async stop() {
-      closed = true; watcher?.close();
+      closed = true; watcher?.close(); if (poller) clearInterval(poller);
       if (mode === "late-provider") requests.push({ marker: "second", responseFormat: "absent", schemaHasTitle: false, messageCount: 6, userMessages: 3,
         roles: { system: 1, developer: 0, user: 3, assistant: 2, tool: 0, other: 0 } });
       if (mode === "late-user" || mode === "initial-provider-late-user") write(user("Q2_LATE"), assistant("late unrelated answer"), stop);
@@ -67,14 +74,14 @@ function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user
       return { ownedStopConfirmed: true };
     },
   };
-  return { root, ports, submitsAtRelease, fault: () => fault, close: () => { closed = true; watcher?.close(); rmSync(root, { recursive: true, force: true }); } };
+  return { root, ports, submitsAtRelease, fault: () => fault, close: () => { closed = true; watcher?.close(); if (poller) clearInterval(poller); rmSync(root, { recursive: true, force: true }); } };
 }
 
 for (const mode of ["ordinary", "tool-stop"] as const) test(`manual Q2 actual Bus/driver keeps a held turn's second envelope queued: ${mode}`, async () => {
   const f = fixture(mode);
   try {
     const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
-      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: PROOF_HANG_GUARD_MS }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(f.fault()).toBeUndefined();
     expect(result.passed).toBe(true); expect(result.checkpoint).toBe("passed");
     expect(result.heldSubmitCount).toBe(1); expect(result.heldQueued).toBe(true);
@@ -96,7 +103,7 @@ test("manual Q2 refuses the old one-assistant/both-markers false-positive shape"
   const f = fixture("merged");
   try {
     const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
-      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: PROOF_HANG_GUARD_MS }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(result.passed).toBe(false); expect(result.checkpoint).toBe("merged-final-assistant");
     expect(result.autoAdmit).toBe(false); expect(result.ownedStopConfirmed).toBe(true);
   } finally { f.close(); }
@@ -106,7 +113,7 @@ test("manual Q2 rejects two marker requests that do not represent the next ordin
   const f = fixture("same-provider-user-count");
   try {
     const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
-      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: PROOF_HANG_GUARD_MS }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(result.passed).toBe(false); expect(result.checkpoint).toBe("ordinary-provider-turns");
     expect(result.chronologyObserved).toBe(true); expect(result.userCount).toBe(2);
     expect(result.firstStop).toBeLessThan(result.secondUser); expect(result.secondUser).toBeLessThan(result.secondStop);
@@ -117,7 +124,7 @@ test("native Q2 refuses synthetic OS reader overrides before starting any port",
   const f = fixture("ordinary");
   try {
     await expect(runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
-      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [] } }, { ...f.ports, kind: "native-pty" })).rejects.toThrow("native-host-override");
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: PROOF_HANG_GUARD_MS }, host: { table: () => [] } }, { ...f.ports, kind: "native-pty" })).rejects.toThrow("native-host-override");
   } finally { f.close(); }
 });
 
@@ -125,7 +132,7 @@ test("manual Q2 rejects a third provider POST arriving during owned stop", async
   const f = fixture("late-provider");
   try {
     const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
-      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: PROOF_HANG_GUARD_MS }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(result.passed).toBe(false); expect(result.checkpoint).toBe("ordinary-provider-turns");
     expect(result.providerRequests).toHaveLength(3); expect(result.finalProviderCount).toBe(3);
     expect(result.finalEvidenceObserved).toBe(true); expect(result.finalEvidencePassed).toBe(false);
@@ -137,7 +144,7 @@ test("manual Q2 freezes late USER and assistant/Stop evidence after stop", async
   const f = fixture("late-user");
   try {
     const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
-      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: PROOF_HANG_GUARD_MS }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(result.passed).toBe(false); expect(result.checkpoint).toBe("turn-count");
     expect(result.userCount).toBe(3); expect(result.finalStopCount).toBe(3); expect(result.messageStopCount).toBe(3);
   } finally { f.close(); }
@@ -147,7 +154,7 @@ test("an orphan Stop is recorded but cannot reuse a prior assistant as another f
   const f = fixture("late-orphan");
   try {
     const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
-      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: PROOF_HANG_GUARD_MS }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(result.passed).toBe(true); expect(result.userCount).toBe(2); expect(result.finalStopCount).toBe(2);
     expect(result.messageStopCount).toBe(3); expect(result.orphanStopCount).toBe(1);
   } finally { f.close(); }
@@ -157,7 +164,7 @@ test("final evidence retains an earlier failure checkpoint and updates actual la
   const f = fixture("initial-provider-late-user");
   try {
     const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
-      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: PROOF_HANG_GUARD_MS }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(result.passed).toBe(false); expect(result.checkpoint).toBe("ordinary-provider-turns");
     expect(result.finalCheckpoint).toBe("turn-count"); expect(result.userCount).toBe(3); expect(result.finalStopCount).toBe(3);
   } finally { f.close(); }
@@ -167,7 +174,7 @@ test("a partial late USER record cannot disappear from closed evidence as an ign
   const f = fixture("late-partial");
   try {
     const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
-      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: PROOF_HANG_GUARD_MS }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(result.passed).toBe(false); expect(result.checkpoint).toBe("final-record-incomplete"); expect(result.finalEvidenceObserved).toBe(false);
     expect(result.finalProviderCount).toBe(2); expect(result.providerRequests).toHaveLength(2);
     expect(result.finalProviderObserved).toBe(true); expect(result.finalInputObserved).toBe(true); expect(result.finalEventsObserved).toBe(false);

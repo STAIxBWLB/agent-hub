@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Remove the Qwen dual-output compat-receipt timing flake: the fixture now consumes submits from a poll as well as `fs.watch`, and the proof deadline is a hang guard instead of a 4 s wall-clock bound, so a loaded runner no longer fails at the `first-held` checkpoint. Refs #1669, hub task 1089.
+
 ## 0.46.1
 
 - Resolve `@staix/agent-mem` 0.38.0 in `bun.lock` so the repository's tests and CI run on the version a fresh install resolves; the declared range `>=0.33.0 <1.0.0` is unchanged. The recovery package refuses a ranged `@staix/cli-output` pin with the output message again when agent-mem declares it. Refs #1664, hub task 1084.
