@@ -48,8 +48,8 @@ const checked = sites.map(site => {
   const result = inspectContinuations(fragments, { commandFlags, tools });
   const marker = site.marker !== undefined && /^(?:operator-knowledge|world-action|human-authority):\s*\S/.test(site.marker);
   const diagnostic = site.file + ":" + site.line;
-  const errors = result.errors.map(error => diagnostic + " " + error);
-  if (site.marker !== undefined && !marker) errors.push(diagnostic + " invalid refusal:by-design marker or missing reason");
+  const errors = result.errors.map(error => diagnostic + " " + error + ". Replace it with a command, flag or tool listed by ahub help or the hub's tool declarations.");
+  if (site.marker !== undefined && !marker) errors.push(diagnostic + " invalid refusal:by-design marker or missing reason. Use a supported marker with a reason, as listed in docs/design/refusal-inventory.md.");
   return { ...site, dynamic, fragments, found: result.found || marker, errors };
 });
 const invalid = checked.flatMap(site => site.errors);
@@ -58,6 +58,7 @@ const keyOf = (site: typeof checked[number]) => JSON.stringify([site.file, site.
 const keys = new Set(missing.map(keyOf));
 const dynamic = checked.filter(site => site.dynamic);
 const baselineFile = "scripts/refusal-inventory.baseline.json";
+const guide = "docs/design/refusal-inventory.md";
 
 if (process.argv[2] === "--json") {
   process.stdout.write(JSON.stringify({ counts: Object.fromEntries(counts), sites: checked, invalid }, null, 2) + "\n");
@@ -74,11 +75,17 @@ if (process.argv[2] === "--json") {
   const delta = checkShrinkOnly(keys, new Set(baseline.missing));
   const fresh = new Set(delta.fresh);
   const errors = [...invalid,
-    ...missing.filter(site => fresh.has(keyOf(site))).map(site => site.file + ":" + site.line + " missing continuation: " + site.fragments.join(" <value> ")),
-    ...delta.gone.map(key => "remove stale refusal baseline key " + key),
+    ...missing.filter(site => fresh.has(keyOf(site))).map(site =>
+      site.file + ":" + site.line + " missing continuation: " + site.fragments.join(" <value> ") +
+      ". Add a runnable ahub command or hub_* tool, or put // refusal:by-design <operator-knowledge|world-action|human-authority>: <reason> on the line above. See " + guide + "."),
+    ...delta.gone.map(key => "Remove stale refusal baseline key " + key + " from " + baselineFile + "."),
   ];
   if (dynamic.length !== baseline.dynamicCeiling) {
-    errors.push(dynamic.length > baseline.dynamicCeiling ? "fully dynamic refusal count grew" : "lower the fully dynamic refusal ceiling");
+    const counts = "Fully dynamic refusals: " + dynamic.length + " found, " + baseline.dynamicCeiling + " allowed by dynamicCeiling in " + baselineFile + ".";
+    const repair = dynamic.length > baseline.dynamicCeiling
+      ? " Give each new dynamic site a static text fragment with a runnable continuation."
+      : " Set dynamicCeiling to " + dynamic.length + ".";
+    errors.push(counts + repair);
     errors.push(...dynamic.map(site => site.file + ":" + site.line + " fully dynamic refusal"));
   }
   for (const error of errors) console.error(error);
