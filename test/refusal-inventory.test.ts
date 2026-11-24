@@ -40,5 +40,6 @@ test("the continuation check catches unknown commands, tools and flags", () => {
 test("the committed refusal baseline passes on the checked-out source", () => {
   const script = fileURLToPath(new URL("../scripts/refusal-inventory.ts", import.meta.url));
   const result = Bun.spawnSync([process.execPath, script, "--check"]);
-  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  if (result.exitCode !== 0) console.error(result.stderr.toString().trimEnd());
+  expect(result.exitCode).toBe(0);
 });
