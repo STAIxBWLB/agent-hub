@@ -155,7 +155,7 @@ function planMove(registry: Registry, oldRef: string, newRoot: string, state?: s
   return { old, next, stores, markers, fingerprint, archive: join(root, ".agenthub", "archive", `move-${timestamp}`) };
 }
 
-export type ProjectMovePreview = ReturnType<typeof planMove>;
+type ProjectMovePreview = ReturnType<typeof planMove>;
 export function previewProjectMove(registry: Registry, oldRef: string, root: string, state?: string): ProjectMovePreview {
   return registry.runtimeCaptureLocked(() => planMove(registry, oldRef, root, state));
 }

@@ -8,6 +8,21 @@
 
 export interface CheckedEntry { key: string; classification: string; file?: string; line?: number; kind?: string; name?: string; value?: string }
 
+/** The shrink-only baseline rule (#1649, shared with the refusal ratchet in #1643): a key outside the baseline is new drift, and a baseline key that matches nothing now must leave it. */
+export interface ShrinkOnlyCheck {
+  /** Current keys that are not in the baseline: new drift. */
+  fresh: string[];
+  /** Baseline keys that match no current key any more: they must leave the baseline. */
+  gone: string[];
+}
+
+export function checkShrinkOnly(current: ReadonlySet<string>, baseline: ReadonlySet<string>): ShrinkOnlyCheck {
+  return {
+    fresh: [...current].filter(key => !baseline.has(key)),
+    gone: [...baseline].filter(key => !current.has(key)),
+  };
+}
+
 export interface InventoryCheck {
   /** An unknown key that is not in the baseline: new drift. */
   fresh: CheckedEntry[];
