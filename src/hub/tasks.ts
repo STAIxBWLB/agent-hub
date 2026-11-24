@@ -60,6 +60,7 @@ import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { evalAdvice, evalGapBlockers, evalRequiredChecks, readEvalFor } from "./eval-gate.ts";
 import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequestLine, SECURITY_CHECKLIST, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
+import { deriveRiskTier, withoutRisk, type RiskRecord } from "./risk-tier.ts";
 import { AUDIT_PROFILES, applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, needsVerification, parseUnitReports, seedLedger, settlementRefusal, SETTLEMENTS, unitId, verificationRefusal, type AuditFinding, type AuditProfile, type AuditSummary, type CarryLookup, type PublicAuditFinding } from "./security-audit.ts";
 import type { AuditSource } from "./audit-source.ts";
 import { SURVEY_FOCUS, SURVEY_LIMITS, parseSurveyFindings, parseSurveyVetDecisions, publicSurveyFinding, surveyBrief, surveyFindingKey, surveyObject, surveyPath, surveyInputAt, surveyInputProblem,
@@ -8689,6 +8690,15 @@ export class Tasks {
     const recorded = proposed ?? task.history.findLast(entry => entry.securityPass && !entry.withheld && (entry.event === "approved" || entry.event === "changes_requested"))?.securityPass;
     return securityPassView(config.security, evidence, recorded);
   }
+  /**
+   * #1645 T2: the risk tier of the head this filing submits. `undefined` when the project configures no `[risk]` table (today's behaviour,
+   * AC4), when the gate read no inventory, or when the evidence belongs to a head other than the one being filed: a tier is a statement
+   * about one inventory, so a head the hub did not read is classified by nothing rather than by default.
+   */
+  private riskForFiling(evidence: PrEvidence | undefined, head: string | undefined): RiskRecord | undefined {
+    const config = this.d.sdlc?.config();
+    return config?.risk ? deriveRiskTier(config.risk, config.security?.paths ?? [], evidence, head) : undefined;
+  }
   private planReport(task: Task, evidence?: PrEvidence) {
     const rawReport = planConformance(this.isPii(task) ? undefined : this.planPaths(task), this.isPii(task) ? undefined : evidence, this.planPaths(task, "out_of_scope") ?? task.plan?.out_of_scope);
     const safe = [...rawReport.outside, ...rawReport.untouched].every(path => this.publicMetadataText(path));
@@ -9966,7 +9976,11 @@ export class Tasks {
     const capacity = this.capacityBefore(task);
     reviewObserverExcluded ||= this.reviewObserverTurn(by, task.id);
     const quotaWaiting = selection?.reviewSelection?.quotaWait !== undefined;
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: quotaWaiting ? null : reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, state: "in_review", refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(requestHead ? { requestHead } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    // #1645 T2: the tier of the head this filing submits. The receipt a re-file starts from drops the tier the replaced filing carried, so a
+    // tier is never read across heads; no `[risk]` table, no inventory for this head, or a head no gate read records none.
+    // A done that `done()` already gated (#382) read that inventory once there, so its cached read is the one to classify (as the review request does).
+    const risk = this.riskForFiling(reviewEvidence ?? this.planReads.get(task.id)?.evidence, requestHead);
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: quotaWaiting ? null : reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...withoutRisk(task.sdlc), stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge"), ...(risk ? { risk } : {}) } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, state: "in_review", refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(requestHead ? { requestHead } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)

@@ -1,5 +1,6 @@
 import { parseIssueLabels, parseRedFirst, testIntegrityBlockers, type RedFirstReceipt, type TestIntegrity } from "./test-integrity.ts";
 import { planConformanceBlockers, type PlanConformance } from "./plan-conformance.ts";
+import { riskPolicy, type RiskPolicy, type RiskRecord } from "./risk-tier.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { DEFAULT_MAX_NITS, findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CostPlan } from "./cost-governance.ts";
@@ -45,7 +46,7 @@ export const AUTO_MERGE_MODES: readonly AutoMergeMode[] = ["off", "dry-run", "on
 export interface SecurityScanConfig { everyH: number; sources: SecuritySource[]; repo?: string }
 /** #786: one repository's own gate: its required checks (before the top-level list) and its own merge mode. */
 export interface RepoMergePolicy { requiredChecks?: string[]; autoMerge?: AutoMergeMode }
-export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; /** #481 S7: the scheduled security-scan baseline; absent means none is scheduled. */ securityScan?: SecurityScanConfig; /** #481 S5: the one check a configuration PR needs; no default, the person names it. */ evalCheck?: string; /** #481 S5: patterns that mark a PR as a configuration change; absent reads as the defaults in eval-gate.ts, an empty list turns the gate off. */ configPaths?: string[]; /** #1403 A2: sensitive paths that need a recorded security pass, and the review companions that apply; absent means the feature is off. */ security?: SecurityPolicy; mode: SdlcMode; requiredChecks: string[]; /** #786: absent reads as "off"; written only when the file names it. */ autoMerge?: AutoMergeMode; /** #786: per-repository tables, keyed by lowercase owner/name. */ repos?: Record<string, RepoMergePolicy>; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
+export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; /** #481 S7: the scheduled security-scan baseline; absent means none is scheduled. */ securityScan?: SecurityScanConfig; /** #481 S5: the one check a configuration PR needs; no default, the person names it. */ evalCheck?: string; /** #481 S5: patterns that mark a PR as a configuration change; absent reads as the defaults in eval-gate.ts, an empty list turns the gate off. */ configPaths?: string[]; /** #1403 A2: sensitive paths that need a recorded security pass, and the review companions that apply; absent means the feature is off. */ security?: SecurityPolicy; /** #1645 T1: paths that make a filed change high or low; absent means no tier is derived and nothing else changes. */ risk?: RiskPolicy; mode: SdlcMode; requiredChecks: string[]; /** #786: absent reads as "off"; written only when the file names it. */ autoMerge?: AutoMergeMode; /** #786: per-repository tables, keyed by lowercase owner/name. */ repos?: Record<string, RepoMergePolicy>; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
 export interface PlanReviewReceipt {
   planner: string;
   planAuthor?: string | null;
@@ -86,6 +87,8 @@ export interface SdlcReceipt {
   pr?: number;
   head?: string;
   reviewedHead?: string;
+  /** #1645 T2: the risk tier derived from the inventory at `head` when this task was filed; never read for another head. */
+  risk?: RiskRecord;
   localHead?: string;
   localResult?: "passed" | "failed" | "unknown";
   observed?: number;
@@ -209,7 +212,7 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
   if (value === undefined) return { mode: "off", requiredChecks: [], stages: [...SDLC_STAGES] };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc: expected a table");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands", "auto_merge", "repos", "eval_check", "config_paths", "security_scan", "security"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
+  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands", "auto_merge", "repos", "eval_check", "config_paths", "security_scan", "security", "risk"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
   const maxNits = raw.max_nits === undefined ? DEFAULT_MAX_NITS : raw.max_nits;
   if (typeof maxNits !== "number" || !Number.isSafeInteger(maxNits) || maxNits < 0 || maxNits > 64) throw new Error("sdlc.max_nits: expected an integer from 0 to 64");
   const bands = bandsConfig(raw.bands), bandConfig = Object.keys(bands).length ? { bands } : {};
@@ -217,7 +220,7 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
     ...(raw.eval_check === undefined ? {} : { evalCheck: evalCheckName(raw.eval_check) }),
     ...(raw.config_paths === undefined ? {} : { configPaths: configPathList(raw.config_paths, "sdlc.config_paths") }),
   };
-  const findingConfig = { ...(raw.max_nits === undefined ? {} : { maxNits }), ...bandConfig, ...evalConfig, ...(raw.security_scan === undefined ? {} : { securityScan: securityScanConfig(raw.security_scan) }), ...(raw.security === undefined ? {} : { security: securityPolicy(raw.security) }) };
+  const findingConfig = { ...(raw.max_nits === undefined ? {} : { maxNits }), ...bandConfig, ...evalConfig, ...(raw.security_scan === undefined ? {} : { securityScan: securityScanConfig(raw.security_scan) }), ...(raw.security === undefined ? {} : { security: securityPolicy(raw.security) }), ...(raw.risk === undefined ? {} : { risk: riskPolicy(raw.risk) }) };
   const mode = raw.mode ?? "off";
   if (mode !== "off" && mode !== "advise" && mode !== "enforce") throw new Error("sdlc.mode: expected off, advise or enforce");
   // ponytail: the #481 S8 window is a fixed version; delete `workflow`, the phase aliases and their tests once it passes.

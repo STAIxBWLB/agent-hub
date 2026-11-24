@@ -14207,6 +14207,17 @@ var init_test_integrity = __esm(() => {
 // src/hub/plan-conformance.ts
 var init_plan_conformance = () => {};
 
+// src/hub/eval-gate.ts
+var init_eval_gate = __esm(() => {
+  init_plan_conformance();
+});
+
+// src/hub/risk-tier.ts
+var init_risk_tier = __esm(() => {
+  init_eval_gate();
+  init_plan_conformance();
+});
+
 // src/hub/control-write-trace.ts
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "async_hooks";
 function isObject(value) {
@@ -14818,11 +14829,6 @@ var init_sdlc_metrics = __esm(() => {
   };
 });
 
-// src/hub/eval-gate.ts
-var init_eval_gate = __esm(() => {
-  init_plan_conformance();
-});
-
 // src/hub/security-pass.ts
 var init_security_pass = __esm(() => {
   init_envelope();
@@ -14849,6 +14855,7 @@ var SDLC_STAGES, PLAYBOOK_STAGES, BASES2, STAGE_GATES, GATES;
 var init_sdlc = __esm(() => {
   init_test_integrity();
   init_plan_conformance();
+  init_risk_tier();
   init_control_write_trace();
   init_review_findings();
   init_sdlc_metrics();
