@@ -23,6 +23,18 @@ bun scripts/benchmarks/friction/run.ts --binary src/cli/main.js --out results.js
 
 `results.json` carries the corpus version, the measured binary's path, version and sha256, class counts in total and per journey, and every step with its class. A binary that does not start fails the run: it never falls back to an older one. A step that was expected to be blocked and was not, or the reverse, is a corpus error and exits 1.
 
+## Compare two runs
+
+```
+bun scripts/benchmarks/friction/compare.ts a.json b.json
+```
+
+It prints both binaries' version and digest, the total class deltas and each journey's deltas. It refuses two reports of different corpus versions: the counts of two measuring sticks say nothing about each other.
+
+## Nightly report
+
+`.github/workflows/friction.yml` runs the corpus on main every night and uploads `results.json` as an artifact. It has read-only permissions and no secret; it writes only the job summary and the artifact.
+
 ## Add a journey
 
 Add an entry to `JOURNEYS` in `scripts/benchmarks/friction/journeys.ts`: an `id`, what it `guards` (the issue or contract of the defect it keeps from returning), optional `setup` commands, and `steps`. Mark a step `expectBlock: true` when the journey is about the block. Run the corpus twice: the class counts must match (`test/benchmarks/friction.test.ts`).

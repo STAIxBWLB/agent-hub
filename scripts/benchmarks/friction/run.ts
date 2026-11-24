@@ -2,9 +2,10 @@
 // offline and with no model call. It never instruments the product: a binary path is an argument, so an old release and
 // the current build run the same corpus.
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { realPath } from "../../../src/hub/project.ts";
 import { classifyBlock, isBlock, type Classification, type FrictionClass, type StepRun } from "./classify.ts";
 
 export interface Step { argv: string[]; /** the step is expected to be blocked; an unexpected block or an unexpected success is a corpus error */ expectBlock?: boolean }
@@ -28,7 +29,7 @@ export function sandboxEnv(root: string, home: string): Record<string, string> {
 }
 
 export function createSandbox(binary: string): Sandbox {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-friction-")));
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-friction-")));
   const home = join(root, "home"), project = join(root, "project"), remote = join(root, "remote.git");
   for (const dir of [home, project, remote]) mkdirSync(dir);
   const git = (cwd: string, ...args: string[]) => {
