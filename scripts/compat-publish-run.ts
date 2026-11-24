@@ -106,9 +106,9 @@ function load(input: CompatPublisherInput): { index: PreparedCompatArtifact; bun
 type Leaf = { path: string; mode: string; type: string; sha: string };
 interface Snapshot { sha: string; tree: string; leaves: Map<string, Leaf> }
 async function optional(api: GithubAPI, route: string): Promise<unknown | undefined> { try { return await api.request("GET", route); } catch (error) { if (error instanceof GithubApiError && error.status === 404) return; throw error; } }
-async function inventory(api: GithubAPI, route: string): Promise<unknown[]> {
+async function inventory(api: GithubAPI, route: string, maxPages = 10): Promise<unknown[]> {
   const all: unknown[] = [];
-  for (let page = 1; page <= 10; page++) {
+  for (let page = 1; page <= maxPages; page++) {
     const rows = array(await api.request("GET", `${route}${route.includes("?") ? "&" : "?"}per_page=100&page=${page}`), 100, "inventory");
     all.push(...rows);
     if (rows.length < 100) return all;
@@ -258,7 +258,7 @@ export async function runCompatPublisher(input: CompatPublisherInput, api: Githu
   }
   const manifestValue = object(parse(await blob(api, base, main, "scripts/compat-receipts/manifest.json")));
   const manifest = object(manifestValue.entries) as unknown as Record<string, PublishManifestEntry>;
-  const rows = await inventory(api, `${base}/pulls?state=all`), pulls = rows.map(row => botPull(row, input.repository, manifest)).filter((p): p is BotPull => !!p);
+  const rows = await inventory(api, `${base}/pulls?state=all`, 100), pulls = rows.map(row => botPull(row, input.repository, manifest)).filter((p): p is BotPull => !!p);
   const args = { manifest, candidates: data.index.watch.candidates, artifacts: data.index.rejectedBatch ? [{}] : data.index.artifacts, dryRun: input.dryRun };
   const baseline = planCompatPublish({ ...args, existingPullRequests: [] }), plan = planCompatPublish({ ...args, existingPullRequests: pulls });
   const verified = confirmedVerified(object(data.index.watch).verified, Object.keys(manifest), data.index.watch.candidates.map(row => row.id));
