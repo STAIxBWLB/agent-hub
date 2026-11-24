@@ -155,3 +155,23 @@ test("the reader answers only for a worktree of this repository, never the proje
   gitAt(foreign, "add", "."); gitAt(foreign, "commit", "-qm", "foreign");
   expect(checkoutAuditSource(dir, foreign)).toBeUndefined();
 });
+
+test("a reviewer reads a brief file at the reviewed head, and only the paths the brief lists", async () => {
+  const { dir, head } = fixture();
+  // The checkout stands at the base, where the reviewed head's text for a.ts does not exist: only the reader can answer.
+  const asked: { scope?: "brief"; requests: readonly { path: string; side?: string }[] }[] = [];
+  const materials: NonNullable<TasksDeps["reviewMaterials"]> = async (_task, requests, scope) => {
+    asked.push({ ...(scope ? { scope } : {}), requests });
+    return { head, materials: requests.map(request => ({ state: "available", path: request.path, side: "head", text: "export const a = 2;\n", rawHash: "a".repeat(64), contentHash: "b".repeat(64) })) };
+  };
+  const f = await rig(dir, head, { reviewMaterials: materials });
+  const read = JSON.parse(await f.tasks.reviewFile("claude", { id: f.t.id, path: "a.ts" })) as Record<string, unknown>;
+  expect(read).toMatchObject({ task: f.t.id, head, path: "a.ts", text: "export const a = 2;\n" });
+  // The read is brief-scoped, one path at a time, and never a caller-enlarged scope.
+  expect(asked).toEqual([{ scope: "brief", requests: [{ path: "a.ts", side: "head" }] }]);
+  // A path the brief does not review (a declared one or an escaping one) and a peer the task does not belong to refuse before any read.
+  await expect(f.tasks.reviewFile("claude", { id: f.t.id, path: "b.ts" })).rejects.toThrow(/not one of the 2 reviewable path/);
+  await expect(f.tasks.reviewFile("pi", { id: f.t.id, path: "a.ts" })).rejects.toThrow(/only its owner or reviewer/);
+  await expect(f.tasks.reviewFile("claude", { id: f.t.id, path: "../a.ts" })).rejects.toThrow(/not one of the 2 reviewable path/);
+  expect(asked).toHaveLength(1);
+});

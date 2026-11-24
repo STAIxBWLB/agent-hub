@@ -464,7 +464,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_roadmap_list", "hub_roadmap_show", "hub_roadmap_check", "hub_roadmap_unplaced", "roadmap_sync", "roadmap_export", "hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_evidence_read", "hub_status", "hub_specs", "hub_supervision_list"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_roadmap_list", "hub_roadmap_show", "hub_roadmap_check", "hub_roadmap_unplaced", "roadmap_sync", "roadmap_export", "hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_review_file", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_evidence_read", "hub_status", "hub_specs", "hub_supervision_list"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -3133,7 +3133,7 @@ export async function startDaemon(opts: DaemonOptions) {
     prepareReviewBrief: async task => {
       if (tasks.isPii(task) || !task.refs.commit) return;
       const root = executionRoot(task.owner ?? "");
-      const brief = buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
+      const brief = buildReviewBrief(root, task.refs.commit, briefPolicy(root));
       if ("unavailable" in brief) return;
       const key = JSON.stringify([root, brief.head, brief.mergeBase]);
       // prepareOnly and completion share one exact-tree pass, including an unknown result.
@@ -3156,7 +3156,7 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     reviewBrief: task => {
       const root = executionRoot(task.owner ?? "");
-      const brief = buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
+      const brief = buildReviewBrief(root, task.refs.commit, briefPolicy(root));
       return "unavailable" in brief ? brief : withCodeSymbols(brief, reviewSymbols.get(JSON.stringify([root, brief.head, brief.mergeBase])) ?? { state: "unknown" }, task.plan?.symbols, tasks.publicMetadataText);
     },
     specsConfig: () => config.specs,
@@ -3513,6 +3513,11 @@ export async function startDaemon(opts: DaemonOptions) {
     return executionRoots.get(peer) ?? opts.cwd;
   };
   const repoFor = (peer: string, budget?: SnapshotBudget) => executionRoot(peer) === opts.cwd ? factsRepo : repoOf(executionRoot(peer), budget);
+  /** The screening every review brief of `root` is built with, so the stored brief, the prepare pass and a brief-scoped read agree. */
+  const briefPolicy = (root: string) => ({
+    privatePath: (path: string) => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true),
+    nameable: tasks.nameable,
+  });
   const projectionsFor = (peer: string): TextProjections => {
     const root = executionRoot(peer);
     if (root === opts.cwd) return projections;
@@ -4876,7 +4881,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return false;
     } catch { return undefined; } // Unknown is never evidence of no writes, including a missing/pruned tree.
   }
-  async function reviewMaterials(task: Task, requests: readonly ReviewReadRequest[]): Promise<ReviewMaterialBatch> {
+  async function reviewMaterials(task: Task, requests: readonly ReviewReadRequest[], scope?: "brief"): Promise<ReviewMaterialBatch> {
     const budget: SnapshotBudget = { deadline: Infinity };
     budget.deadline = budgetNow(budget) + 8000;
     const deadline = budget.deadline;
@@ -4909,6 +4914,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const canonical = relative(opts.cwd, resolve(root, path));
         return canonical !== ".." && !canonical.startsWith("../") && !canonical.startsWith(".worktrees/") ? canonical : scoped;
       });
+      // #1646 T3: a reviewer reading its brief at the reviewed head is scoped to exactly the paths the brief lists, which the host
+      // builds itself. The reader's caps (MAX_FILES per operation, PROJECTED_DIFF_BYTES) still bound every answer.
+      if (scope === "brief") {
+        const brief = buildReviewBrief(root, head, briefPolicy(root));
+        if ("unavailable" in brief) return unavailable();
+        scopes.push(...brief.reviewable.map(file => file.path));
+      }
       let base = "";
       // Only complete PR metadata at this exact head expands scope. A declared PR link
       // or a locally guessed merge base is never an inventory of its changed files.
@@ -5980,6 +5992,12 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     if (op === "hub_visual" || op === "hub_visual_show") return visualTool(by, op, a, piiTurn);
+    // #1646 T3: a brief file read is the reviewer's read of the commit it approves. A PII or private turn reads none: its words
+    // may carry the PII, and the file body would be a second carrier of it.
+    if (op === "hub_review_file") {
+      if (piiTurn || turns.get(by)?.private || contextPii(by)) throw new PreEffectToolRefusal("review brief files are unavailable during a PII or private turn; read them in a turn without the private task");
+      return await tasks.reviewFile(by, a);
+    }
     const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
     if (op === "hub_survey_report") {

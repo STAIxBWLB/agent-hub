@@ -318,8 +318,12 @@ export interface TasksDeps {
   /** Optional persisted task/run execution limits (issue #102). */
   executionBudget?: ExecutionBudget;
   /** Project-scoped immutable-source metadata, read only before a study transaction. */
-  /** Host-scoped immutable-head/material batch; supports host-staged completion refs/sdlc, never client-staged Task objects. The shared reader owns file authorization and budgets. */
-  reviewMaterials?: (task: Task, requests: readonly { path: string; side?: "base" | "head" }[]) => Promise<ReviewMaterialBatch>;
+  /**
+   * Host-scoped immutable-head/material batch; supports host-staged completion refs/sdlc, never client-staged Task objects. The shared
+   * reader owns file authorization and budgets. `scope: "brief"` widens the reader's scope to the task's own review brief (#1646 T3),
+   * which the host builds itself, never to paths a caller names.
+   */
+  reviewMaterials?: (task: Task, requests: readonly { path: string; side?: "base" | "head" }[], scope?: "brief") => Promise<ReviewMaterialBatch>;
   studySource?: (id: string) => { id: string; sha256: string; private: boolean } | undefined;
   /** Host-owned screened snapshot read, never a public source-read excerpt reconstructed as a projection. */
   /** Opaque host-only current raw/projection/converter token, never client evidence. */
@@ -853,6 +857,30 @@ export class Tasks {
     const material = batch.materials.find(row => row.path === anchor.path && row.side === (anchor.side ?? "head"));
     if (!material) return { status: "unavailable" };
     try { return anchorStatus(anchor, material); } catch { return { status: "unavailable" }; }
+  }
+  /**
+   * #1646 T3: one file of a task's own review brief, read at the reviewed head from the repository's Git objects, so a reviewer
+   * reads the commit it approves even when the checkout it works in stands elsewhere. The task's owner and reviewer may ask, the
+   * path must be one the brief lists, and the shared reader's caps bound the bytes; a path outside the brief is refused rather
+   * than served from an enlarged scope.
+   */
+  async reviewFile(by: PeerId, input: unknown): Promise<string> {
+    const asked = input && typeof input === "object" && !Array.isArray(input) ? input as { id?: unknown; path?: unknown } : {};
+    const task = this.need(asked.id, false, true, true);
+    if (by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal(`task #${task.id}: only its owner or reviewer may read its review brief files`);
+    if (this.reviewTaskPrivate(task)) throw new PreEffectToolRefusal(`task #${task.id}: review brief files stay unread for a private task`);
+    const path = asked.path;
+    if (typeof path !== "string" || !path || path.length > 1024 || /[\p{Cc}]/u.test(path)) throw new PreEffectToolRefusal("review file needs a task id and one repository-relative path (1024 bytes at most, no control characters)");
+    const brief = this.d.reviewBrief?.(task);
+    if (!brief || "unavailable" in brief) throw new PreEffectToolRefusal(`task #${task.id}: the review brief is unavailable (${brief?.unavailable ?? "no brief provider"}), so there is no reviewed file to read`);
+    if (!brief.reviewable.some(file => file.path === path)) throw new PreEffectToolRefusal(`task #${task.id}: ${path} is not one of the ${brief.reviewable.length} reviewable path(s) of the review brief at ${brief.head}`);
+    if (!this.d.reviewMaterials) throw new PreEffectToolRefusal("review material reader is unavailable; reopen the task review with the current hub before retrying");
+    let batch: ReviewMaterialBatch;
+    try { batch = await this.d.reviewMaterials(task, [{ path, side: "head" }], "brief"); }
+    catch { throw new PreEffectToolRefusal("review material or immutable head is unavailable; refresh the task review before retrying"); }
+    const material = batch.materials.find(row => row.path === path && row.side === "head");
+    if (!material || material.state !== "available") throw new PreEffectToolRefusal(`task #${task.id}: ${path} is unavailable at the reviewed head ${batch.head || "unknown"}; read it in the repository, or ask its owner to re-file the head`);
+    return JSON.stringify({ task: task.id, head: batch.head, path: material.path, text: material.text, contentHash: material.contentHash, ...(material.projection ? { projection: material.projection } : {}) });
   }
   private reviewCommentResolve(by: PeerId, task: Task, input: unknown): string[] | undefined {
     if (input === undefined) return undefined;
