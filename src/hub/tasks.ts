@@ -867,19 +867,21 @@ export class Tasks {
   async reviewFile(by: PeerId, input: unknown): Promise<string> {
     const asked = input && typeof input === "object" && !Array.isArray(input) ? input as { id?: unknown; path?: unknown } : {};
     const task = this.need(asked.id, false, true, true);
+    // refusal:by-design human-authority: who owns and who reviews a task are board assignments a person or the planner sets, so a peer the board did not name has nothing it can run to gain the read.
     if (by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal(`task #${task.id}: only its owner or reviewer may read its review brief files`);
+    // refusal:by-design human-authority: a private task's brief files stay unread outside its readers; a person decides that task's privacy on the board.
     if (this.reviewTaskPrivate(task)) throw new PreEffectToolRefusal(`task #${task.id}: review brief files stay unread for a private task`);
     const path = asked.path;
-    if (typeof path !== "string" || !path || path.length > 1024 || /[\p{Cc}]/u.test(path)) throw new PreEffectToolRefusal("review file needs a task id and one repository-relative path (1024 bytes at most, no control characters)");
+    if (typeof path !== "string" || !path || path.length > 1024 || /[\p{Cc}]/u.test(path)) throw new PreEffectToolRefusal("review file needs a task id and one repository-relative path (1024 bytes at most, no control characters); hub_task_show lists the reviewable paths");
     const brief = this.d.reviewBrief?.(task);
-    if (!brief || "unavailable" in brief) throw new PreEffectToolRefusal(`task #${task.id}: the review brief is unavailable (${brief?.unavailable ?? "no brief provider"}), so there is no reviewed file to read`);
-    if (!brief.reviewable.some(file => file.path === path)) throw new PreEffectToolRefusal(`task #${task.id}: ${path} is not one of the ${brief.reviewable.length} reviewable path(s) of the review brief at ${brief.head}`);
+    if (!brief || "unavailable" in brief) throw new PreEffectToolRefusal(`task #${task.id}: the review brief is unavailable (${brief?.unavailable ?? "no brief provider"}), so there is no reviewed file to read; its owner files the reviewed head with hub_task_done`);
+    if (!brief.reviewable.some(file => file.path === path)) throw new PreEffectToolRefusal(`task #${task.id}: ${path} is not one of the ${brief.reviewable.length} reviewable path(s) of the review brief at ${brief.head}; hub_task_show lists the reviewable paths`);
     if (!this.d.reviewMaterials) throw new PreEffectToolRefusal("review material reader is unavailable; reopen the task review with the current hub before retrying");
     let batch: ReviewMaterialBatch;
     try { batch = await this.d.reviewMaterials(task, [{ path, side: "head" }], "brief"); }
     catch { throw new PreEffectToolRefusal("review material or immutable head is unavailable; refresh the task review before retrying"); }
     const material = batch.materials.find(row => row.path === path && row.side === "head");
-    if (!material || material.state !== "available") throw new PreEffectToolRefusal(`task #${task.id}: ${path} is unavailable at the reviewed head ${batch.head || "unknown"}; read it in the repository, or ask its owner to re-file the head`);
+    if (!material || material.state !== "available") throw new PreEffectToolRefusal(`task #${task.id}: ${path} is unavailable at the reviewed head ${batch.head || "unknown"}; read it in the repository, or its owner re-files the head with hub_task_done`);
     return JSON.stringify({ task: task.id, head: batch.head, path: material.path, text: material.text, contentHash: material.contentHash, ...(material.projection ? { projection: material.projection } : {}) });
   }
   private reviewCommentResolve(by: PeerId, task: Task, input: unknown): string[] | undefined {

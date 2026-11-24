@@ -5995,6 +5995,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // #1646 T3: a brief file read is the reviewer's read of the commit it approves. A PII or private turn reads none: its words
     // may carry the PII, and the file body would be a second carrier of it.
     if (op === "hub_review_file") {
+      // refusal:by-design operator-knowledge: whether this turn is private or PII is the console operator's setting, so no command the caller runs lifts it.
       if (piiTurn || turns.get(by)?.private || contextPii(by)) throw new PreEffectToolRefusal("review brief files are unavailable during a PII or private turn; read them in a turn without the private task");
       return await tasks.reviewFile(by, a);
     }
