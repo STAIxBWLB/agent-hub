@@ -352,7 +352,7 @@ The separate report-by-task fixture measures 79 cells.
 | src/hub/review-brief.ts:renderFindingAnchor | Hub | - | Inline / indirect | 32 |
 | src/hub/review-brief.ts:renderSpecTaskReport | Hub | - | Inline / indirect | 57 |
 | src/hub/review-brief.ts:renderCodeSymbols | Hub | - | Inline / indirect | Measured within review brief |
-| src/hub/review-brief.ts:renderReviewBrief | Hub | - | Inline / indirect | 132 |
+| src/hub/review-brief.ts:renderReviewBrief | Hub | - | Inline / indirect | 160 |
 | src/hub/review-comments.ts:renderReviewComment | Hub | - | Inline / indirect | Owner-facing hub delivery |
 | src/hub/schedules.ts:formatInZone | Hub | - | Inline / indirect | 16 |
 | src/hub/ui.ts:renderDashboard | Hub | - | Inline / indirect | Web dashboard |
