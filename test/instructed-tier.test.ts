@@ -191,7 +191,7 @@ test("runtime guard refuses project roots, sandbox roots and any checkout ancest
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("the daemon executes confirmed exact and intent commands through its inherited installed CLI socket", async () => {
+async function instructedE2E(mode: "main" | "slow" | "bounded"): Promise<void> {
   const { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { dirname, join } = await import("node:path");
@@ -283,6 +283,30 @@ test("the daemon executes confirmed exact and intent commands through its inheri
         await Bun.sleep(5);
       };
       const countTasks = () => { const current = new Board(join(stateDir, "hub.db")); try { return current.list().length; } finally { current.close(); } };
+      // ponytail: the two legs that wait out SCREEN_TIMEOUT_MS (8 s each) run in their own tests on the same fixture, so each fits its 30 s budget on a slow runner; upgrade: an injectable screen timeout in the daemon would remove the real wait.
+      if (mode === "slow") {
+        const { SCREEN_TIMEOUT_MS } = await import("../src/hub/inference.ts");
+        let slowOnce = true;
+        screenInput = async () => { if (slowOnce) { slowOnce = false; await Bun.sleep(SCREEN_TIMEOUT_MS - 250); } return { label: "clear", ms: 0 }; };
+        await typed("run backlog add implement fixture slow clear");
+        const slowClient = Bun.spawn([process.execPath, join(repo, "src/cli/main.ts"), "instructed", "run"], { cwd, env: { ...personEnv(process.env), CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: session, AGENTHUB_PEER_ID: "claude", AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        const [slowExit, slowOutput, slowError] = await Promise.all([slowClient.exited, new Response(slowClient.stdout).text(), new Response(slowClient.stderr).text()]);
+        expect(slowExit, slowError).toBe(0); expect(slowOutput).toContain("backlog, owner none");
+        const slowBoard = new Board(join(stateDir, "hub.db"));
+        try { expect(slowBoard.list().some(row => row.title === "fixture slow clear")).toBe(true); } finally { slowBoard.close(); }
+          return;
+      }
+      if (mode === "bounded") {
+        const { SCREEN_TIMEOUT_MS } = await import("../src/hub/inference.ts");
+        const { INSTRUCTION_CONTROL_TIMEOUT_MS } = await import("../src/hub/instructed-exact.ts");
+        screenInput = async () => await new Promise<import("../src/hub/inference.ts").PiiVerdict>(() => {});
+        const beforeTimeout = countTasks();
+        await typed("run backlog add implement fixture bounded screen");
+        const bounded = await tools.request({ t: "instruction_execute", session }, INSTRUCTION_CONTROL_TIMEOUT_MS);
+        expect(bounded.ok).toBe(false); expect(bounded.error).toContain("privacy screening");
+        expect(countTasks()).toBe(beforeTimeout);
+          return;
+      }
       const countBeforeScreen = countTasks();
       const publicCommand = "run backlog add implement fixture public title";
       await typed(publicCommand); screenInputs.length = 0;
@@ -434,20 +458,6 @@ test("the daemon executes confirmed exact and intent commands through its inheri
       const { SCREEN_TIMEOUT_MS } = await import("../src/hub/inference.ts");
       const { INSTRUCTION_CONTROL_TIMEOUT_MS, INSTRUCTION_CHILD_TIMEOUT_MS } = await import("../src/hub/instructed-exact.ts");
       expect(INSTRUCTION_CONTROL_TIMEOUT_MS).toBeGreaterThan(INSTRUCTION_CHILD_TIMEOUT_MS + 3 * SCREEN_TIMEOUT_MS);
-      let slowOnce = true;
-      screenInput = async () => { if (slowOnce) { slowOnce = false; await Bun.sleep(SCREEN_TIMEOUT_MS - 250); } return { label: "clear", ms: 0 }; };
-      await typed("run backlog add implement fixture slow clear");
-      const slowClient = Bun.spawn([process.execPath, join(repo, "src/cli/main.ts"), "instructed", "run"], { cwd, env: { ...personEnv(process.env), CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: session, AGENTHUB_PEER_ID: "claude", AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-      const [slowExit, slowOutput, slowError] = await Promise.all([slowClient.exited, new Response(slowClient.stdout).text(), new Response(slowClient.stderr).text()]);
-      expect(slowExit, slowError).toBe(0); expect(slowOutput).toContain("backlog, owner none");
-      const slowBoard = new Board(join(stateDir, "hub.db"));
-      try { expect(slowBoard.list().some(row => row.title === "fixture slow clear")).toBe(true); } finally { slowBoard.close(); }
-      screenInput = async () => await new Promise<import("../src/hub/inference.ts").PiiVerdict>(() => {});
-      const beforeTimeout = countTasks();
-      await typed("run backlog add implement fixture bounded screen");
-      const bounded = await tools.request({ t: "instruction_execute", session }, INSTRUCTION_CONTROL_TIMEOUT_MS);
-      expect(bounded.ok).toBe(false); expect(bounded.error).toContain("privacy screening");
-      expect(countTasks()).toBe(beforeTimeout);
       screenInput = async () => ({ label: "clear", ms: 0 });
       const settingPrompt = "3004bef3-8884-4e54-bbf2-c5c760a52095", settingArgs = "run settings set tasks.auto_pull true --yes", settingAt = Date.now();
       expect(captured!.pending({ session, promptId: settingPrompt, transcript, home: config, cwd, project: cwd, peer: "claude", hash: instructionHash(settingArgs) }, settingAt)).toBe(true);
@@ -661,7 +671,11 @@ test("the daemon executes confirmed exact and intent commands through its inheri
     await daemon?.stop(); worker.stop(); keys.forEach((key, index) => previous[index] === undefined ? delete process.env[key] : process.env[key] = previous[index]);
     rmSync(root, { recursive: true, force: true });
   }
-}, 30_000);
+}
+
+test("the daemon executes confirmed exact and intent commands through its inherited installed CLI socket", () => instructedE2E("main"), 30_000);
+test("the daemon admits a slow but clear privacy screen through its inherited installed CLI socket", () => instructedE2E("slow"), 30_000);
+test("the daemon bounds a hung privacy screen through its inherited installed CLI socket", () => instructedE2E("bounded"), 30_000);
 
 
 test("control client handshakes and exchanges a request over inherited Bun IPC", async () => {
