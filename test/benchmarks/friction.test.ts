@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyBlock, continuationOf, splitCommand, type StepRun } from "../../scripts/benchmarks/friction/classify.ts";
@@ -59,4 +59,35 @@ test("a binary that does not run fails the run instead of falling back to anothe
     const bad = join(dir, "ahub.js"); writeFileSync(bad, "process.exit(3);");
     await expect(runCorpus(JOURNEYS, bad)).rejects.toThrow("does not run");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+const report = (corpusVersion: number, blocks: Record<string, Partial<Record<"in_band" | "out_of_band" | "dead_end" | "by_design", number>>>, digest = "d".repeat(64)) => {
+  const zero = { in_band: 0, out_of_band: 0, dead_end: 0, by_design: 0 }, totals = { ...zero };
+  const journeys = Object.entries(blocks).map(([id, row]) => { const full = { ...zero, ...row }; for (const name of Object.keys(zero) as (keyof typeof zero)[]) totals[name] += full[name]; return { id, guards: "g", blocks: full, steps: [] }; });
+  return { corpusVersion, binary: { path: "/x", version: "1.0.0", digest }, totals, journeys };
+};
+
+test("compare reports the class deltas per journey and names both binaries (AC5)", async () => {
+  const { compareReports, renderComparison } = await import("../../scripts/benchmarks/friction/compare.ts");
+  const a = report(1, { alpha: { dead_end: 2 }, beta: { in_band: 1 }, old: { out_of_band: 1 } }, "a".repeat(64));
+  const b = report(1, { alpha: { dead_end: 1, in_band: 1 }, beta: { in_band: 1 }, fresh: { dead_end: 1 } }, "b".repeat(64));
+  const result = compareReports(a, b);
+  expect(result.totals).toEqual({ in_band: 1, out_of_band: -1, dead_end: 0, by_design: 0 });
+  expect(result.journeys.map(row => row.id)).toEqual(["alpha", "beta", "fresh", "old"]);
+  const text = renderComparison(result);
+  expect(text).toContain("a: 1.0.0 (aaaaaaaaaaaa)"); expect(text).toContain("b: 1.0.0 (bbbbbbbbbbbb)");
+  expect(text).toContain("alpha: in_band +1, dead_end -1"); expect(text).toContain("beta: no change");
+  expect(text).toContain("fresh (new in b): dead_end +1"); expect(text).toContain("old (gone in b): out_of_band -1");
+});
+
+test("compare refuses reports of different corpus versions", async () => {
+  const { compareReports } = await import("../../scripts/benchmarks/friction/compare.ts");
+  expect(() => compareReports(report(1, { alpha: {} }), report(2, { alpha: {} }))).toThrow("refusing to compare corpus version 1 with 2");
+});
+
+test("the nightly workflow has read-only permissions, no secret and an uploaded report", () => {
+  const text = readFileSync(join(import.meta.dir, "../../.github/workflows/friction.yml"), "utf8");
+  expect(text).toMatch(/^permissions:\n  contents: read\n/m);
+  expect(text).not.toMatch(/secrets\.|contents: write|issues: write|pull-requests: write|id-token/);
+  expect(text).toContain("upload-artifact"); expect(text).toContain("scripts/benchmarks/friction/run.ts --binary src/cli/main.js");
 });

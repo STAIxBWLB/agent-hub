@@ -9,7 +9,7 @@ export interface Continuation { argv: string[]; text: string }
 /** A block marker: a refusal that is closed on purpose says so, reusing the refusal check's marker vocabulary. */
 export const BY_DESIGN_MARKER = /\b(?:by design|refusal-ok|person only)\b/i;
 
-/** A block is a non-zero exit. A refusal envelope is a zero exit whose text starts with a refusal word. */
+/** A block today is a non-zero exit. The spec's second kind, a refusal envelope from a hub tool call, needs a tool-call step kind (T3) and is not checked here. */
 export function isBlock(run: StepRun): boolean {
   return run.exitCode !== 0;
 }
