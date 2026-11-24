@@ -4488,6 +4488,14 @@
       "replacement": "    if (false) return undefined;",
       "testFile": "test/codex.test.ts",
       "testName": "an older forwarded model ACK cannot replace a newer accepted hub model or its sticky clear hint"
+    },
+    {
+      "id": "unused-export-ratchet",
+      "file": "src/hub/limits.ts",
+      "search": "export const PROJECT_LIMITS: LimitsConfig = { sender_per_min: 12, pair_per_min: 6, important_per_hour: 6, repeat_window_s: 120 };",
+      "replacement": "export const PROJECT_LIMITS: LimitsConfig = { sender_per_min: 12, pair_per_min: 6, important_per_hour: 6, repeat_window_s: 120 };\nexport const SEEDED_UNREFERENCED_EXPORT = \"seeded\";",
+      "testFile": "test/unused-exports.test.ts",
+      "testName": "this checkout: the committed baseline passes the check and is sorted with no duplicate"
     }
   ]
 }
