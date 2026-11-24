@@ -120,6 +120,18 @@ test("assignment: preference order, idle before busy, paused/offline/detached sk
   expect(detectSignals({ title: "plain", detail: "", refs: { paths: ["missing.txt"] } }, routing, dir)).toEqual([]);
 });
 
+test("proposal detail is preserved at 8000 characters and refused before creation at 8001", async () => {
+  const { board, tasks } = await setup();
+  const detail = "x".repeat(7999) + " ";
+  const task = await tasks.propose("claude", { title: "bounded proposal", detail, class: "implement" });
+  expect(board.get(task.id)?.detail).toBe(detail);
+
+  const oversized = tasks.propose("claude", { title: "oversized proposal", detail: detail + "x", class: "implement" });
+  await expect(oversized).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  await expect(oversized).rejects.toThrow(/8001 characters.*limit is 8000 characters.*spec issue.*retry hub_task_propose.*in the title.*hub_task_spec/);
+  expect(board.list().map(({ id }) => id)).toEqual([task.id]);
+});
+
 test("propose -> assigned by class -> accept -> done -> review envelope -> approved; only the owner and the reviewer may act", async () => {
   const { tasks, peers, board, saves } = await setup();
   const t = await tasks.propose("claude", { title: "add --json to ahub status", class: "implement", refs: { paths: ["src/cli/main.ts"] } });
