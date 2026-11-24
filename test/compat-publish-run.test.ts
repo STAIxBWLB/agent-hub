@@ -19,7 +19,7 @@ class FakeGithub implements GithubAPI {
   calls: { method: string; route: string; body: unknown }[] = [];
   blobs = new Map<string, Buffer>(); trees = new Map<string, Map<string, Leaf>>(); commits = new Map<string, { tree: string; parents: string[] }>(); refs = new Map<string, string>();
   pulls: Pull[] = []; issues: { number: number; title: string; body: string; state: string }[] = [];
-  next = 100; dispatchFails = false; beforeWrite?: () => void;
+  next = 100; dispatchFails = false; pullPage?: (page: number) => unknown[]; beforeWrite?: () => void;
   token(): string { return createHash("sha1").update(String(this.next++)).digest("hex"); }
   store(value: string | Buffer): string { const bytes = Buffer.from(value); const sha = gitHash(bytes); this.blobs.set(sha, bytes); return sha; }
   addCommit(sha: string, files: Record<string, string>, parents: string[] = []): void {
@@ -38,6 +38,7 @@ class FakeGithub implements GithubAPI {
       if (url.startsWith("/git/commits/")) { const sha = url.slice(13), row = this.commits.get(sha); if (!row) throw new GithubApiError(404); return { sha, tree: { sha: row.tree }, parents: row.parents.map(sha => ({ sha })) }; }
       if (url.startsWith("/git/trees/")) { const sha = url.slice(11).split("?")[0]!, tree = this.trees.get(sha); if (!tree) throw new GithubApiError(404); return { sha, truncated: false, tree: [...tree.values()] }; }
       if (url.startsWith("/git/blobs/")) { const sha = url.slice(11), bytes = this.blobs.get(sha); if (!bytes) throw new GithubApiError(404); return { sha, encoding: "base64", size: bytes.length, content: bytes.toString("base64") }; }
+      if (url.startsWith("/pulls?") && this.pullPage) return this.pullPage(Number(/[?&]page=(\d+)/.exec(url)?.[1] ?? 1));
       if (url.startsWith("/pulls?")) return this.pulls.map(p => structuredClone(p));
       if (url.startsWith("/issues?")) return this.issues.filter(i => i.state === "open").map(i => structuredClone(i));
       if (/^\/pulls\/\d+$/.test(url)) { const row = this.pulls.find(p => p.number === Number(url.split("/")[2])); if (!row) throw new GithubApiError(404); return structuredClone(row); }
@@ -111,6 +112,17 @@ test("publisher publishes exact data, opens the bot PR, then dispatches checks w
     expect(f.api.writes.at(-1)!.route).toEndWith("/actions/workflows/check.yml/dispatches");
     expect(f.api.pulls[0]!.body).toContain("Refs #888 and #1248");
     expect(f.api.writes.some(row => row.route.endsWith("/merges"))).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+const filler = (n: number) => ({ number: n, title: "old", body: "", state: "closed", merged_at: null, user: { login: "a-person", type: "User" }, head: { ref: `old/${n}`, sha: BASE, repo: { full_name: REPO } }, base: { ref: "main" } });
+test("pull inventory reads past 10 pages and still fails closed at its 100-page bound, other inventories keep 10", async () => {
+  const f = fixture(); try {
+    const p = f.prepare(), pages: number[] = [];
+    f.api.pullPage = page => { pages.push(page); return page <= 11 ? Array.from({ length: page < 11 ? 100 : 7 }, (_, i) => filler(page * 1000 + i)) : []; };
+    expect((await runCompatPublisher({ ...p.input, dryRun: true }, f.api)).actions[0]!.kind).toBe("create-pr"); expect(pages).toHaveLength(11);
+    pages.length = 0; f.api.pullPage = page => { pages.push(page); return Array.from({ length: 100 }, (_, i) => filler(page * 1000 + i)); };
+    await expect(runCompatPublisher({ ...p.input, dryRun: true }, f.api)).rejects.toThrow("inventory-ceiling"); expect(pages).toHaveLength(100);
   } finally { f.cleanup(); }
 });
 

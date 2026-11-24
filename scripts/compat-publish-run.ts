@@ -258,6 +258,7 @@ export async function runCompatPublisher(input: CompatPublisherInput, api: Githu
   }
   const manifestValue = object(parse(await blob(api, base, main, "scripts/compat-receipts/manifest.json")));
   const manifest = object(manifestValue.entries) as unknown as Record<string, PublishManifestEntry>;
+  // ponytail: reads every PR (100 pages, 10,000 PRs) on each publish and fails closed past it; upgrade: list only bot-authored compat branches (head prefix or a search query) instead of all PRs.
   const rows = await inventory(api, `${base}/pulls?state=all`, 100), pulls = rows.map(row => botPull(row, input.repository, manifest)).filter((p): p is BotPull => !!p);
   const args = { manifest, candidates: data.index.watch.candidates, artifacts: data.index.rejectedBatch ? [{}] : data.index.artifacts, dryRun: input.dryRun };
   const baseline = planCompatPublish({ ...args, existingPullRequests: [] }), plan = planCompatPublish({ ...args, existingPullRequests: pulls });
