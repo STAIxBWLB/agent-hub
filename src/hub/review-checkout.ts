@@ -12,7 +12,7 @@
  * when the hub knows no checkout of its own for that reviewer. A later count separates "the reviewer read other bytes" from
  * "the hub looked at the root" only because every record says which of the two it is.
  */
-export type ReviewCheckoutSource = "peer-cwd" | "project-root";
+type ReviewCheckoutSource = "peer-cwd" | "project-root";
 
 export interface ReviewCheckoutEvidence {
   /** The checkout that was read: the reviewing session's own, or the project checkout. */
