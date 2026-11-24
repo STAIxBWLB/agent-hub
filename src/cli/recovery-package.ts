@@ -77,6 +77,8 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
         }
         // #1664: agent-mem 0.37.0+ declares exactly the hub's own pinned @staix/cli-output (hashed once by outputRuntime); nothing else, and no nested node_modules the digest would not cover.
         const memoryDeps = Object.entries(memory.dependencies ?? {}), outputPin = deps["@staix/cli-output"];
+        // A ranged hub pin is the output package's refusal to make, not a memory mismatch (outputRuntime says the same).
+        if (memoryDeps.length && typeof outputPin === "string" && !/^\d+\.\d+\.\d+$/.test(outputPin)) throw new Error("output runtime dependency must be an exact version");
         const depsOk = memoryDeps.length === 0 || (memoryDeps.length === 1 && typeof outputPin === "string" && memoryDeps[0]?.[0] === "@staix/cli-output" && memoryDeps[0][1] === outputPin);
         if (!accepted || !depsOk || (memoryDeps.length > 0 && existsSync(join(dir, "node_modules")))) throw new Error("memory runtime dependency identity/version mismatch");
         return realPath(dir);
