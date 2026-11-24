@@ -410,7 +410,7 @@ export function configuredToolContext(status: unknown, peer: string): ProjectToo
   return { startPeers, readOnly: readOnlyPeers.includes(peer) };
 }
 
-const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_roadmap_list", "hub_roadmap_show", "hub_roadmap_unplaced", "hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_roadmap_list", "hub_roadmap_show", "hub_roadmap_unplaced", "hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_review_file", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 /** Publication restricts exposure only; server-side authority remains mandatory for every call. */
 export function projectToolList<T extends { name: string }>(tools: T[], readOnly = false): T[] {
   return readOnly ? tools.filter(tool => READ_ONLY_PROJECT_TOOLS.includes(tool.name) || tool.name === EVIDENCE_READ_TOOL.name) : tools;

@@ -5,7 +5,7 @@ type RpcReply = { result?: { capabilities?: unknown; tools?: { name: string }[];
 const json = async (response: Response) => await response.json() as RpcReply;
 const sessions: { close(): void }[] = [];
 afterEach(() => { for (const session of sessions.splice(0)) session.close(); });
-const tools = ["hub_review", "hub_task_show", "hub_task_accept"].map(name => ({ name, description: name,
+const tools = ["hub_review", "hub_task_show", "hub_review_file", "hub_task_accept"].map(name => ({ name, description: name,
   inputSchema: { type: "object" as const, properties: { id: { type: "integer" } }, required: ["id"], additionalProperties: false as const } }));
 function fixture() {
   let active = true;
@@ -21,14 +21,19 @@ function fixture() {
   return { session, config, rpc, calls, revoke: () => { active = false; } };
 }
 
-test("reviewer MCP exposes only two host tools without a control token or stdio launcher", async () => {
+test("reviewer MCP exposes only the host's review tools, without a control token or stdio launcher", async () => {
   const f = fixture();
   expect(f.config.command).toBeUndefined();
   expect(f.session.config).not.toContain("control-token");
   expect((await json(await f.rpc("initialize"))).result?.capabilities).toEqual({ tools: {} });
   const listed = await json(await f.rpc("tools/list"));
-  expect(listed.result?.tools?.map((tool: { name: string }) => tool.name)).toEqual(["hub_review", "hub_task_show"]);
+  // #1646 T3: a reviewer whose sandbox cannot read the checkout reads its brief files through the hub.
+  expect(listed.result?.tools?.map((tool: { name: string }) => tool.name)).toEqual(["hub_review", "hub_task_show", "hub_review_file"]);
   expect(f.calls).toEqual([]);
+  // The brief-file read reaches the host bound to this review task, like the verdict itself.
+  const read = await json(await f.rpc("tools/call", { name: "hub_review_file", arguments: { id: 7, path: "a.ts" } }));
+  expect(read.result?.content).toEqual([{ type: "text", text: "fixture result" }]);
+  expect(f.calls).toEqual([{ name: "hub_review_file", args: { id: 7, path: "a.ts" } }]);
 });
 
 test("reviewer MCP diagnostics observe guarded refusals and full host errors without tool arguments", async () => {

@@ -12,7 +12,7 @@ import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process
 import { hubHome, realPath } from "../hub/project.ts";
 import type { ReviewerBackend, ReviewerCauseClass, ReviewerLaunch, ReviewerPrepareContext } from "./reviewer-print.ts";
 
-const TOOLS = ["hub_review", "hub_task_show"];
+const TOOLS = ["hub_review", "hub_task_show", "hub_review_file"];
 /** A version refusal names only versions and a command, so the daemon may show it (#691). */
 class VersionRefusal extends Error {}
 const CAP = 128 * 1024, MAX_SERVERS = 64;
@@ -353,7 +353,7 @@ export const codexReviewerBackend: ReviewerBackend = {
   toolTrace(event) {
     const row = event as { type?: string; item?: { type?: string; server?: string; tool?: string; error?: { message?: unknown } | string; result?: { isError?: boolean; content?: { type?: string; text?: unknown }[] } } };
     const item = row?.item;
-    if (row?.type !== "item.completed" || item?.type !== "mcp_tool_call" || item.server !== "agent-hub" || (item.tool !== "hub_review" && item.tool !== "hub_task_show")) return undefined;
+    if (row?.type !== "item.completed" || item?.type !== "mcp_tool_call" || item.server !== "agent-hub" || (item.tool !== "hub_review" && item.tool !== "hub_task_show" && item.tool !== "hub_review_file")) return undefined;
     const failure = typeof item.error === "string" ? item.error : item.error?.message;
     const refused = item.result?.isError === true && Array.isArray(item.result.content) ? item.result.content.filter(value => value?.type === "text" && typeof value.text === "string").map(value => value.text).join("\n") : undefined;
     return { tool: item.tool, ...(typeof failure === "string" ? { refusal: failure } : typeof refused === "string" ? { refusal: refused } : {}) };
