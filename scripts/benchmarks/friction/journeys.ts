@@ -65,8 +65,8 @@ export const JOURNEYS: Journey[] = [
   {
     id: "handoff-to-unregistered-project",
     guards: "agent-hub#1644 seed: a handoff to a project this machine never registered names how to register it",
-    setup: [init, up],
-    steps: [{ argv: ["task", "handoff", "--project", "elsewhere", "implement", "journey card"], expectBlock: true, expectText: "not in this machine's agent-hub registry" }],
+    setup: [init, up, { write: "../sibling/.git/HEAD", content: "ref: refs/heads/main\n" }],
+    steps: [{ argv: ["task", "handoff", "--project", "../sibling", "implement", "journey card"], expectBlock: true, expectText: "not in this machine's agent-hub registry" }],
   },
   {
     id: "review-against-moved-head",

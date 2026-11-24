@@ -62,6 +62,17 @@ const self = { id: "p_self", root: "/work/self" };
 const projects = [{ id: "p_self", root: "/work/self", stateDir: "/work/self/.agenthub/state" }, { id: "p_b", root: "/work/b", stateDir: "/work/b/.agenthub/state" }];
 const canonical = (path: string) => path === "/tmp/link-to-b" ? "/work/b" : path;
 
+test("the unregistered refusal leads with a runnable registration for a path and says an id cannot be registered", () => {
+  const byPath = refusal(() => resolveTarget("/work/nope", projects, self, canonical)).message;
+  expect(byPath).toContain("`ahub --project /work/nope init`");
+  expect(byPath.indexOf("ahub --project")).toBeLessThan(byPath.indexOf("ahub projects"));
+  const byId = refusal(() => resolveTarget("p_nope", projects, self, canonical)).message;
+  expect(byId).toContain("an id names only a registered project");
+  expect(byId).not.toContain("<path>`, then");
+  const odd = refusal(() => resolveTarget("/work/a b;rm", projects, self, canonical)).message;
+  expect(odd).not.toContain("/work/a b;rm");   // a path with shell characters is never printed as a command
+});
+
 test("the target resolves by id or canonical root; unregistered and same-project are refused before any state dir is read", () => {
   expect(resolveTarget("p_b", projects, self, canonical).id).toBe("p_b");
   expect(resolveTarget("/work/b", projects, self, canonical).id).toBe("p_b");
