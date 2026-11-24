@@ -20,7 +20,7 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup();
  * #1645 T3: one change filed through `done()` so the tier is the one T2 derives, then the verdict. The gh fake is the
  * shape `test/sdlc-integrity-flow.test.ts` already pins, so the only thing these cases vary is the `[risk]` table.
  */
-function rig(options: { mode?: SdlcMode; risk?: object; paths?: string[] } = {}) {
+function rig(options: { mode?: SdlcMode; risk?: object; paths?: string[]; branch?: string | null } = {}) {
   const mode = options.mode ?? "enforce", paths = options.paths ?? ["src/hub/sdlc-merge.ts"];
   const dir = mkdtempSync(join(tmpdir(), "ahub-risk-review-"));
   const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
@@ -51,7 +51,7 @@ function rig(options: { mode?: SdlcMode; risk?: object; paths?: string[] } = {})
     routing: () => loadRouting(dir), notify: message => notices.push(message),
     sdlc: { config: () => sdlcConfig({ mode, required_checks: ["gate"], ...(options.risk ? { risk: options.risk } : {}) }), gh } });
   const task = board.propose(USER, { title: "risk tier change", class: "implement", plan: { paths } });
-  board.update(task.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress", refs: { branch: BRANCH } });
+  board.update(task.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress", refs: options.branch === null ? {} : { branch: options.branch ?? BRANCH } });
   tasks.recordLifecycle(USER, task.id, { repo: "owner/repo", issue: 2, pr: 1, localHead: HEAD, localResult: "passed", stage: "implement" });
   return { board, tasks, id: task.id, notices };
 }
@@ -62,9 +62,9 @@ const filed = async (r: ReturnType<typeof rig>) => {
   return task;
 };
 /** The verifier card #1645 T3 recognises: a `test` card on the same branch at the same head, approved by another peer. */
-const verifier = (r: ReturnType<typeof rig>, overrides: { owner?: string; commit?: string; state?: "approved" | "in_review"; branch?: string; repo?: string } = {}) => {
+const verifier = (r: ReturnType<typeof rig>, overrides: { owner?: string; commit?: string; state?: "approved" | "in_review"; branch?: string | null; repo?: string } = {}) => {
   const card = r.board.propose(USER, { title: "verify the change", class: "test",
-    refs: { repo: overrides.repo ?? "owner/repo", branch: overrides.branch ?? BRANCH, commit: overrides.commit ?? HEAD } });
+    refs: { repo: overrides.repo ?? "owner/repo", ...(overrides.branch === null ? {} : { branch: overrides.branch ?? BRANCH }), commit: overrides.commit ?? HEAD } });
   const owner = overrides.owner ?? "claude";
   let updated = r.board.update(card.id, USER, "accepted", { state: "in_progress", owner });
   if ((overrides.state ?? "approved") === "in_review") return r.board.update(card.id, USER, "done", { state: "in_review" });
@@ -100,6 +100,16 @@ test("AC3 enforce: a verifier card is not one when it is the implementer's, unap
     await expect(r.tasks.review(USER, r.id, "approved", undefined, undefined, HEAD)).rejects.toThrow("a high task needs a verifier card");
     expect(r.board.get(r.id)?.state).toBe("in_review");
   }
+});
+
+test("AC3: a high task filed without refs.branch finds its verifier by repository and head", async () => {
+  const r = rig({ risk: POLICY, branch: null });
+  await filed(r);
+  const review = () => r.tasks.review(USER, r.id, "approved", undefined, undefined, HEAD);
+  // The continuation cannot name a branch the filing never recorded, so it names the repository instead of "the branch of this change".
+  await expect(review()).rejects.toThrow("hub_task_propose (class test, refs.repo owner/repo, refs.commit " + HEAD);
+  verifier(r, { branch: null });
+  expect((await review()).state).toBe("approved");
 });
 
 test("AC3 advise: the same gap is reported in the verdict's note and the approval stands", async () => {
@@ -170,10 +180,15 @@ test("the verifier identity rule is one function, so a display line and the verd
     { id: 2, class: "test", state: "approved", owner: "codex", repo: "owner/repo", branch: BRANCH, commit: HEAD },
     { id: 3, class: "test", state: "approved", owner: "claude", repo: "owner/repo", branch: BRANCH, commit: HEAD },
   ];
-  // The implementer's own card (2) is not a verifier, the only other `test` card (3) is; a card for another head and a subject without a branch hold none.
+  // The implementer's own card (2) is not a verifier, the only other `test` card (3) is; a card for another head holds none.
   const view = riskView({ tier: "high", head: HEAD, matched: 1 }, cards, { repo: "owner/repo", branch: BRANCH, head: HEAD, implementer: "codex" });
   expect(view).toMatchObject({ tier: "high", minimum: { reviewers: 1, verifier: true }, verifier: { id: 3 } });
   expect(riskView({ tier: "high", head: HEAD, matched: 1 }, cards, { repo: "owner/repo", branch: BRANCH, head: BASE, implementer: "codex" })).toBeUndefined();
-  expect(riskView({ tier: "high", head: HEAD, matched: 1 }, cards, { repo: "owner/repo", head: HEAD, implementer: "codex" })?.verifier).toBeUndefined();
+  // A subject that recorded no branch is matched by repository and head, so its tier stays satisfiable; another branch at this head is not it.
+  expect(riskView({ tier: "high", head: HEAD, matched: 1 }, cards, { repo: "owner/repo", head: HEAD, implementer: "codex" })?.verifier).toMatchObject({ id: 3 });
+  expect(riskView({ tier: "high", head: HEAD, matched: 1 }, cards, { repo: "owner/other", head: HEAD, implementer: "codex" })?.verifier).toBeUndefined();
+  const elsewhere = [{ ...cards[2]!, branch: "feat/other" }];
+  expect(riskView({ tier: "high", head: HEAD, matched: 1 }, elsewhere, { repo: "owner/repo", branch: BRANCH, head: HEAD, implementer: "codex" })?.verifier).toBeUndefined();
+  expect(riskView({ tier: "high", head: HEAD, matched: 1 }, elsewhere, { repo: "owner/repo", head: HEAD, implementer: "codex" })?.verifier).toMatchObject({ id: 3 });
   expect(riskView({ tier: "low", head: HEAD, matched: 1 }, cards, { repo: "owner/repo", branch: BRANCH, head: HEAD, implementer: "codex" })?.verifier).toBeUndefined();
 });

@@ -78,23 +78,29 @@ export function riskMinimum(tier: RiskTier): RiskMinimum {
  * approved state and another peer's owner - so #1645 T3 invents no card shape and no board column.
  */
 export interface RiskCard { id: number; class: string; state: string; owner: string | null; repo?: string; branch?: string; commit?: string }
-/** The filed change a verifier answers to: its branch and head, and whoever implemented it. */
+/** The filed change a verifier answers to: its repository, branch and head, and whoever implemented it. */
 interface RiskSubject { repo?: string; branch?: string; head?: string; implementer: string | null }
 
-/** The approved verifier card of this exact change, or `undefined`. A card that verified an older head is not one: a tier is a statement about one head. */
+/**
+ * The approved verifier card of this exact change, or `undefined`. What identifies a card is the head it verified: `refs.commit` must be the filed
+ * head, and a card for an older head is never one because a tier is a statement about one head. The branch narrows it to the same change when the
+ * filing named one; a task filed without `refs.branch` is matched by repository and head instead, so it can still satisfy its tier (a change filed
+ * that way would otherwise owe a card no proposal could satisfy).
+ */
 function riskVerifier(cards: readonly RiskCard[], subject: RiskSubject): RiskCard | undefined {
-  if (!subject.head || !subject.branch) return undefined;
+  if (!subject.head) return undefined;
   const repo = subject.repo?.toLowerCase();
   return cards.find(card => card.class === "test" && card.state === "approved" && card.owner !== null && card.owner !== subject.implementer
-    && card.branch === subject.branch && card.commit === subject.head && (repo === undefined || card.repo === undefined || card.repo.toLowerCase() === repo));
+    && card.commit === subject.head && (subject.branch === undefined || card.branch === subject.branch)
+    && (repo === undefined || card.repo === undefined || card.repo.toLowerCase() === repo));
 }
 
 /** What the receipt's tier says about the head being judged, with the verifier the board holds for it. `undefined` for another head, never a carried tier. */
-export interface RiskView { tier: RiskTier; head: string; matched: number; branch?: string; minimum: RiskMinimum; verifier?: { id: number; owner: string | null } }
+export interface RiskView { tier: RiskTier; head: string; matched: number; repo?: string; branch?: string; minimum: RiskMinimum; verifier?: { id: number; owner: string | null } }
 export function riskView(risk: RiskRecord | undefined, cards: readonly RiskCard[], subject: RiskSubject): RiskView | undefined {
   if (!risk || risk.head !== subject.head) return undefined;
   const minimum = riskMinimum(risk.tier), verifier = minimum.verifier ? riskVerifier(cards, subject) : undefined;
-  return { tier: risk.tier, head: risk.head, matched: risk.matched, ...(subject.branch ? { branch: subject.branch } : {}), minimum, ...(verifier ? { verifier: { id: verifier.id, owner: verifier.owner } } : {}) };
+  return { tier: risk.tier, head: risk.head, matched: risk.matched, ...(subject.repo ? { repo: subject.repo } : {}), ...(subject.branch ? { branch: subject.branch } : {}), minimum, ...(verifier ? { verifier: { id: verifier.id, owner: verifier.owner } } : {}) };
 }
 
 /**

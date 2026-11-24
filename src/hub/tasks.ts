@@ -10763,8 +10763,10 @@ export class Tasks {
       const risk = this.riskViewFor(task, reviewedHead ?? findingHead ?? this.findingHead(task));
       if (risk && risk.minimum.verifier && !risk.verifier) {
         const line = riskLine(risk);
-        const branch = risk.branch ?? "the branch of this change";
-        if (this.d.sdlc.config().mode === "enforce") throw new PreEffectToolRefusal(`${line}; a high task needs a verifier card by another peer at this head, so call hub_task_propose (class test, refs.branch ${branch}, refs.commit ${risk.head}), have a peer other than the implementer complete it, then approve again`);
+        // The card is identified by the head it verified, so the continuation names the branch when the filing recorded one and the repository when
+        // it did not, which is also how `riskVerifier` finds a card for a task filed without `refs.branch`.
+        const where = [...(risk.branch ? [`refs.branch ${risk.branch}`] : risk.repo ? [`refs.repo ${risk.repo}`] : []), `refs.commit ${risk.head}`].join(", ");
+        if (this.d.sdlc.config().mode === "enforce") throw new PreEffectToolRefusal(`${line}; a high task needs a verifier card by another peer at this head, so call hub_task_propose (class test, ${where}), have a peer other than the implementer complete it, then approve again`);
         note = `${note ?? ""}\n${line}`.trim();
       }
     } else if (verdict === "approved" && this.d.sdlc?.config().mode === "off" && this.d.sdlc?.gh && task.sdlc?.repo && task.sdlc.pr
