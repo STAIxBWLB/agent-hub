@@ -15,7 +15,7 @@ export class CompatPublisherError extends Error { readonly causeClass: string; c
 const fail = (cause: string): never => { throw new CompatPublisherError(cause); };
 const SHA = /^[a-f0-9]{40}$/, HASH = /^[a-f0-9]{64}$/, ID = /^[a-z][a-z0-9-]{0,63}$/;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
-const JSON_CAP = 4 * 1024 * 1024, ASSET_CAP = 64 * 1024 * 1024, TOTAL_CAP = 128 * 1024 * 1024;
+const JSON_CAP = 4 * 1024 * 1024, ASSET_CAP = 64 * 1024 * 1024, TOTAL_CAP = 128 * 1024 * 1024, ISSUE_PAGES = 10, PULL_PAGES = 100;
 const SOURCE = "src/adapters/compat.ts", SERVER = "plugins/agent-hub/server.js", PLUGIN = "plugins/agent-hub/.claude-plugin/plugin.json";
 const NAMES = ["compat.ts", "receipt.md", "server.js", "plugin.json"] as const, BOT = "github-actions[bot]";
 const digest = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex");
@@ -106,9 +106,9 @@ function load(input: CompatPublisherInput): { index: PreparedCompatArtifact; bun
 type Leaf = { path: string; mode: string; type: string; sha: string };
 interface Snapshot { sha: string; tree: string; leaves: Map<string, Leaf> }
 async function optional(api: GithubAPI, route: string): Promise<unknown | undefined> { try { return await api.request("GET", route); } catch (error) { if (error instanceof GithubApiError && error.status === 404) return; throw error; } }
-async function inventory(api: GithubAPI, route: string): Promise<unknown[]> {
+async function inventory(api: GithubAPI, route: string, maxPages: number): Promise<unknown[]> {
   const all: unknown[] = [];
-  for (let page = 1; page <= 10; page++) {
+  for (let page = 1; page <= maxPages; page++) {
     const rows = array(await api.request("GET", `${route}${route.includes("?") ? "&" : "?"}per_page=100&page=${page}`), 100, "inventory");
     all.push(...rows);
     if (rows.length < 100) return all;
@@ -238,7 +238,7 @@ export function retainManagedReceiptRows(report: string, previous: string, verif
   return replaceRows(report, rows);
 }
 async function issue(api: GithubAPI, base: string): Promise<{ number: number; body: string } | undefined> {
-  const rows = (await inventory(api, `${base}/issues?state=open`)).filter(value => !Object.hasOwn(object(value), "pull_request"));
+  const rows = (await inventory(api, `${base}/issues?state=open`, ISSUE_PAGES)).filter(value => !Object.hasOwn(object(value), "pull_request"));
   const number = selectAgentCompatIssue(rows); if (number === undefined) return;
   const row = object(await api.request("GET", `${base}/issues/${number}`));
   if (row.title !== AGENT_COMPAT_ISSUE_TITLE || row.state !== "open" || row.pull_request) fail("issue-identity");
@@ -258,7 +258,8 @@ export async function runCompatPublisher(input: CompatPublisherInput, api: Githu
   }
   const manifestValue = object(parse(await blob(api, base, main, "scripts/compat-receipts/manifest.json")));
   const manifest = object(manifestValue.entries) as unknown as Record<string, PublishManifestEntry>;
-  const rows = await inventory(api, `${base}/pulls?state=all`), pulls = rows.map(row => botPull(row, input.repository, manifest)).filter((p): p is BotPull => !!p);
+  // ponytail: reads every PR (100 pages, 10,000 PRs) on each publish and fails closed past it; upgrade: list only bot-authored compat branches (head prefix or a search query) instead of all PRs.
+  const rows = await inventory(api, `${base}/pulls?state=all`, PULL_PAGES), pulls = rows.map(row => botPull(row, input.repository, manifest)).filter((p): p is BotPull => !!p);
   const args = { manifest, candidates: data.index.watch.candidates, artifacts: data.index.rejectedBatch ? [{}] : data.index.artifacts, dryRun: input.dryRun };
   const baseline = planCompatPublish({ ...args, existingPullRequests: [] }), plan = planCompatPublish({ ...args, existingPullRequests: pulls });
   const verified = confirmedVerified(object(data.index.watch).verified, Object.keys(manifest), data.index.watch.candidates.map(row => row.id));
