@@ -20,9 +20,10 @@ export function renderFindingAnchor(finding: ReviewFinding, placement: ReviewAnc
 
 /**
  * #520: the review brief ahub builds itself, in place of `ocr delegate preview` and `rule`. Every reviewer gets the same
- * one: the changed files of the head against its merge base with the checkout's HEAD, the files left out and why, the
- * review rules that apply to each file, and the files the plain name list shows that the brief does not. Only git is
- * read, bounded; nothing here touches the board.
+ * one: the changed files of the head against the default branch it merges into, the files left out and why, the review rules
+ * that apply to each file, and the files the plain name list shows that the brief does not. The head and the merge base are
+ * full commit ids and the list does not depend on any checkout's state, so the same pair always gives the same brief. Only
+ * git is read, bounded; nothing here touches the board.
  */
 export interface BriefFile { path: string; status: string; oldPath?: string; insertions?: number; deletions?: number }
 export interface BriefExcluded { path: string; status: string; oldPath?: string; reason: string }
@@ -219,7 +220,7 @@ function renderCodeSymbols(brief:ReviewBrief):string[] {
 export function renderReviewBrief(brief: ReviewBrief): string {
   const file = (f: BriefFile) => `- ${f.oldPath ? `${f.oldPath} -> ` : ""}${f.path} (${f.status}${f.insertions !== undefined ? `, +${f.insertions} -${f.deletions}` : ""})`;
   return [
-    `Review brief: head ${brief.head} against ${brief.base} (merge base ${brief.mergeBase.slice(0, 12)}); ${brief.reviewable.length} reviewable, ${brief.excluded.length} excluded${brief.withheld ? `, ${brief.withheld} withheld by the privacy policy` : ""}.`,
+    `Review brief: head ${brief.head} against ${brief.base} (merge base ${brief.mergeBase}); ${brief.reviewable.length} reviewable, ${brief.excluded.length} excluded${brief.withheld ? `, ${brief.withheld} withheld by the privacy policy` : ""}.`,
     ...(brief.reviewable.length ? ["Reviewable:", ...brief.reviewable.map(file)] : ["Reviewable: none (record why in the note)."]),
     ...(brief.excluded.length ? ["Excluded (still read their diff when it matters):", ...brief.excluded.map(e => `- ${e.oldPath ? `${e.oldPath} -> ` : ""}${e.path} (${e.status}): ${e.reason}`)] : []),
     ...renderCodeSymbols(brief),

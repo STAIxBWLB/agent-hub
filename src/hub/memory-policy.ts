@@ -69,7 +69,8 @@ export function isTrustedReviewPackage(env: Pick<Envelope, "from" | "kind" | "re
 export function reviewCaptureExcluded(tool: string, args: string): boolean {
   const name = tool.replace(/^mcp__[^ ]+__/, "");
   if (name === "hub_visual" || name === "hub_visual_show") return true;
-  if (["review_comment_put", "review_comment_delete", "review_comment_send", "review_blob"].includes(name)) return true;
+  // #1646: a brief file body is the reviewed commit's content, read for one verdict; it belongs to no memory.
+  if (["review_comment_put", "review_comment_delete", "review_comment_send", "review_blob", "hub_review_file"].includes(name)) return true;
   if (name !== "hub_review") return false;
   try {
     const input: unknown = JSON.parse(args);

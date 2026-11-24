@@ -1,5 +1,6 @@
 import { hubGitEnv, hubGitSync } from "./git.ts";
 import { childEnv } from "./child-process.ts";
+import { realPath } from "./project.ts";
 
 /**
  * #1403 A4: what an audit reads from the checkout, behind one injectable port so `Tasks` stays testable and the daemon wires the real thing. Read-only git, hardened like the review brief's
@@ -12,6 +13,11 @@ export interface AuditSource {
   resolve(ref: string): string | undefined;
   /** Repository-relative paths that differ between `from` and `to`, or undefined when they cannot be listed completely. */
   changed(from: string, to: string): string[] | undefined;
+  /**
+   * #1646: among `paths`, those the checkout's worktree holds differently from `reviewed`, and those it holds as
+   * untracked files. Undefined when either read is incomplete: an unread checkout is unknown, never clean.
+   */
+  readsAt?(reviewed: string, paths: readonly string[]): { differing: string[]; untracked: string[] } | undefined;
   /** Local origin/HEAD remote-tracking commit, never a checkout HEAD or guessed branch. */
   defaultTip?(): string | undefined;
   /** Unique local common ancestor; shallow, missing, unrelated or ambiguous history is unknown. */
@@ -62,5 +68,44 @@ export function gitAuditSource(cwd: string): AuditSource {
       const paths = r.stdout.split("\0").filter(Boolean);
       return paths.length > MAX_CHANGED_PATHS ? undefined : paths;
     },
+    readsAt: (reviewed, paths) => {
+      if (!SHA.test(reviewed) || commit(reviewed) !== reviewed) return undefined;
+      // Only the caller's own list, and only names git accepts as pathspecs: never a flag, never a control character.
+      const scoped = [...new Set(paths.filter(path => typeof path === "string" && path && !path.startsWith("-") && !/[\p{Cc}]/u.test(path)))];
+      if (!scoped.length) return { differing: [], untracked: [] };
+      // The reviewed commit against the worktree (index and unstaged alike), then the files git does not track yet.
+      const diff = run(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", reviewed, "--", ...scoped]);
+      if (diff.status !== 0 || typeof diff.stdout !== "string") return undefined;
+      const others = run(["ls-files", "--others", "--exclude-standard", "-z", "--", ...scoped]);
+      if (others.status !== 0 || typeof others.stdout !== "string") return undefined;
+      // A reviewed path the checkout does not track is reported once, as untracked: git also diffs such a file by path
+      // when it happens to exist, and one state per path keeps the evidence readable.
+      const untracked = others.stdout.split("\0").filter(Boolean), loose = new Set(untracked);
+      const differing = diff.stdout.split("\0").filter(path => path && !loose.has(path));
+      return differing.length > MAX_CHANGED_PATHS || untracked.length > MAX_CHANGED_PATHS ? undefined : { differing, untracked };
+    },
   };
+}
+
+/** The common Git directory of `dir` as it is on disk, or undefined when `dir` is no checkout of a readable repository. */
+const commonDirectory = (dir: string): string | undefined => {
+  const result = hubGitSync(["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", env: hubGitEnv(childEnv(process.env), { repositoryIsolation: true, readOnlyDiagnostic: true }), maxBuffer: 4096, timeout: 5_000 });
+  const out = result.status === 0 && typeof result.stdout === "string" ? result.stdout.trim() : "";
+  if (!out) return undefined;
+  try { return realPath(out); } catch { return undefined; }
+};
+
+/**
+ * #1646 T2: a read-only reader for a checkout other than the project's own, such as the checkout a reviewing session reports for
+ * itself. It answers only when `root` is a worktree of `anchor`'s repository on disk, compared by canonical path and common Git
+ * directory, never by the names a caller typed; the project checkout itself is refused so a caller records it as the project's
+ * rather than as a peer's. A root that is not a checkout of this repository is unknown, never read.
+ */
+export function checkoutAuditSource(anchor: string, root: string): AuditSource | undefined {
+  try {
+    const here = realPath(anchor), there = realPath(root);
+    if (here === there) return undefined;
+    const common = commonDirectory(here), other = commonDirectory(there);
+    return common && common === other ? gitAuditSource(there) : undefined;
+  } catch { return undefined; }
 }

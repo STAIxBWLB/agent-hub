@@ -222,6 +222,12 @@
     "reason": "Intentional local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence; builtin operator notices moved to the gated statusNotice port in 2d."
   },
   {
+    "predicate": "isWsPeer",
+    "function": "src/hub/daemon.ts:startDaemon.tasks.reviewerCheckout",
+    "count": 1,
+    "reason": "Host checkout-evidence read: only a daemon-owned Claude channel WsPeer reports the cwd it reads in, and the verdict's record names that source; a generic adapter has no checkout the hub could name, so it records the project checkout instead (#1646)."
+  },
+  {
     "predicate": "isQwenDualPeer",
     "function": "src/hub/daemon.ts:startDaemon.stopPeer",
     "count": 1,

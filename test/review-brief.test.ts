@@ -76,6 +76,11 @@ test("the brief lists reviewable files, exclusions with reasons, rules per file,
   for (const needle of ["ROOT_RULES", "SRC_RULES", "LIB_RULES", "src/a.ts", "old-name.md -> new-name.md", "old.gen.js -> new.gen.js (R): generated", "1 withheld by the privacy policy", "coverage {reviewed"]) expect(text).toContain(needle);
   expect(text).not.toContain("private.txt");
   expect(text).not.toContain("HEAD_RULES");
+  // #1646 AC4: both ends of the range are full commit ids, and the same pair renders the same brief whatever the checkout holds.
+  expect(brief.mergeBase).toMatch(/^[a-f0-9]{40}$/);
+  expect(text).toContain(`Review brief: head ${head} against ${brief.base} (merge base ${brief.mergeBase});`);
+  writeFileSync(join(dir, "src/a.ts"), "export const a = 999;\n"); // a reviewed path dirtied in a checkout that is not at the head
+  expect(renderReviewBrief(buildReviewBrief(dir, head, policy) as ReviewBrief)).toBe(text);
   expect(brief.rulesMissing).toEqual([{ source: "docs/missing.md", reason: "not found at the merge base" }]);
   expect(text).toContain("Configured rules not loaded (read them in the repository):\n- docs/missing.md: not found at the merge base");
   // A rule file matching a private-data pattern is screened whole, before any cut, and named only.

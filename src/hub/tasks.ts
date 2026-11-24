@@ -127,6 +127,7 @@ import { mainCheckoutWarning } from "./main-checkout.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import type { TaskWorktreePort } from "./task-worktree.ts";
 import { coverageGap, renderReviewBrief, renderSpecTaskReport, type BriefFile, type ReviewBrief } from "./review-brief.ts";
+import type { ReviewCheckoutEvidence } from "./review-checkout.ts";
 import { DEFAULT_SPECS_CONFIG, type SpecsConfig } from "./specs-config.ts";
 import type { SpecsCheckReport, SpecsCoverReport } from "./specs.ts";
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
@@ -253,6 +254,12 @@ export interface TasksDeps {
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh; reportPolicy?: (head: string, repo: string) => ReleaseReportPolicy | undefined };
   /** #1403 A4: read-only git for the security audit (the checkout's head and changed paths); absent means the audit commands are unavailable. */
   auditSource?: AuditSource;
+  /**
+   * #1646 T2: a read-only reader for the checkout a reviewing session reported for itself, resolved and proven by the host to be a
+   * worktree of this repository. Absent means the hub knows no such checkout, so the verdict's evidence names the project
+   * checkout instead. The path comes from the host's own socket record, never from a tool argument.
+   */
+  reviewerCheckout?: (peer: PeerId) => AuditSource | undefined;
   /** #785 P1b: the per-head CI watcher's bounds; tests shorten them, the defaults are `CI_WATCH_*` in `ci-watch.ts`. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   /** #785 P1c: `tasks.auto_pull`, read for every automatic pull trigger; absent or false pulls nothing. */
@@ -311,8 +318,12 @@ export interface TasksDeps {
   /** Optional persisted task/run execution limits (issue #102). */
   executionBudget?: ExecutionBudget;
   /** Project-scoped immutable-source metadata, read only before a study transaction. */
-  /** Host-scoped immutable-head/material batch; supports host-staged completion refs/sdlc, never client-staged Task objects. The shared reader owns file authorization and budgets. */
-  reviewMaterials?: (task: Task, requests: readonly { path: string; side?: "base" | "head" }[]) => Promise<ReviewMaterialBatch>;
+  /**
+   * Host-scoped immutable-head/material batch; supports host-staged completion refs/sdlc, never client-staged Task objects. The shared
+   * reader owns file authorization and budgets. `scope: "brief"` widens the reader's scope to the task's own review brief (#1646 T3),
+   * which the host builds itself, never to paths a caller names.
+   */
+  reviewMaterials?: (task: Task, requests: readonly { path: string; side?: "base" | "head" }[], scope?: "brief") => Promise<ReviewMaterialBatch>;
   studySource?: (id: string) => { id: string; sha256: string; private: boolean } | undefined;
   /** Host-owned screened snapshot read, never a public source-read excerpt reconstructed as a projection. */
   /** Opaque host-only current raw/projection/converter token, never client evidence. */
@@ -847,6 +858,32 @@ export class Tasks {
     if (!material) return { status: "unavailable" };
     try { return anchorStatus(anchor, material); } catch { return { status: "unavailable" }; }
   }
+  /**
+   * #1646 T3: one file of a task's own review brief, read at the reviewed head from the repository's Git objects, so a reviewer
+   * reads the commit it approves even when the checkout it works in stands elsewhere. The task's owner and reviewer may ask, the
+   * path must be one the brief lists, and the shared reader's caps bound the bytes; a path outside the brief is refused rather
+   * than served from an enlarged scope.
+   */
+  async reviewFile(by: PeerId, input: unknown): Promise<string> {
+    const asked = input && typeof input === "object" && !Array.isArray(input) ? input as { id?: unknown; path?: unknown } : {};
+    const task = this.need(asked.id, false, true, true);
+    // refusal:by-design human-authority: who owns and who reviews a task are board assignments a person or the planner sets, so a peer the board did not name has nothing it can run to gain the read.
+    if (by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal(`task #${task.id}: only its owner or reviewer may read its review brief files`);
+    // refusal:by-design human-authority: a private task's brief files stay unread outside its readers; a person decides that task's privacy on the board.
+    if (this.reviewTaskPrivate(task)) throw new PreEffectToolRefusal(`task #${task.id}: review brief files stay unread for a private task`);
+    const path = asked.path;
+    if (typeof path !== "string" || !path || path.length > 1024 || /[\p{Cc}]/u.test(path)) throw new PreEffectToolRefusal("review file needs a task id and one repository-relative path (1024 bytes at most, no control characters); hub_task_show lists the reviewable paths");
+    const brief = this.d.reviewBrief?.(task);
+    if (!brief || "unavailable" in brief) throw new PreEffectToolRefusal(`task #${task.id}: the review brief is unavailable (${brief?.unavailable ?? "no brief provider"}), so there is no reviewed file to read; its owner files the reviewed head with hub_task_done`);
+    if (!brief.reviewable.some(file => file.path === path)) throw new PreEffectToolRefusal(`task #${task.id}: ${path} is not one of the ${brief.reviewable.length} reviewable path(s) of the review brief at ${brief.head}; hub_task_show lists the reviewable paths`);
+    if (!this.d.reviewMaterials) throw new PreEffectToolRefusal("review material reader is unavailable; reopen the task review with the current hub before retrying");
+    let batch: ReviewMaterialBatch;
+    try { batch = await this.d.reviewMaterials(task, [{ path, side: "head" }], "brief"); }
+    catch { throw new PreEffectToolRefusal("review material or immutable head is unavailable; refresh the task review before retrying"); }
+    const material = batch.materials.find(row => row.path === path && row.side === "head");
+    if (!material || material.state !== "available") throw new PreEffectToolRefusal(`task #${task.id}: ${path} is unavailable at the reviewed head ${batch.head || "unknown"}; read it in the repository, or its owner re-files the head with hub_task_done`);
+    return JSON.stringify({ task: task.id, head: batch.head, path: material.path, text: material.text, contentHash: material.contentHash, ...(material.projection ? { projection: material.projection } : {}) });
+  }
   private reviewCommentResolve(by: PeerId, task: Task, input: unknown): string[] | undefined {
     if (input === undefined) return undefined;
     try { const ids = reviewCommentIds(input); if (ids.length && by !== task.owner) throw new Error("not owner"); this.d.board.reviewCommentResolution(task, ids); return ids; }
@@ -1221,6 +1258,24 @@ export class Tasks {
     return resolveFindingHead(task.sdlc, reviewedHead ? { head: reviewedHead } : undefined, task.refs.commit);
   }
 
+  /**
+   * #1646 T2: what the checkout the reviewer read held, read from the brief's own reviewed paths. The reviewing session's own
+   * checkout is read and named when the host resolved one; otherwise the project checkout is read and named as such, so a later
+   * count separates a reviewer that read other bytes from a hub that looked at the root. A port that cannot answer, or a known
+   * checkout it cannot read, leaves the verdict with no evidence: an unread checkout is unknown, never clean.
+   */
+  private checkoutEvidence(brief: ReviewBrief, reviewer: PeerId): ReviewCheckoutEvidence | undefined {
+    const paths = brief.reviewable.map(file => file.path);
+    const peer = this.d.reviewerCheckout?.(reviewer);
+    if (peer) {
+      const reads = peer.readsAt?.(brief.head, paths);
+      // The hub knows where this reviewer read: when that checkout cannot answer, the project checkout is not a substitute.
+      return reads ? { source: "peer-cwd", head: peer.head() ?? null, differing: reads.differing, untracked: reads.untracked } : undefined;
+    }
+    const root = this.d.auditSource, reads = root?.readsAt?.(brief.head, paths);
+    return reads ? { source: "project-root", head: root?.head() ?? null, differing: reads.differing, untracked: reads.untracked } : undefined;
+  }
+
   private findingTextAllowed(task: Task, items: readonly ReviewFinding[]): boolean {
     return this.candidateTextAllowed(JSON.stringify(items), task)
       && items.every(item => (!item.path || !matchesPolicy(this.d.cwd, item.path, this.d.piiPaths ?? [], true))
@@ -1458,6 +1513,7 @@ export class Tasks {
       ...(h.reviewerFamily ? { reviewerFamily: screenHistoryText(h.reviewerFamily, "reviewer family") } : {}),
       ...(h.reviewerReason ? { reviewerReason: h.reviewerReason } : {}),
       ...(h.reviewedHead ? { reviewedHead: h.reviewedHead } : {}),
+      ...(h.checkout ? { checkout: h.checkout } : {}),
       ...(h.reviewScope === "code" ? { reviewScope: "code" as const } : {}),
       ...(h.evidenceOnly ? { evidenceOnly: true as const } : {}),
       ...(h.unmetCriteria?.length ? { unmetCriteria: h.unmetCriteria } : {}),
@@ -10498,6 +10554,8 @@ export class Tasks {
     // #520: what the coverage was checked against, pinned through every await: the commit and the lifecycle receipt (the
     // inherited reviewedHead lives there).
     let covered: { commit: string | undefined; receipt: string } | undefined;
+    // #1646: the reviewer's checkout at this verdict, read from the brief's own files; absent when it could not be read.
+    let checkout: ReviewCheckoutEvidence | undefined;
     let conformanceIdentity: string | undefined;
     let reviewRound: number | undefined;
     let withdrawalRevision: number | undefined;
@@ -10592,6 +10650,7 @@ export class Tasks {
         const effective = typeof head === "string" ? head : t.sdlc?.reviewedHead;
         if (effective !== undefined && effective !== brief.head && enforce) throw new PreEffectToolRefusal(`coverage: the verdict ${typeof head === "string" ? "names" : "inherits"} head ${effective}, but the review brief is for ${brief.head} (the commit under review)`);
         covered = { commit: t.refs.commit, receipt: JSON.stringify(t.sdlc ?? null) };
+        checkout = this.checkoutEvidence(brief, by);
         const gap = coverageGap(brief, coverage);
         if (gap.length && enforce) throw new PreEffectToolRefusal(`coverage: ${gap.length} reviewable path(s) of the review brief are not accounted for: ${list(gap)}. Pass coverage {reviewed, skipped: [{path, reason}]}.`);
         if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${list(gap)}`.trim();
@@ -10667,7 +10726,7 @@ export class Tasks {
     // #507b: unmet items that start with a recorded criterion id name that criterion. The ids come from the checklist on the board as it is at this
     // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
-    const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(securityRecord && !pii ? { securityPass: { ...securityRecord, ...((reviewedHead ?? findingHead) ? { head: (reviewedHead ?? findingHead)! } : {}) } } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...(checkout ? { checkout } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(securityRecord && !pii ? { securityPass: { ...securityRecord, ...((reviewedHead ?? findingHead) ? { head: (reviewedHead ?? findingHead)! } : {}) } } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const capacity = this.capacityBefore(task);
       this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);

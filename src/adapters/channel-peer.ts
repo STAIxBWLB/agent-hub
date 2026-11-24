@@ -93,6 +93,13 @@ export class WsPeer extends BasePeer {
   get channelHeld(): boolean {
     return (!!this.sock && !this.pullOnly) || (this.claiming && !this.claimedPullOnly);
   }
+  /**
+   * #1646: the checkout the attached session reported at its hello (its own cwd), read live from that socket. It says where a
+   * session reads, never proves owner isolation or grants any: an absent or detached session reports nothing.
+   */
+  get sessionCwd(): string | undefined {
+    return this.attached && typeof this.sock?.data.cwd === "string" ? this.sock.data.cwd : undefined;
+  }
   /** Status-file observations are advisory; a replaced client cannot evict a live socket or pending claim. */
   standbyHeld(pullOnly: boolean): boolean {
     return this.claiming || (!!this.sock && this.sock.readyState === WebSocket.OPEN && (pullOnly || !this.pullOnly));

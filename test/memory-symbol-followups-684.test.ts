@@ -40,9 +40,14 @@ test("#684 real no-reviewer done reuses prepareOnly symbols and performs one unk
   const start = source.indexOf(marker) + marker.length, end = source.indexOf("    memorySymbolNodes: task => {", start);
   expect(start).toBeGreaterThan(marker.length); expect(end).toBeGreaterThan(start);
   const body = source.slice(start, end).replace(/\n    },\s*$/, "");
+  // The ports' own closures resolve here, not inside the sandbox, so the config the mirrored factory reads is declared first.
+  const config = { local: { deny: [] as string[] }, pii: { paths: [] as string[] } };
   const ports: Record<string, unknown> = { tasks: undefined, executionRoot: () => cwd,
     buildReviewBrief: (_root: string, head: string, policy: { privatePath(path: string): boolean; nameable(text: string): boolean }) => { expect(policy.privatePath("a.ts")).toBe(false); expect(policy.nameable("run")).toBe(true); return brief(head); },
-    config: { local: { deny: [] }, pii: { paths: [] } }, isDenied, matchesPolicy, board, reviewSymbols, memorySymbols, memoryStore: store,
+    // #1646: the daemon builds one screening for the stored brief, this prepare pass and a brief-scoped read. This port mirrors that
+    // factory over the same ports, so the body keeps naming it instead of carrying a second copy; the buildReviewBrief port pins it.
+    briefPolicy: (root: string) => ({ privatePath: (path: string) => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii.paths, true), nameable: () => true }),
+    config, isDenied, matchesPolicy, board, reviewSymbols, memorySymbols, memoryStore: store,
     memoryProject: "fixture", memoryRepo: "o/r", resolveMemorySymbolNodes,
     codeFacts: { changedSymbols: async () => { prepared++; return { state: "known", value: ["a.ts", "b.ts"].map(path => ({ name: "run", kind: "fn", path, line: 1, ambiguous: false, change: "unknown" })) }; }, exists: async () => { exists++; return { state: "unknown" }; } },
   };
