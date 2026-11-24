@@ -556,7 +556,7 @@
       ]
     },
     "docs/agent-notes/README.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "7dbc4dc0d9e166a7074e773f50014a210db80b4d",
       "paths": [
         "src/cli/console-state.ts",
         "src/cli/attention.ts",
