@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.46.0
+bun add -g github:STAIxBWLB/agent-hub#v0.46.1
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -53,6 +53,12 @@ A project whose hub is stopped is upgraded without starting it: `ahub upgrade
 --to <version>` in it only retargets its runtime selection, and `ahub upgrade
 --all-stopped --to <version>` does that for every stopped project at once
 (`--dry-run` lists each one first).
+
+## Upgrading to 0.46.1
+
+Fixes `ahub upgrade`, restart and conductor recovery on an install that resolved agent-mem 0.37.0 or later. Those versions declare `@staix/cli-output`, and 0.46.0 refused them with `memory runtime dependency identity/version mismatch`. On such an install, the 0.46.0 `ahub upgrade` fails on that same error before it plans anything. Install 0.46.1 globally first (`bun add -g @staix/agent-hub@0.46.1`, then `ahub setup`), then run `ahub upgrade` from the new CLI. Nothing else changes, and the declared agent-mem range stays `>=0.33.0 <1.0.0`.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.46.1` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.46.0
 
