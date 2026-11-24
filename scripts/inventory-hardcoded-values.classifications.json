@@ -2725,6 +2725,7 @@
   "src/hub/tasks.ts:pending:inline:visible.slice=500#0": "operational",
   "src/hub/tasks.ts:planBacklog:inline:input.reason.length > 1000=1000#0": "contract",
   "src/hub/tasks.ts:plannerRulings:inline:rulings.length < 5=5#0": "operational",
+  "src/hub/tasks.ts:propose:inline:detail.length > 8000=8000#0": "contract",
   "src/hub/tasks.ts:publicHistory:inline:history.slice=-5#0": "operational",
   "src/hub/tasks.ts:publicSpecReport:inline:report.changed.length > 20=20#0": "operational",
   "src/hub/tasks.ts:publicSpecReport:inline:report.unchanged.length > 20=20#0": "operational",

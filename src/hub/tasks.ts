@@ -4735,6 +4735,10 @@ export class Tasks {
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; needs_network?: unknown; needs_worktree?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown; [HOST_ROADMAP_DRAFT]?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined, hostCreatedHook?: (task: Task) => void): Promise<Task> {
     const requestCheck = this.requestCheck(by, fence);
+    const detail = String(input.detail ?? "");
+    if (detail.length > 8000) throw new PreEffectToolRefusal(
+      `Task detail is ${detail.length} characters; the limit is 8000 characters. Put the full detail in the spec issue, then retry hub_task_propose with #<issue number> in the title and a short detail so hub_task_spec can read the spec.`,
+    );
     const plan = cleanPlan(input.plan, this.d.profileData ?? this.d.profile ?? "dev", (this.d.sdlc?.config().mode ?? "off") !== "off");
     this.validatePlanSources(plan);
     requireLocalTaskPeer(input.owner);
@@ -4778,7 +4782,7 @@ export class Tasks {
     const profile = this.d.profile ?? "dev";
     let baseGiven: TaskClass | undefined;
     try { if (given !== undefined) baseGiven = profileClass(given, this.d.profileData ?? profile); } catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
-    const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
+    const text = { title, detail, refs: cleanRefs(input.refs) };
     // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
     const screenDetail = [text.detail, text.refs.repo, external?.repo, external?.url].filter(value => value !== undefined && value !== "").join("\n");
     const signals = this.signalsFor({ ...text, detail: [screenDetail, planText(plan)].join("\n"), plan });
