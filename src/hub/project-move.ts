@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { processLiveness } from "../pi/process-signature.ts";
 import { projectRoot, realPath } from "./project.ts";
 import { assertHubDbCompatible } from "./db-schema.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { parseProjectRuntime } from "./project-runtime-state.ts";
 import { recoveryLock } from "./recovery-store.ts";
 import { idFor, type Project, type Registry } from "./registry.ts";
@@ -103,6 +104,7 @@ function inspectStore(project: Project, old: Project, own: boolean): Store | und
   assertHubDbCompatible(file);
   const db = new Database(file, { readonly: true, strict: true });
   try {
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     const rewrites = counts(db, old.id, own);
     if (!own && !rewrites.length) return undefined;
     const pending = own && rewrites.some(change => change.table === "deliveries") &&
@@ -160,7 +162,10 @@ export function previewProjectMove(registry: Registry, oldRef: string, root: str
 
 function backupDatabase(file: string, target: string): void {
   const db = new Database(file, { readonly: true, strict: true });
-  try { db.query("VACUUM INTO ?").run(target); } finally { db.close(); }
+  try {
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+    db.query("VACUUM INTO ?").run(target);
+  } finally { db.close(); }
   sync(target);
 }
 
@@ -168,6 +173,7 @@ function rewriteStore(store: Store, old: Project, next: Project): void {
   assertHubDbCompatible(store.file);
   const db = new Database(store.file, { readwrite: true, create: false, strict: true });
   try {
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     db.run("PRAGMA synchronous = FULL");
     db.transaction(() => {
       for (const rewrite of store.rewrites) {
