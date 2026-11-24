@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Require a screened reason to reopen a settled review finding in enforce mode. Advise reports missing reasons, and reasoned reopenings after person acceptance notify the person. Refs #1657, hub task 1095.
+
 - Record on a review verdict what the checkout the reviewer read held: for the files the review brief lists, which differ from the reviewed commit and which the checkout holds untracked, with that checkout's own head and which checkout it was, the reviewing session's own when the hub knows it and otherwise the project checkout. An unreadable checkout records no evidence rather than a clean one. Refs #1646, hub task 1092.
 
 - Derive a risk tier from a filed change's complete file inventory: `[risk]` in `.agenthub/sdlc.toml` names the paths that make a change `high` and the ones that keep it `low`, a `[security]` path is always `high`, a path no pattern names is `medium`, and an inventory the hub cannot read completely records no tier rather than `medium`. A done records the tier with the head it classified, and a re-file drops it and derives a new one, so a tier is never read for a head it was not derived from. A project without a `[risk]` table is unchanged, and nothing reads the tier yet. Refs #1645, hub task 1097.

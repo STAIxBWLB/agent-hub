@@ -498,6 +498,15 @@ Train history retains at most 256 events. Configuration no-ops retain the revisi
 
 Verdict history retains each report and its reviewed head. Within a task, the semantic id remains the finding identity when its pass is reclassified; a disposition for that id settles the same finding across passes. Open Important findings carry forward across heads until a reviewer explicitly sets fixed or false_positive, or the person sets accepted with a rationale. Omitting an id never settles it; nits stay on their original head. Review requests list carried public ids, pass, severity and optional path; private finding details stay withheld. Head selection uses the first valid full SHA from the PR head, reviewed head, local head, then commit metadata; unresolved non-empty reports refuse in enforce. A supplied head must match the resolved task head when one exists, and that resolution is rechecked after asynchronous screening. Status and the merge queue show counts for the current head. In enforce, approval refuses while any Important finding remains open; advise exposes the count without blocking. Existing verdicts without structured findings stay compatible.
 
+To reopen a finding last marked `false_positive` or person-`accepted`, set
+`reopen_reason` on its new `open` report. The reason is screened and recorded
+with the verdict, with a 512-byte limit. In advise, the verdict is saved and the
+tool result lists any missing reasons under `reopenedWithoutReason`. Enforce
+refuses those reports before saving them. A reasoned reopening after person
+acceptance also notifies the person. Previously fixed findings can reopen
+without a reason. With the lifecycle off, the field is unavailable.
+
+
 With the lifecycle on (`advise` or `enforce`; #1403 A1, B4), an item may also carry these fields, and `off` refuses them as unknown fields and advertises none of them:
 
 - `state` (`confirmed` or `needs_validation`) and `boundary` (`principal`, `control`, `resource`, `result`: the lower-trust actor, the control that was meant to hold, the resource affected and the result observed, each at most 512 bytes and sanitized like `rationale`). An open `important` finding with `pass: "security"` must carry both, and the refusal names the four boundary fields; nits, other passes and settled findings need neither, and the fields are refused on them.

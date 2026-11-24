@@ -98,6 +98,7 @@ const securityReviewFindings = {
     boundary: { type: "object", properties: { principal: boundaryField, control: boundaryField, resource: boundaryField, result: boundaryField }, required: ["principal", "control", "resource", "result"], additionalProperties: false,
       description: "principal: the lower-trust actor; control: the check that was meant to hold; resource: what is affected; result: what was observed" },
     blocker: boundaryField,
+    reopen_reason: { ...boundaryField, description: "Why a false_positive or person-accepted finding should reopen. Required in enforce." },
     origin: { type: "string", enum: ["introduced", "pre_existing"] },
   } },
 } as const;

@@ -10555,7 +10555,7 @@ export class Tasks {
     } catch { return prefix("Review brief unavailable: it could not be built."); }
   }
 
-  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown, securityPass?: unknown): Promise<Task> {
+  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown, securityPass?: unknown): Promise<Task & { reopenedWithoutReason?: string[] }> {
     if (by !== USER && hasReviewAnchorInput(findings)) {
       try { this.d.onReviewObserverInput?.(by); }
       catch { throw new PreEffectToolRefusal("the anchored review input could not be privately scoped; retry after ordinary new input"); }
@@ -10603,7 +10603,7 @@ export class Tasks {
     if (withdrawing) withdrawalRevision = initial.history.length;
     if (withdrawing) { await this.unmergedForReopen(initial, valid); valid(); }
     let parsed: ReviewFinding[];
-    try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS, contract: mode === "off" ? "off" : "required" }); }
+    try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS, contract: mode === "off" ? "off" : "required", reopenReason: true }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
     // #1403 A2: the field exists only under an enabled lifecycle (off neither advertises nor accepts it), and only on a verdict that can carry it. Validated before any board effect.
     let securityRecord: SecurityPassRecord | undefined;
@@ -10628,6 +10628,14 @@ export class Tasks {
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid finding head"); }
     }
     const report: ReviewFindingSet | undefined = suppliedFindings ? { ...(findingHead ? { head: findingHead } : {}), items: parsed } : undefined;
+    const settledReopens = parsed.flatMap(item => {
+      if (item.disposition !== "open") return [];
+      const previous = initial.history.findLast(entry => entry.reviewFindings?.items.some(finding => finding.id === item.id));
+      const disposition = previous?.reviewFindings?.items.find(finding => finding.id === item.id)?.disposition;
+      return previous && (disposition === "false_positive" || disposition === "accepted")
+        ? [{ item, disposition, by: previous.by }] : [];
+    });
+    const missingReopenReason = settledReopens.filter(entry => !entry.item.reopen_reason);
     const proposedSets = (task: Task) => [...this.reviewFindingSets(task), ...(report ? [report] : [])];
     if (head !== undefined || suppliedFindings || this.reviewFindingSets(initial).length) {
       const identity = (task: Task) => JSON.stringify({ owner: task.owner, reviewer: task.reviewer, commit: task.refs.commit, receipt: task.sdlc, resolvedHead: this.findingHead(task), private: this.isPii(task), findings: this.reviewFindingSets(task) });
@@ -10638,6 +10646,11 @@ export class Tasks {
         if (by !== USER && suppliedFindings && this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("structured review of ordinary work is unavailable during a private turn");
         if (parsed.filter(item => item.severity === "nit").length > (this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS)) throw new PreEffectToolRefusal("review nit cap exceeded");
         if (report?.items.length && !report.head && this.d.sdlc?.config().mode === "enforce") throw new PreEffectToolRefusal("a finding report requires a resolvable full reviewed head in enforce");
+        if (this.d.sdlc?.config().mode === "enforce" && missingReopenReason.length) {
+          const settled = missingReopenReason.map(({ item, disposition, by }) =>
+            item.id + " (" + disposition + " by " + (by === USER ? "the person" : by) + ")").join(", ");
+          throw new PreEffectToolRefusal(`Settled findings need a reason to reopen: ${settled}. Re-file hub_review with reopen_reason on each finding or omit those findings.`);
+        }
         const current = findingsForHead(proposedSets(task), findingHead);
         if (current.length > 64) throw new PreEffectToolRefusal("one reviewed head supports at most 64 distinct finding IDs");
         if (verdict === "approved" && this.d.sdlc?.config().mode === "enforce" && findingTally(current).openImportant) throw new PreEffectToolRefusal("approval blocked: open important review findings on this head");
@@ -10741,10 +10754,22 @@ export class Tasks {
     // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
     const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...(checkout ? { checkout } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(securityRecord && !pii ? { securityPass: { ...securityRecord, ...((reviewedHead ?? findingHead) ? { head: (reviewedHead ?? findingHead)! } : {}) } } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const lifecycleOn = (this.d.sdlc?.config().mode ?? "off") !== "off";
+    const reopenedWithoutReason = lifecycleOn ? missingReopenReason.map(({ item }) => item.id) : [];
+    const acceptedReopens = settledReopens.filter(entry => entry.disposition === "accepted" && entry.item.reopen_reason);
+    const notifyAcceptedReopens = () => {
+      if (!lifecycleOn || !acceptedReopens.length) return;
+      const details = pii || withheld || observerExcluded ? String(acceptedReopens.length) + " previously accepted findings"
+        : acceptedReopens.map(({ item }) => item.id).join(", ");
+      this.releaseNotice(`task #${task.id}: reopened ${details} after person acceptance`);
+    };
+    const result = (saved: Task) => reopenedWithoutReason.length
+      ? { ...saved, reopenedWithoutReason } : saved;
     if (verdict === "approved") {
       const capacity = this.capacityBefore(task);
       this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
+      notifyAcceptedReopens();
       this.recordConsideredAfter(next, parsed.filter(finding => finding.disposition === "false_positive"), "review", findingHead ?? reviewedHead);
       this.writePlannerNotices(next, capacity, next.state === "approved");
       if (next.owner) {
@@ -10765,10 +10790,11 @@ export class Tasks {
       this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
       this.releaseNotice(`task #${next.id}: review saved but finding follow-up proposal unavailable`, () => this.proposeFindingFollowUps(next, by, withheld));
       this.releaseNotice(`task #${next.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(next, by, withheld));
-      return next;
+      return result(next);
     }
     this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: evidenceOnly ? task.rejections : task.rejections + 1 }, note, flag, task.history.length);
+    notifyAcceptedReopens();
     this.recordConsideredAfter(rejected, parsed.filter(finding => finding.disposition === "false_positive"), "review", findingHead ?? reviewedHead);
     void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld || observerExcluded);
     if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
@@ -10785,7 +10811,7 @@ export class Tasks {
     if (withdrawing) {
       this.releaseNotice(`task ${this.publicTitle(rejected)}: could not tell its owner the approval was withdrawn`, () =>
         this.tell(rejected, `Task #${rejected.id}: ${by} withdrew approval and requests changes. Review the findings, then call hub_task_done with the updated head.`, pii));
-      return rejected;
+      return result(rejected);
     }
     if (!evidenceOnly && rejected.rejections >= (this.d.escalateAfter?.() ?? ESCALATE_AFTER)) {
       let moved: Task;
@@ -10798,18 +10824,18 @@ export class Tasks {
         // meanwhile (#254), a failed board write, a superseded move) still throws. assignOwner keeps throwing for
         // the ready offer's retry (#231).
         if (!(e instanceof AssignmentUndeliveredError)) throw e;
-        return e.task;
+        return result(e.task);
       }
-      if (moved.owner !== rejected.owner) return moved;
+      if (moved.owner !== rejected.owner) return result(moved);
       // Nobody to escalate to: the owner still has to hear the verdict and the note.
       this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${moved.owner ?? "its owner"} changes were requested again`, () =>
         this.tell(moved, `Task #${moved.id}: ${by} requests changes again.${note ? ` ${this.screen(moved, note, "review note", moved.owner, withheld)}` : ""} Nobody else can take it; fix it and call hub_task_done again.`, pii, "owner", observerExcluded));
-      return moved;
+      return result(moved);
     }
     const reopened = this.d.board.update(rejected.id, HUB, "reopened", { state: "in_progress" });
     this.releaseNotice(`task ${this.publicTitle(reopened)}: could not tell ${reopened.owner ?? "its owner"} changes were requested`, () =>
       this.tell(reopened, `Task #${reopened.id}: ${by} requests changes.${note ? ` ${this.screen(reopened, note, "review note", reopened.owner, withheld)}` : ""} Fix it and call hub_task_done again.`, pii, "owner", observerExcluded));
-    return reopened;
+    return result(reopened);
   }
 
   /**

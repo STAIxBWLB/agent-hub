@@ -19462,6 +19462,7 @@ var init_hub_tools = __esm(() => {
         description: "principal: the lower-trust actor; control: the check that was meant to hold; resource: what is affected; result: what was observed"
       },
       blocker: boundaryField,
+      reopen_reason: { ...boundaryField, description: "Why a false_positive or person-accepted finding should reopen. Required in enforce." },
       origin: { type: "string", enum: ["introduced", "pre_existing"] }
     } }
   };

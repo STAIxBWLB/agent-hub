@@ -12,6 +12,7 @@ export interface ReviewFinding {
   path?: string;
   disposition: "open" | "fixed" | "false_positive" | "accepted";
   rationale?: string;
+  reopen_reason?: string;
   anchor?: ReviewAnchor;
   /** #1403 A1, important security findings only (an enabled lifecycle). `needs_validation` is a source-grounded hypothesis blocked on `blocker`; it never blocks approval. */
   state?: "confirmed" | "needs_validation";
@@ -55,7 +56,7 @@ function boundaryOf(raw: unknown): FindingBoundary {
 }
 const NEEDS_SECURITY_FIELDS = "an important security finding needs state (confirmed or needs_validation) and boundary {principal, control, resource, result}: the lower-trust principal, the control that was meant to hold, the resource affected and the result observed; a missing best practice or a guessed deployment fact is not a finding";
 /** Supplied findings are validated independently of lifecycle mode, before any board effect. */
-export function parseReviewFindings(raw: unknown, options: { person: boolean; maxNits: number; contract?: FindingContract }): ReviewFinding[] {
+export function parseReviewFindings(raw: unknown, options: { person: boolean; maxNits: number; contract?: FindingContract; reopenReason?: boolean }): ReviewFinding[] {
   if (typeof options.person !== "boolean" || !Number.isSafeInteger(options.maxNits) || options.maxNits < 0 || options.maxNits > MAX_ITEMS) return fail("invalid finding authority or nit limit");
   const contract = options.contract ?? "off";
   if (contract !== "off" && contract !== "required" && contract !== "stored") return fail("invalid finding contract");
@@ -68,7 +69,7 @@ export function parseReviewFindings(raw: unknown, options: { person: boolean; ma
   const result = Array.from({ length: raw.length }, (_, index): ReviewFinding => {
     const entry = descriptors[String(index)];
     if (!entry || !Object.hasOwn(entry, "value") || !entry.enumerable) return fail("finding array accessors refused");
-    const item = fields(entry.value, contract === "off" ? BASE_FIELDS : [...BASE_FIELDS, ...SECURITY_FIELDS]), id: unknown = item.id?.value, pass: unknown = item.pass?.value;
+    const item = fields(entry.value, contract === "off" ? BASE_FIELDS : [...BASE_FIELDS, ...SECURITY_FIELDS, ...(contract === "stored" || options.reopenReason ? ["reopen_reason"] : [])]), id: unknown = item.id?.value, pass: unknown = item.pass?.value;
     const severity: unknown = item.severity?.value, disposition: unknown = item.disposition?.value;
     if (typeof id !== "string" || !/^[A-Za-z0-9._:-]+$/.test(id) || Buffer.byteLength(id) > 96 || ids.has(id)) return fail("invalid or duplicate finding id");
     ids.add(id);
@@ -77,6 +78,7 @@ export function parseReviewFindings(raw: unknown, options: { person: boolean; ma
     if (disposition !== "open" && disposition !== "fixed" && disposition !== "false_positive" && disposition !== "accepted") return fail("invalid finding disposition");
     const path = item.path ? text(item.path.value, 512, true) : undefined;
     const rationale = item.rationale ? text(item.rationale.value, 2048, false) : undefined;
+    const reopenReason = item.reopen_reason ? text(item.reopen_reason.value, 512, false) : undefined;
     const anchor = item.anchor ? parseReviewAnchor(item.anchor.value) : undefined;
     if (path !== undefined && anchor && path !== anchor.path) return fail("path and anchor.path differ; use the same task-scoped file path");
     if (disposition === "accepted" && (!options.person || !rationale)) return fail("accepted findings require a person and rationale");
@@ -92,7 +94,7 @@ export function parseReviewFindings(raw: unknown, options: { person: boolean; ma
       if (state === "needs_validation" && blocker === undefined) return fail("a needs_validation finding names its blocker: the missing fact that settles it");
       if (state === "confirmed" && blocker !== undefined) return fail("a confirmed finding carries no blocker; use needs_validation for a hypothesis blocked on a named fact");
     }
-    return { id, pass, severity, disposition, ...(path !== undefined ? { path } : {}), ...(rationale !== undefined ? { rationale } : {}), ...(anchor ? { anchor } : {}),
+    return { id, pass, severity, disposition, ...(path !== undefined ? { path } : {}), ...(rationale !== undefined ? { rationale } : {}), ...(anchor ? { anchor } : {}), ...(reopenReason === undefined ? {} : { reopen_reason: reopenReason }),
       ...(state !== undefined ? { state } : {}), ...(boundary !== undefined ? { boundary } : {}), ...(blocker !== undefined ? { blocker } : {}), ...(origin !== undefined ? { origin } : {}) } as ReviewFinding;
   });
   if (result.filter(item => item.severity === "nit").length > options.maxNits) return fail("nit limit exceeded");
@@ -128,6 +130,7 @@ const SECURITY_KEYS = ["state", "boundary", "blocker", "origin"] as const;
  */
 function merged(prior: ReviewFinding | undefined, item: ReviewFinding): ReviewFinding {
   const next: ReviewFinding = { ...prior, ...item };
+  if (item.reopen_reason === undefined) delete next.reopen_reason;
   for (const key of SECURITY_KEYS) if (item[key] === undefined) delete next[key];
   if (prior && blocksApproval(prior) && item.disposition === "open" && !blocksApproval(item)) {
     next.severity = "important";

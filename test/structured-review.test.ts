@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Board, type Task } from "../src/hub/board.ts";
+import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
@@ -44,7 +44,7 @@ function rig(mode: SdlcMode = "off", options: Partial<TasksDeps> = {}) {
   };
   return { cwd, board, bus, tasks, deps, policy, routing, notices, shared, create, reopen };
 }
-const submit = (tasks: Tasks, id: number, findings: unknown, verdict = "changes_requested", by = "claude", head: string | undefined = A): Promise<Task> =>
+const submit = (tasks: Tasks, id: number, findings: unknown, verdict = "changes_requested", by = "claude", head: string | undefined = A): ReturnType<Tasks["review"]> =>
   Reflect.apply(tasks.review, tasks, [by, id, verdict, undefined, undefined, head, undefined, findings]);
 
 test("S3 enforce refuses open Important approval before any board effect", async () => {
@@ -403,4 +403,56 @@ test("#1436 the same semantic id on two unrelated tasks still files exactly one 
 test("#1436 positionalFindingId names review-local labels only", () => {
   for (const id of ["N1", "F5", "B1", "nit-1", "nit1", "3", "T7", "finding-12", "issue_3", "bugs:N1", "compliance:F5"]) expect(positionalFindingId(id), id).toBe(true);
   for (const id of ["carried", "sha256-pin", "md5", "utf8", "N", "reclassified", "security:carried", "compliance:hub-task-id-written-as-github-ref", "follow-up-fixed", "nit-"]) expect(positionalFindingId(id), id).toBe(false);
+});
+
+for (const disposition of ["false_positive", "accepted"] as const) {
+  test("a settled " + disposition + " finding needs a reopen reason in enforce", async () => {
+    const r = rig("advise"), row = r.create();
+    const item = (extra: Record<string, unknown> = {}) => finding("reopen-fixture", { pass: "bugs", ...extra });
+    await submit(r.tasks, row.id, [item({ disposition, rationale: "Initial settlement" })], "changes_requested", "user");
+    r.policy.head = B; r.reopen(row.id); r.policy.mode = "enforce";
+    const before = r.board.get(row.id)!;
+    await expect(submit(r.tasks, row.id, [item()], "changes_requested", "claude", B))
+      .rejects.toThrow(/reopen-fixture.*by the person.*hub_review.*reopen_reason/);
+    expect(r.board.get(row.id)).toEqual(before);
+    await expect(submit(r.tasks, row.id, [item({ reopen_reason: "é".repeat(257) })], "changes_requested", "claude", B))
+      .rejects.toThrow(/invalid bounded finding text/);
+    expect(r.board.get(row.id)).toEqual(before);
+    const saved = await submit(r.tasks, row.id, [item({ reopen_reason: "New evidence changes the assessment" })], "changes_requested", "claude", B);
+    expect(saved.reopenedWithoutReason).toBeUndefined();
+    expect(saved.history.findLast(entry => entry.event === "changes_requested")?.reviewFindings?.items[0]?.reopen_reason)
+      .toBe("New evidence changes the assessment");
+    expect(r.notices.some(note => note.includes("reopened reopen-fixture after person acceptance"))).toBe(disposition === "accepted");
+  });
+}
+
+test("advise saves and reports a reasonless reopen, while lifecycle off rejects reopen_reason", async () => {
+  const r = rig("advise"), row = r.create();
+  const item = (extra: Record<string, unknown> = {}) => finding("reopen-fixture", { pass: "bugs", ...extra });
+  await submit(r.tasks, row.id, [item({ disposition: "false_positive" })]);
+  r.policy.head = B; r.reopen(row.id);
+  r.policy.mode = "off";
+  await expect(submit(r.tasks, row.id, [item({ reopen_reason: "New evidence" })], "changes_requested", "claude", B))
+    .rejects.toThrow(/unknown finding field/);
+  r.policy.mode = "advise";
+  const saved = await submit(r.tasks, row.id, [item()], "changes_requested", "claude", B);
+  expect(saved.reopenedWithoutReason).toEqual(["reopen-fixture"]);
+  expect(saved.history.findLast(entry => entry.event === "changes_requested")?.reviewFindings?.items[0]?.disposition).toBe("open");
+});
+
+test("reopen reasons are screened with finding rationale and stay out of public history if uncleared", async () => {
+  const reason = "UNCLEARED_REOPEN_CANARY";
+  const r = rig("advise", { piiScreen: async text => text.includes(reason)
+    ? { label: "unknown", miss: "failed", ms: 0 }
+    : { label: "clear", ms: 0 } });
+  r.routing.signals.pii_screen = "local";
+  const row = r.create();
+  const item = finding("review-reopen-screen", { pass: "bugs" });
+  await submit(r.tasks, row.id, [{ ...item, disposition: "accepted", rationale: "Initial settlement" }], "changes_requested", "user");
+  r.policy.head = B; r.reopen(row.id);
+  const saved = await submit(r.tasks, row.id, [{ ...item, reopen_reason: reason }], "changes_requested", "claude", B);
+  expect(saved.history.findLast(entry => entry.event === "changes_requested")?.withheld).toBe(true);
+  expect(JSON.stringify(r.tasks.publicView(saved, true))).not.toContain(reason);
+  expect(r.notices.some(note => note.includes("after person acceptance"))).toBe(true);
+  expect(r.notices.join("\n")).not.toContain(reason);
 });
