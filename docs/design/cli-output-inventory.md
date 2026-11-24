@@ -200,6 +200,46 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | agents | Delegated / no direct output call |
 | doctor | fail (2), console.log (3), formatMemoryStaleAnchors (1), printOutput (2), renderOrphanCleanup (1), renderDoctor (1) |
 
+## Inline literal output
+
+Widths for single literal strings emitted directly from CLI handlers. No wrapping is applied by these call sites.
+Interpolated and daemon-supplied strings require runtime fixtures. They are counted above but have no width here.
+
+| Command | Text source | Stream | Literal width |
+| --- | --- | --- | ---: |
+| recovery | src/cli/main.ts:1035 | stdout | 29 |
+| recovery | src/cli/main.ts:1068 | stdout | 60 |
+| projects | src/cli/main.ts:1160 | stdout | 45 |
+| ui | src/cli/main.ts:1176 | stdout | 57 |
+| ui | src/cli/main.ts:1191 | stderr | 112 |
+| ui | src/cli/main.ts:1196 | stdout | 76 |
+| init | src/cli/main.ts:1317 | stderr | 115 |
+| models | src/cli/main.ts:1584 | stdout | 11 |
+| say | src/cli/main.ts:1608 | stdout | 46 |
+| roadmap | src/cli/main.ts:1812 | stdout | 46 |
+| deliverables | src/cli/main.ts:2047 | stdout | 70 |
+| sdlc | src/cli/main.ts:2152 | stdout | 29 |
+| ask | src/cli/main.ts:2463 | stdout | 9 |
+| ask | src/cli/main.ts:2466 | stdout | 54 |
+| roster | src/cli/main.ts:2583 | stdout | 19 |
+| roster | src/cli/main.ts:2590 | stdout | 19 |
+| autonomy | src/cli/main.ts:2641 | stdout | 75 |
+| settings | src/cli/main.ts:2734 | stdout | 39 |
+| settings | src/cli/main.ts:2747 | stdout | 33 |
+| settings | src/cli/main.ts:2778 | stdout | 33 |
+| answer | src/cli/main.ts:2823 | stdout | 17 |
+| bench | src/cli/main.ts:2964 | stdout | 107 |
+| usage | src/cli/main.ts:3148 | stderr | 121 |
+| undo | src/cli/main.ts:3284 | stdout | 103 |
+| undo | src/cli/main.ts:3289 | stdout | 53 |
+| kill | src/cli/main.ts:3306 | stdout | 18 |
+| kill | src/cli/main.ts:3310 | stdout | 11 |
+| reset | src/cli/main.ts:3324 | stdout | 36 |
+| reset | src/cli/main.ts:3348 | stdout | 56 |
+| reset | src/cli/main.ts:3354 | stdout | 39 |
+| reset | src/cli/main.ts:3357 | stdout | 11 |
+| reset | src/cli/main.ts:3392 | stdout | 96 |
+
 ## Renderer candidates
 
 Source scan for top-level render and format functions. The file shows where the text originates. Layout references are direct, and indirect composition needs manual review.
@@ -273,46 +313,46 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/task-output.ts:renderGroom | CLI | - | blank, grid, heading, pair | 50 |
 | src/cli/task-output.ts:renderReleaseList | CLI | - | blank | 41 |
 | src/cli/task-output.ts:renderReleaseShow | CLI | - | Inline / indirect | 41 |
-| src/cli/upgrade-output.ts:renderUpgradePlan | CLI | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-output.ts:renderStoppedPlan | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/upgrade-output.ts:renderUpgradePlan | CLI | - | Inline / indirect | 55 |
+| src/cli/upgrade-output.ts:renderStoppedPlan | CLI | - | Inline / indirect | 56 |
 | src/cli/upgrade-output.ts:renderStoppedResults | CLI | - | Inline / indirect | 60 |
-| src/cli/upgrade-output.ts:renderRecoveryStatus | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/upgrade-output.ts:renderRecoveryStatus | CLI | - | Inline / indirect | 46 |
 | src/cli/upgrade-output.ts:renderBudgetResult | CLI | - | Inline / indirect | 27 |
 | src/cli/upgrade-presentation.ts:renderStep | CLI | - | Inline / indirect | 50 |
-| src/cli/upgrade-presentation.ts:renderPlan | CLI | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderOperation | CLI | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderBlocked | CLI | - | Inline / indirect | Unmeasured |
+| src/cli/upgrade-presentation.ts:renderPlan | CLI | - | Inline / indirect | 26 |
+| src/cli/upgrade-presentation.ts:renderOperation | CLI | - | Inline / indirect | 46 |
+| src/cli/upgrade-presentation.ts:renderBlocked | CLI | - | Inline / indirect | 76 |
 | src/cli/upgrade-presentation.ts:renderMenu | CLI | - | Inline / indirect | 17 |
-| src/cli/upgrade-presentation.ts:renderWait | CLI | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-presentation.ts:renderSummary | CLI | - | Inline / indirect | Unmeasured |
-| src/cli/upgrade-restore-state.ts:renderRestoreTransitionTable | CLI | - | table | Unmeasured |
-| src/cli/watch.ts:renderActivity | CLI | - | paint, wrap | Unmeasured |
+| src/cli/upgrade-presentation.ts:renderWait | CLI | - | Inline / indirect | 80 |
+| src/cli/upgrade-presentation.ts:renderSummary | CLI | - | Inline / indirect | 75 |
+| src/cli/upgrade-restore-state.ts:renderRestoreTransitionTable | CLI | - | table | 320 |
+| src/cli/watch.ts:renderActivity | CLI | - | paint, wrap | 31 |
 | src/cli/worktrees-output.ts:renderWorktrees | CLI | - | blank, grid, heading, moment | 32 |
 | src/cli/worktrees-output.ts:renderTidyPreview | CLI | - | blank, grid, heading, pair | 41 |
 | src/cli/worktrees-output.ts:renderTidyResult | CLI | - | grid, heading | 30 |
 | src/hub/bench.ts:formatRuns | Hub | - | Inline / indirect | 77 |
-| src/hub/bench.ts:formatReport | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/bench.ts:formatCompare | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/bench.ts:formatReport | Hub | - | Inline / indirect | 99 |
+| src/hub/bench.ts:formatCompare | Hub | - | Inline / indirect | 99 |
 | src/hub/checkpoint-fields.ts:renderCheckpoint | Hub | - | Inline / indirect | 19 |
 | src/hub/claude-failure-stage.ts:formatClaudeFailure | Hub | - | Inline / indirect | 51 |
 | src/hub/delivery-hints.ts:renderHeldHint | Hub | - | Inline / indirect | 43 |
 | src/hub/delivery-public.ts:renderHeldInbox | Hub | - | Inline / indirect | 0 |
-| src/hub/dogfood.ts:formatDogfood | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/dogfood.ts:formatDogfood | Hub | - | Inline / indirect | 43 |
 | src/hub/envelope.ts:renderDigest | Hub | - | Inline / indirect | 1483 |
-| src/hub/guidance-variants.ts:renderGuidanceVariantV1 | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/guidance-variants.ts:renderGuidanceVariantV1 | Hub | - | Inline / indirect | Guidance payload for agents |
 | src/hub/invocations.ts:renderInvocationResult | Hub | - | Inline / indirect | 109 |
-| src/hub/memory-profile-check.ts:formatMemoryProfileCheck | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/memory-stale-anchors.ts:formatMemoryStaleAnchors | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/report.ts:formatUsage | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/memory-profile-check.ts:formatMemoryProfileCheck | Hub | - | Inline / indirect | 27 |
+| src/hub/memory-stale-anchors.ts:formatMemoryStaleAnchors | Hub | - | Inline / indirect | 59 |
+| src/hub/report.ts:formatUsage | Hub | - | Inline / indirect | Internal report section, no separate view |
 | src/hub/report.ts:formatReport | Hub | - | Inline / indirect | 81 |
-| src/hub/report.ts:formatPerson | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/report.ts:formatPerson | Hub | - | Inline / indirect | 14 |
 | src/hub/report.ts:formatTaskReport | Hub | - | Inline / indirect | 116 |
-| src/hub/research.ts:formatResearch | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/research.ts:formatResearch | Hub | - | Inline / indirect | 106 |
 | src/hub/research.ts:formatAddons | Hub | - | Inline / indirect | 108 |
-| src/hub/review-brief.ts:renderFindingAnchor | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/review-brief.ts:renderSpecTaskReport | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/review-brief.ts:renderCodeSymbols | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/review-brief.ts:renderReviewBrief | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/review-comments.ts:renderReviewComment | Hub | - | Inline / indirect | Unmeasured |
-| src/hub/schedules.ts:formatInZone | Hub | - | Inline / indirect | Unmeasured |
+| src/hub/review-brief.ts:renderFindingAnchor | Hub | - | Inline / indirect | 32 |
+| src/hub/review-brief.ts:renderSpecTaskReport | Hub | - | Inline / indirect | 57 |
+| src/hub/review-brief.ts:renderCodeSymbols | Hub | - | Inline / indirect | Measured within review brief |
+| src/hub/review-brief.ts:renderReviewBrief | Hub | - | Inline / indirect | 132 |
+| src/hub/review-comments.ts:renderReviewComment | Hub | - | Inline / indirect | Owner-facing hub delivery |
+| src/hub/schedules.ts:formatInZone | Hub | - | Inline / indirect | 16 |
 | src/hub/ui.ts:renderDashboard | Hub | - | Inline / indirect | Web dashboard |
