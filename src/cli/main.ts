@@ -2320,6 +2320,7 @@ const commands: Record<string, () => Promise<void> | void> = {
           return;
         }
         if (!view || view.status === "none") return console.log(`task #${task}: no spec read-back; start one with ahub sdlc readback start ${task}`);
+        if (view.status === "private") return console.log(`task #${task}: read-back ${view.readback} belongs to a private task; its report is not printed here`);
         if (view.status === "requested") return console.log(`task #${task}: read-back ${view.readback} requested from ${view.reader}; the reader has not reported yet`);
         console.log(`task #${task}: read-back ${view.readback} of ${view.repo}#${view.issue} by ${view.reader}`);
         if (view.report.cannot_paraphrase) console.log(`cannot paraphrase: ${view.report.cannot_paraphrase}`);

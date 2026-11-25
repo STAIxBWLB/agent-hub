@@ -8396,7 +8396,7 @@ export class Tasks {
     const full = by === USER || this.d.bus.isRostered(by) && (task.owner === by && this.isConfiguredPlanner(by) || task.reviewer === by && !!this.d.roles?.[by]?.includes("reviewer"));
     // refusal:by-design human-authority: who owns, plans and reviews a task are board assignments a person or the planner sets, so a peer the board did not name has nothing it can run to gain the read.
     if (!full && latest.reader !== by) throw new PreEffectToolRefusal(`read-back ${latest.id} is for the person, the task's planner, its owner, its reviewer or the reader`);
-    if (this.isPii(task)) return { task: task.id, status: "private" as const };
+    if (this.isPii(task)) return { task: task.id, status: "private" as const, readback: latest.id };
     return { task: task.id, readback: latest.id, repo: latest.repo, issue: latest.issue, lastEditedAt: latest.lastEditedAt, reader: latest.reader,
       ...(latest.report ? { report: latest.report, missing_refs: latest.missingRefs ?? [] } : { status: "requested" as const }) };
   }
