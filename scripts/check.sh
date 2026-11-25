@@ -77,6 +77,7 @@ if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then
   step "roles check" bun scripts/check-roles.ts
   step "hardcoded-values inventory" bun scripts/inventory-hardcoded-values.ts --check   # #719 (#1180): unknown keys may only shrink, never grow
   step "unused exports" bun scripts/unused-exports.ts --check   # #1649: an export of src/ that nothing imports may only shrink, never grow
+  step "cli output inventory" bun scripts/cli-output-inventory.ts --check   # #1654 T4: a help or renderer change that ages the committed snapshot fails here, not at review
   step "refusal continuations" bun scripts/refusal-inventory.ts --check
   step "readme facts" bun scripts/readme-facts.ts   # #1268: generated doc facts match package.json and .bun-version (`--write` fixes)
   step "bundle freshness" bun scripts/build.mjs --check

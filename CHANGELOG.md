@@ -24,6 +24,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Follow an accepted review-checklist line and propose its removal when it stops helping: an accept records the line's profile, class and criterion, the time and its 30-day unmet rate as a fixed suffix on the card's own note, `ahub learn list --accepted` reports each followed line as `insufficient`, `helping`, `no-change` or `worse` beside the checklist size, and a line with 5 reviewed tasks in its window and no improvement gets one removal card that removes only that line through the settings writer (`ahub settings undo` restores it), while rejecting it closes the card and restarts the window. A hand-written or edited line is `untracked` and never removed, PII tasks and evidence-only verdicts never count, and at the 16-line cap a new candidate's card names the weakest followed line. Refs #1642, hub task 1108.
 
+- Gate the CLI output inventory: `scripts/check.sh` runs `bun scripts/cli-output-inventory.ts --check` with the once-only steps, so a help or renderer change that ages the dated snapshot fails the gate instead of surfacing at review. The step runs once per gate on each operating system, never once per shard. Refs #1654, hub task 1112.
+
 ## 0.46.1
 
 - Resolve `@staix/agent-mem` 0.38.0 in `bun.lock` so the repository's tests and CI run on the version a fresh install resolves; the declared range `>=0.33.0 <1.0.0` is unchanged. The recovery package refuses a ranged `@staix/cli-output` pin with the output message again when agent-mem declares it. Refs #1664, hub task 1084.
