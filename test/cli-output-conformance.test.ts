@@ -529,6 +529,10 @@ describe("CLI output standard v1: raw console output is a shrink-only baseline (
       expect(RAW_CALL.test(line) && !OUTPUT_PATHS.test(line)).toBe(false);
     }
   });
+  test("main.ts warn() and warnLine() are one function, and error-format re-exports the one formatter", () => {
+    expect(readFileSync(join(ROOT, "src/cli/main.ts"), "utf8")).toContain("const warn = warnLine;");
+    expect(readFileSync(join(ROOT, "src/cli/error-format.ts"), "utf8")).toContain('export { warningLines } from "./warn-line.ts";');
+  });
   test("a warning is `ahub: warning: <what>: <why>` with an optional next step, a marker only on a terminal", () => {
     expect(warningLines("never-ask: nothing asks", undefined, false, false)).toEqual(["ahub: warning: never-ask: nothing asks"]);
     expect(warningLines("w", "ahub x --y", true, true)).toEqual(["! ahub: warning: w", "  -> ahub x --y"]);

@@ -118,7 +118,7 @@ test("room CLI read output projects only ids and uses JSON only when explicitly 
   const json = await printed(async () => { await runRoomCommand(["status", "example", "--json"], request); });
   expect(JSON.parse(json.join("\n"))).toEqual([row]);
   const human = await printed(async () => { await runRoomCommand(["status", "example"], request); });
-  expect(human[0]).toContain("Room status");
+  expect(human[0]).toContain("Room status"); expect(human[0]).toMatch(/Room status\s+1$/);
   expect(human.join("\n")).toContain(owner);
   expect(human.join("\n")).toContain(member);
   expect(human.join("\n")).not.toContain("private");

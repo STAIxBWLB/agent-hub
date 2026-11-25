@@ -68,11 +68,11 @@ test("person inbox purged stubs and local dispositions print metadata only with 
   for (const state of ["done", "discarded", "expired"]) {
     const item = Object.defineProperty(meta({ state }), "body", { get() { throw new Error("PURGED_BODY_CANARY must not be read"); } });
     const shown = await output(["inbox", "show", id], { ok: true, item });
-    expect(shown.requests).toEqual([{ t: "room", op: "inbox_show", input: { id } }]); expect(shown.lines.join("\n")).toContain(`Room inbox ${id}: ${state} (body unavailable)`);
+    expect(shown.requests).toEqual([{ t: "room", op: "inbox_show", input: { id } }]); expect(shown.lines.join("\n")).toContain(`Room inbox ${id}: ${state} (body unavailable)`); expect(shown.lines.join("\n")).not.toContain("PURGED_BODY_CANARY");
   }
   for (const [action, state] of [["done", "done"], ["discard", "discarded"]]) {
     const result = await output(["inbox", action!, id], { ok: true, item: { ...meta({ state }), body: "BODY_CANARY", artifact: "KEY_CANARY" } });
-    expect(result.requests).toEqual([{ t: "room", op: `inbox_${action}`, input: { id } }]); expect(result.lines.join("\n")).toContain(`Room inbox ${id}: ${state}`);
+    expect(result.requests).toEqual([{ t: "room", op: `inbox_${action}`, input: { id } }]); expect(result.lines.join("\n")).toContain(`Room inbox ${id}: ${state}`); for (const canary of ["BODY_CANARY", "KEY_CANARY"]) expect(result.lines.join("\n")).not.toContain(canary);
   }
 });
 

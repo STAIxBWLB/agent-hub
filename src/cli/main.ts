@@ -142,7 +142,8 @@ import { agentShellCause, classifyPeerCommand, cliCommandLabel, detectCliIdentit
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { installedVersions } from "./console-versions.ts";
-import { errorLines, failureExitCode, warningLines } from "./error-format.ts";
+import { errorLines, failureExitCode } from "./error-format.ts";
+import { warnLine } from "./warn-line.ts";
 import { asciiMarkers, paint, permissionBoundary, resolveColor, streamEnv, wrap, type Span } from "./console-state.ts";
 import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderStatusDefault, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
@@ -586,9 +587,7 @@ function startupDiagnostic(error: unknown): string {
 }
 
 /** A stderr warning that does not end the command (standard v1, Messages). */
-function warn(message: string, next?: string): void {
-  console.error(warningLines(message, next, !!process.stderr.isTTY, asciiMarkers(process.env, process.argv.includes("--ascii"))).join("\n"));
-}
+const warn = warnLine;
 /**
  * CLI output standard v1, Messages: `ahub: <what failed>: <why>` on stderr; with a terminal on stderr it leads with the fail marker, and a piped line
  * keeps the plain `ahub: ` form so a script or agent matching it still works. `next` is a complete, copyable command printed on a second line (ASCII
@@ -865,7 +864,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     process.exit(code);
   }
   if (kind === "upgrade" && await stoppedUpgrade(to!, allStopped, display, yes, dry)) return;
-  if (kind === "upgrade") warn("Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode", "ahub settings set peers.kimi.start_mode headless");
+  if (kind === "upgrade") warn("Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode; to keep ACP, run the next command", "ahub settings set peers.kimi.start_mode headless");
   if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io), display.options);
   const plan = await makeUpgradePlan(kind, to ?? VERSION, cwd, undefined, conductorPeer);
   if (conductorPeer) await preflightConductorRecovery(plan, conductorPeer);
