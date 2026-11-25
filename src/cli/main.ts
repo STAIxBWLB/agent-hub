@@ -2955,7 +2955,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const quota = await hub.request({ t: "budget" });
       // CLI output standard v1: the default view answers "is it OK, and what do I do next"; every detail the older view printed stays behind --verbose (and --full, which adds the long ids).
       const data = { ...status, budget: quota.budget ?? {} };
-      printOutput(options.verbose || options.full ? renderStatus(data, options.columns, Date.now(), options.full) : renderStatusDefault(data, options.columns, Date.now(), asciiMarkers(process.env, args.includes("--ascii"))), options.color);
+      printOutput(options.verbose || options.full ? renderStatus(data, options.columns, Date.now(), options.full, asciiMarkers(process.env, args.includes("--ascii"))) : renderStatusDefault(data, options.columns, Date.now(), asciiMarkers(process.env, args.includes("--ascii"))), options.color);
       if (status.needs) { const pet = loadPetConfig(cwd); if (pet.enabled) console.log(renderPet(petView(status), false, pet.character)); }
       // #258: open long-term tasks and who holds them, as of this machine's last memory sync.
       if (status.memoryProfile ? status.memoryProfile.state === "ready" : memoryIndexExists(join(hubHome(), "memory"))) {
@@ -3124,7 +3124,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const events = readEvents(join(stateDir, "events.jsonl"), since());
     const data = by >= 0 ? summarizeByTask(events) : summarize(events);
     if (options.json) return console.log(JSON.stringify(data, null, 2));
-    printOutput(renderReport(data, options.columns, Date.now(), by >= 0), options.color);
+    printOutput(renderReport(data, options.columns, Date.now(), by >= 0, asciiMarkers(process.env, args.includes("--ascii"))), options.color);
   },
   specs: async () => {
     if (args[0] !== "stamp") { process.exitCode = runSpecs(args, cwd, loadConfig(cwd).specs); return; }

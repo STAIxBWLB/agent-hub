@@ -265,10 +265,18 @@ function contextText(p: any, now: number): string {
   if (!c) return "unknown";
   return `${c.used === null || c.used === undefined ? "unknown" : `${Math.round(c.used * 100)}%`}${c.freshness === "stale" ? " stale" : ""}${typeof c.measuredAt === "number" ? ` ${relative(c.measuredAt, now)}` : ""}${c.source ? ` ${c.source}` : ""}`;
 }
-export function renderStatus(data: StatusOutput, columns?: number, now = Date.now(), full = false): Span[][] {
+/** The header line does not wrap: when its context does not fit the terminal, the context moves to a wrapped hint line under a short header. */
+function fitHeader(report: LayoutReport, columns: number | undefined, name: string, context: string): LayoutReport {
+  if (columns === undefined || width(` ahub ${name}  ${context}`) <= columns) return report.header("ahub", name, context);
+  return report.header("ahub", name).note(context);
+}
+export function renderStatus(data: StatusOutput, columns?: number, now = Date.now(), full = false, ascii = false): Span[][] {
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
-  const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
-  if (data.cwd) out.push(...lines(data.cwd, columns));
+  // #1654 T3: the shared header, then a section mark per group. Every detail line below keeps its text, so a search for one still finds it.
+  const out: Span[][] = fitHeader(new LayoutReport(columns, ascii), columns, "Status", [data.version, `pid ${data.pid ?? "unknown"}`, `127.0.0.1:${data.controlPort ?? "unknown"}`].filter(Boolean).join("  ")).lines();
+  const mark = (name: string, count?: string) => { out.push(...(out.length && out.at(-1)!.length ? [[]] : []), ...new LayoutReport(columns, ascii).section(name, count).lines()); };
+  mark("Hub");
+  if (data.cwd) out.push(...detail("project", data.cwd, columns));
   if (data.runtimeModelsUnavailable === true) out.push(...lines("Runtime models unavailable: could not read a bounded model catalog; run ahub model list for the cause. For a known peer, use ahub model set <peer> <model> or ahub model clear <peer>; repair storage or reduce the retained peer catalog as indicated before listing again.", columns, "attention"));
   else if (Array.isArray(data.runtimeModels)) out.push(...renderRuntimeModels(data.runtimeModels.map(projectModelStatus).filter((row): row is RuntimeModelStatus => row !== null), columns));
   const timing = data.controlWriteTiming;
@@ -397,16 +405,18 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (typeof p.oldestQueuedAt === "number") out.push(...detail(`${id} oldest queued`, relative(p.oldestQueuedAt, now), columns, "muted"));
     return out;
   });
-  if (peerRows.length) out.push([], ...rows(head, peerRows, columns, peerDetails));
+  mark("Peers", peerRows.length ? String(peerRows.length) : undefined);
+  if (peerRows.length) out.push(...rows(head, peerRows, columns, peerDetails));
   else out.push(...lines("no peers attached yet (ahub claude | ahub codex | ahub kimi)", columns));
   if (settling) out.push([], ...lines("settling: the adapter has not confirmed these deliveries yet (Claude: reply or hub_delivery_done). Task state is independent.", columns, "muted"));
   if (data.taskWip) for (const [peer, value] of Object.entries(data.taskWip)) out.push(...detail(`${peer} planner WIP`, `${value.wip}/${value.wipLimit}${wipSplit(value)}`, columns));
   if (data.models?.backends?.length) {
-    out.push([], ...rows(["MODEL", "STATE", "ACTIVE", "REQUESTED", "ACTUAL", "PROVIDER"], data.models.backends.map(b => [span(backendLabel(b)), span(b.state ?? "unknown", stateTone(b.state ?? "")), span(b.active || "-"), span(b.requestedModel ?? "-"), span(b.actualModel ?? "-"), span(b.provider ?? "-")]), columns));
+    mark("Models", String(data.models.backends.length));
+    out.push(...rows(["MODEL", "STATE", "ACTIVE", "REQUESTED", "ACTUAL", "PROVIDER"], data.models.backends.map(b => [span(backendLabel(b)), span(b.state ?? "unknown", stateTone(b.state ?? "")), span(b.active || "-"), span(b.requestedModel ?? "-"), span(b.actualModel ?? "-"), span(b.provider ?? "-")]), columns));
     for (const b of data.models.backends) for (const [key, label] of [["coolingUntil", "cooling"], ["failingUntil", "dispatch held"]]) if (b[key!]) { const at = Date.parse(b[key!]); out.push(...detail(`${backendLabel(b)} ${label}`, `${Number.isFinite(at) ? relative(at, now) : "unknown"}${key === "coolingUntil" && typeof b.failures === "number" ? ` after ${b.failures} failures` : key === "failingUntil" ? "; no load moves until then" : ""}`, columns, "attention")); }
   }
   const counts = Object.entries(data.tasks ?? {}).map(([state, count]) => `${count} ${state}`).join(", ");
-  if (counts) out.push([], ...lines(`TASKS  ${counts} (ahub board)`, columns));
+  if (counts) { mark("Tasks"); out.push(...lines(`TASKS  ${counts} (ahub board)`, columns)); }
   if (data.personRun?.length) out.push(...lines(`WAITING ON YOU  ${data.personRun.map(id => `#${id}`).join(", ")} (person-run: no agent is offered it; ahub backlog list)`, columns, "attention"));
   return out;
 }
@@ -484,7 +494,7 @@ export function statusAttention(data: StatusOutput, now = Date.now()): Attention
  */
 export function renderStatusDefault(data: StatusOutput, columns?: number, now = Date.now(), ascii = false): Span[][] {
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
-  const report = new LayoutReport(columns, ascii).header("ahub", "Status", [data.version, data.pid !== undefined ? `pid ${data.pid}` : undefined, data.controlPort !== undefined ? `127.0.0.1:${data.controlPort}` : undefined].filter(Boolean).join("  "));
+  const report = fitHeader(new LayoutReport(columns, ascii), columns, "Status", [data.version, data.pid !== undefined ? `pid ${data.pid}` : undefined, data.controlPort !== undefined ? `127.0.0.1:${data.controlPort}` : undefined].filter(Boolean).join("  "));
   const attention = statusAttention(data, now);
   report.section("Attention", attention.length ? plural(attention.length, "item") : undefined);
   if (!attention.length) report.bullet("ok", "nothing needs attention");
@@ -823,12 +833,15 @@ export function renderExecutionBudgetStatus(budgets: unknown, columns?: number, 
   return [...lines("Execution budget", columns, "strong"), ...(Array.isArray(budgets) && !budgets.length ? lines("No execution budgets configured.", columns) : budgets === undefined ? lines("No matching execution budget.", columns) : fields(budgets, columns, now))];
 }
 /** Retain the report's coverage and attribution sentences; add sections and aligned counters for scanning. */
-export function renderReport(report: Report | TaskReport, columns?: number, now = Date.now(), byTask = false): Span[][] {
-  const out = lines(`period: ${report.from ? moment(report.from, now) : "-"} .. ${report.to ? moment(report.to, now) : "-"}`, columns, "muted");
+export function renderReport(report: Report | TaskReport, columns?: number, now = Date.now(), byTask = false, ascii = false): Span[][] {
+  // #1654 T3: the shared header and `▸` section marks; the period line and every sentence keep their words.
+  const out: Span[][] = new LayoutReport(columns, ascii).header("ahub", byTask ? "Report by task" : "Report").lines();
+  out.push(...lines(`period: ${report.from ? moment(report.from, now) : "-"} .. ${report.to ? moment(report.to, now) : "-"}`, columns, "muted"));
+  const mark = (name: string) => { out.push(...new LayoutReport(columns, ascii).section(name).lines()); };
   const formatted = byTask ? formatTaskReport(report as TaskReport) : formatReport(report as Report);
   if (!byTask) {
     const r = report as Report;
-    out.push([], ...lines("Counters", columns, "strong"), ...rows(["METRIC", "COUNT"], [
+    out.push([]); mark("Counters"); out.push(...rows(["METRIC", "COUNT"], [
       [span("messages"), span(r.messages.total, "number")], [span("overflow"), span(r.messages.overflow, "number")],
       [span("undeliverable"), span(r.messages.undeliverable, "number")], [span("messages per task"), span(r.messages.perTask, "number")],
       [span("overlap warnings"), span(r.overlaps.warnings, "number")], [span("task pairs"), span(r.overlaps.pairs, "number")],
@@ -842,7 +855,7 @@ export function renderReport(report: Report | TaskReport, columns?: number, now 
   for (const sentence of formatted.slice(1)) {
     const name = section(sentence);
     if (name !== previous) {
-      out.push([], ...lines(name, columns, "strong")); previous = name;
+      out.push([]); mark(name); previous = name;
       if (name === "Peers" && !byTask) out.push(...rows(["PEER", "TURNS", "BUSY", "TOKENS"], Object.entries((report as Report).peers).map(([peer, p]) => [span(peer, peerTone(peer)), span(p.turns ?? "unknown", "number"), span(`${p.busyMinutes}m`, "muted"), span(p.tokens || "unknown", "number")]), columns));
       if (name === "Tasks" && byTask) out.push(...rows(["TASK", "CLASS", "OUTCOME", "TURNS", "WALL"], Object.entries((report as TaskReport).tasks).map(([id, task]) => [span(`#${id}${task.pii ? " [pii]" : ""}`, "taskRef"), span(task.class ?? "unknown"), span(task.outcome ?? "unknown", stateTone(task.outcome ?? "")), span(task.turns, "number"), span(task.wallMs === null ? "unknown" : duration(task.wallMs), "muted")]), columns));
     }

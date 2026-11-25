@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { Report as PackageReport, errorLine, errorSpans, lineSpans, paint as packagePaint, terminalText as packageText, wrap as packageWrap, wrapSpans as packageWrapSpans } from "@staix/cli-output";
 import { sanitize } from "../src/hub/envelope.ts";
 import { renderHelp } from "../src/cli/help.ts";
+import { renderStatus, renderStatusDefault, renderReport } from "../src/cli/output.ts";
+import { summarize } from "../src/hub/report.ts";
+import { renderAuthorization, renderSdlcAudit, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "../src/cli/sdlc-output.ts";
 import { PALETTE, Report, TONE_ROLE, paint, table, wrap } from "../src/cli/console-state.ts";
 import { errorLines, failureExitCode } from "../src/cli/error-format.ts";
 import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, SGR_RESET, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
@@ -384,4 +387,46 @@ test("list views open with the standard header and a counted section, and print 
   const filled = renderQueue([{ id: 1, peer: "claude", state: "queued" }], 80, Date.now()).map(line => line.map(span => span.text).join(""));
   expect(filled[0]!.startsWith(" ahub Queue")).toBe(true);
   expect(filled.some(line => line.startsWith("▸ "))).toBe(true);
+});
+
+// #1654 T4: the grammar checks run over the real output of every command family moved onto the shared Report in T3, not over a sample report.
+describe("CLI output standard v1: each converted view follows the grammar (#1654 T4)", () => {
+  const A = "a".repeat(40), NOW = 1_800_000_000_000;
+  const peer = { state: "idle", doing: "", since: NOW - 60_000, tokens: 0 };
+  const status = { version: "0.40.0", pid: 4242, controlPort: 12345, cwd: "/work/project", peers: { claude: peer }, tasks: { in_progress: 2 } } as any;
+  const views: Record<string, (columns: number | undefined, ascii: boolean) => ReturnType<typeof renderSdlcMerge>> = {
+    "status --verbose": (c, a) => renderStatus(status, c, NOW, false, a),
+    "status": (c, a) => renderStatusDefault(status, c, NOW, a),
+    "report": (c, a) => renderReport(summarize([]), c, NOW, false, a),
+    "sdlc authorize-release": (c, a) => renderAuthorization({ version: "0.18.0", commit: A, by: "person", at: NOW - 60_000, id: "11111111-2222-3333-4444-555555555555", docs: { fresh: true, documents: 3, digest: A } }, c, NOW, a),
+    "sdlc merge": (c, a) => renderSdlcMerge({ task: 7, mode: "on", ran: false, decision: "refused", refused: ["auto_merge is off for this repository"] }, c, NOW, a),
+    "sdlc queue": (c, a) => renderSdlcQueue({ report: { repo: "owner/a-repository-with-a-long-name", complete: true, order: [830], rows: [{ pr: 830, tasks: [7], ready: false, head: A, after: [], blockers: ["required check is not successful"] }] } }, c, NOW, a),
+    "sdlc release": (c, a) => renderSdlcRelease({ report: { repo: "owner/repo", head: A, ready: false, native: "unverified", blockers: ["documents not fresh"] } }, c, NOW, a),
+    "sdlc status": (c, a) => renderSdlcStatus({ mode: "advise", rows: [{ id: 7, title: "task", stage: "implementation-review", mode: "advise", ready: false, actor: "owner/planner", next: "wait", blockers: ["no review"], receipt: { pr: 807 } }] }, c, NOW, a),
+    "sdlc explain": (c, a) => renderSdlcExplain({ mode: "advise", rows: [{ id: 7, title: "task", stage: "review", mode: "advise", ready: false, actor: "reviewer", next: "wait", blockers: [] }] }, c, NOW, a),
+    "sdlc metrics": (c, a) => renderSdlcMetrics({ since: null, tasks: 1, metrics: {}, bands: "off" }, c, NOW, a),
+    "sdlc costs": (c, a) => renderSdlcCosts({ rows: [{ repo: "owner/repo", pr: 830, reviewRounds: 1, ciRuns: 2, complete: true }] }, c, NOW, a),
+    "sdlc audit": (c, a) => renderSdlcAudit({ audit: { audit: "A1", task: 7, ref: A, profile: "standard", counts: { covered: 1 }, findings: {}, units: [], items: [] } }, c, NOW, a),
+  };
+  const text = (lines: ReturnType<typeof renderSdlcMerge>) => lines.map(line => line.map(span => span.text).join(""));
+  for (const [name, render] of Object.entries(views)) {
+    test(`${name}: header first, a section mark per group with one blank line before it, no trailing blank, no line over 24, 40 or 80 cells`, () => {
+      for (const columns of [24, 40, 80, undefined]) {
+        const lines = text(render(columns, false));
+        expect(lines[0], `${name} at ${columns}`).toMatch(/^ ahub /);
+        expect(lines.at(-1), `${name} at ${columns}: trailing blank`).not.toBe("");
+        for (const [i, line] of lines.entries()) {
+          if (line.startsWith("▸ ") && i > 1) expect(lines[i - 1], `${name} at ${columns}: blank before ${line}`).toBe("");
+          if (columns !== undefined) expect(Bun.stringWidth(line), `${name} at ${columns}: ${line}`).toBeLessThanOrEqual(columns);
+        }
+        for (let i = 1; i < lines.length; i++) expect(!(lines[i] === "" && lines[i - 1] === ""), `${name} at ${columns}: two blank lines`).toBe(true);
+      }
+    });
+    test(`${name}: --ascii swaps every glyph and keeps the same line count`, () => {
+      const unicode = text(render(80, false)), ascii = text(render(80, true));
+      expect(ascii.length).toBe(unicode.length);
+      expect(ascii.join("\n")).not.toMatch(/[\u2713\u2717\u26a0\u25b8\u2192]/);
+      expect(unicode.some(line => line.startsWith("▸ ")) || name === "report" || name === "status --verbose").toBe(true);
+    });
+  }
 });
