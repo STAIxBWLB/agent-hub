@@ -3,6 +3,7 @@
 // semantic tones, readable times (`2026-10-25 14:20 UTC (3h05m ago)`, never a raw ISO string). `--json` is the caller's
 // branch and prints the hub's reply untouched, so nothing here may be the only copy of a field.
 import { duration, plural, relative, table, terminalText, wrap, type Span, type Tone } from "./console-state.ts";
+import { readbackSummary, type ReadbackView } from "../hub/spec-readback.ts";
 
 type Line = Span[];
 /** Configuration remains restart-bound; the claim is caller provenance, not inferred release consent. */
@@ -128,7 +129,7 @@ function receiptLine(receipt: any): string {
     receipt?.pr ? `PR #${receipt.pr}` : undefined, receipt?.head ? `head ${short(receipt.head)}` : undefined].filter(Boolean);
   return parts.length ? parts.join(", ") : "no issue or PR recorded";
 }
-function taskBlock(row: any, columns: number | undefined, detail: boolean): Line[] {
+function taskBlock(row: any, columns: number | undefined, detail: boolean, readback = true): Line[] {
   const id = `#${row.id}`;
   const out: Line[] = para(`${id}  ${row.title ?? ""}`, columns, undefined, "", 6)
     .map((line, i) => i === 0 ? [s(id, "taskRef"), s(line[0]!.text.slice(id.length), "strong")] : line);
@@ -136,6 +137,10 @@ function taskBlock(row: any, columns: number | undefined, detail: boolean): Line
   out.push(...pair("next", row.next ?? "unknown", columns, 11, undefined, "  "));
   out.push(...pair("receipt", receiptLine(row.receipt), columns, 11, undefined, "  "));
   out.push(...bullets("blockers", list(row.blockers), columns, "attention", "  "));
+  if (readback && row.readback) {
+    const view = row.readback as ReadbackView;
+    out.push(...pair("read-back", readbackSummary(view), columns, 11, view.state === "stale" || view.state === "unavailable" ? "attention" : undefined, "  "));
+  }
   if (!detail) return out;
   if (row.spec) out.push(...pair("spec", `issue #${row.spec.issue}, ${row.spec.state}`, columns, 11, undefined, "  "));
   if (row.playbook) out.push(...pair("playbook", row.playbook, columns, 11, undefined, "  "));
@@ -183,7 +188,8 @@ function lifecycleView(reply: any, columns: number | undefined, detail: boolean)
   if (!detail || rows.length > 1) {
     out.push(...grid(["ID", "STAGE", "READY", "ACTOR", "PR"], rows.map(row => [s(`#${row.id}`, "taskRef"), s(row.stage ?? "unknown"), s(yes(row.ready), readyTone(row.ready)), s(row.actor ?? "-"), s(row.receipt?.pr ? `#${row.receipt.pr}` : "-")]), columns));
   }
-  for (const row of rows) out.push(blank, ...taskBlock(row, columns, detail));
+  // #1658: the read-back line belongs to one task's view; a list of rows has no single issue body to read it against.
+  for (const row of rows) out.push(blank, ...taskBlock(row, columns, detail, detail || rows.length === 1));
   if (reply?.truncated) out.push(blank, ...para("showing the first 100 tasks; name a task to read one", columns, "muted"));
   return out;
 }

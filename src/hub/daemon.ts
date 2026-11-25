@@ -60,6 +60,7 @@ import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-a
 import { MERGE_READBACK_INTERVAL_MS } from "./sdlc-merge.ts";
 import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunnerState, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
+import { readbackLine } from "./spec-readback.ts";
 import { isDenied, sbplString } from "../local/deny.ts";
 import { hostShellPath } from "./host-executable.ts";
 import { supersededDeliveryReason, deliveryTaskContext } from "./delivery-superseded.ts";
@@ -6003,6 +6004,14 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
+    if (op === "hub_readback_report") {
+      // #1658 T4: the report is the bound reader's; a private, PII or review-observer turn writes none.
+      // refusal:by-design operator-knowledge: whether a turn is private, PII or a review observer's is the console operator's setting, so no command the caller runs lifts it.
+      if (piiTurn || turns.get(by)?.private || contextPii(by) || reviewTurn || reviewObserverInput(by)) throw new PreEffectToolRefusal("read-back reports are unavailable in private or review input; retry in a public reader turn");
+      // refusal:by-design world-action: recovery and shutdown are the hub's own state, released by the hub, so the write waits for that release rather than a caller command.
+      if (stopping || recoveryActive() || bus.isRecoveryHeld) throw new PreEffectToolRefusal("recovery or shutdown holds read-back writes; wait for release and retry");
+      return JSON.stringify(await tasks.specReadbackReport(by, a, () => stopping || recoveryActive() || bus.isRecoveryHeld ? "read-back write held by recovery or shutdown" : undefined));
+    }
     if (op === "hub_survey_report") {
       if (piiTurn || turns.get(by)?.private || contextPii(by) || reviewTurn || reviewObserverInput(by)) throw new PreEffectToolRefusal("survey reports are unavailable in private or review input; retry in a public current-owner context");
       if (stopping || recoveryActive() || bus.isRecoveryHeld) throw new PreEffectToolRefusal("recovery or shutdown holds survey writes; wait for release and retry");
@@ -6174,10 +6183,13 @@ export async function startDaemon(opts: DaemonOptions) {
       return JSON.stringify({ published: manifest.capabilities.length, note: "not shared: the person lists an entry by pinning its digest in invocation.share (ahub capabilities shows each digest)" });
     }
     if (op === "hub_task_spec") {
-      need("spec_read", "read assigned specifications");
+      // #1658 T4: the person's ruling is one binding per read-back request, so the bound reader may state the spec back
+      // without the standing spec_read capability, and only while its own request holds no report.
+      const carried = (task: Task | undefined) => !!task && tasks.specReadbackReader(task.id, task.created, by);
+      if (!carried(board.get(Number(a.id)))) need("spec_read", "read assigned specifications");
       const authorized = () => {
         const task = board.get(a.id);
-        if (!task || task.state === "backlog" || task.owner !== by && task.reviewer !== by || tasks.isPii(task) || turns.get(by)?.private || contextPii(by)) throw new PreEffectToolRefusal("spec unavailable");
+        if (!task || task.state === "backlog" || task.owner !== by && task.reviewer !== by && !carried(task) || tasks.isPii(task) || turns.get(by)?.private || contextPii(by)) throw new PreEffectToolRefusal("spec unavailable");
         return task;
       };
       const task = authorized(), generation = connectionGeneration(by), updated = task.updated, revision = task.history.length;
@@ -6193,7 +6205,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (remaining <= 0) throw new PreEffectToolRefusal("timeout");
         specs.push(await (opts.boundedTools?.fetchSpec ?? fetchSpec)(memoryRepo, issue, { screen: boundedSafe, projectDir: opts.cwd, timeoutMs: Math.min(15_000, remaining) }));
         const current = authorized();
-        if (current.updated !== updated || current.history.length !== revision || connectionGeneration(by) !== generation || !may(by, "spec_read")) throw new PreEffectToolRefusal("spec unavailable");
+        if (current.updated !== updated || current.history.length !== revision || connectionGeneration(by) !== generation || !may(by, "spec_read") && !carried(current)) throw new PreEffectToolRefusal("spec unavailable");
       }
       const result = JSON.stringify({ specs });
       if (Buffer.byteLength(result) > 80 * 1024) throw new PreEffectToolRefusal("too large");
@@ -13258,6 +13270,33 @@ export async function startDaemon(opts: DaemonOptions) {
             (error: Error) => reply({ ok: false, error: sanitize(error.message).slice(0, 300) })).finally(() => { taskOpsInFlight--; });
           return;
         }
+        if (msg.op === "readback-start" || msg.op === "readback-show") {
+          // #1658: the person or the current conductor starts and reads a spec read-back; every request gets a reply.
+          if (Object.keys(msg).some(key => !["t", "rid", "op", "id"].includes(key))) return void reply({ ok: false, error: "a read-back accepts only its task id; remove unknown fields" });
+          const asker = c.role === "console" ? USER : c.role === "tools" && c.peer && conductorPeer(config.roles) === c.peer && !c.toolsOwner && !turns.get(c.peer)?.private && !contextPii(c.peer) ? c.peer : undefined;
+          if (!asker) return void reply({ ok: false, error: "only the person or the current configured conductor may use spec read-backs; ask the person to run ahub sdlc readback start" });
+          const externalOwner = c.externalOwner;
+          const sessionCurrent = c.role === "console" ? () => { if (sock.data !== c || sock.readyState !== WebSocket.OPEN || c.role !== "console") throw new Error("person session changed"); } : operationalCurrent(sock);
+          const fence = () => {
+            try {
+              sessionCurrent();
+              if (externalOwner && !currentExternalTools(c, true)) return "read-back execution root changed; reconnect and retry";
+              sessionCurrent();
+              if (c.peer !== (asker === USER ? undefined : asker) || c.externalOwner !== externalOwner || c.toolsOwner) return "read-back actor changed; reconnect and retry";
+              if (c.peer && (turns.get(c.peer)?.private || contextPii(c.peer))) return "read-back unavailable during private input";
+              return recoveryActive() || stopping ? "recovery or shutdown holds read-back writes; retry after release" : undefined;
+            } catch { return "read-back person or conductor session changed; reconnect and retry"; }
+          };
+          const refusal = fence(); if (refusal) return void reply({ ok: false, error: refusal });
+          if (msg.op === "readback-show") {
+            try { return void reply({ ok: true, readback: tasks.specReadbackShow(asker, msg.id) }); }
+            catch (error) { return void reply({ ok: false, error: sanitize(error instanceof Error ? error.message : "read-back read unavailable").slice(0, 300) }); }
+          }
+          taskOpsInFlight++;
+          void tasks.specReadbackStart(asker, msg.id, fence).then(result => reply({ ok: true, ...result }),
+            (error: Error) => reply({ ok: false, error: sanitize(error.message).slice(0, 300) })).finally(() => { taskOpsInFlight--; });
+          return;
+        }
         if (msg.op === "audit-start" || msg.op === "audit-show") {
           // #1403 A4: the person or the one configured conductor starts and reads a security audit. Every request gets a reply, a refusal included.
           const asker = c.role === "console" ? USER : c.role === "tools" && c.peer && conductorPeer(config.roles) === c.peer && !c.toolsOwner && !turns.get(c.peer)?.private && !contextPii(c.peer) ? c.peer : undefined;
@@ -13384,8 +13423,13 @@ export async function startDaemon(opts: DaemonOptions) {
             // The readback is for the receipt read before it; a relink meanwhile makes it someone else's evidence.
             const now = board.get(msg.id)?.sdlc;
             if (`${now?.repo ?? ""}#${now?.issue ?? ""}` !== linked) return reply({ ok: false, error: "the task's spec link changed during the readback; nothing was recorded, run ahub sdlc accept again" });
-            try { const next = tasks.acceptSpec(USER, msg.id, { repo, issue: msg.issue, edit }); reply({ ok: true, acceptance: next.sdlc?.acceptance }); }
-            catch (error) { reply({ ok: false, error: (error as Error).message }); }
+            try {
+              // #1658 AC6: the read-back line prints before the acceptance is recorded, and the acceptance proceeds in every state.
+              const accepted = board.get(msg.id)!;
+              const view = tasks.readbackView({ ...accepted, sdlc: { ...(accepted.sdlc ?? { stage: "spec" as const }), repo, issue: msg.issue } }, edit);
+              const next = tasks.acceptSpec(USER, msg.id, { repo, issue: msg.issue, edit });
+              reply({ ok: true, acceptance: next.sdlc?.acceptance, readback: readbackLine(view, msg.id) });
+            } catch (error) { reply({ ok: false, error: (error as Error).message }); }
           }, () => reply({ ok: false, error: "issue edit time unavailable; nothing was recorded" }));
           return;
         }

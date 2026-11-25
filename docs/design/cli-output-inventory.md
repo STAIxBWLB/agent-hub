@@ -156,7 +156,7 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | intake | fail (3), showToolText (2), renderIntakeChange (1), renderIntake (1) |
 | deliverables | fail (2), console.log (5) |
 | board | fail (8), console.log (3), showToolText (1), renderHandoffs (1), console.error (1), printOutput (2), renderBoardColumns (1), renderBoard (1) |
-| sdlc | printOutput (2), fail (48), console.log (21), process.stdout.write (2), showToolText (2), renderSdlcMerge (1) |
+| sdlc | printOutput (2), fail (51), console.log (34), process.stdout.write (2), showToolText (2), renderSdlcMerge (1) |
 | task | showToolText (3), fail (15), console.log (7), renderHandoffs (1), renderHandoffReceipt (1), console.error (1) |
 | review | fail (5), console.log (2) |
 | remember | console.log (1) |
@@ -219,26 +219,26 @@ Interpolated and daemon-supplied strings require runtime fixtures. They are coun
 | roadmap | src/cli/main.ts:1812 | stdout | 46 |
 | deliverables | src/cli/main.ts:2049 | stdout | 70 |
 | sdlc | src/cli/main.ts:2154 | stdout | 29 |
-| ask | src/cli/main.ts:2465 | stdout | 9 |
-| ask | src/cli/main.ts:2468 | stdout | 54 |
-| roster | src/cli/main.ts:2585 | stdout | 19 |
-| roster | src/cli/main.ts:2592 | stdout | 19 |
-| autonomy | src/cli/main.ts:2643 | stdout | 75 |
-| settings | src/cli/main.ts:2736 | stdout | 39 |
-| settings | src/cli/main.ts:2749 | stdout | 33 |
-| settings | src/cli/main.ts:2780 | stdout | 33 |
-| answer | src/cli/main.ts:2825 | stdout | 17 |
-| bench | src/cli/main.ts:2966 | stdout | 107 |
-| usage | src/cli/main.ts:3150 | stderr | 121 |
-| undo | src/cli/main.ts:3286 | stdout | 103 |
-| undo | src/cli/main.ts:3291 | stdout | 53 |
-| kill | src/cli/main.ts:3308 | stdout | 18 |
-| kill | src/cli/main.ts:3312 | stdout | 11 |
-| reset | src/cli/main.ts:3326 | stdout | 36 |
-| reset | src/cli/main.ts:3350 | stdout | 56 |
-| reset | src/cli/main.ts:3356 | stdout | 39 |
-| reset | src/cli/main.ts:3359 | stdout | 11 |
-| reset | src/cli/main.ts:3394 | stdout | 96 |
+| ask | src/cli/main.ts:2498 | stdout | 9 |
+| ask | src/cli/main.ts:2501 | stdout | 54 |
+| roster | src/cli/main.ts:2618 | stdout | 19 |
+| roster | src/cli/main.ts:2625 | stdout | 19 |
+| autonomy | src/cli/main.ts:2676 | stdout | 75 |
+| settings | src/cli/main.ts:2769 | stdout | 39 |
+| settings | src/cli/main.ts:2782 | stdout | 33 |
+| settings | src/cli/main.ts:2813 | stdout | 33 |
+| answer | src/cli/main.ts:2858 | stdout | 17 |
+| bench | src/cli/main.ts:2999 | stdout | 107 |
+| usage | src/cli/main.ts:3183 | stderr | 121 |
+| undo | src/cli/main.ts:3319 | stdout | 103 |
+| undo | src/cli/main.ts:3324 | stdout | 53 |
+| kill | src/cli/main.ts:3341 | stdout | 18 |
+| kill | src/cli/main.ts:3345 | stdout | 11 |
+| reset | src/cli/main.ts:3359 | stdout | 36 |
+| reset | src/cli/main.ts:3383 | stdout | 56 |
+| reset | src/cli/main.ts:3389 | stdout | 39 |
+| reset | src/cli/main.ts:3392 | stdout | 11 |
+| reset | src/cli/main.ts:3427 | stdout | 96 |
 
 ## Renderer candidates
 
