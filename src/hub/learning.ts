@@ -129,7 +129,7 @@ export function withChecklistLine(current: readonly string[], line: string): { l
  */
 export function withoutChecklistLine(current: readonly string[], marker: string): { list: string[]; removed: string } | { refused: string } {
   const hits = current.filter(entry => entry.startsWith(marker));
-  if (!hits.length) return { refused: `no checklist line starts with ${JSON.stringify(marker)}: it was removed or edited by hand, so nothing was removed; reject the card to close it` };
+  if (!hits.length) return { refused: `no checklist line starts with ${JSON.stringify(marker)}: it was removed or edited by hand, so nothing was removed` };
   if (hits.length > 1) return { refused: `${hits.length} checklist lines start with ${JSON.stringify(marker)}: remove the one you mean in .agenthub/config.local.json, then reject this card` };
   return { list: current.filter(entry => entry !== hits[0]), removed: hits[0]! };
 }

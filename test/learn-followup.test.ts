@@ -101,7 +101,12 @@ test("withoutChecklistLine removes exactly the generated line its marker names, 
   const other = overridesDiff({ ...KEY, criterion: "AC2", tasks: [1, 2, 3] }).profile_overrides.review_checklist[0]!;
   const removed = withoutChecklistLine(["hand written", LINE, other], checklistLineMarker("AC1"));
   expect(removed).toEqual({ list: ["hand written", other], removed: LINE });
-  expect(withoutChecklistLine(["hand written"], checklistLineMarker("AC1"))).toMatchObject({ refused: expect.stringContaining("reject the card") });
+  // read as a string, not through toMatchObject: Bun 1.4.4 writes the asymmetric matcher into the received object, so the refusal would read back empty
+  const zero = withoutChecklistLine(["hand written"], checklistLineMarker("AC1")) as { refused?: string };
+  expect(zero.refused).toContain("nothing was removed");
+  // the card id is not knowable in this module, so the pure refusal names no command and no unnamed action; the daemon adds `ahub learn reject <id>` (#1642)
+  expect(zero.refused).not.toContain("ahub learn");
+  expect(zero.refused).not.toContain("reject the card");
   expect(withoutChecklistLine([LINE, LINE], checklistLineMarker("AC1"))).toMatchObject({ refused: expect.stringContaining("2 checklist lines") });
   // a line whose criterion merely starts the same way is not this line
   expect(withoutChecklistLine([`AC10: confirm this first; it was unmet on 3 implement tasks`], checklistLineMarker("AC1"))).toMatchObject({ refused: expect.stringContaining("no checklist line") });
@@ -276,3 +281,36 @@ test("a real daemon: accepting a removal card takes only that line out of config
   expect(again.accepted).toMatchObject({ alreadyAccepted: true, ...KEY });
   expect(bytes(f.local)).toBe(before);
 }, 30_000);
+
+test("a real daemon: with no line carrying the marker the removal accept refuses and names ahub learn reject with that card's id", async () => {
+  const seed = await rig(), [card] = await seed.file();
+  await seed.tasks.learnClose(USER, card!.id, "accepted", { unmet: 3, reviewed: 3 });
+  for (const title of ["fourth piece", "fifth piece", "sixth piece", "seventh piece", "eighth piece"]) await seed.reviewed(title, ["AC1"]);
+  const [removal] = removalCards(seed.board);
+  expect(removal).toBeDefined();
+  const f = project();
+  writeFileSync(f.shared, JSON.stringify(BASE));
+  // the person removed the generated line by hand, so the card names a line the checklist no longer carries
+  writeFileSync(f.local, JSON.stringify({ profile_overrides: { review_checklist: [...SHIPPED_DEV] } }));
+  const before = bytes(f.local);
+  mkdirSync(f.state, { recursive: true });
+  const hubDb = join(seed.dir, "hub.db");
+  seed.board.close();
+  writeFileSync(join(f.state, "hub.db"), readFileSync(hubDb));
+  const daemon = await startDaemon({ cwd: f.cwd, stateDir: f.state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, agentDrift: false, snapshotClock: () => 0 });
+  cleanup.push(() => daemon.stop());
+  const person = await ControlClient.connect(f.state, { role: "console", projectRoot: f.cwd });
+  cleanup.push(() => person.close());
+  const reply = await person.request({ t: "task", op: "learn_accept", args: { id: removal!.id } });
+  expect(reply.ok).toBe(false);
+  const text = String(reply.error);
+  expect(text).toContain("nothing was removed");
+  expect(text).toContain(`ahub learn reject ${removal!.id}`);
+  expect(text).toContain("ahub learn list --all");
+  expect(bytes(f.local)).toBe(before);
+  // the card the refusal names is still open, so the command it names really closes it: a second accept refuses the same way rather than closing it
+  const again = await person.request({ t: "task", op: "learn_accept", args: { id: removal!.id } });
+  expect(again.ok).toBe(false);
+  expect(String(again.error)).toContain(`ahub learn reject ${removal!.id}`);
+}, 30_000);
+
