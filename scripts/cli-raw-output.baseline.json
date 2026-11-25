@@ -1,0 +1,1616 @@
+[
+ {
+  "file": "src/cli/agents.ts",
+  "text": "if (!revoke) console.log(`${COMPAT[id].label} ${version}: ${COMPAT[id].trustNote}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/agents.ts",
+  "text": "if (revoke) return console.log(`revoked: ${id} ${version} (${rows.length} trusted on this machine, ${trustFile()})`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/agents.ts",
+  "text": "console.log(`trusted on this machine: ${COMPAT[id].label} ${version}\\nUndo: ahub agents trust ${id} ${version} --revoke`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/agents.ts",
+  "text": "console.log(`${row.id.padEnd(13)} ${(v.version ?? \"-\").padEnd(10)} ${v.state.padEnd(9)} ${row.policy}${v.ok ? (v.note ? `\\n${\" \".repeat(14)}${v.note}` : \"\") : `\\n${\" \".repeat(14)}${v.reason}`}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/bench.ts",
+  "text": "else console.error(`  bench: a command's process group could not be stopped and may still run in the tree (${error.message})`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/bench.ts",
+  "text": "log: (line) => console.log(line),",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/broker.ts",
+  "text": "try { console.log(`broker room ${store.dropRoom(drop.room).removed ? \"dropped\" : \"not found\"}: ${drop.room}`); }",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/broker.ts",
+  "text": "console.log(`broker listening at ${broker.publicUrl} (ciphertext relay; application delivery is not acknowledged here)`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/broker.ts",
+  "text": "const stop = () => { void broker.stop().catch(() => { process.exitCode = 1; console.error(\"broker: stop failed\"); }); };",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/claude-profile-hook.ts",
+  "text": "if (output) console.log(output);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/facts-hook.ts",
+  "text": "if (out) console.log(out);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/kimi-facts-hook.ts",
+  "text": "if (out) console.log(out);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/launch.ts",
+  "text": "const unavailable = (reason: string) => console.error(`Native identity and crash cleanup disabled for this launch; managed hook record stays current. ${reason}.`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/launch.ts",
+  "text": "attestation = recordClaudeNative(options.stateDir, options.record, child.pid, signature, warning => console.error(warning)).catch(() => undefined);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.error(\"ahub: CLI audit could not be recorded (outbox unavailable or full)\");",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "try { data = JSON.parse(text); } catch { return console.log(text); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (present.json) return console.log(text);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const line of lines) console.log(paint(line, color));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "async function killOrphan(pid: number, root: string, diagnostic: (text: string) => void = text => console.log(text)): Promise<boolean> {",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "? console.error(paint([{ text }], false))",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if(result.complete===false)console.error(`ahub: operational output is incomplete: ${typeof result.incompleteReason===\"string\"?terminalText(result.incompleteReason).replace(/[\\r\\n]+/g,\" \").slice(0,200):\"public privacy or history coverage unavailable\"}`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else if(result.truncated)console.error(`ahub: operational ${history} history is truncated`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (cause) console.error(`ahub: ${res.error}\\n${cause}`), process.exit(1);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`${args[0]} is ${res.state}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "const printRecovery = (lines: readonly string[]) => { for (const line of lines) console.log(line); };",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "child.on(\"error\", () => console.error(`runner launch failed; use ${recoveryCommand(operation, \"resume\")}`));",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "} else console.log(`Recovery operation ${operation.id} scheduled.\\n${recoveryCommand(operation, \"status\")}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "out: (line) => console.log(line),",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const blocker of plan.blockers) console.error(`ahub: blocker: ${blocker}`);",
+  "count": 1,
+  "reason": "#1654 item 23, answered: the --json stderr blocker lines are a machine contract pinned since #206, so the line keeps its `ahub: blocker: <why>` form"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.error(`ahub: the latest release is ${to}`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.error(`ahub: ${to} is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${argv.join(\" \")}`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "child.on(\"error\", (error) => { console.error(`ahub: cannot run bun x: ${error.message}`); resolve(1); });",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (kind === \"upgrade\") console.error(\"ahub: Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode. To keep ACP: ahub settings set peers.kimi.start_mode headless\");",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (display.json) for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);",
+  "count": 1,
+  "reason": "#1654 item 23, answered: the --json stderr blocker lines are a machine contract pinned since #206, so the line keeps its `ahub: blocker: <why>` form"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (ended.phase === \"completed\") { if (!display.json) console.log(`${kind} to ${plan.version} completed`); return; }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const line of wrap(\"ahub: using the operation's retained coordinator for reattachment\", display.options.columns)) console.error(line);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (display.options.verbose) for (const line of wrap(recoveryCommand(operation, \"reattach\", selected.peer), display.options.columns)) console.error(line);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "} else console.error(`ahub: using the operation's coordinator: ${recoveryCommand(operation, \"reattach\", selected.peer)}`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "child.on(\"error\", () => { console.error(`ahub: coordinator could not start; ${recoveryCommand(operation, \"status\")}`); resolve(1); });",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!id) return console.log(\"no recovery operation is open\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(\"preflight cancelled; no committed transition was rolled back\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`${one[\"--fresh-session\"]}: a fresh session is accepted and the lost one is recorded; resuming`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(`whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, \"status\")}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, \"status\")}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(text);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "\"--version\": () => console.log(VERSION),",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "version: () => console.log(VERSION),",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(terminalText(lines.join(\"\\n\")));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(\"registration removed; project files were kept\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(\"dashboard manager stopped; project hubs were kept running\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (settings) console.error(\"Settings session: for 15 minutes this dashboard session may change permission modes, routing and start settings.\");",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (args.includes(\"--no-open\")) return console.log(url);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (opened.error || opened.status !== 0) console.log(`Open this one-time link within 60 seconds:\\n${url}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(\"Dashboard opened. The session expires in one hour; run ahub ui to reopen it.\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "print: line => console.log(terminalText(line)) });",
+  "count": 4,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const notice of found.notices) console.log(terminalText(notice));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "print: line => console.log(terminalText(line)), ask: async prompt => rl ? rl.question(prompt) : null,",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "...(rl ? { ask: async (prompt: string) => { try { return await rl.question(prompt); } catch { return null; } } } : {}), print: line => console.log(terminalText(line)) });",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "try { if (research !== undefined) assertLifecycleAvailable(cwd); const line = setupResearchDefault(hubHome(), machineRoots, research); if (line) console.log(terminalText(line)); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(\"error\" in acon ? `acon plugin not registered: ${acon.error}` : acon.changed ? `acon plugin registered: ${acon.path}` : `acon plugin up to date: ${acon.path}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "result = await runInitPrompt({ ask, print: line => console.log(terminalText(line)) },",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!result.ok) { console.error(`ahub init: ${result.reason === \"refused\" ? result.message : result.reason === \"interrupted\" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === \"refused\" ? 1 : 0; return; }",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (defaults.notice) console.error(defaults.notice);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log([...plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : \"\"}`), ...settingLines].join(\"\\n\") || \"already up to date\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(changed.length ? changed.map((p) => `${existsSync(p) ? \"wrote\" : \"removed\"} ${p}`).join(\"\\n\") : \"already up to date\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const line of homeInit.lines) console.log(terminalText(line));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (homeInit.switchHome) { try { writeJcodeHomeConfig(cwd, homeInit.plan.home); console.log(`jcode_home now points at ${homeInit.plan.home}`); } catch (error) { console.error((error as Error).message); process.exitCode = 1; } }",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (jcodeHomeBlocked(homeInit.plan.home)) console.error(`jcode home ${homeInit.plan.home} is not a plain directory; nothing was created there`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`wrote ${homeInit.plan.home}; hub skills: ${installed.filter(entry => entry.action === \"install\" || entry.action === \"replace\").length} installed`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "} catch (error) { console.error(`jcode home was not fully set up: ${(error as Error).message}`); process.exitCode = 1; }",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "try { for (const line of await inheritMachineAutonomy(project, hubHome(), autonomyEnvironment(process.env, !!process.stdin.isTTY), registry)) console.log(terminalText(line)); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!delegatedPeer) { const roots = (() => { const r = new Registry(); try { return r.list().map(row => row.root); } finally { r.close(); } })(); for (const line of inheritMachineStart(cwd, hubHome(), [...roots, cwd])) console.log(terminalText(line)); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (examples.length) console.log(terminalText(\"Example checks (advisory):\\n\" + examples.map(example => \"- \" + example).join(\"\\n\")));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(nextSteps.join(\"\\n\"));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "process.on(\"unhandledRejection\", (e) => console.error(`${new Date().toISOString()} unhandled rejection:`, e));",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "process.on(\"uncaughtException\", (e) => console.error(`${new Date().toISOString()} uncaught exception:`, e));",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (unattended) console.error(UNATTENDED_WARNING);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "const status = await startProject(registeredProject(), { unattended, liveTest, starting: pid => console.error(`ahub: hub is still starting, pid ${pid}; waiting for readiness, run ahub status in another terminal to inspect progress`), ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId, AGENTHUB_PEER_ID: continuationPeer, AGENTHUB_RECOVERY_CONDUCTOR: continuationPeer, AGENTHUB_RECOVERY_CONTINUATION: continuationId } } : {}) });",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (chosen.notice) console.error(chosen.notice);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const line of await startProjectAgents({ root: cwd, stateDir }, chosen.agents)) console.log(terminalText(line));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else for (const line of guidanceProbeStatusLines(exported)) console.log(terminalText(line));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(`guidance probe ${status.id}: ${status.state}; revision ${status.revision}; evidence ${status.evidence}; workers ${status.counters.workerAttempts}; editors ${status.counters.editorAttempts}; model calls ${status.counters.modelCalls}; tool calls ${status.counters.toolCalls}; token usage ${status.counters.usageUnknown || status.counters.modelCalls === 0 ? \"unknown\" : status.counters.tokensObservedKnown}; cancelled ${status.cancelRequested ? \"yes\" : \"no\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(`guidance probe ${receipt.id}: ${receipt.state}; revision ${receipt.revision}; evidence ${receipt.evidence}${receipt.already ? \"; already recorded\" : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(`Declared execution metadata link ${link.already ? \"already registered\" : \"registered\"} for task #${link.taskId}; this does not attest to producer execution.`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (action === \"stop\") { await stopMlx(mlxOptions); return console.log(\"MLX stopped\"); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`MLX runtime and pinned model prepared at ${runtimeDir}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (res.recorded) return console.log(\"recorded only ([FYI]); no peer was interrupted\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (res.dropped === \"hop\") return console.log(res.notice);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(paint([{ text: res.targets.length ? `queued for: ${res.targets.join(\", \")}` : \"no peers attached; nothing delivered\" }], false));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (typeof res.notice === \"string\" && res.notice) console.log(paint([{ text: res.notice }], false));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (result.hiddenSettled) console.error(`${result.hiddenSettled} settled deliver${result.hiddenSettled === 1 ? \"y\" : \"ies\"} hidden (already resolved); ahub queue list --all shows them`);",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!yes) return console.log(`${what} for ${result.peer}${split}; nothing discarded. Run again with --reason <text> --yes to discard them.`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`discarded ${result.discarded} of ${what} for ${result.peer}${split}${result.refused ? `; ${result.refused} refused (${Object.entries(result.refusedBy ?? {}).map(([why, n]) => `${why} ${n}`).join(\", \")})` : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "await attachWatch(hub, peer, line => console.log(line), { columns: () => process.stdout.columns || 80, color, noThoughts: args.includes(\"--no-thoughts\") });",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else if (msg.t === \"context\") console.log(`  ${msg.peer}: ${contextLine(msg.reading)}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else if (msg.t === \"notice\") console.log(`  * ${msg.line}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`  ? ${msg.peer} asks permission: ${String(msg.title).replace(/\\n/g, \"\\n      | \")}\\n    answer with: ahub permit ${msg.id} <${options}> | deny`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(`${args[1]} resumed; the coordinator leaves it alone until its window resets`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (options.json) return console.log(raw);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "try { cards = JSON.parse(raw); } catch { return console.log(raw); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!Array.isArray(cards)) return console.log(raw);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (sub === \"add\" && args.length >= 3) return console.log(await taskOp(\"hub_task_propose\", { class: id, title: args.slice(2).join(\" \"), backlog: true }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if ([\"pull\", \"return\"].includes(sub ?? \"\") && operands.length === 2) return console.log(await taskOp(sub === \"pull\" ? \"backlog_pull\" : \"backlog_return\", { id }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!options.json) { console.log(\"Roadmap files written in the current worktree.\"); return; }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (options.json) console.log(text);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`smoke ${result.outcome} (${result.reason}): ${result.counts.submits} submits, ${result.counts.stops} stops; cleanup ${result.checks.cleaned ? \"confirmed\" : \"unconfirmed\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "const projections = new TextProjections({ cwd, stateDir, config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log: line => console.error(line) });",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!rows.length) return console.log(task === undefined ? `no ${approved ? \"approved \" : \"\"}deliverables on the board` : `task #${task} has no ${approved ? \"approved \" : \"\"}deliverables`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`${row.title} [${row.state}${flag}]`);                                   // `title` is the hub's publicTitle: it already starts with `#<id>`",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const file of row.files) console.log(`  ${file.id}  ${file.path ?? \"(private)\"}  ${file.format}${file.version ? ` ${file.version}` : \"\"}  ${file.bytes} B  sha256 ${file.sha256}${file.state ? `  ${file.state}` : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!check) console.log(\"(hashes are the board's records; add --check to measure the files now)\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(await taskOp(\"github_import\", selection));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.error(paint([{ text: `ahub: board dependency stages unavailable; showing filtered rows without stages: ${String((error as Error).message).replace(/[\\n\\t]/g, \" \")}` }], false));",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (original) process.stdout.write(original); else console.log(\"release authorization matched\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(`task #${reply.task}: security audit ${reply.audit} started at ${String(reply.ref).slice(0, 12)}, ${reply.units} units (${reply.planned} planned, ${reply.carried} carried over)${reply.partial ? \", partial\" : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (operation === \"report\" && args.length === 3) return console.log(await taskOp(\"hub_release_report\", { id: releaseId }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (operation === \"cut\" && args.length === 4) return console.log(await taskOp(\"hub_release_cut\", { id: releaseId, revision }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(await taskOp(\"hub_release_configure\", { ...fields, id: releaseId, revision }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(await taskOp(\"hub_release_assign\", { id, revision, release, reason: args.slice(4).join(\" \") }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(await taskOp(\"hub_plan_review\", { id, revision, reason: flags.rest.join(\" \"), ...(scope !== undefined ? { review: { scope, reviewers: Number(reviewers) } } : {}), ...(flags.one[\"--ci\"] !== undefined ? { ci: flags.one[\"--ci\"] } : {}) }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`task #${id}: plan departure accepted for the reviewed head`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`task #${id}: merged outside the hub; approved`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(state === \"requested\" || state === \"reported\"",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!view || view.status === \"none\") return console.log(`task #${task}: no spec read-back; start one with ahub sdlc readback start ${task}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (view.status === \"private\") return console.log(`task #${task}: read-back ${view.readback} belongs to a private task; its report is not printed here`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (view.status === \"requested\") return console.log(`task #${task}: read-back ${view.readback} requested from ${view.reader}; the reader has not reported yet`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`task #${task}: read-back ${view.readback} of ${view.repo}#${view.issue} by ${view.reader}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (view.report.cannot_paraphrase) console.log(`cannot paraphrase: ${view.report.cannot_paraphrase}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else { console.log(`proposes: ${view.report.proposes}`); console.log(`existing: ${view.report.existing}`); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const item of view.report.undefined ?? []) console.log(`undefined: ${item.term} (${item.where})`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const item of view.report.open_decisions ?? []) console.log(`open decision: ${item.decision} (${item.where})`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const path of view.report.refs ?? []) console.log(`ref: ${path}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const path of view.missing_refs ?? []) console.log(`missing ref: ${path}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (reply.readback) console.log(reply.readback);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`task #${id}: spec issue #${issue} accepted at body edit ${reply.acceptance?.lastEditedAt ?? \"never\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(await taskOp(\"hub_sdlc_record\", { id, receipt }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "try { const reply = await hub.request({ t: \"task_catalog_role\", id: Number(rest[0]), role: rest[1] === \"none\" ? null : rest[1] }); if (!reply.ok) fail(reply.error); console.log(reply.text); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(`task #${reply.task}: claim ${reply.recorded?.slot} recorded as ${reply.recorded?.verdict}${reply.recorded?.model ? ` (model ${reply.recorded.model}` : \"\"}${reply.recorded?.modelVerdict ? `${reply.recorded?.model ? \", \" : \" (\"}model said ${reply.recorded.modelVerdict}` : \"\"}${reply.recorded?.model || reply.recorded?.modelVerdict ? \")\" : \"\"}${reply.recorded?.synthesis ? `; synthesis ${reply.recorded.synthesis.disposition} @ ${reply.recorded.synthesis.manifestSha256}` : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (sub === \"escalate\") return console.log(await taskOp(\"task_escalate\", { id: rest[0] }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(await taskOp(revision === undefined ? \"task_assign\" : \"task_assign_checked\", { id: positional[0], peer: positional[1], ...(role !== \"owner\" ? { role } : {}), ...(revision === undefined ? {} : { revision }) }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(await taskOp(\"task_unassign\", { id: positional[0], role, ...(revision === undefined ? {} : { revision }) }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(`task #${id} (approved ${record!.approvedAt}) labelled ${label} in the research records`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(await taskOp(\"hub_task_propose\", { ...(cls ? { class: cls } : {}), title, owner: flags.one[\"--owner\"], detail: flags.one[\"--detail\"], ...(flags.many[\"--path\"]?.length ? { refs: { paths: flags.many[\"--path\"] } } : {}), ...(flags.many[\"--after\"]?.length ? { after: flags.many[\"--after\"].map(Number) } : {}), ...(urgent ? { urgent: true } : {}), ...(needsNetwork ? { needs_network: true } : {}), ...(needsWorktree ? { needs_worktree: true } : {}), ...(backlog ? { backlog: true } : {}) }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(await taskOp(\"review_brief\", { id: Number(args[1]) }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(await taskOp(\"hub_review\", { id: Number(id), verdict, ...(one[\"--head\"] ? { head: one[\"--head\"] } : {}), note: note.join(\" \"), ...(findings === undefined ? {} : { findings }), ...(securityPass === undefined ? {} : { security_pass: securityPass }), ...(many[\"--unmet\"]?.length ? { unmet: many[\"--unmet\"] } : {}) }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "remember: async () => console.log(await taskOp(\"hub_remember\", { text: freeText(args, \"ahub remember <text>\") })),",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(res.answer ?? `(${res.note})`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(\"\\nEvidence:\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const e of res.evidence as { id: string; text: string }[]) console.log(`  ${e.id.padEnd(12)} ${e.text.slice(0, 150)}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (res.pii) console.log(\"\\n(PII is involved: shown here only, not saved anywhere)\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (res.saved) console.log(`\\n${res.saved}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(await taskOp(\"route_explain\", flags.one[\"--class\"] ? { class: flags.one[\"--class\"], title: flags.rest.join(\" \") } : { id: flags.rest[0] }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`${peer}: ${reply.state}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(`${peer}: old session detached; standby attachment requested`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`${peer}: session title updated`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (typeof reply.previousTitle === \"string\") console.log(`To restore the previous title in a terminal:\\ncd ${shellQuote(cwd)} && ahub title ${shellQuote(peer!)} ${shellQuote(reply.previousTitle)}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (reply.peers) for (const [id, value] of Object.entries(reply.peers)) console.log(`${id}: ${value}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "else console.log(`${peer}: ${reply.permissionMode}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (typeof reply.note === \"string\" && reply.note) console.log(reply.note);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!/^(y|yes)$/i.test(answer.trim())) return console.log(\"nothing was changed\");",
+  "count": 2,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "ask: async prompt => rl ? rl.question(prompt) : null, print: line => console.log(terminalText(line)),",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "print: line => console.log(terminalText(line)),",
+  "count": 2,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (action === \"off\" && defaults.fingerprint === \"untrusted\") console.log(\"Unsafe machine defaults are already ignored; their file was left unchanged.\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`Machine autonomy default: ${action}.`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (Array.isArray(result.rejected)) for (const row of result.rejected.slice(0, 100)) console.log(terminalText(`${String(row.key).slice(0, 160)}: ${String(row.reason).slice(0, 1000)}`));",
+  "count": 2,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(\"Guarded settings awaiting confirmation:\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`  ${terminalText(change.key)}: ${terminalText(change.before)} -> ${terminalText(change.after)}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (change.effect !== undefined) console.log(`    ${terminalText(change.effect)}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!accepted) return console.log(\"guarded settings were not applied\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(paint([{ text: result.text }], false));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(paint([{ text: (await request({ t: \"settings_undo\", ...(confirm ? { confirm } : {}) })).text }], false));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const line of preview.lines ?? []) console.log(paint([{ text: line }], false));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const task of preview.tasks ?? []) console.log([task.before[0], \"  before:\", ...task.before.slice(2).map((line: string) => `    ${line}`), \"  after:\", ...task.after.slice(2).map((line: string) => `    ${line}`)].join(\"\\n\"));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (preview.hidden) console.log(`${preview.hidden} more open tasks are not shown`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(\"preview only; nothing was changed\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(paint([{ text: reply.text }], false));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (typeof reply.note === \"string\" && reply.note) console.log(paint([{ text: reply.note }], false));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (sub === \"list\" && row.group !== group) console.log(`${group ? \"\\n\" : \"\"}${group = row.group}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`  ${row.key.padEnd(width)}  ${settingText(row.value).padEnd(valueWidth)}  ${facts.join(\"; \")}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (sub === \"get\") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === \"boolean\" ? \"true, false\" : row.type === \"number-or-off\" ? `off or a number from ${row.min ?? 0} to ${row.max ?? \"the configured bound\"}` : row.type === \"integer\" || row.type === \"number\" ? `a number from ${row.min ?? 0} to ${row.max ?? \"the configured bound\"}` : row.type === \"peers\" ? \"a comma list of peer ids\" : row.type === \"roles\" ? \"up to two comma-separated catalog ids\" : (row.values ?? []).join(\", \")}${row.file === \"this hub run\" || row.key === \"instructed.mode\" ? \"\" : \", or inherit to remove the machine-local value\"}${row.risk === \"raises\" ? \"; a dashboard needs a settings session (ahub ui --settings) to raise it\" : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (sub === \"list\" && view.pendingRestart?.length) console.log(`\\npending restart: ${view.pendingRestart.map((entry: { key: string }) => entry.key).join(\", \")}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (sub === \"list\" && view.undo) console.log(`\\nahub settings undo puts back the last write (${view.undo})`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!rows.length) return console.log(\"no open questions\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`${row.set}  ${row.peer} asks${row.private ? \" (private)\" : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`  ${question.id}: ${terminalText(String(question.prompt))}${question.multi ? \"  (choose any)\" : \"\"}${question.allowOther ? \"  (or --other <text>)\" : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const option of question.options) console.log(`    ${option.id}  ${terminalText(String(option.label))}${option.description ? `  - ${terminalText(String(option.description))}` : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`  answer with: ahub answer ${row.set} ${row.questions.map((question: { id: string; options: { id: string }[] }) => `${question.id}=${question.options[0]?.id ?? \"<option>\"}`).join(\" \")}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`answered ${reply.questionSet ?? parsed.value.set}${reply.instructed && typeof reply.actor === \"string\" ? `; answered by ${terminalText(reply.actor)} on the person's instruction` : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(request.action === \"read-all\" ? `marked ${reply.marked} ${reply.marked === 1 ? \"result\" : \"results\"} read` : `marked ${reply.unread} unread again`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!rows.length) return console.log(request.unread ? \"no unread results\" : \"no results\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const row of rows) console.log(`${row.read ? \" \" : \"*\"} ${row.id}  ${terminalText(String(row.title))}  ${new Date(Number(row.settledAt)).toISOString().replace(\"T\", \" \").slice(0, 16)}  ${Math.round(Number(row.ms) / 1000)}s${row.read ? \"\" : `  ahub results --read ${row.id}`}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (Number(reply.more) > 0) console.log(`... and ${Number(reply.more)} older unread; ahub results --read-all marks them all, or read the newest ones first`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(PET_WINDOW_RETIRED_NOTICE);",
+  "count": 2,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "try { const lines = await goalCommand([\"list\"], cwd); if (!lines.startsWith(\"no open\")) console.log(`\\nlong-term tasks\\n${lines}`); } catch { /* memory unreadable: status goes on */ }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "hub.onPush=message=>{if(message.t===\"operational_log\" && typeof message.line===\"string\"){if(message.complete===false && !incompleteShown){operationalIncomplete(message,\"log\");incompleteShown=true;}if(ready)console.log(message.line);else if(pending.length<100)pending.push(message.line);}};",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for(const line of result.lines??[])console.log(line);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "ready=true;for(const line of pending)console.log(line);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "const stop = () => { interrupted = true; console.log(\"stopping at the next check: the attempt in progress is recorded as interrupted (a task still open is named)\"); };",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(formatBenchReport(benchReport(readRuns().filter((r) => r.header.run === run))).join(\"\\n\"));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "try { console.log(await memoryCommand(args, cwd, { person: caller.role === \"console\", ...(caller.role === \"tools\" ? { agent: caller.peer } : {}) })); } catch (e) { fail((e as Error).message); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "try { console.log(await goalCommand(args, cwd, { link, person: caller.role === \"console\" })); } catch (e) { fail((e as Error).message); }",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(`${written} research record${written === 1 ? \"\" : \"s\"} written from this project's events`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const w of written) console.log(`${w.projectKeyHash}: ${w.counts.tasks} task${w.counts.tasks === 1 ? \"\" : \"s\"} (${w.counts.approved} approved, ${w.counts.cancelled} cancelled), ${w.counts.labels} label${w.counts.labels === 1 ? \"\" : \"s\"} -> ${w.dir}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (out) console.log(out);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!hook) return console.log(text);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (first.undone && !unobserved.length) return console.log(`turn ${id} is already undone: its files are as they were before it started`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (first.undone) return console.log(`turn ${id}: its files are as they were before it started${unobservedNote}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log((first.restore.length ? `turn ${id} changed:\\n  ${first.restore.join(\"\\n  \")}` : unobserved.length ? `turn ${id} changed no files the hub can restore` : `turn ${id} changed no files`) + unobservedNote);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(\"(every change made in the project during the turn counts as its own, including any by Claude or by you)\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "const projections = new TextProjections({ cwd: undoCwd, stateDir, config: undoConfig.text_projection ?? {}, deny: undoConfig.local.deny, readAllow: undoConfig.local.read_allow, log: line => console.error(line) });",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (preview) console.log(terminalText(\"Undo preview (end snapshot to start snapshot):\\n\" + preview));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!args.includes(\"--yes\")) return console.log(\"nothing was changed; add --yes to restore these files\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(await taskOp(\"turn_revert\", { turn: id }));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (second.restore.length) console.log(`restored to their state before ${id}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!hubManifest()) return console.log(\"hub is not running\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(\"hub stopped\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (!existsSync(stateDir)) return console.log(\"no state directory; nothing to reset\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`ahub reset${all ? \" --all\" : \"\"}, dry run: the hub is ${live.state}${live.state === \"stopped\" ? \"\" : \"; --yes stops it first, as ahub kill does\"}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`  move ${stateDir}${plan ? ` (${plan.entries} entries)` : \"\"} to ${join(cwd, \".agenthub\", \"archive\")}/state-<UTC time>/ (0700), then start an empty state directory holding only project.json; project ${project.id} keeps its id and registration`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(unread ? `  could not read the state (${unread}); it is archived as it is` : \"  archived as they are:\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "} else console.log('  settle as discard with reason \"reset\", clear and drop:');",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const line of plan ? resetLines(plan) : []) console.log(`    ${line}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (stale.length) console.log(`  remove the manifest a hub left when it did not stop cleanly: ${stale.join(\", \")}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`  ${all ? \".agenthub/config.json, config.local.json and routing.toml are outside the state directory and stay\" : kept}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`  ${memory}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "return console.log(\"nothing was changed; add --yes to apply\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (live.state !== \"stopped\") console.log(\"hub stopped\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`moved the state directory to ${archived}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`the new state directory holds only project.json (to restore: ahub kill, move ${stateDir} into ${join(cwd, \".agenthub\", \"archive\")}/, then move the archive back to ${stateDir})`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(`settled ${result.settled.length} deliveries as discard with reason \"reset\"`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "for (const line of resetLines(result.plan).slice(1)) console.log(`cleared ${line}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (result.stale.length) console.log(`removed the manifest a hub left when it did not stop cleanly: ${result.stale.join(\", \")}`);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(kept);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(memory);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(\"Claude Code sessions attached to this hub lost their hub session: relaunch them with ahub claude\");",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "const reply = await hub.request({ t: \"settings_set\", key: row!.key, value }); if (!reply.ok) fail(reply.error); console.log(reply.text);",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "if (selection.preview) return runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, declaredExternalInstances: peerConfig.declaredExternalInstances, projectRoot: cwd, connect, print: text => console.log(text) });",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "await requireActiveConfiguredAcp(hub, cmd, selection.peer, text => console.error(text));",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(await taskOp(\"hub_peer_start\", { peer: selection.peer, mode: \"headless\" }, false, hub, 70_000));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "console.log(await taskOp(op, input));",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/main.ts",
+  "text": "await runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, declaredExternalInstances: peerConfig.declaredExternalInstances, projectRoot: cwd, connect: connectLaunch, print: text => console.log(text), operationId: process.env.AGENTHUB_RECOVERY_OPERATION });",
+  "count": 1,
+  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`Room inbox (${rows.length})`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "for (const row of rows) console.log(`${row.id} ${row.name} ${row.from} ${row.state}; received ${row.receivedAt}; expires ${row.expiresAt}; ${row.bytes} bytes\\n  sender ${row.sender}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`Room inbox ${item.id}: ${item.state}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "if (item.body === undefined) { console.log(`Room inbox ${item.id}: ${item.state} (body unavailable)`); return; }",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(frame(env));",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`Rooms (${rows.length})`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`${row.name} ${row.room} epoch ${row.epoch} ${row.state}\\n  owner ${row.owner}\\n  member ${row.member}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "if (row.state === \"online\" && (row.linkCause === null || row.linkCause === undefined)) console.log(\"  link online\");",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "else console.log(`  link cause ${row.linkCause ?? \"unknown\"}; next: ${row.linkNextStep ?? \"Check broker availability, then read ahub room status again.\"}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`  outbox ${health?.outboxDepth ?? \"unknown\"}; oldest ${age(health?.oldestOutboxAgeMs)}; last receipt ${age(health?.lastReceiptAgeMs)}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`  refused: ${health?.refused ? Object.entries(health.refused).map(([reason, count]) => `${reason} ${count}`).join(\", \") : \"unknown\"}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "for (const peer of row.remotePeers ?? []) console.log(`  peer ${peer.id}: ${peer.presence ?? peer.state}${peer.liveness === \"untracked\" ? \"; liveness not tracked (broker without ephemeral); upgrade the broker to track liveness\" : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "if (!(\"id\" in delivery)) console.log(`  inbound: pending ${delivery.pending}, needs_review ${delivery.needsReview}${delivery.truncated ? \"; truncated\" : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "else console.log(`  ${delivery.direction} ${delivery.id}: ${delivery.state}; application ${delivery.application}; peer ${delivery.peer}${delivery.disposition ? `; person disposition ${delivery.disposition}` : \"\"}${delivery.lateReceipt ? `; late receipt evidence ${delivery.lateReceipt}` : \"\"}${delivery.refusalReason ? `; refusal ${roomReceiptReasonText(delivery.refusalReason)}` : \"\"}${delivery.holdReason ? \"; reason epoch rotated; inspect ahub queue show before resolving\" : \"\"}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`Owner fingerprint: ${preview.owner}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`Member fingerprint: ${preview.member}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`Outstanding deliveries on the old epoch (${preview.outstanding.length}):`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "for (const id of preview.outstanding) console.log(`  ${id}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(`Room: ${result.name}`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(\"Room artifact (share out of band):\");",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "console.log(encoded);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/room.ts",
+  "text": "} else console.log(command.action === \"resolve\" && result.kind === \"disposed\" ? \"room resolve: disposed\" : `room ${command.action}: complete`);",
+  "count": 1,
+  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+ },
+ {
+  "file": "src/cli/specs.ts",
+  "text": "const output: SpecsOutput = { out: line => console.log(line), error: line => console.error(line) };",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/terminal-recovery.ts",
+  "text": "console.error(\"terminal launcher is unrecorded; upgrade the running hub for managed terminal recovery\");",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ },
+ {
+  "file": "src/cli/upgrade-runtime.ts",
+  "text": "catch { console.error(\"Pi continuity retirement is unconfirmed after successful recovery release; inspect the retained bookmark before another automatic start\"); }",
+  "count": 1,
+  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+ }
+]

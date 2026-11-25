@@ -19,7 +19,7 @@ import { renderIntake, renderIntakeChange } from "../src/cli/intake-output.ts";
 import { renderCapabilities } from "../src/cli/capabilities-output.ts";
 import { renderTidyPreview, renderTidyResult, renderWorktrees } from "../src/cli/worktrees-output.ts";
 import { PALETTE, Report, TONE_ROLE, paint, table, wrap } from "../src/cli/console-state.ts";
-import { errorLines, failureExitCode } from "../src/cli/error-format.ts";
+import { errorLines, failureExitCode, warningLines } from "../src/cli/error-format.ts";
 import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, SGR_RESET, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
 
 // CLI output standard v1 (docs/design/cli-output.md, #1484): the five conformance checks every CLI runs, the role and marker tables,
@@ -493,5 +493,48 @@ describe("Report.titled: the header fits, else the context moves to a note (#165
   });
   test("an empty context is no context", () => {
     expect(rows(new Report(80).titled("ahub", "Status", ""))).toEqual([" ahub Status"]);
+  });
+});
+
+// #1654 T4 / AC4: a `console.log` or `console.error` in src/cli that bypasses Report, printOutput, errorLines or warningLines fails here unless
+// `scripts/cli-raw-output.baseline.json` lists it. The baseline can only shrink: a new call is refused, and an entry whose call is gone or reduced must be removed.
+const OUTPUT_PATHS = /JSON\.stringify|errorLines\(|warningLines\(|printOutput|\brender[A-Z]\w*\(|\.render\(|\bwarn\(/;
+const RAW_CALL = /console\.(log|error)\(/;
+interface RawBaseline { file: string; text: string; count: number; reason: string }
+function rawCalls(): Map<string, number> {
+  const found = new Map<string, number>();
+  for (const file of sources("src/cli")) {
+    for (const line of readFileSync(join(ROOT, file), "utf8").split("\n")) {
+      if (!RAW_CALL.test(line) || OUTPUT_PATHS.test(line)) continue;
+      const key = `${file}\u0000${line.trim()}`;
+      found.set(key, (found.get(key) ?? 0) + 1);
+    }
+  }
+  return found;
+}
+describe("CLI output standard v1: raw console output is a shrink-only baseline (#1654 AC4)", () => {
+  const baseline = JSON.parse(readFileSync(join(ROOT, "scripts/cli-raw-output.baseline.json"), "utf8")) as RawBaseline[];
+  const allowed = new Map(baseline.map(entry => [`${entry.file}\u0000${entry.text}`, entry.count]));
+  test("the detector skips the sanctioned paths and sees a bare call", () => {
+    expect(RAW_CALL.test("console.log(`x`)")).toBe(true);
+    for (const line of ["console.error(errorLines(a, b, c, d).join())", "console.error(warningLines(a))", "console.log(JSON.stringify(x))", "printOutput(x)", "warn(`x`)"]) {
+      expect(RAW_CALL.test(line) && !OUTPUT_PATHS.test(line)).toBe(false);
+    }
+  });
+  test("a warning is `ahub: warning: <what>: <why>` with an optional next step, a marker only on a terminal", () => {
+    expect(warningLines("never-ask: nothing asks", undefined, false, false)).toEqual(["ahub: warning: never-ask: nothing asks"]);
+    expect(warningLines("w", "ahub x --y", true, true)).toEqual(["! ahub: warning: w", "  -> ahub x --y"]);
+  });
+  test("every call outside the sanctioned paths is in the baseline", () => {
+    const added = [...rawCalls()].filter(([key, count]) => count > (allowed.get(key) ?? 0)).map(([key]) => key.replace("\u0000", ": "));
+    expect(added).toEqual([]);
+  });
+  test("the baseline holds no entry whose call is gone or reduced, so it only shrinks", () => {
+    const found = rawCalls();
+    const stale = baseline.filter(entry => (found.get(`${entry.file}\u0000${entry.text}`) ?? 0) < entry.count).map(entry => `${entry.file}: ${entry.text}`);
+    expect(stale).toEqual([]);
+  });
+  test("every entry names its reason from #1654", () => {
+    for (const entry of baseline) expect(entry.reason).toContain("#1654");
   });
 });

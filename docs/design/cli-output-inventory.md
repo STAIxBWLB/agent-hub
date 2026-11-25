@@ -121,10 +121,10 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | ui | fail (6), console.log (4), console.error (1) |
 | manager | Delegated / no direct output call |
 | setup | fail (7), console.log (9) |
-| init | fail (5), console.log (11), console.error (6) |
+| init | fail (5), console.log (11), console.error (5) |
 | daemon | console.error (2) |
 | console | fail (2) |
-| up | console.error (4), console.log (2) |
+| up | console.error (3), console.log (2) |
 | claude | Delegated / no direct output call |
 | codex | Delegated / no direct output call |
 | kimi | Delegated / no direct output call |
@@ -157,7 +157,7 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | deliverables | fail (2), console.log (5) |
 | board | fail (8), console.log (3), showToolText (1), renderHandoffs (1), console.error (1), printOutput (2), renderBoardColumns (1), renderBoard (1) |
 | sdlc | printOutput (2), fail (51), console.log (35), process.stdout.write (2), showToolText (2), renderSdlcCosts (1), renderSdlcMetrics (1), renderSdlcMerge (1) |
-| task | showToolText (3), fail (15), console.log (7), renderHandoffs (1), renderHandoffReceipt (1), console.error (1) |
+| task | showToolText (3), fail (15), console.log (7), renderHandoffs (1), renderHandoffReceipt (1) |
 | review | fail (5), console.log (2) |
 | remember | console.log (1) |
 | ask | fail (2), console.log (5) |
@@ -167,10 +167,10 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | stop | fail (2), console.log (1) |
 | peer | fail (7), console.log (2) |
 | title | fail (3), console.log (2) |
-| permission | fail (3), console.error (1), console.log (3) |
+| permission | fail (3), console.log (3) |
 | roster | fail (5), console.log (3), printOutput (4), renderRoster (1) |
 | autonomy | console.log (4), fail (1) |
-| settings | fail (18), console.log (23), console.error (1) |
+| settings | fail (18), console.log (23) |
 | permit | fail (1) |
 | answer | fail (3), console.log (8) |
 | results | fail (4), console.log (8) |
@@ -207,38 +207,37 @@ Interpolated and daemon-supplied strings require runtime fixtures. They are coun
 
 | Command | Text source | Stream | Literal width |
 | --- | --- | --- | ---: |
-| recovery | src/cli/main.ts:1035 | stdout | 29 |
-| recovery | src/cli/main.ts:1068 | stdout | 60 |
-| projects | src/cli/main.ts:1162 | stdout | 45 |
-| ui | src/cli/main.ts:1178 | stdout | 57 |
-| ui | src/cli/main.ts:1193 | stderr | 112 |
-| ui | src/cli/main.ts:1198 | stdout | 76 |
-| init | src/cli/main.ts:1319 | stderr | 115 |
-| models | src/cli/main.ts:1586 | stdout | 11 |
-| say | src/cli/main.ts:1610 | stdout | 46 |
-| roadmap | src/cli/main.ts:1814 | stdout | 46 |
-| deliverables | src/cli/main.ts:2051 | stdout | 70 |
-| sdlc | src/cli/main.ts:2156 | stdout | 29 |
-| ask | src/cli/main.ts:2501 | stdout | 9 |
-| ask | src/cli/main.ts:2504 | stdout | 54 |
-| roster | src/cli/main.ts:2621 | stdout | 19 |
-| roster | src/cli/main.ts:2628 | stdout | 19 |
-| autonomy | src/cli/main.ts:2679 | stdout | 75 |
-| settings | src/cli/main.ts:2772 | stdout | 39 |
-| settings | src/cli/main.ts:2785 | stdout | 33 |
-| settings | src/cli/main.ts:2816 | stdout | 33 |
-| answer | src/cli/main.ts:2861 | stdout | 17 |
-| bench | src/cli/main.ts:3002 | stdout | 107 |
-| usage | src/cli/main.ts:3186 | stderr | 121 |
-| undo | src/cli/main.ts:3322 | stdout | 103 |
-| undo | src/cli/main.ts:3327 | stdout | 53 |
-| kill | src/cli/main.ts:3344 | stdout | 18 |
-| kill | src/cli/main.ts:3348 | stdout | 11 |
-| reset | src/cli/main.ts:3362 | stdout | 36 |
-| reset | src/cli/main.ts:3386 | stdout | 56 |
-| reset | src/cli/main.ts:3392 | stdout | 39 |
-| reset | src/cli/main.ts:3395 | stdout | 11 |
-| reset | src/cli/main.ts:3430 | stdout | 96 |
+| recovery | src/cli/main.ts:1039 | stdout | 29 |
+| recovery | src/cli/main.ts:1072 | stdout | 60 |
+| projects | src/cli/main.ts:1166 | stdout | 45 |
+| ui | src/cli/main.ts:1182 | stdout | 57 |
+| ui | src/cli/main.ts:1197 | stderr | 112 |
+| ui | src/cli/main.ts:1202 | stdout | 76 |
+| models | src/cli/main.ts:1590 | stdout | 11 |
+| say | src/cli/main.ts:1614 | stdout | 46 |
+| roadmap | src/cli/main.ts:1818 | stdout | 46 |
+| deliverables | src/cli/main.ts:2055 | stdout | 70 |
+| sdlc | src/cli/main.ts:2160 | stdout | 29 |
+| ask | src/cli/main.ts:2505 | stdout | 9 |
+| ask | src/cli/main.ts:2508 | stdout | 54 |
+| roster | src/cli/main.ts:2625 | stdout | 19 |
+| roster | src/cli/main.ts:2632 | stdout | 19 |
+| autonomy | src/cli/main.ts:2683 | stdout | 75 |
+| settings | src/cli/main.ts:2776 | stdout | 39 |
+| settings | src/cli/main.ts:2789 | stdout | 33 |
+| settings | src/cli/main.ts:2820 | stdout | 33 |
+| answer | src/cli/main.ts:2865 | stdout | 17 |
+| bench | src/cli/main.ts:3006 | stdout | 107 |
+| usage | src/cli/main.ts:3190 | stderr | 121 |
+| undo | src/cli/main.ts:3326 | stdout | 103 |
+| undo | src/cli/main.ts:3331 | stdout | 53 |
+| kill | src/cli/main.ts:3348 | stdout | 18 |
+| kill | src/cli/main.ts:3352 | stdout | 11 |
+| reset | src/cli/main.ts:3366 | stdout | 36 |
+| reset | src/cli/main.ts:3390 | stdout | 56 |
+| reset | src/cli/main.ts:3396 | stdout | 39 |
+| reset | src/cli/main.ts:3399 | stdout | 11 |
+| reset | src/cli/main.ts:3434 | stdout | 96 |
 
 ## Renderer candidates
 
