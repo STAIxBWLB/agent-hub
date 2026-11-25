@@ -64,6 +64,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Verify Claude Code 2.1.332 as a headless implementer with an isolated model-free transport and wrapper receipt, allowing it to start without machine-local trust after release (Refs #888, hub task 1118).
 
+- Report the current native activity category in live JSON status for Codex, ACP and the local worker, omitting private turns and keeping no history. Refs #1512, hub task 1143.
+
 ## 0.46.1
 
 - Resolve `@staix/agent-mem` 0.38.0 in `bun.lock` so the repository's tests and CI run on the version a fresh install resolves; the declared range `>=0.33.0 <1.0.0` is unchanged. The recovery package refuses a ranged `@staix/cli-output` pin with the output message again when agent-mem declares it. Refs #1664, hub task 1084.

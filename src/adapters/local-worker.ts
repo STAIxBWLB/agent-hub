@@ -1,3 +1,4 @@
+import { LOCAL_ACTIVITY, nativeActivity } from "./definitions/native-activity.ts";
 import type { ModelOverrideSelection } from "./registry-types.ts";
 import { isNativeModelToken } from "./model-token.ts";
 import { isReviewObserverExcluded, reviewCaptureExcluded } from "../hub/memory-policy.ts";
@@ -511,6 +512,7 @@ export class LocalPeer extends BasePeer {
           // A tool has its own timeout (bash up to 600 s) and an approval can take 120 s: neither is the model going silent.
           const alive = this.probeConfinement ? undefined : setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), 30_000);
           const name = call.function.name;
+          if (!this.probeConfinement) this.onActivity?.(nativeActivity(LOCAL_ACTIVITY, name, TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name) ? "hub" : "unknown"));
           try {
             await this.requireBudget(envs, "tool_calls");
             if (turnSignal.aborted) throw new ExecutionBudgetStop(this.budgetStopReason || "turn cancelled before tool execution");

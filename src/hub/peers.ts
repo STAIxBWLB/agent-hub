@@ -1,3 +1,4 @@
+import type { ActivityKind } from "./peer-activity.ts";
 import type { DeliveryFailureCause } from "./delivery-failure.ts";
 import type { Envelope, EnvelopeOpts, PeerId, PeerState } from "./envelope.ts";
 import type { PermissionMode } from "./permission-mode.ts";
@@ -141,6 +142,7 @@ export interface PeerAdapter {
   onDelivery?: (receipt: DeliveryReceipt) => void;
   /** Set by the bus (#878): a native session title or current plan item the adapter observed; `reset` on a new session. */
   onDoing?: (kind: DoingKind, text?: unknown) => void;
+  onActivity?: (kind: ActivityKind | undefined) => void;
   /** Safe restart metadata only: ids and launch parameters, never prompt/message text. */
   recoveryMetadata?(): Record<string, unknown>;
   /** Current native TUI ownership, correlated to one launcher. A start acknowledgement is never evidence. */
@@ -161,6 +163,7 @@ export abstract class BasePeer implements PeerAdapter {
   onFailed?: (envs: Envelope[], failure?: { quota?: true; failureCause?: DeliveryFailureCause }) => void;
   onDelivery?: (receipt: DeliveryReceipt) => void;
   onDoing?: (kind: DoingKind, text?: unknown) => void;
+  onActivity?: (kind: ActivityKind | undefined) => void;
   private _state: PeerState = "offline";
   private timer: ReturnType<typeof setTimeout> | undefined;
   private nextWatchdogMs: number | undefined;

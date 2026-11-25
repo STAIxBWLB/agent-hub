@@ -1,3 +1,5 @@
+import { codexItemActivity } from "./definitions/native-activity.ts";
+import type { ActivityKind } from "../hub/peer-activity.ts";
 import { codexAccountUsage, codexQuotaWindowInput } from "./definitions/native-quota.ts";
 import type { QuotaAccountUsage } from "../hub/quota-account.ts";
 import type { ModelOverrideSelection } from "./registry-types.ts";
@@ -33,6 +35,7 @@ function confirmsReadOnlySandbox(value: unknown): boolean {
 /** A counter Codex reported: a finite non-negative number, otherwise 0 (an absent kind is not a negative delta). */
 const counter = (value: unknown): number => { const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : 0; };
 export interface CodexOptions {
+  activityServers?: ReadonlyMap<string, ActivityKind>;
   /** Host-only choice sampled once at the next turn/review boundary. */
   getModelOverride?: () => ModelOverrideSelection;
   /** Successful explicit native-client choice; never acknowledgement of a hub override revision. */
@@ -1019,6 +1022,7 @@ export class CodexPeer extends BasePeer {
       return;
     }
     if (method === "turn/started") {
+      this.onActivity?.(undefined);
       this.reroutedModel = undefined; // a reroute whose turn end was never read cannot carry into another turn
       link.rejectedModelSelection = undefined;
       // The notification has no request id. Conservatively protect every outstanding capture on
@@ -1031,6 +1035,10 @@ export class CodexPeer extends BasePeer {
       this.lastAnswer = "";
       this.setState("busy");
       if (params.turn?.id) this.opts.onTurn?.(params.turn.id);
+    } else if (method === "item/started") {
+      if (typeof params.turnId !== "string" || !this.activeTurns.has(params.turnId)) return;
+      const kind = this.opts.activityServers && codexItemActivity(params.item?.type, params.item?.server, this.opts.activityServers);
+      if (kind !== undefined) this.onActivity?.(kind);
     } else if (method === "item/agentMessage/delta") {
       if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn()) return;
       const buf = this.deltas.get(params.itemId) ?? [];
@@ -1052,6 +1060,7 @@ export class CodexPeer extends BasePeer {
       // Conclusions only: skip commentary, keep the last answer of the turn (phase may be absent).
       if (item.phase !== "commentary" && text.trim()) this.lastAnswer = text.trim();
     } else if (method === "turn/completed") {
+      if (typeof nativeId === "string" && this.activeTurns.has(nativeId)) this.onActivity?.(undefined);
       const nativeTurn = params.turn?.id;
       this.abortActionWaits(link, typeof nativeTurn === "string" ? nativeTurn : undefined);
       // A watchdog or a newer turn has invalidated this completion. Unknown-id legacy starts retain their fallback.
