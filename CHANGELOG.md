@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The dashboard has an Overview view (#1514): throughput per week, board pulse per day, peer first-pass health over 30 days, peer workload by state and the 20 most recent failures. Figures shared with `ahub sdlc metrics` come from the same `taskSample`, an unknown figure reads `unknown` and never 0, and a private task is only counted as withheld. The data is built only while that view is open.
 - `ahub status --verbose`, `status --full` and `ahub report` print on the shared Report layout, and the grammar is now checked over the real output of every converted view (hub task 1141, Refs #1654): a header, a `▸` section mark per group, `--ascii` markers, and a header that moves its context to a wrapped line on a terminal too narrow for it. Every detail line keeps its words, `--json` is unchanged. This is the last slice of #1654 T3 and T4.
 
 - `ahub sdlc status` and `explain` print on the shared Report layout (hub task 1137, Refs #1654): a header with the mode, a task table, one section per task with its blockers and gate findings as marker lines, and `--ascii` markers. `sdlc release` also prints a warning line when a release is not ready or native verification is unverified. `--json` is unchanged and every pinned phrase stays.

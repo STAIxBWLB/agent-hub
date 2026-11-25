@@ -8,6 +8,7 @@ import { officeModel } from "../ui/office-model.ts";
 import { OFFICE_PEER_ORDER, ADAPTER_DISPLAY } from "../adapters/registry.ts";
 import { needs } from "../ui/needs.ts";
 import { roadmapModel } from "../ui/roadmap-model.ts";
+import { overviewModel } from "../ui/overview-model.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -27,7 +28,7 @@ const SESSION_MS = 60 * 60_000;
 /** How long a session opened by `ahub ui --settings` may change settings that raise authority; it stays an ordinary session after. */
 export const SETTINGS_MS = 15 * 60_000;
 /** The page's view names (index.html DASHBOARD_VIEWS): the only values a snapshot request's `view` may carry to a project hub. */
-export const DASHBOARD_VIEWS = ["board", "office", "stream", "agents", "message", "memory", "settings", "roadmap"] as const;
+export const DASHBOARD_VIEWS = ["board", "office", "stream", "agents", "message", "memory", "settings", "roadmap", "overview"] as const;
 export const dashboardView = (value: unknown): typeof DASHBOARD_VIEWS[number] | undefined => (DASHBOARD_VIEWS as readonly unknown[]).includes(value) ? value as typeof DASHBOARD_VIEWS[number] : undefined;
 const LIMIT = 64;
 const secret = () => randomBytes(32).toString("hex");
@@ -43,7 +44,8 @@ export function renderDashboard(): { html: string; styles: string[]; markup: str
     .replace("/* PEER_START_RETRY_MS */", () => `const PEER_START_RETRY_MS = ${PEER_START_RETRY_MS};`)
     .replace("/* OFFICE_MODEL */", () => `const officeModel = ((OFFICE_PEER_ORDER) => ${officeModel.toString()})(${JSON.stringify(OFFICE_PEER_ORDER)});`)
     .replace("/* NEEDS_MODEL */", () => `const needs = ${needs.toString()};`)
-    .replace("/* ROADMAP_MODEL */", () => `const roadmapModel = ${roadmapModel.toString()};`);
+    .replace("/* ROADMAP_MODEL */", () => `const roadmapModel = ${roadmapModel.toString()};`)
+    .replace("/* OVERVIEW_MODEL */", () => `const overviewModel = ${overviewModel.toString()};`);
   const blocks = (tag: string) => [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))].map((m) => m[1]!);
   const body = /<body>([\s\S]*)<\/body>/.exec(html)?.[1] ?? "";
   return { html, styles: blocks("style"), markup: body.replace(/<script>[\s\S]*?<\/script>/g, ""), script: blocks("script").join("\n") };
