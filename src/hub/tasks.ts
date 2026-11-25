@@ -8393,9 +8393,9 @@ export class Tasks {
     const task = this.need(this.studyNumber(id, "read-back task"));
     const latest = this.d.board.readbackLatest(task.id, task.created);
     if (!latest) return { task: task.id, status: "none" as const };
-    const full = by === USER || this.d.bus.isRostered(by) && (task.owner === by && this.isConfiguredPlanner(by) || task.reviewer === by && !!this.d.roles?.[by]?.includes("reviewer"));
+    const full = by === USER || latest.by === by || this.d.bus.isRostered(by) && (task.owner === by || task.reviewer === by || task.planner === by);
     // refusal:by-design human-authority: who owns, plans and reviews a task are board assignments a person or the planner sets, so a peer the board did not name has nothing it can run to gain the read.
-    if (!full && latest.reader !== by) throw new PreEffectToolRefusal(`read-back ${latest.id} is for the person, the task's planner, its owner, its reviewer or the reader`);
+    if (!full && latest.reader !== by) throw new PreEffectToolRefusal(`read-back ${latest.id} is for the person, the conductor that started it, the task's own holders or the reader`);
     if (this.isPii(task)) return { task: task.id, status: "private" as const, readback: latest.id };
     return { task: task.id, readback: latest.id, repo: latest.repo, issue: latest.issue, lastEditedAt: latest.lastEditedAt, reader: latest.reader,
       ...(latest.report ? { report: latest.report, missing_refs: latest.missingRefs ?? [] } : { status: "requested" as const }) };

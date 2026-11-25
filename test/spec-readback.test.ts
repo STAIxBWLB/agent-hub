@@ -174,6 +174,15 @@ test("no eligible reader answers unavailable and writes nothing; the proposer is
   } finally { f.close(); }
 });
 
+test("a show is for the person, the conductor that started it, the task's own holders and the reader", async () => {
+  const f = await readbackFixture();
+  try {
+    const started = await f.tasks.specReadbackStart("user", f.task.id);
+    expect(f.tasks.specReadbackShow("claude", f.task.id)).toMatchObject({ task: f.task.id, readback: started.readback, status: "requested" });
+    expect(() => f.tasks.specReadbackShow("ghost", f.task.id)).toThrow(/conductor that started it/);
+  } finally { f.close(); }
+});
+
 test("only the bound reader reports, once; the ref check counts missing paths and the grant closes after it", async () => {
   const f = await readbackFixture();
   try {
