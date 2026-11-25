@@ -7,42 +7,44 @@ import { readbackSummary, type ReadbackView } from "../hub/spec-readback.ts";
 
 type Line = Span[];
 /** Configuration remains restart-bound; the claim is caller provenance, not inferred release consent. */
-export function renderSdlcConfiguration(value: unknown, columns?: number): Span[][] {
+export function renderSdlcConfiguration(value: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const row = value as any;
-  const out = heading(list(row?.restartPending).length ? "SDLC configuration saved; restart pending" : "SDLC configuration saved", columns);
-  out.push(...pair("actor", row?.by ?? "unknown", columns, 12));
-  out.push(...pair("instruction", "person's explicit instruction claimed for this session", columns, 12));
-  for (const line of list(row?.lines)) out.push(...para(String(line), columns));
-  if (row?.backup) out.push(...pair("backup", row.backup, columns, 12));
-  return out;
+  const out = new LayoutReport(columns, ascii).titled("ahub", "SDLC configuration", list(row?.restartPending).length ? "saved; restart pending" : "saved");
+  const rows: [string, unknown][] = [["actor", row?.by ?? "unknown"], ["instruction", "person's explicit instruction claimed for this session"]];
+  if (row?.backup) rows.push(["backup", row.backup]);
+  out.section("Receipt").kv(rows);
+  if (list(row?.lines).length) { out.section("Details"); for (const line of list(row.lines)) out.note(String(line), "value"); }
+  return out.lines();
 }
 /** Survey fields already passed the host's task and security disclosure policy. */
-export function renderSdlcSurvey(value: unknown, columns?: number): Span[][] {
+export function renderSdlcSurvey(value: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const row = value as any;
-  if (!row) return [[s("no advisor survey", "muted")]];
-  const out: Span[][] = [...heading(`Advisor survey, task ${row.task ?? "unknown"}`, columns)];
-  for (const field of ["survey", "ref", "focus"]) if (row[field] !== undefined) out.push(...pair(field, row[field], columns, 12));
-  if (row.withheld || row.status === "private") return [...out, [s("report withheld by current privacy", "attention")]];
+  if (!row) return new LayoutReport(columns, ascii).header("ahub", "Advisor survey").note("no advisor survey").lines();
+  const out = new LayoutReport(columns, ascii).titled("ahub", "Advisor survey", `task ${row.task ?? "unknown"}`);
+  const head = ["survey", "ref", "focus"].filter(field => row[field] !== undefined).map((field): [string, unknown] => [field, row[field]]);
+  if (head.length) out.section("Survey").kv(head);
+  if (row.withheld || row.status === "private") return out.bullet("warn", "report withheld by current privacy").lines();
+  const rejectedRows = (rejected: any, unknownWhen: boolean): [string, unknown][] => {
+    const rows: [string, unknown][] = [["rejected before", rejected.id]];
+    if (unknownWhen) rows.push(["change", "unknown (suppression retained)"]);
+    if (!rejected.withheld && rejected.reason) rows.push(["reason", rejected.reason]);
+    return rows;
+  };
   for (const item of list(row.items)) {
     const finding = item.finding ?? item;
-    out.push(...pair("finding", finding.id, columns, 12));
-    if (finding.withheld || item.withheld) { out.push(...pair("details", "withheld", columns, 12)); continue; }
-    for (const field of ["evidence", "impact", "effort", "risk", "confidence", "fix_sketch"]) if (finding[field] !== undefined) out.push(...pair(field, finding[field], columns, 12));
-    if (item.decision) out.push(...pair("decision", item.decision.verdict, columns, 12));
-    else if (item.verdict) out.push(...pair("decision", item.verdict, columns, 12));
-    if (item.rejectedBefore?.rejectedBefore || item.rejectedBefore === true) out.push(...pair("history", "rejected before", columns, 12, "attention"));
-    for (const rejected of list(item.rejected)) {
-      out.push(...pair("rejected before", rejected.id, columns, 16));
-      if (rejected.change === "unknown") out.push(...pair("change", "unknown (suppression retained)", columns, 16, "attention"));
-      if (!rejected.withheld && rejected.reason) out.push(...pair("reason", rejected.reason, columns, 16));
-    }
+    out.section(`Finding ${terminalText(finding.id ?? "unknown")}`);
+    if (finding.withheld || item.withheld) { out.kv([["details", "withheld"]]); continue; }
+    const rows: [string, unknown][] = [];
+    for (const field of ["evidence", "impact", "effort", "risk", "confidence", "fix_sketch"]) if (finding[field] !== undefined) rows.push([field, finding[field]]);
+    if (item.decision) rows.push(["decision", item.decision.verdict]);
+    else if (item.verdict) rows.push(["decision", item.verdict]);
+    if (item.rejectedBefore?.rejectedBefore || item.rejectedBefore === true) rows.push(["history", "rejected before"]);
+    for (const rejected of list(item.rejected)) rows.push(...rejectedRows(rejected, rejected.change === "unknown"));
+    out.kv(rows.length ? rows : [["details", "none recorded"]]);
   }
-  for (const rejected of list(row.rejected)) {
-    out.push(...pair("rejected before", rejected.id, columns, 16));
-    if (rejected.status === "unknown" || rejected.change === "unknown") out.push(...pair("change", "unknown (suppression retained)", columns, 16, "attention"));
-    if (!rejected.withheld && rejected.reason) out.push(...pair("reason", rejected.reason, columns, 16));
-  }
-  return out;
+  const rejected = list(row.rejected);
+  if (rejected.length) out.section("Rejected before", String(rejected.length)).kv(rejected.flatMap((entry: any) => rejectedRows(entry, entry.status === "unknown" || entry.change === "unknown")));
+  return out.lines();
 }
 export const s = (value: unknown, tone?: Tone): Span => ({ text: terminalText(value).replace(/[\n\t]/g, " "), ...(tone ? { tone } : {}) });
 const room = (columns?: number) => columns ?? Infinity;
@@ -59,10 +61,6 @@ export function moment(at: unknown, now: number): string {
 }
 const span = (ms: unknown) => typeof ms === "number" && Number.isFinite(ms) ? duration(ms) : "unknown";
 
-/** Text wrapped to the width, continuation lines hanging under `indent`. */
-function para(text: string, columns: number | undefined, tone?: Tone, indent = "", hang = 2): Line[] {
-  return wrap(indent + text, room(columns), hang).map(line => [s(line, tone)]);
-}
 /**
  * `label  value`, the value wrapped beside its own label so narrow terminals never separate them. When the longest word of
  * the value does not fit in the room left of the label column, the value moves under the label instead, so a path or id
@@ -78,11 +76,6 @@ export function pair(label: string, value: unknown, columns: number | undefined,
   }
   const lines = wrap(head + text, room(columns), head.length);
   return lines.map((line, i) => i === 0 ? [s(line.slice(0, head.length), "muted"), s(line.slice(head.length), tone)] : [s(line, tone)]);
-}
-/** Items under a label, one per line, wrapped under the dash. */
-function bullets(label: string, items: readonly unknown[], columns: number | undefined, tone?: Tone, indent = ""): Line[] {
-  if (!items.length) return [];
-  return [[s(indent + label, "muted")], ...items.flatMap(item => para(`- ${terminalText(item)}`, columns, tone, indent + (columns !== undefined && indent.length + 2 + 2 + Math.max(0, ...terminalText(item).split(/\s+/).map(textWidth)) > columns ? "" : "  "), 2))];
 }
 const GAP = 2;
 const textWidth = (text: string) => Bun.stringWidth(text);
@@ -188,9 +181,7 @@ function taskBlock(out: LayoutReport, row: any, detail: boolean, readback = true
 }
 function lifecycleView(reply: any, columns: number | undefined, detail: boolean, ascii: boolean): Span[][] {
   const rows = list(reply?.rows);
-  const mode = `mode ${reply?.mode ?? "unknown"}`, out = new LayoutReport(columns, ascii);
-  if (columns === undefined || textWidth(` ahub SDLC lifecycle  ${mode}`) <= columns) out.header("ahub", "SDLC lifecycle", mode);
-  else out.header("ahub", "SDLC lifecycle").note(mode);
+  const out = new LayoutReport(columns, ascii).titled("ahub", "SDLC lifecycle", `mode ${reply?.mode ?? "unknown"}`);
   if (reply?.securityScan && typeof reply.securityScan === "object") out.section("Security scan").kv([["security scan", Object.entries(reply.securityScan).map(([source, value]) => `${source}: ${value === null ? "unknown" : value}`).join(", ")]]);
   if (!rows.length) return out.note("no task has lifecycle state yet").lines();
   if (!detail || rows.length > 1) {
@@ -209,18 +200,10 @@ export const renderSdlcExplain = (reply: unknown, columns?: number, _now = Date.
 // ---- sdlc queue / release -----------------------------------------------------------------------------------------
 
 /** `ahub sdlc queue <repo>`: the merge order, then each open PR's gates. */
-/** The header line does not wrap: a name that fits the terminal stays in it, a longer one moves to a wrapped row under a short header. */
-function titled(columns: number | undefined, ascii: boolean, lead: string, name: string): LayoutReport {
-  const report = new LayoutReport(columns, ascii);
-  if (columns === undefined || textWidth(` ahub ${lead} ${name}`) <= columns) return report.header("ahub", `${lead} ${name}`);
-  // the lead itself may not fit either: it moves to the wrapped line with the name
-  if (textWidth(` ahub ${lead}`) > columns) return report.header("ahub", lead.slice(0, lead.indexOf(" ") < 0 ? lead.length : lead.indexOf(" "))).note(`${lead} ${name}`, "value");
-  return report.header("ahub", lead).note(name, "value");
-}
 export function renderSdlcQueue(reply: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const report = (reply as any)?.report ?? {};
   const rows = list(report.rows);
-  const out = titled(columns, ascii, "Merge queue", String(report.repo ?? "unknown repository"));
+  const out = new LayoutReport(columns, ascii).titled("ahub", "Merge queue", String(report.repo ?? "unknown repository"), true);
   if (report.complete === false || report.truncated) {
     out.section("Caution");
     if (report.complete === false) out.bullet("warn", "incomplete: a read failed or the board changed during it; do not merge from this order");
@@ -250,7 +233,7 @@ function auditStates(a: any): string {
 export function renderSdlcAudit(reply: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const a = (reply as any)?.audit;
   if (!a) return new LayoutReport(columns, ascii).header("ahub", "Security audit").section("Audit").kv([["audits", "none started: run ahub sdlc audit start"]]).lines();
-  const out = titled(columns, ascii, "Security audit", `${a.audit} (task #${a.task})`);
+  const out = new LayoutReport(columns, ascii).titled("ahub", "Security audit", `${a.audit} (task #${a.task})`, true);
   const f = a.findings ?? {};
   out.section("Summary").kv([["source", `${short(a.ref)}, profile ${a.profile}${a.scoped ? ", scoped" : ""}`], ["coverage", `${a.partial ? "partial: " : ""}${auditStates(a)}`],
     ["findings", `${f.verified ?? 0} verified, ${f.candidate ?? 0} candidate (unverified), ${f.needsValidation ?? 0} needs validation, ${f.rejected ?? 0} rejected, ${f.settled ?? 0} settled, ${f.other ?? 0} other`]]);
@@ -268,7 +251,7 @@ export function renderSdlcAudit(reply: unknown, columns?: number, _now = Date.no
 /** `ahub sdlc release <repo> [live-issue...]`: source, document, issue and authorization evidence, then what blocks the release. */
 export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.now(), ascii = false): Span[][] {
   const r = (reply as any)?.report ?? {};
-  const out = titled(columns, ascii, "Release readiness", String(r.repo ?? "unknown repository"));
+  const out = new LayoutReport(columns, ascii).titled("ahub", "Release readiness", String(r.repo ?? "unknown repository"), true);
   out.section("Source").kv([["version", r.version ?? (r.releasePolicy ? "undetermined" : "unknown")], ["head", short(r.head)], ["tag", r.tag ? `${r.tag} at ${short(r.tagCommit)}` : "none"],
     ["commits", `${plural(list(r.commits).length, "commit")} since the last tag`], ...(list(r.mergedPrs).length ? [["merged PRs", list(r.mergedPrs).map((p: any) => `#${p.pr}`).join(", ")] as const] : [])]);
   out.section("Readiness").kv([["source ready", yes(r.sourceReady)], ["native", String(r.native ?? "unverified")], ["release ready", yes(r.ready)]]);
@@ -382,7 +365,7 @@ export function renderSdlcMerge(view: unknown, columns?: number, _now = Date.now
   const refused = list(v?.refused), argv = list(v?.argv);
   const decision = v?.decision === "merge" ? "merge: every gate passed" : v?.decision === "refused" ? `refused by ${plural(refused.length, "gate")}` : "unknown";
   const ran = v?.ran === true ? "yes" : v?.ran === false ? (v?.mode === "dry-run" && argv.length ? "no (dry run: the command above was not run)" : "no") : "unknown";
-  const report = titled(columns, ascii, "Guarded merge of task", `#${v?.task ?? "unknown"}`).section("Decision")
+  const report = new LayoutReport(columns, ascii).titled("ahub", "Guarded merge of task", `#${v?.task ?? "unknown"}`, true).section("Decision")
     .kv([["mode", v?.mode ?? "unknown"], ["decision", decision], ...(argv.length ? [["command", `gh ${argv.join(" ")}`] as const] : []), ["ran", ran]]);
   if (refused.length) { report.section("Refused", String(refused.length)); for (const gate of refused) report.bullet("fail", terminalText(gate)); }
   const r = v?.result;

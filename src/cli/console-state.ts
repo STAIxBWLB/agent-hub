@@ -256,6 +256,19 @@ export class Report {
     this.out.push(...new SharedReport(this.columns, this.ascii).header(tool, name, context).lines());
     return this;
   }
+  /**
+   * #1654 AC3: the one header-fit rule. The header line does not wrap, so a name that fits the terminal stays in it and a longer
+   * one moves to a wrapped line under a short header. `context` follows the name after two spaces in `hint`; with `inline` it
+   * joins the name by one space (`Merge queue owner/repo`) and moves in `value`. A name too wide for any header keeps its first
+   * word there and repeats in full on the wrapped line. No wrap width means no moving.
+   */
+  titled(tool: string, name: string, context?: string, inline = false): this {
+    const fits = (text: string) => this.columns === undefined || cellWidth(` ${tool} ${text}`) <= this.columns;
+    const joined = !context ? name : inline ? `${name} ${context}` : `${name}  ${context}`;
+    if (fits(joined)) return inline && context ? this.header(tool, joined) : this.header(tool, name, context || undefined);
+    if (context && fits(name)) return this.header(tool, name).note(context, inline ? "value" : "hint");
+    return this.header(tool, name.split(" ")[0]!).note(joined, "value");
+  }
   /** One blank line, then `▸ <Name>` (ASCII `> <Name>`) in `section`, with an optional count in `hint`. */
   section(name: string, count?: string): this {
     if (this.out.length && this.out.at(-1)!.length) this.push([]);

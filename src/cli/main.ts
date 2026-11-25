@@ -397,11 +397,11 @@ function missingTaskText(text: string): string | undefined {
   try { const value: unknown = JSON.parse(text); return typeof value === "string" && /^no task #\d+$/.test(value) ? value : undefined; } catch { return undefined; }
 }
 /** A hub tool answers JSON text. Text that does not parse is printed as it came: a renderer never sees it, so it cannot read as an empty report. */
-function showToolText(render: (data: any, columns?: number, now?: number) => Span[][], text: string, present: ReturnType<typeof outputOptions>): void {
+function showToolText(render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][], text: string, present: ReturnType<typeof outputOptions>): void {
   let data: unknown;
   try { data = JSON.parse(text); } catch { return console.log(text); }
   if (present.json) return console.log(text);
-  printOutput(render(data, present.columns, Date.now()), present.color);
+  printOutput(render(data, present.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), present.color);
 }
 const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release", "audit", "configure", "survey"];
 function sdlcOperands(): string[] { return SDLC_READ.includes(args[0] ?? "") ? outputArguments() : args; }
@@ -1765,7 +1765,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const split = splitPresentation(args, { edges: true }), operands = split.operands;
     const [sub, id, revision, value, ...reason] = operands;
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
-    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
+    const shown = (render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
     if (sub === "list" && outputArguments().length === 1) {
       // #399: a table by default; --json prints the hub's listing unchanged, and a refusal is printed as it came.
       const options = outputOptions(), raw = await taskOp("hub_backlog_list", {});
@@ -1780,24 +1780,24 @@ const commands: Record<string, () => Promise<void> | void> = {
       // #1177: `--reserved <peer>` / `--unreserve` edit the reservation atomically with the return (fields.reserved); with neither, the arguments are what they always were.
       const returned = parseBacklogReturn(operands.slice(3));
       if (!returned.ok) return fail(returned.error);
-      return shown((data, columns, now) => renderBacklogResult("return-untouched", data, columns, now))(taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: returned.value.reason, ...(returned.value.fields ? { fields: returned.value.fields } : {}) }));
+      return shown((data, columns, now, ascii) => renderBacklogResult("return-untouched", data, columns, now, ascii))(taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: returned.value.reason, ...(returned.value.fields ? { fields: returned.value.fields } : {}) }));
     }
     if (sub === "add" && args.length >= 3) return console.log(await taskOp("hub_task_propose", { class: id, title: args.slice(2).join(" "), backlog: true }));
     if (!/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog list|add <class> <title...>|pull|return <id>|plan|pin <id> <revision> <value> <reason...>|undo <id> <revision>");
     if (["pull", "return"].includes(sub ?? "") && operands.length === 2) return console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
     if (!/^\d+$/.test(revision ?? "")) fail("planning revision is required");
-    if (sub === "pull-ready" && operands.length >= 4) return shown((data, columns, now) => renderBacklogResult("pull-ready", data, columns, now))(taskOp("hub_backlog_pull", { id: Number(id), revision: Number(revision), reason: operands.slice(3).join(" ") }));
+    if (sub === "pull-ready" && operands.length >= 4) return shown((data, columns, now, ascii) => renderBacklogResult("pull-ready", data, columns, now, ascii))(taskOp("hub_backlog_pull", { id: Number(id), revision: Number(revision), reason: operands.slice(3).join(" ") }));
     if (sub === "split" && value && reason.length) {
       let parts: unknown;try { parts=JSON.parse(value); } catch { return fail("split parts must be JSON"); }
-      return shown((data, columns, now) => renderBacklogResult("split", data, columns, now))(taskOp("hub_backlog_split", { id: Number(id), revision: Number(revision), parts, reason: reason.join(" ") }));
+      return shown((data, columns, now, ascii) => renderBacklogResult("split", data, columns, now, ascii))(taskOp("hub_backlog_split", { id: Number(id), revision: Number(revision), parts, reason: reason.join(" ") }));
     }
-    if (sub === "undo" && operands.length === 3) return shown((data, columns, now) => renderBacklogResult("undo", data, columns, now))(taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
+    if (sub === "undo" && operands.length === 3) return shown((data, columns, now, ascii) => renderBacklogResult("undo", data, columns, now, ascii))(taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
     if (!["plan", "pin", "person"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
     let fields: unknown;
     try { fields = sub === "pin" ? { pinned: value === "true" ? true : value === "false" ? false : undefined } : sub === "person" ? { needsPerson: value === "true" ? true : value === "false" ? false : undefined } : JSON.parse(value); }
     catch { return fail("planning fields must be JSON"); }
     if ((sub === "pin" || sub === "person") && value !== "true" && value !== "false") fail(`${sub} must be true or false`);
-    return shown((data, columns, now) => renderBacklogResult(sub === "person" ? "plan" : sub as "plan" | "pin", data, columns, now))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
+    return shown((data, columns, now, ascii) => renderBacklogResult(sub === "person" ? "plan" : sub as "plan" | "pin", data, columns, now, ascii))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
   },
 
   roadmap: async () => {
@@ -1818,7 +1818,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const split = splitPresentation(args, { edges: true }), operands = split.operands;
     const [sub, name, revision, value] = operands;
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
-    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
+    const shown = (render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
     if (sub === "list" && operands.length === 1) return shown(renderReleaseList)(taskOp("hub_release_list", {}));
     if (sub === "show" && name && operands.length === 2) return shown(renderReleaseShow)(taskOp("release_show", { name }));
     if (sub === "new" && name && revision && operands.length === 4 && /^\d+$/.test(value ?? "")) return shown(renderReleaseNew)(taskOp("release_new", { name, goal: revision, order: Number(value) }));
@@ -2366,7 +2366,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   task: async () => {
     const presentation = splitPresentation(args, { valueFlags: ["--reason", "--superseded-by", "--revision"], edges: true });
-    const shownTask = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, outputOptions(presentation.flags));
+    const shownTask = (render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, outputOptions(presentation.flags));
     // task show and task cancel read their presentation options before the request goes out (a refusal after a cancel would invite a retry of work already done)
     if (["show", "cancel"].includes(args[0] ?? "")) outputOptions(presentation.flags);
     const [sub, ...rest] = ["show", "cancel"].includes(args[0] ?? "") ? presentation.operands : args;
