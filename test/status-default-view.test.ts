@@ -98,6 +98,17 @@ describe("ahub status default view (#1484 AC2)", () => {
   test("the person-run line keeps its documented words", () => {
     expect(text(renderStatusDefault({ peers: {}, tasks: { backlog: 2 }, personRun: [7] } as never, 80, now))).toContain("WAITING ON YOU  #7");
   });
+  // #1668: the hub refused a hub-tools hello because a server it did not start serves that peer's socket.
+  test("a detached peer is an Attention row naming the cause and the exact launch, and the verbose view carries both", () => {
+    const cause = "a Jcode server the hub did not start is serving this peer's socket, so its work continues outside the hub";
+    const data = { peers: { "jcode-local": { state: "offline", queued: 0, detached: { cause, command: "ahub jcode --as jcode-local" } } }, tasks: {} } as never;
+    expect(statusAttention(data, now)).toEqual([{ marker: "warn", text: `jcode-local is detached: ${cause}`, next: "ahub jcode --as jcode-local" }]);
+    const view = text(renderStatusDefault(data, 200, now));
+    expect(view).toContain(`jcode-local is detached: ${cause}`);
+    expect(view).toContain("→  ahub jcode --as jcode-local");
+    const verbose = renderStatus(data, undefined, now).map(line => paint(line, false)).join("\n");
+    expect(verbose).toContain(`detached  ${cause}; relaunch it with ahub jcode --as jcode-local`);
+  });
 });
 
 describe("ahub status --verbose keeps every detail the older view printed", () => {

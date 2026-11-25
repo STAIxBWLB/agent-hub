@@ -389,6 +389,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (p.ownerIsolationNote) out.push(...detail("owner isolation", p.ownerIsolationNote, columns, "attention"));
     if (p.permissionNote) out.push(...detail("permission", p.permissionNote, columns, "muted"));
     if (typeof p.statusNotice?.message === "string" && p.statusNotice.message) out.push(...detail("status notice", p.statusNotice.message, columns, "attention"));
+    if (typeof p.detached?.cause === "string" && p.detached.cause) out.push(...detail("detached", `${p.detached.cause}${typeof p.detached.command === "string" && p.detached.command ? `; relaunch it with ${p.detached.command}` : ""}`, columns, "attention"));
     if (p.requestedModel && p.servedBy && p.requestedModel !== p.servedBy) out.push(...detail("requested model", p.requestedModel, columns));
     if (p.reviewScope === "code" || p.reviewScope === "full") out.push(...detail("review scope", p.reviewScope === "code" ? "code only (cannot run tests or read CI; the merger gates on exact-head CI)" : "full", columns, "muted")); // #852
     if (typeof p.modelSource === "string" && p.modelSource) out.push(...detail("model source", flat(p.modelSource), columns, "muted")); // an extra Jcode instance (#685): names only, never a URL or token
@@ -463,6 +464,8 @@ export function statusAttention(data: StatusOutput, now = Date.now()): Attention
     if (typeof p.reviewerUnavailable === "string" && p.reviewerUnavailable) add("fail", `${id} reviewer unavailable: ${flat(p.reviewerUnavailable)}`);
     if (p.ownerIsolationNote) add("warn", `${id} owner isolation: ${p.ownerIsolationNote}`);
     if (typeof p.statusNotice?.message === "string" && p.statusNotice.message) add("warn", `${id}: ${p.statusNotice.message}`);
+    // #1668: the hub refused a hub-tools hello because a server the hub did not start is serving that peer's socket; the hub already knows the launch that ends it.
+    if (typeof p.detached?.cause === "string" && p.detached.cause) add("warn", `${id} is detached: ${p.detached.cause}`, typeof p.detached.command === "string" ? p.detached.command : undefined);
     if (typeof p.importantWaitingSince === "number" && p.importantWaitingNote) add("warn", `${id}: ${String(p.importantWaitingNote)}`, `ahub queue list --peer ${id}`);
     const actionPolicy = data.actionPolicyInfo?.[id];
     if (actionPolicy?.note && !actionPolicy.enforceable) add("warn", `${id} action policy: ${actionPolicy.note}`);

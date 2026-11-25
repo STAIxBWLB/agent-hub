@@ -144,6 +144,48 @@ test("a stopped owned launch no longer admits its launch id (#368)", async () =>
   await expect(ControlClient.connect(stateDir, { role: "tools", peer: "jcode-local", launchId: owned })).rejects.toThrow(/owned launch|not an owned/);
 });
 
+/** #1668: the refused hello is how the hub learns that a server it did not start is serving that peer's socket. */
+test("a hello refused as not an owned launch shows the peer as detached with its cause and launch command, and an unrelated refusal changes no peer (#1668)", async () => {
+  const { console_, stateDir, daemon } = await hub();
+  const peers = async () => (await console_.request({ t: "status" })).status.peers;
+  expect(JSON.stringify(await peers())).not.toContain("detached");
+  // The base peer and an extra instance each carry their own id and no owned launch, so admission refuses them with the same words as before (AC3).
+  await expect(ControlClient.connect(stateDir, { role: "tools", peer: "jcode", launchId: "forged" })).rejects.toThrow(/not an owned launch/);
+  await expect(ControlClient.connect(stateDir, { role: "tools", peer: "jcode-local", launchId: "forged" })).rejects.toThrow(/not an owned launch/);
+  const detached = await peers();
+  const cause = "a Jcode server the hub did not start is serving this peer's socket, so its work continues outside the hub";
+  expect(detached.jcode.detached).toEqual({ cause, command: "ahub jcode" });
+  expect(detached["jcode-local"].detached).toEqual({ cause, command: "ahub jcode --as jcode-local" });
+  // Nothing was admitted by the refusal, and the record names no launch id, socket or path.
+  expect(daemon.bus.stateOf("jcode")).toBe("offline");
+  expect(JSON.stringify(detached.jcode.detached)).not.toContain("forged");
+  // Only those two peers gained the state: a refusal is not shared, and a peer with no record stays exactly as it was.
+  expect(Object.values(detached).map((peer: any) => peer.detached).filter(Boolean)).toHaveLength(2);
+  expect(detached["jcode-claude"]?.detached).toBeUndefined();
+});
+
+test("a refused hello for a peer on no roster records nothing (#1668)", async () => {
+  const { console_, stateDir } = await hub({}, { roster: { jcode: true, "jcode-local": false, "jcode-claude": true } });
+  // Off roster is refused before the launch proof is even asked for, so no peer for that socket is detached: it is not a peer here at all.
+  await expect(ControlClient.connect(stateDir, { role: "tools", peer: "jcode-local", launchId: "forged" })).rejects.toThrow(/off roster/);
+  const peers = (await console_.request({ t: "status" })).status.peers;
+  expect(Object.values(peers).map((peer: any) => peer.detached).filter(Boolean)).toHaveLength(0);
+});
+
+test("a hub-owned launch clears the detached state, and a launch refused before it starts keeps it (#1668)", async () => {
+  const { console_, stateDir, claudeHome } = await hub();
+  const detached = async (peer: string) => (await console_.request({ t: "status" })).status.peers[peer]?.detached;
+  await expect(ControlClient.connect(stateDir, { role: "tools", peer: "jcode-local", launchId: "forged" })).rejects.toThrow(/not an owned launch/);
+  expect(await detached("jcode-local")).toBeTruthy();
+  expect((await console_.request({ t: "start", peer: "jcode-local", args: { mode: "headless" } })).ok).toBe(true);
+  expect(await detached("jcode-local")).toBeUndefined();
+  // A start the hub refuses before it reaches the peer is no relaunch, so the record stays for the person to act on.
+  await expect(ControlClient.connect(stateDir, { role: "tools", peer: "jcode-claude", launchId: "forged" })).rejects.toThrow(/not an owned launch/);
+  rmSync(claudeHome, { recursive: true });
+  expect((await console_.request({ t: "start", peer: "jcode-claude", args: { mode: "headless" } })).ok).toBe(false);
+  expect(await detached("jcode-claude")).toMatchObject({ command: "ahub jcode --as jcode-claude" });
+});
+
 test("the shared MCP server run with no AGENTHUB_PEER_ID refuses every hub tool and never connects as jcode, and a forged id has no owned launch (#368)", async () => {
   const { dir, stateDir, console_, record } = await hub();
   expect((await console_.request({ t: "start", peer: "jcode-local", args: { mode: "headless" } })).ok).toBe(true);
