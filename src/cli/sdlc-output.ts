@@ -343,7 +343,7 @@ export function renderAuthorization(authorization: unknown, columns?: number, no
 
 // ---- sdlc merge ---------------------------------------------------------------------------------------------------
 
-const MERGE_STATE: Record<string, [string, Tone]> = { merged: ["merged", "success"], not_merged: ["not merged", "failure"], unknown: ["merge state unknown", "attention"] };
+const MERGE_STATE: Record<string, [string, "ok" | "fail" | "warn"]> = { merged: ["merged", "ok"], not_merged: ["not merged", "fail"], unknown: ["merge state unknown", "warn"] };
 /** `ahub sdlc merge <task> [--dry-run]` (#899): the hub's decision, every gate that refused it, the `gh` command, and GitHub's readback after a run. */
 export function renderSdlcMerge(view: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const v = view as any;
@@ -355,9 +355,10 @@ export function renderSdlcMerge(view: unknown, columns?: number, _now = Date.now
   if (refused.length) { report.section("Refused", String(refused.length)); for (const gate of refused) report.bullet("fail", terminalText(gate)); }
   const r = v?.result;
   if (r && typeof r === "object") {
-    const [state] = MERGE_STATE[String(r.state)] ?? ["merge state unknown"];
-    report.section("Result").kv([["result", `${state}, gh exit ${count(r.exit)}${r.mergeCommit ? `, merge commit ${short(r.mergeCommit)}` : ""}`],
-      ...(r.cleanup ? [["cleanup", `branch cleanup ${String(r.cleanup).replaceAll("_", " ")}${r.reason ? ` (${String(r.reason).replaceAll("_", " ")})` : ""}`] as const] : [])]);
+    const [state, marker] = MERGE_STATE[String(r.state)] ?? ["merge state unknown", "warn" as const];
+    report.section("Result");
+    report.bullet(marker, `${state}, gh exit ${count(r.exit)}${r.mergeCommit ? `, merge commit ${short(r.mergeCommit)}` : ""}`);
+    if (r.cleanup) report.kv([["cleanup", `branch cleanup ${String(r.cleanup).replaceAll("_", " ")}${r.reason ? ` (${String(r.reason).replaceAll("_", " ")})` : ""}`]]);
   }
   return report.lines();
 }
