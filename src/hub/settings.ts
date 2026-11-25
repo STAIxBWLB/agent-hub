@@ -59,6 +59,8 @@ const perClass = (name: TaskClass): SettingDef[] => [
 ];
 export const SETTINGS: readonly SettingDef[] = [
   { key: "memory.sync_interval_min", group: "Switches", label: "Memory sync interval in minutes (0 disables)", type: "integer", min: 0, max: 1440, store: "config", applies: "live", risk: "raises", path: ["memory", "sync_interval_min"] },
+  // #1329: the switch the person turns with `ahub memory review on|off`; the run and week caps beside it are not switches and stay in the block.
+  { key: "memory.review.enabled", group: "Switches", label: "Memory review: schedule one review per period (ahub memory review on|off)", type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["memory", "review", "enabled"] },
   ...["enabled", "auto_reassign"].map((key): SettingDef => ({ key: `task_sweep.${key}`, group: "Switches", label: `Task sweep: ${key}`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["task_sweep", key] })),
   { key: "task_sweep.no_writes_turns", group: "Switches", label: "Consecutive owner turns without writes (0 disables)", type: "integer", min: 0, max: Number.MAX_SAFE_INTEGER, store: "config", applies: "live", risk: "raises", path: ["task_sweep", "no_writes_turns"] },
   ...["interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"].map((key): SettingDef => ({ key: `task_sweep.${key}`, group: "Switches", label: `Task sweep: ${key}`, type: "number", min: 1, max: 2_147_483_647 / (key === "interval_s" ? 1000 : 60_000), store: "config", applies: "live", risk: "raises", path: ["task_sweep", key] })),

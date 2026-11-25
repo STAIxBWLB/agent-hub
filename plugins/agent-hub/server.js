@@ -31581,6 +31581,7 @@ var MACHINE_LOCAL = [
   "supervision.mode",
   "folder_triggers",
   "schedules",
+  "memory.review",
   "corpus.paths",
   "invocation"
 ];

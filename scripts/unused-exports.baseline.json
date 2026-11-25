@@ -1022,7 +1022,6 @@
   "src/hub/schedules.ts#cronText",
   "src/hub/schedules.ts#folderGlobProblem",
   "src/hub/schedules.ts#parseCron",
-  "src/hub/schedules.ts#parseEvery",
   "src/hub/schedules.ts#scheduleZone",
   "src/hub/sdlc-branch-ci.ts#BranchCi",
   "src/hub/sdlc-merge.ts#FreshBoard",

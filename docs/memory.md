@@ -181,6 +181,22 @@ Recall lines, native brief items, `hub_memory_show` lines and human `ahub memory
 
 Each rendered batch has a shared cache and a hard bound of 32 metadata probes. On a tree not modified during the call, no hint probe reaches a `pii.paths`/`local.deny` path: declared private paths and the common deny policy are checked lexically first, including folded spellings and globs. Absolute/escaping paths, symlinks observed by a probe, denied paths, unreadable metadata and exhausted budgets are unknown and produce no marker. A concurrent ancestor swap by a process running as you can expose one existence bit; it is outside the [security threat model](security.md), and the deterministic ceiling witness is retained in the tests. Descriptor-anchored traversal is needed before supporting that scenario. Symbol nodes are checked only through their allowed file; this hint does not parse source symbols or read file contents. Current privacy screening still precedes rendering and peer-output byte caps. No new memory operation or candidate writer is introduced.
 
+## Scheduled review and its switch (#1329 part 1)
+
+`memory.review` is a machine-local block in `.agenthub/config.local.json`, and a committed config cannot start it (`ALL_MACHINE_LOCAL` drops it). It is off by default, and enabling it needs both caps:
+
+```json
+{ "memory": { "review": { "enabled": true, "every": "1d", "projects": [], "peer": "claude", "max_notes": 20, "max_tokens_run": 40000, "max_tokens_week": 150000 } } }
+```
+
+`every` takes a configured schedule's spelling (`<n>m`, `<n>h`, `<n>d`, at least 15m), `projects` lists project paths or directory names and an empty list means every project this machine holds, `peer` files the card for that peer (unset leaves the class's owner choice to routing), and `max_notes` bounds what one run reads. `max_tokens_week` must be at least `max_tokens_run`, and an enable without both is refused by the config loader and by `ahub memory review on`, so no daemon schedules a review whose spend nothing bounds.
+
+A due run proposes one `review`-class card from a fixed template through the ordinary proposal path: the privacy screen, triage, routing, the schedule marker in its detail, and no second card while one is open. The template names `ahub memory stale-anchors --json` as its input, so a run reviews only the notes whose code anchors no longer resolve; until agent-mem#324 lands, that stale-anchor report is the only input the package exposes. The card changes no code and no note outside that list.
+
+`ahub memory review on|off|status` is the person's switch, and `--live-test` does not delegate it, like the rest of the family. `off` pauses the review's schedule through the store's epoch, cancels the card a run left open through the ordinary cancel path, and writes `enabled: false`; `on` writes the key and clears a pause set with `ahub schedule pause memory-review`; `status` prints the period, the caps, the last card and the next due time. The key is the one switch: a schedule's row is pruned the moment its entry disappears, so `off` leaves nothing paused behind. The block is classified live, so it takes effect on the reload rather than at the next hub start.
+
+**The caps are declared, not enforced yet.** The execution budget's `tokens` unit cannot carry them: `ExecutionBudget.admitTasks` answers a `tokens` limit with `reason: "unknown_usage"` instead of admitting it, and `covers()` refuses the unit outright, because the hub counts no tokens for a peer's turn. `status` therefore reports spend as unknown rather than as zero, and the stop that enforces the caps is #1329 part 2.
+
 ## Review candidates and local usage counters
 
 Agents propose a correction with `hub_memory_correct {id, text, reason}`. The target is an exact id or unique visible prefix, screened under this project's current policy. The tool requires `memory_correct`, refuses private turns, and records a candidate with the full target id and revision. It does not edit a note or notify the other peers with the proposed text. Arguments and results are excluded from capture.

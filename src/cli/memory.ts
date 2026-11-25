@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { CodeFacts } from "../hub/code-facts.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "../hub/db-timeout.ts";
 import { hubGitEnv, hubGitSync } from "../hub/git.ts";
-import { stateDirFor } from "../hub/control-client.ts";
+import { stateDirFor, ControlClient } from "../hub/control-client.ts";
+import { scheduleWhen } from "../hub/schedules.ts";
 import { isDenied } from "../local/deny.ts";
 import { foldSegment } from "../hub/permission-mode.ts";
 import { matchesPolicyLexically } from "../hub/path-policy.ts";
@@ -28,7 +29,7 @@ import { bindProfileMemory, memoryProjectFor, memoryProjectForStore, openProfile
 import { createMemorySyncPolicy, inspectDeclinedMemoryRows, projectMemorySyncText } from "../hub/memory-sync-policy.ts";
 
 export const GOAL_USAGE = goalUsage(AHUB_NAMES.goal);
-export const MEMORY_USAGE = `${memoryUsage(AHUB_NAMES.memory)} | decay [--days N] [--json] | declined [--json] | profile-check [--json]`;
+export const MEMORY_USAGE = `${memoryUsage(AHUB_NAMES.memory)} | decay [--days N] [--json] | declined [--json] | profile-check [--json] | review on|off|status [--json]`;
 
 const fail = (message: string): never => { throw new Error(message); };
 /** The project's config, or none when there is no valid one (reading memory needs none). */
@@ -136,9 +137,48 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
   return memoryCommandBody(args, cwd, opts, person);
 }
 
+/**
+ * #1329 part 1: `ahub memory review on|off|status`. The switch, its caps and the open card's cancellation are the daemon's
+ * (`memory_review`), so this only carries the answer: the config write, the pause that stops the timer at once and the
+ * `Tasks.cancel` of the card a run left open all happen in one op, in that order, where the schedule and the board are.
+ */
+async function memoryReviewCommand(args: string[], cwd: string, person: boolean): Promise<string> {
+  const json = args.includes("--json");
+  const rest = args.filter(arg => arg !== "--json");
+  const action = rest[1];
+  if (rest.length !== 2 || (action !== "on" && action !== "off" && action !== "status")) fail("usage: ahub memory review on|off|status [--json]");
+  // The switch is machine-local and a person's: an agent shell must not turn it on, and it must not read as the console either.
+  if (!person) fail(`memory review ${action} is the person's switch on the machine-local memory.review config; run it in the person's terminal or the console`);
+  const hub = await ControlClient.connect(stateDirFor(cwd), { role: "console", projectRoot: cwd }, 5_000);
+  try {
+    const res = await hub.request({ t: "task", op: "memory_review", args: { action } }, 30_000);
+    if (!res.ok) fail(res.error);
+    if (json) return res.text;
+    const data = JSON.parse(res.text) as {
+      action: string; enabled?: boolean; cancelled?: number; error?: string;
+      review?: { every?: string; max_notes?: number; projects?: string[]; max_tokens_run?: number; max_tokens_week?: number };
+      schedule?: { state: string; next: number; last?: number; task?: number; error?: string; zone?: string };
+    };
+    const review = data.review ?? {}, lines = [`memory review: ${data.enabled ? "on" : "off"}`];
+    if (data.cancelled !== undefined) lines.push(`cancelled the open review task #${data.cancelled}`);
+    if (data.error) lines.push(`not changed: ${data.error}`);
+    if (review.every !== undefined) lines.push(`period: every ${review.every}`);
+    lines.push(`caps: ${review.max_tokens_run ?? "unset"} per run, ${review.max_tokens_week ?? "unset"} per week`);
+    if (review.max_notes !== undefined) lines.push(`notes per run: at most ${review.max_notes}`);
+    if (review.projects?.length) lines.push(`projects: ${review.projects.join(", ")}`);
+    const schedule = data.schedule;
+    lines.push(schedule
+      ? `schedule: ${schedule.state}, next ${scheduleWhen(schedule, schedule.next)}${schedule.task !== undefined ? `, last task #${schedule.task}` : ""}${schedule.error ? `, last error: ${schedule.error}` : ""}`
+      : "schedule: not running here (the switch is off, or this project is not one it selects)");
+    lines.push("spend: unknown (the hub counts no tokens for a review turn yet, so the caps are declared and the stop that enforces them lands with #1329 part 2)");
+    return lines.join("\n");
+  } finally { hub.close(); }
+}
+
 async function memoryCommandBody(args: string[], cwd: string, opts: { store?: MemoryStore; sync?: Omit<SyncOptions, "remote">; now?: () => number }, person: boolean): Promise<string> {
   const privatePaths = (): string[] => { try { return loadConfig(cwd).pii?.paths ?? []; } catch (e) { return fail(`the project's config does not load (${(e as Error).message}); fix it before reading hub memory`); } };
   const rest = args.filter(arg => arg !== "--json");
+  if (rest[0] === "review") return memoryReviewCommand(args, cwd, person);
   if (rest[0] === "decay") {
     let days = 90;
     if (rest.length !== 1) {

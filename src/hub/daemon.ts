@@ -120,6 +120,7 @@ import { MODEL_COOLDOWN_FAILURES_SETTING, MODEL_COOLDOWN_SETTING, MODEL_COOLDOWN
 import { ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING, adapterOperationalReaders, type AdapterTimingConfig } from "./operational-settings.ts";
 import { BUS_ACCEPTED_SETTLE_MS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
 import { foldersConfig, scheduleKeyOf, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
+import { MEMORY_REVIEW_DEFAULTS, MEMORY_REVIEW_SCHEDULE_ID, memoryReviewConfig, memoryReviewEntry, type MemoryReviewConfig } from "./memory-review.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import { QuestionStore, QUESTION_SURFACES, questionView } from "./questions.ts";
 import { RunTracker, outcomeOf, settleVerdict, type Run } from "./completions.ts";
@@ -323,7 +324,7 @@ export interface HubConfig {
   /** #489 H7: accepted presentation preferences read by a new console through settings_get. */
   console?: ConsoleOperationalConfig["console"];
   /** `native` (#258): the hub's own store in ~/.agenthub/memory, on with any project config; `short_ttl_days`: short-term lifetime after approval; `sync_interval_min`: machine sync while a remote is set (default 10, 0 off); `preface_unused_after` (#1330): a long-term preface line delivered at least this many times and never cited moves to the end of its section, so the cap cuts it first (default 20, 0 keeps the store order). */
-  memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number; sync_interval_min?: number; suggest_edges?: boolean; preface_unused_after?: number };
+  memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number; native?: boolean; short_ttl_days?: number; sync_interval_min?: number; suggest_edges?: boolean; preface_unused_after?: number; review?: MemoryReviewConfig };
   roster: PeerRoster;
   roles: Record<string, string[]>;
   /** #455: the one peer that holds the planner role; unset, the `roles` planners stand, or the hub assigns one. */
@@ -421,7 +422,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   queue_cap: 200,
   bus: { max_attempts: BUS_MAX_ATTEMPTS_SETTING.defaultValue, digest_max: BUS_DIGEST_MAX_SETTING.defaultValue, pull_budget_bytes: BUS_PULL_BUDGET_BYTES_SETTING.defaultValue, notes_kept: BUS_NOTES_KEPT_SETTING.defaultValue, terminal_history_limit: BUS_TERMINAL_HISTORY_LIMIT_SETTING.defaultValue, accepted_settle_ms: BUS_ACCEPTED_SETTLE_MS_SETTING.defaultValue },
   adapter_timing: { acp_tool_ceiling_min: ACP_TOOL_CEILING_SETTING.defaultValue, acp_activity_batch_ms: ACP_ACTIVITY_BATCH_SETTING.defaultValue, jcode_steer_timeout_s: JCODE_STEER_TIMEOUT_SETTING.defaultValue },
-  memory: { enabled: true, inject_tokens: 2000, brief_items: 8, preface_unused_after: 20 },
+  memory: { enabled: true, inject_tokens: 2000, brief_items: 8, preface_unused_after: 20, review: MEMORY_REVIEW_DEFAULTS },
   roster: {},
   roles: DEFAULT_ROLES,
   conductor: { feed: "own", approval_wait_s: 30 },
@@ -716,6 +717,10 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
   if (!mlx.enabled && file.pi?.backend === "mlx") throw new Error("Pi backend mlx conflicts with mlx.enabled=false");
   if (typeof mlx.runtimeDir === "string" && mlx.runtimeDir) mlx.runtimeDir = resolve(cwd, mlx.runtimeDir);
   if (typeof mlx.modelPath === "string" && mlx.modelPath) mlx.modelPath = resolve(cwd, mlx.modelPath);
+  // #1329 part 1: the scheduled memory review is derived from `memory.review` at every read (`scheduleEntries` below)
+  // rather than copied into `config.schedules`, because a config reload applies per-key deltas to this live object: a copy
+  // would go stale the moment a person flips the switch.
+  const memoryReview = memoryReviewConfig(file.memory?.review);
   return {
     ...DEFAULT_CONFIG,
     ...file,
@@ -732,7 +737,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     instructed: { mode: instructedMode(file.instructed?.mode) },
     permission_default_sources: appliedPermissionSources,
     memory: { ...DEFAULT_CONFIG.memory, native: true, ...file.memory, ...(file.memory?.short_ttl_days !== undefined ? { short_ttl_days: ttlDays(file.memory.short_ttl_days) } : {}),
-      ...(file.memory?.sync_interval_min !== undefined ? { sync_interval_min: syncMinutes(file.memory.sync_interval_min) } : {}) }, // the native store is on with any project config (#258)
+      ...(file.memory?.sync_interval_min !== undefined ? { sync_interval_min: syncMinutes(file.memory.sync_interval_min) } : {}), review: memoryReview }, // the native store is on with any project config (#258)
     roster: peerRosterConfig(file.roster, instances, adapterCatalog, inertModuleRoster),
     roles: Object.fromEntries(Object.entries({ ...configuredRoles, ...conductorPolicy.roles, ...extraRoles }).filter(([id]) => !instanceConfig.declaredExternalInstances?.some(row => row.id === id || row.kind === id))),
     planner: conductorPolicy.planner,
@@ -5245,6 +5250,15 @@ export async function startDaemon(opts: DaemonOptions) {
   startupCleanup.push(() => folderStore.close());
   let schedulesTimer: ReturnType<typeof setInterval> | undefined;
   const scheduleNow = () => opts.schedulesNow?.() ?? Date.now();
+  /**
+   * #1329 part 1: the configured schedules plus the one the machine-local memory.review switch stands for. Read live from
+   * the config at every call, so a reload that flips the switch adds or drops the entry with no copy to re-derive, and every
+   * schedule path (`proposeFromSchedules`, `scheduleViews`, `setSchedulePaused`, `runScheduleNow`) takes its list from here.
+   */
+  const scheduleEntries = (): ScheduleEntry[] => {
+    const review = memoryReviewEntry(config.memory.review ?? MEMORY_REVIEW_DEFAULTS, opts.cwd);
+    return review ? [...config.schedules, review] : config.schedules;
+  };
   /** The pass in flight, so a stop can wait for it before the board and the store close. */
   let schedulesPass: Promise<void> | undefined;
   /** #335: `ahub schedule run` calls in flight. They are not the timer's pass, but `stopOnce` waits for them just the same. */
@@ -5256,7 +5270,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const runSchedulesOnce = async () => {
     try {
-      for (const run of await tasks.proposeFromSchedules(schedulesStore, config.schedules, scheduleNow(), () => opts.schedulesHeld?.() === true)) {
+      for (const run of await tasks.proposeFromSchedules(schedulesStore, scheduleEntries(), scheduleNow(), () => opts.schedulesHeld?.() === true)) {
         if (run.outcome === "ran") log(`schedule ${run.id}: proposed task #${run.task}`);
         else if (run.outcome === "failed") log(`schedule ${run.id}: could not propose; see ahub status`);
       }
@@ -5277,9 +5291,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const rescheduleSchedules = () => {
     if (schedulesTimer) clearInterval(schedulesTimer);
     schedulesTimer = undefined;
+    const entries = scheduleEntries();
     if (!config.folder_triggers.length) { try { folderStore.prune([]); } catch { /* the store is closed while stopping */ } }
-    if (!config.schedules.length && !config.folder_triggers.length) { try { schedulesStore.prune([]); } catch { /* the store is closed while stopping */ } return; }
-    if (!config.schedules.length) { try { schedulesStore.prune([]); } catch { /* the store is closed while stopping */ } }
+    if (!entries.length && !config.folder_triggers.length) { try { schedulesStore.prune([]); } catch { /* the store is closed while stopping */ } return; }
+    if (!entries.length) { try { schedulesStore.prune([]); } catch { /* the store is closed while stopping */ } }
     schedulesTimer = setInterval(() => { void runSchedules(); }, opts.schedulesEveryMs ?? 60_000);
     schedulesTimer.unref?.();
   };
@@ -6656,19 +6671,55 @@ export async function startDaemon(opts: DaemonOptions) {
       // #335: the person's schedule commands; #933: the admitted conductor's too. Tasks refuses any other actor.
       case "schedule_list":
         if (by !== USER) throw new PreEffectToolRefusal("schedule list is a console command");
-        return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true));
+        return JSON.stringify(scheduleViews(scheduleEntries(), schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true));
       case "schedule_run": {
         // The run is registered with the shutdown drain, so `stopOnce` waits for it, as for a timer pass, before the board and the store close (#335). A run that arrives
         // once stop has begun is refused earlier still, by the control layer ("hub is stopping"); the test below holds that, so nothing here repeats it.
-        const run = tasks.runScheduleNow(by, schedulesStore, config.schedules, a.id, scheduleNow(), () => opts.schedulesHeld?.() === true);
+        const run = tasks.runScheduleNow(by, schedulesStore, scheduleEntries(), a.id, scheduleNow(), () => opts.schedulesHeld?.() === true);
         const drained = run.then(() => undefined, () => undefined);
         manualSchedulePasses.add(drained); void drained.finally(() => manualSchedulePasses.delete(drained));
         return JSON.stringify(await run);
       }
       case "schedule_pause":
       case "schedule_resume":
-        tasks.setSchedulePaused(by, schedulesStore, config.schedules, a.id, op === "schedule_pause", scheduleNow());
-        return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true).filter(view => view.id === a.id));
+        tasks.setSchedulePaused(by, schedulesStore, scheduleEntries(), a.id, op === "schedule_pause", scheduleNow());
+        return JSON.stringify(scheduleViews(scheduleEntries(), schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true).filter(view => view.id === a.id));
+      // #1329 part 1: `ahub memory review on|off|status`. Person only: it is deliberately absent from CONDUCTOR_TASK_OPS, so the
+      // gate above refuses every other caller. The switch is the machine-local `memory.review.enabled` key, written through the
+      // same writer and loader check as `ahub settings set`, so enabling without both caps is refused by the config, not here;
+      // a store write beside it makes the change take effect now instead of at the next period, and `off` cancels the card the
+      // last run left open through `Tasks.cancel`, the normal cancel path (AC2).
+      case "memory_review": {
+        const reviewView = () => scheduleViews(scheduleEntries(), schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true).find(candidate => candidate.id === MEMORY_REVIEW_SCHEDULE_ID);
+        const action = a.action;
+        if (action === "status") {
+          const view = reviewView();
+          return JSON.stringify({ action: "status", enabled: config.memory.review?.enabled === true, review: config.memory.review ?? MEMORY_REVIEW_DEFAULTS, ...(view ? { schedule: view } : {}) });
+        }
+        if (action !== "on" && action !== "off") throw new PreEffectToolRefusal("memory review takes on, off or status; ahub memory review status shows the switch");
+        const def = settingDef("memory.review.enabled");
+        if (typeof def === "string") throw new PreEffectToolRefusal(`this hub has no memory.review setting; upgrade it, then run ahub memory review ${action}`);
+        // The fence and the cancellation come before the config write: the write reloads the entries, and a pass already past its
+        // hold check must meet the paused epoch rather than a schedule list that no longer explains why it is running.
+        let cancelled: number | undefined;
+        if (action === "off") {
+          // #335's epoch, set before the write on purpose: the `tasks.cancel` below yields, so a timer pass can begin while the
+          // config still says enabled, and that pass has to meet the paused epoch. Nothing has to undo it afterwards: the row
+          // goes with the entry the reload drops (`Tasks.proposeFromSchedules` prunes a removed schedule).
+          schedulesStore.setPaused(MEMORY_REVIEW_SCHEDULE_ID, true, scheduleNow());
+          const open = tasks.openScheduled().get(MEMORY_REVIEW_SCHEDULE_ID);
+          if (open !== undefined) { await tasks.cancel(open, by, { reason: "ahub memory review off stopped the schedule" }); cancelled = open; }
+        }
+        writeConfigSetting(opts.cwd, opts.stateDir, def, action === "on", scratch => configWriteCheck(scratch, "terminal", def.path.join(".")));
+        const reloaded = await reloadConfig("terminal", def.key);
+        // The write is on disk, so the switch survives a restart either way; only this daemon's view of it failed to catch up.
+        if (reloaded.ok !== true) throw new Error(`memory.review.enabled was ${action === "on" ? "set" : "cleared"} in .agenthub/config.local.json but this hub did not apply it: ${sanitize(typeof reloaded.error === "string" ? reloaded.error : "the reload failed")}; fix the config and run ahub memory review status`);
+        // `on` clears the pause here rather than leaving it to the reload: a key that is already `true` changes nothing, so
+        // there is no reload to carry the fence, and this command must still resume a schedule a person paused by hand.
+        if (action === "on") schedulesStore.setPaused(MEMORY_REVIEW_SCHEDULE_ID, false, scheduleNow());
+        const view = reviewView();
+        return JSON.stringify({ action, enabled: action === "on", review: config.memory.review ?? MEMORY_REVIEW_DEFAULTS, ...(cancelled === undefined ? {} : { cancelled }), ...(view ? { schedule: view } : {}) });
+      }
       // #334: natural-language intake. Person only, except approve for the admitted conductor (#933): Tasks refuses any other actor.
       case "intake": {
         const result = await tasks.intake(by, { text: a.text, sources: a.sources });
@@ -7804,7 +7855,7 @@ export async function startDaemon(opts: DaemonOptions) {
     pendingRestart: allPendingRestart(),
     retainedConfig,
     ...(agentDrift.length ? { agentDrift } : {}),
-    ...(config.schedules.length ? { schedules: scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true) } : {}),
+    ...(scheduleEntries().length ? { schedules: scheduleViews(scheduleEntries(), schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true) } : {}),
     ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.publicMetadataText, checkoutBranch); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries([...START_MODE_PEERS, ...configuredIds].map(peer => [peer, startModeOf(config.peers, peer, declarations, adapterCatalog)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
@@ -10422,7 +10473,7 @@ export async function startDaemon(opts: DaemonOptions) {
       milestones: board.milestones().map(row => ({ id: row.id, title: row.title, horizon: row.horizon, state: row.state, order: row.order })),
       milestoneOfTask: Object.fromEntries(board.milestoneLinks().filter(link => link.kind === "task").map(link => [link.ref, link.milestone] as const)),
       // #335: each schedule's next run, ids and times only (a title or detail is task text). Absent when none is configured, so an older page and an unconfigured project see no change.
-      ...(config.schedules.length ? { schedules: scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true) } : {}),
+      ...(scheduleEntries().length ? { schedules: scheduleViews(scheduleEntries(), schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true) } : {}),
       boardLegend: Object.entries(peerView).map(([id, peer]) => ({
         peer: id, state: peer.state,
         permissionMode: "permissionNote" in peer && peer.permissionNote ? "unmanaged" : permissionDisplay(id, bus.peers.get(id)),
@@ -10706,7 +10757,10 @@ export async function startDaemon(opts: DaemonOptions) {
       if (changes.some(change => change.key === "task_sweep" || change.key.startsWith("task_sweep."))) rescheduleSweep();
       const syncChange = changes.find(change => change.key === "memory.sync_interval_min");
       if (syncChange) rescheduleMemorySync((Number(syncChange.before ?? 10) <= 0) && Number(syncChange.after ?? 10) > 0);
-      if (changes.some(change => change.key === "schedules" || change.key.startsWith("schedules.") || change.key === "folder_triggers" || change.key.startsWith("folder_triggers."))) rescheduleSchedules();
+      // #1329 part 1: no pause fence is synced here, and none is needed: a schedule's row is pruned as soon as its entry
+      // disappears (`Tasks.proposeFromSchedules`), so `off` leaves no pause behind and `on` starts from a fresh period. The
+      // one pause that outlives a config edit is a person's own `ahub schedule pause memory-review`, which `on` clears.
+      if (changes.some(change => change.key === "schedules" || change.key.startsWith("schedules.") || change.key === "folder_triggers" || change.key.startsWith("folder_triggers.") || change.key === "memory.review" || change.key.startsWith("memory.review."))) rescheduleSchedules();
       if (changes.some(change => ["batch_max", "batch_ms", "queue_cap"].includes(change.key))) bus.configureScheduling({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap });
       if (changes.some(change => change.key === "watchdog_ms")) for (const peer of bus.peers.values()) if (peer instanceof BasePeer) peer.configureWatchdog(config.watchdog_ms);
       Object.assign(limits, config.limits);

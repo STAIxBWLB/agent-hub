@@ -33,6 +33,7 @@ export const MACHINE_LOCAL = [
   "supervision.mode", // #1221 T2: lets the hub propose existing actions to a person's console and agents; an opt-in only the person's own machine sets
   "folder_triggers", // #512c: entries make the hub read a folder and propose a task per new file; a committed config may not point the hub at a folder on someone else's machine
   "schedules", // #512: entries make the hub propose tasks on a timer; a committed config may not create work on someone else's machine
+  "memory.review", // #1329: the switch that schedules a memory review and the caps it spends; a committed config may not start work on someone else's machine
   "corpus.paths", // #510: folders the hub reads as evidence; a committed config may not point the hub at a folder on someone else's machine
   "invocation", // #445 C1: what another agent may be offered from this machine's agents (a digest-pinned allowlist); a committed config may not share a person's agents' commands with someone else's peers
 ] as const;
