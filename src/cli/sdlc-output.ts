@@ -66,7 +66,7 @@ const span = (ms: unknown) => typeof ms === "number" && Number.isFinite(ms) ? du
  * the value does not fit in the room left of the label column, the value moves under the label instead, so a path or id
  * is broken only when it is wider than the whole terminal.
  */
-export function pair(label: string, value: unknown, columns: number | undefined, labelWidth: number, tone?: Tone, indent = ""): Line[] {
+function pair(label: string, value: unknown, columns: number | undefined, labelWidth: number, tone?: Tone, indent = ""): Line[] {
   const text = terminalText(value).replace(/[\n\t]/g, " ");
   const head = indent + label.padEnd(labelWidth) + "  ";
   const longest = Math.max(0, ...text.split(/\s+/).map(textWidth));
@@ -104,15 +104,13 @@ export function grid(head: string[], data: Span[][], columns: number | undefined
   });
   return table(head, physical, columns, widths);
 }
+const blank: Line = [s("")];
 /** Narrow terminal: each row becomes its own block, the first column as its heading and every other column beside its label. */
 function blocks(head: string[], data: Span[][], columns: number): Line[] {
   const label = Math.max(...head.slice(1).map(textWidth));
   return data.flatMap((row, n) => [...(n ? [blank] : []), ...wrap(row[0]?.text ?? "", columns, 2).map((line): Line => [{ ...(row[0] ?? s("")), text: line }]),
     ...head.slice(1).flatMap((name, i) => pair(name.toLowerCase(), row[i + 1]?.text ?? "", columns, label, row[i + 1]?.tone, "  "))]);
 }
-/** A heading wraps to the width like any paragraph; a long repository name never pushes it past the terminal. */
-export const heading = (text: string, columns?: number): Line[] => wrap(text, room(columns), 2).map(line => [s(line, "strong")]);
-export const blank: Line = [s("")];
 const readyTone = (ready: unknown): Tone => ready === true ? "success" : "attention";
 
 // ---- sdlc status / explain ----------------------------------------------------------------------------------------

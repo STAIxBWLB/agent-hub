@@ -10,6 +10,14 @@ import { renderStatus, renderStatusDefault, renderReport } from "../src/cli/outp
 import { summarize } from "../src/hub/report.ts";
 import { renderAuthorization, renderSdlcAudit, renderSdlcConfiguration, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcSurvey } from "../src/cli/sdlc-output.ts";
 import { renderBacklogResult, renderGroom, renderReleaseList, renderReleaseShow, renderTaskCancel, renderTaskShow } from "../src/cli/task-output.ts";
+import { renderSourceAdd, renderSourceList } from "../src/cli/source-output.ts";
+import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "../src/cli/schedule-output.ts";
+import { renderExperiments, renderStudyEvidence, renderStudyList, renderStudyReceipt, renderStudyShow, renderSynthesisReadiness } from "../src/cli/study-output.ts";
+import { renderHandoffReceipt, renderHandoffs } from "../src/cli/handoff-output.ts";
+import { renderLearnChange, renderLearnList } from "../src/cli/learn-output.ts";
+import { renderIntake, renderIntakeChange } from "../src/cli/intake-output.ts";
+import { renderCapabilities } from "../src/cli/capabilities-output.ts";
+import { renderTidyPreview, renderTidyResult, renderWorktrees } from "../src/cli/worktrees-output.ts";
 import { PALETTE, Report, TONE_ROLE, paint, table, wrap } from "../src/cli/console-state.ts";
 import { errorLines, failureExitCode } from "../src/cli/error-format.ts";
 import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, SGR_RESET, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
@@ -419,6 +427,28 @@ describe("CLI output standard v1: each converted view follows the grammar (#1654
     "backlog groom": (c, a) => renderGroom({ items: [{ kind: "overlap", task: 7, related: [8, 9], code: "tests", personCommand: "ahub backlog return 7 3 reason" }], unknown: [11], truncated: true, privateTasks: "withheld" }, c, NOW, a),
     "release list": (c, a) => renderReleaseList([{ id: 2, name: "0.18.0", goal: "Readable output", order: 2, state: "active", revision: 4, plannedStart: NOW - 86_400_000, tasks: [{ id: 7, state: "in_progress" }], afterCut: null }], c, NOW, a),
     "release show": (c, a) => renderReleaseShow({ id: 2, name: "0.18.0", goal: "Readable output", order: 2, state: "active", revision: 4, tasks: [], afterCutUnknown: [41], afterCutUnknownCount: 1, afterCut: null }, c, NOW, a),
+    // #1654 AC3 close-out: the last eight output files
+    "source add": (c, a) => renderSourceAdd({ id: "src:e5d53b3ad5222924", created: true, kind: "file", origin: "/a/very/long/path/to/a/note.txt", sha256: "e".repeat(64), bytes: 13, private: true, text: true, reasons: ["path under pii.paths"] }, c, NOW, a),
+    "source list": (c, a) => renderSourceList([{ id: "src:e5d53b3ad5222924", kind: "file", origin: "/a/note.txt", sha256: "e".repeat(64), bytes: 13, added_at: NOW - 1000, private: false, origins: [{ origin: "/a/note.txt", private: false }, { origin: "/b/note.txt", private: true }] }], c, NOW, a),
+    "schedule list": (c, a) => renderScheduleList([{ id: "nightly", every: "1h", class: "plan", queue: "backlog", state: "scheduled", next: NOW + 3_600_000, coalesced: 2, error: "could not propose" }], c, NOW, a),
+    "schedule run": (c, a) => renderScheduleRun({ id: "nightly", outcome: "ran", task: 12 }, c, NOW, a),
+    "schedule pause": (c, a) => renderScheduleChange("pause", [{ id: "nightly", every: "1h", state: "paused", next: NOW + 3_600_000 }], c, NOW, a),
+    "study list": (c, a) => renderStudyList({ campaigns: [{ id: "rc-1", revision: 2, status: "approved", parentTaskId: 7, unitCount: 3 }], next: "rc-1" }, c, NOW, a),
+    "study show": (c, a) => renderStudyShow({ id: "rc-1", revision: 2, held: true, reasons: ["a source is missing"], units: [{ unitId: "u1", round: 1, taskId: 8, state: "open", purpose: "discover", handoff: {}, sourceIds: [] }], rounds: [] }, c, NOW, a),
+    "study receipt": (c, a) => renderStudyReceipt("draft", { id: "rc-1", revision: 1, status: "draft", parentTaskId: 7, unitCount: 1, units: [{ unitId: "u1", taskId: 8, round: 1 }] }, c, NOW, a),
+    "study experiments": (c, a) => renderExperiments({ attempts: [{ id: "ra-1", taskId: 2, phase: "final", status: "succeeded", approval: "unapproved", postHoc: "predeclared" }], counts: { all: 1, statuses: { succeeded: 1 } } }, c, NOW, a),
+    "study evidence": (c, a) => renderStudyEvidence({ status: "resolved", id: "ev-1", revision: 1, link: { sourceId: "src:1" }, locator: { start: 0, end: 10 }, excerpt: "a screened passage" }, c, NOW, a),
+    "study check": (c, a) => renderSynthesisReadiness({ status: "ready", scope: "structural", manifestSha256: A, binding: "current", claimCoverage: "complete", deliverable: "ok", bibliography: "ok", citations: { state: "ok", cited: 2, missing: 0 }, claims: [{ claimId: "c1", claim: "text" }], next: ["record_evidence"] }, c, NOW, a),
+    "handoff receipt": (c, a) => renderHandoffReceipt({ project: "other-project", task: 4, state: "proposed" }, c, NOW, a),
+    "handoff list": (c, a) => renderHandoffs({ handoffs: [{ remoteProject: "other", remoteTask: 4, state: "proposed", reach: "unreachable", cause: "hub not running", age: "2h", originPeer: "jcode", title: "a title" }], syncing: true, pending: 1 }, c, NOW, a),
+    "learn list": (c, a) => renderLearnList([{ id: 3, status: "open", profile: "dev", class: "implement", criterion: "AC1", tasks: [1, 2], line: "check AC1" }], c, false, false, a),
+    "learn accept": (c, a) => renderLearnChange("accept", { card: { id: 3 }, accepted: { profile: "dev", class: "implement", criterion: "AC1", line: "check AC1", file: ".agenthub/config.local.json", lines: 3, applies: "after a restart", undo: "ahub settings undo" } }, c, NOW, a),
+    "intake draft": (c, a) => renderIntake({ draft: { id: 7, title: "Intake: prepare" }, split: "hub", children: [{ id: 8, class: "plan", deps: [], title: "Part one" }, { id: 9, class: "implement", deps: [8], title: "Part two" }] }, c, NOW, a),
+    "intake approve": (c, a) => renderIntakeChange("approve", [{ id: 7, state: "backlog", title: "t" }], c, NOW, a),
+    "capabilities": (c, a) => renderCapabilities({ peers: [{ peer: "claude", permission_mode: "default", entries: [{ id: "skill:a", state: "digest-changed", class: "destructive", source: "skill", invoke: "slash", digest: "abc" }] }] }, c, NOW, a),
+    "worktrees": (c, a) => renderWorktrees({ live: [{ path: "/w/a", branch: "feat/a", task: 7, pr: 9, lastActiveAt: NOW - 1000 }], settled: [{ path: "/w/b", branch: "feat/b", reason: "merged", lastActiveAt: NOW - 5000 }], complete: false }, c, NOW, a),
+    "worktrees tidy": (c, a) => renderTidyPreview({ entries: [{ shown: "/w/b", branch: "feat/b", reason: "merged" }], removable: [{ shown: "/w/b", branch: "feat/b", reason: "merged" }], fingerprint: "abc123" }, c, NOW, a),
+    "worktrees tidy confirm": (c, a) => renderTidyResult([{ shown: "/w/b", branch: "feat/b", worktreeRemoved: true, branchDeleted: false, note: "branch kept" }], c, NOW, a),
   };
   const text = (lines: ReturnType<typeof renderSdlcMerge>) => lines.map(line => line.map(span => span.text).join(""));
   for (const [name, render] of Object.entries(views)) {
