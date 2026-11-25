@@ -74,12 +74,13 @@ test("the injected page model is the module's own projection", () => {
   expect(JSON.parse(JSON.stringify(pages(views)))).toEqual(JSON.parse(JSON.stringify(roadmapModel(views))));
 });
 
-test("the dashboard has eight views, key 8 is the roadmap, and every view has a nav button", () => {
-  expect(DASHBOARD_VIEWS).toHaveLength(8);
+test("the dashboard has nine views, key 8 is the roadmap, key 9 the overview, and every view has a nav button", () => {
+  expect(DASHBOARD_VIEWS).toHaveLength(9);
+  expect(DASHBOARD_VIEWS[8]).toBe("overview");
   expect(DASHBOARD_VIEWS[7]).toBe("roadmap");
   const html = renderDashboard().html;
   for (const name of DASHBOARD_VIEWS) expect(html).toContain(`data-view-target="${name}"`);
-  expect(html).toContain('<kbd>1</kbd>-<kbd>8</kbd>');
+  expect(html).toContain('<kbd>1</kbd>-<kbd>9</kbd>');
   expect(html).toContain('data-view="roadmap"');
   // The page keeps its own list, which gates switchView and the digit keys: a view missing there is unreachable however the markup reads.
   const page = /const DASHBOARD_VIEWS = \[([^\]]*)\]/.exec(html)?.[1]?.replace(/['"\s]/g, "");
