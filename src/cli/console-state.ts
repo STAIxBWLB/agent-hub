@@ -279,11 +279,12 @@ export class Report {
    * Key/value rows of one section: two-space indent, `Key:` padded to the widest key, two spaces, value. A key wider than 28 cells
    * puts its value on the next line at a four-space indent. An empty value is `(unset)` in `hint`.
    */
-  kv(rows: readonly (readonly [string, unknown])[], indent = 2): this {
-    const keys = rows.map(([key]) => cellWidth(`${terminalText(key)}:`));
+  kv(rows: readonly (readonly [string, unknown])[], indent = 2, options: { colon?: boolean } = {}): this {
+    const suffix = options.colon === false ? "" : ":";
+    const keys = rows.map(([key]) => cellWidth(`${terminalText(key)}${suffix}`));
     const pad = Math.max(0, ...keys.filter(width => width <= 28));
     for (const [index, [key, raw]] of rows.entries()) {
-      const label = `${terminalText(key)}:`, text = terminalText(raw ?? "").trim();
+      const label = `${terminalText(key)}${suffix}`, text = terminalText(raw ?? "").trim();
       const value = (line: string): Span => text ? { text: line, role: "value" } : { text: "(unset)", role: "hint" };
       const lead = " ".repeat(indent);
       // a terminal too narrow to leave 10 cells beside the label stacks the value under its key, like a key wider than 28
