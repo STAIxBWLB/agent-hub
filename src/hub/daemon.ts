@@ -85,7 +85,7 @@ import { buildReviewBrief, withCodeSymbols } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
-import { JcodeOptionMismatch, JcodeTuiRefusal, isJcodePeer, jcodeToolCeilingCause, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
+import { JcodeOptionMismatch, JcodeTuiRefusal, isJcodePeer, jcodeDetachedNotice, jcodeToolCeilingCause, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
 import { VERSION_REFUSAL, configuredCommands, describe, isCompatId } from "../adapters/compat.ts";
 import { agentVersionsAsync, type AgentVersionRow } from "../cli/agents.ts";
 import { driftedAgents, noticeDrift, type DriftedAgent } from "./agent-drift.ts";
@@ -2367,6 +2367,12 @@ export async function startDaemon(opts: DaemonOptions) {
   const modelRelays = new Map<string, ModelRelay>();
   /** #368: the owned Jcode launch of each Jcode peer, from creation (its MCP child connects while `start()` runs, before the bus has the peer). */
   const jcodeLaunches = new Map<string, JcodePeer>();
+  /**
+   * #1668: a rostered Jcode peer whose socket a server the hub did not start is serving, written from the tools hello that admission refused and
+   * read by `ahub status`. A hub-owned launch of that peer clears it. ponytail: this daemon's memory, so a restart forgets it until that server's next
+   * hello is refused; a durable record would need a state file the refusal path does not own.
+   */
+  const jcodeDetached = new Map<string, { cause: string; command: string }>();
   const globalModelRelay = (relay: ModelRelay) => { modelRelay = relay; };
   const nativeStateDir = (peer: string) => declarations[peer] ? join(opts.stateDir, "instances", peer) : opts.stateDir;
   const instanceAppPorts = new Map<string, number>();
@@ -7738,6 +7744,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const statusPeerIds = (open: ReturnType<Board["statusTasks"]>) => {
     const reservations = board.statusReservations();
     const ids = new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds(), ...reservations].filter(id => !id.includes("@")));
+    // #1668: a peer whose socket a server the hub did not start is serving stays on the report until a hub-owned launch clears the record.
+    for (const peer of jcodeDetached.keys()) ids.add(peer);
     for (const peer of configuredIds) if (onRoster(peer)) ids.add(peer);
     if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return [...ids];
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
@@ -7828,7 +7836,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; const reviewObserverHoldNote = reviewObserverSessionIdentityHoldNote(id); return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(reviewObserverHoldNote ? { reviewObserverHoldNote } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(includeAttentionItems && p?.standbySessions?.length ? { standbySessions: p.standbySessions } : {}), ...(includeAttentionItems && p?.ownerAttachment ? { ownerAttachment: p.ownerAttachment } : {}), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) ? { ...(p.claiming ? { claiming: true } : {}), ...(definitionOf(id)?.transport === "claude-channel" && p.attached ? { attachMode: p.attachMode, attachEvidence: p.attachEvidence } : {}) } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; const reviewObserverHoldNote = reviewObserverSessionIdentityHoldNote(id); const detached = jcodeDetached.get(id); return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(detached ? { detached } : {}), ...(reviewObserverHoldNote ? { reviewObserverHoldNote } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(includeAttentionItems && p?.standbySessions?.length ? { standbySessions: p.standbySessions } : {}), ...(includeAttentionItems && p?.ownerAttachment ? { ownerAttachment: p.ownerAttachment } : {}), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) ? { ...(p.claiming ? { claiming: true } : {}), ...(definitionOf(id)?.transport === "claude-channel" && p.attached ? { attachMode: p.attachMode, attachEvidence: p.attachEvidence } : {}) } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     peerVersions,
     taskWip: tasks.wipBreakdown(peerIds),
@@ -9034,6 +9042,8 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryTaskPreface(peer); await ensurePreface(peer); startCurrent?.();
       try { startCurrent?.(); await jcode.start(); startCurrent?.(); registerModelOwner(jcode); bindRecordOwner(jcode, executionCwd, () => jcode.nativeSession); await reconcileNativeStart(peer, jcode, startCurrent); }
       catch { await jcode.stop().catch(() => {}); if (jcodeLaunches.get(peer) === jcode) jcodeLaunches.delete(peer); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
+      // #1668: this peer is under the hub again, so it is no longer detached. A start that failed above keeps the record.
+      if (jcodeDetached.delete(peer) && !stopping) writeStatus();
       return { ok: true, policy: "unmanaged" };
     }
     if (adapter?.start.acpCommand) {
@@ -12145,7 +12155,12 @@ export async function startDaemon(opts: DaemonOptions) {
         // peer's current owned launch. A forged AGENTHUB_PEER_ID in some other process has no such id, so it never acts as that peer.
         if (definitionOf(c.peer)?.start.daemonPort === "owned-acp") {
           const owner = jcodeLaunches.get(c.peer);
-          if (!owner || !owner.ownsLaunch(msg.launchId)) return sock.close(4403, "this process is not an owned launch of that peer; start it with ahub jcode");
+          if (!owner || !owner.ownsLaunch(msg.launchId)) {
+            // #1668: this peer's socket is served by a server the hub did not start, so the peer is offline here while that work goes on. The refusal
+            // itself is unchanged and nothing new listens; the peer only gains the state `ahub status` reports until a hub-owned launch replaces it.
+            if (!stopping) { jcodeDetached.set(c.peer, jcodeDetachedNotice(c.peer)); writeStatus(); }
+            return sock.close(4403, "this process is not an owned launch of that peer; start it with ahub jcode");
+          }
         }
       } else {
         c.peer = String(msg.peer ?? defaultChannelPeer(undefined));

@@ -95,6 +95,13 @@ export class JcodeTuiRefusal extends Error {
 }
 /** #1085: said by `ahub status` while a recovered headless Jcode has not yet opened its TUI, and by the launcher when `ahub jcode` finds it running headless. */
 export const JCODE_HEADLESS_AFTER_RECOVERY = "jcode is running headless after recovery; run ahub stop jcode, then ahub jcode to get its TUI back";
+/**
+ * #1668: what `ahub status` says while a rostered Jcode peer's socket is served by a server the hub did not start, handed to the daemon by the hello that
+ * admission refused. It names the cause class and the launch that puts the peer back under the hub, and carries no launch id, socket or path.
+ */
+export function jcodeDetachedNotice(peer: string): { cause: string; command: string } {
+  return { cause: "a Jcode server the hub did not start is serving this peer's socket, so its work continues outside the hub", command: peer === "jcode" ? "ahub jcode" : `ahub jcode --as ${peer}` };
+}
 const JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" } as const;
 /** #691: the verdict lives in `src/adapters/compat.ts` (line, verified versions, the person's trust); never pin here. */
 export const jcodeVersionSupported = (version: unknown): boolean => assessVersion("jcode", version).ok;
