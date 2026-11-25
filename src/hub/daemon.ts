@@ -2472,6 +2472,13 @@ export async function startDaemon(opts: DaemonOptions) {
   } catch {
     guidanceProbeStore.close(); board.close(); throw new Error("advisor survey state or recovery binding is unavailable; restore trusted project state and choose a supporting target before retrying");
   }
+  try {
+    const retained = board.specReadbackIntegrity(), expected = restored?.integrity?.specReadbacks;
+    if (restored && (expected ? expected.readbacks !== retained.readbacks || expected.digest !== retained.digest
+      : retained.readbacks !== 0)) throw new Error("changed recovery binding");
+  } catch {
+    guidanceProbeStore.close(); board.close(); throw new Error("spec read-back state or recovery binding is unavailable; restore trusted project state and choose a supporting target before retrying");
+  }
   startupCleanup.push(() => guidanceProbeStore.close());
   // #1226 T3: the one explicit crash reconcile. A fresh process has no probe in flight, so a session still `reserved` or `running` belongs to a previous process
   // and is recorded as unknown with an unknown receipt (never launched, retried or turned into a success). It runs after the integrity comparison above, never
@@ -7687,6 +7694,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchEvidence = board.researchEvidenceIntegrity();
     const reviewerQuota = reviewerQuotaIntegrity();
     const advisorSurveys = board.surveyIntegrity();
+    const specReadbacks = board.specReadbackIntegrity();
     const guidanceVariants = board.guidanceVariantsIntegrity();
     const guidanceProbes = guidanceProbeStore.integrity();
     const executionReferences = board.executionReferencesIntegrity();
@@ -7695,7 +7703,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const visualIntegrity = visuals.integrity();
     if (!Number.isSafeInteger(visualIntegrity.count) || visualIntegrity.count < 0 || !/^[a-f0-9]{64}$/.test(visualIntegrity.digest))
       throw new Error("visual recovery integrity unavailable; inspect the retained store before recovery");
-    return { ...(roadmap.milestones || roadmap.links ? { roadmap } : {}), ...(reviewerQuota.rows || !reviewerQuota.complete || reviewerQuota.waits ? { reviewerQuota } : {}), queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(advisorSurveys.surveys || advisorSurveys.findings || advisorSurveys.considered ? { advisorSurveys } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(guidanceProbes.experiments || guidanceProbes.sessions ? { guidanceProbes } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    return { ...(roadmap.milestones || roadmap.links ? { roadmap } : {}), ...(reviewerQuota.rows || !reviewerQuota.complete || reviewerQuota.waits ? { reviewerQuota } : {}), queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(advisorSurveys.surveys || advisorSurveys.findings || advisorSurveys.considered ? { advisorSurveys } : {}), ...(specReadbacks.readbacks ? { specReadbacks } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(guidanceProbes.experiments || guidanceProbes.sessions ? { guidanceProbes } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -11638,6 +11646,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return "target lacks research_evidence_withdrawal; choose a supporting daemon to preserve withdrawal revisions";
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("advisor_surveys")) && board.hasSurveyState())
         return "target lacks advisor_surveys; persisted survey candidates and considered-finding history require a supporting daemon";
+      if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("spec_readbacks")) && board.hasSpecReadbacksState())
+        return "target lacks spec_readbacks; stored spec read-back requests and reports require a supporting daemon";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("project_autonomy")) {
         let needsAutonomy = autonomyConfirmed.size > 0;
         try {

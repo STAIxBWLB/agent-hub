@@ -62,6 +62,7 @@ export interface RestartSnapshot {
     researchEvidence?: { links: number; revisions: number; digest: string };
     reviewerQuota?: { rows: number; completed: number; pending: number; unknown: number; complete: boolean; waits: number; digest: string };
     advisorSurveys?: { surveys: number; findings: number; considered: number; digest: string };
+    specReadbacks?: { readbacks: number; digest: string };
     reviewComments?: { comments: number; packages: number; digest: string };
     /** Stored visual payloads and image metadata, never external image bytes. */
     visuals?: { count: number; digest: string };
@@ -185,6 +186,12 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     const value = s.integrity.advisorSurveys;
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["surveys", "findings", "considered", "digest"].includes(key))
       || ![value.surveys, value.findings, value.considered].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "specReadbacks")) {
+    const value = s.integrity.specReadbacks;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["readbacks", "digest"].includes(key))
+      || !Number.isSafeInteger(value.readbacks) || value.readbacks < 0
       || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (s.integrity && Object.hasOwn(s.integrity, "reviewComments")) {
