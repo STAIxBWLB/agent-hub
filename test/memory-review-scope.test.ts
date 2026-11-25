@@ -103,25 +103,35 @@ async function rig() {
   const tasks = new Tasks({
     board, bus, routing: () => loadRouting(dir), cwd: dir, project: "review-scope", candidates,
     store: { project: "review-scope", repo: dir, store: {} as never }, notify: () => {},
+    // Two slots so the one peer holds a review card and an ordinary task at once: the point of the scope's turn binding.
+    wipLimit: () => 2,
   });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
   return { dir, board, bus, tasks, candidates, claude };
 }
 
-test("a peer's live review card puts the scope around it, and a note it files becomes a candidate", async () => {
+test("a peer's live review card scopes its owner's turn on that card, and no other call", async () => {
   const { dir, board, tasks, candidates } = await rig();
   const entry = memoryReviewEntry(memoryReviewConfig({ enabled: true, ...CAPS }), dir)!;
   const card = await tasks.propose(HUB, { title: entry.title, detail: scheduledDetail(entry), class: "review", owner: "claude" });
   // Before the card is accepted there is no review work to scope.
-  expect(tasks.reviewCardFor("claude")).toBeUndefined();
+  expect(tasks.reviewCardFor("claude", card.id)).toBeUndefined();
   tasks.accept("claude", card.id);
-  expect(tasks.reviewCardFor("claude")?.id).toBe(card.id);
-  // Another peer, and the hub itself, are never in a review's scope.
-  expect(tasks.reviewCardFor("codex")).toBeUndefined();
-  expect(tasks.reviewCardFor(HUB)).toBeUndefined();
+  // AC3 binds the scope to the card's OWNER and to the TURN bound to that card: the reviewer reviews the card rather than
+  // running it, and the owner's work on another task keeps every tool.
+  expect(tasks.reviewCardFor("claude", card.id)?.id).toBe(card.id);
+  const other = await tasks.propose(HUB, { title: "an ordinary implement task", class: "implement", owner: "claude" });
+  tasks.accept("claude", other.id);
+  expect(tasks.reviewCardFor("claude", other.id)).toBeUndefined();
+  expect(tasks.reviewCardFor("codex", card.id)).toBeUndefined();
+  expect(tasks.reviewCardFor("claude", undefined)).toBeUndefined();
+  expect(tasks.reviewCardFor(HUB, card.id)).toBeUndefined();
 
-  // AC4: the note never reaches the curated store; it is a candidate that names the card and the peer.
-  const saved = await tasks.rememberOutcome("claude", { text: "the anchor this note names moved to another file" });
+  // AC4: the note never reaches the curated store; it is a candidate that names the card and the peer. A call that passes no
+  // card is outside the review's turn, so it files no candidate at all.
+  expect(await tasks.rememberOutcome("claude", { text: "a note filed on the owner's other task" })).not.toMatchObject({ outcome: "candidate" });
+  expect(candidates.list({ project: "review-scope" })).toHaveLength(0);
+  const saved = await tasks.rememberOutcome("claude", { text: "the anchor this note names moved to another file" }, card);
   expect(saved.outcome).toBe("candidate");
   expect(saved.message).toContain(`task #${card.id} changed no note`);
   const [proposal] = candidates.list({ project: "review-scope" });
@@ -131,5 +141,5 @@ test("a peer's live review card puts the scope around it, and a note it files be
   // A closed card scopes nothing: the same call is ordinary work again.
   await tasks.cancel(card.id, USER, { reason: "the run stopped" });
   expect(board.get(card.id)!.state).toBe("cancelled");
-  expect(tasks.reviewCardFor("claude")).toBeUndefined();
+  expect(tasks.reviewCardFor("claude", card.id)).toBeUndefined();
 });

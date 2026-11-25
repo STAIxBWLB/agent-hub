@@ -4337,6 +4337,12 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const reviewCountLine = (card: Task): string => memoryReviewCountLine({ ...(reviewCounts.get(card.id) ?? { notes: 0, corrections: 0, remembered: 0 }), tokens: reviewCountedTokens([card.id]) });
   /**
+   * #1329 AC3: the review card the caller's current turn is bound to. The turn's own attribution names it: the card is
+   * delivered to its owner, `Tasks.ownerTurnTasks` excludes a `review` card, and a call made outside that turn - the
+   * reviewer's, or the owner's work on another task - is not in the review's scope.
+   */
+  const reviewTurnCard = (by: PeerId): Task | undefined => tasks.reviewCardFor(by, turns.get(by)?.attribution.task);
+  /**
    * The stop itself: a counted spend at either cap asks the owner for one checkpoint and then escalates the card with reason
    * `budget`, through the ordinary escalation path, so the board records who moved it and why. Each card stops once: the stop
    * is read from the card's own history, so it survives a daemon restart and a second turn cannot escalate it again.
@@ -6162,11 +6168,11 @@ export async function startDaemon(opts: DaemonOptions) {
       if (by !== USER && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("bounded task tools unavailable during a PII turn");
     }
     if (op === "hub_specs" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("spec inspection unavailable during a private turn");
-    // #1329 part 2 (AC3): while a peer holds a memory-review card, the card's tool scope is enforced here, on every call,
-    // before anything is written. The scope is a name rule in `memory-review.ts`; this only decides whose turn is in scope,
-    // and with no review card there is nothing to look up beyond the two live board states.
+    // #1329 part 2 (AC3): while a turn is bound to a memory-review card its owner holds, the card's tool scope is enforced
+    // here, on every call, before anything is written. The scope is a name rule in `memory-review.ts`; this only decides
+    // whether this call runs in the review's turn, and an ordinary turn resolves no card at all.
     if (by !== USER) {
-      const reviewCard = tasks.reviewCardFor(by), refused = reviewCard && memoryReviewScope(op);
+      const reviewCard = reviewTurnCard(by), refused = reviewCard && memoryReviewScope(op);
       if (reviewCard && refused) throw new PreEffectToolRefusal(`task #${reviewCard.id}: ${refused}; read the card with ahub task show ${reviewCard.id}, and run that work in a turn outside this review`);
     }
     if (MEMORY_READ_TOOLS.has(op)) validateMemoryRead(op, a);
@@ -6235,14 +6241,14 @@ export async function startDaemon(opts: DaemonOptions) {
       checkMemory();
       const read = memoryRead(memoryStore, memoryProject, screenMemory, op, a, staleness(), code ? currentMemoryCode(code) : undefined);
       // #1329: a review's done report counts the notes it checked, so a successful read on its card is counted here.
-      const card = op === "hub_memory_show" ? tasks.reviewCardFor(by) : undefined;
-      if (card && Array.isArray(a.ids)) reviewCount(card.id, "notes", a.ids.length);
+      const card = op === "hub_memory_show" ? (Array.isArray(a.ids) ? reviewTurnCard(by) : undefined) : undefined;
+      if (card) reviewCount(card.id, "notes", (a.ids as unknown[]).length);
       return read;
     }
     if (op === "hub_memory_correct") {
       need("memory_correct", "propose memory corrections");
       const candidate = await tasks.correct(by, a);
-      const card = tasks.reviewCardFor(by);
+      const card = reviewTurnCard(by);
       if (card) reviewCount(card.id, "corrections");
       return candidate;
     }
@@ -6603,10 +6609,10 @@ export async function startDaemon(opts: DaemonOptions) {
           : line(reviewed);
       }
       case "hub_remember": {
-        const { message: saved, outcome } = await tasks.rememberOutcome(by, a);
+        const reviewCard = reviewTurnCard(by);
+        const { message: saved, outcome } = await tasks.rememberOutcome(by, a, reviewCard);
         // #1329 AC4: on a review card a note is a proposal, and the done report counts it by kind.
-        const reviewSaved = outcome === "candidate" ? tasks.reviewCardFor(by) : undefined;
-        if (reviewSaved) reviewCount(reviewSaved.id, "remembered");
+        if (reviewCard && outcome === "candidate") reviewCount(reviewCard.id, "remembered");
         // #1279: a saved note that names another entry cites it. `tasks.remember` already refused a PII task, a private path and a secret, so only a note it saved gets here.
         // #802: the structured outcome decides, never the reply wording. Only `not_saved` skips the citation: a candidate note held for a person's review was cited under the old wording test too, and stays so.
         if (!piiTurn && !reviewTurn && typeof a.text === "string" && a.text && outcome !== "not_saved") {

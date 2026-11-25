@@ -7690,18 +7690,17 @@ export class Tasks {
   schedulesHeld(): boolean { return !!this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || !!this.d.bus.storageError; }
 
   /**
-   * #1329 part 2 (AC3): the memory-review card this peer holds a role on, which is what puts the review's tool scope around
-   * its calls. The card is the hub's own (schedule marker in its detail), so a peer cannot widen its scope by writing one, and
-   * a closed or not-yet-started card scopes nothing. The two live states are read by their own query, so a tool call never
-   * scans the whole board.
+   * #1329 part 2 (AC3): the memory-review card a call runs under. A card scopes its owner's turn on that card and nothing
+   * else: the reviewer reviews it rather than running it, and the owner's work on another task keeps every tool. The turn's
+   * own attribution names the card (`Tasks.ownerTurnTasks` excludes a `review` card), so the caller passes that task id
+   * instead of the peer's identity. The card is the hub's own (schedule marker in its detail), so a peer cannot widen its
+   * scope by writing one, and a closed or not-yet-started card scopes nothing.
    */
-  reviewCardFor(by: PeerId): Task | undefined {
-    if (by === HUB || by === USER) return undefined;
-    for (const state of ["in_progress", "changes_requested"] as const) {
-      const card = this.d.board.list(state).find(task => (task.owner === by || task.reviewer === by) && memoryReviewTask(task));
-      if (card) return card;
-    }
-    return undefined;
+  reviewCardFor(by: PeerId, taskId: number | undefined): Task | undefined {
+    if (by === HUB || by === USER || taskId === undefined) return undefined;
+    const card = this.d.board.get(taskId);
+    if (!card || card.owner !== by || !memoryReviewTask(card)) return undefined;
+    return card.state === "in_progress" || card.state === "changes_requested" ? card : undefined;
   }
 
   private schedulesRunning = false;
@@ -11534,7 +11533,7 @@ export class Tasks {
    * #802: what `remember` answered and whether it stored anything, so a caller never decides that from the wording. `saved` is a note in shared memory, `candidate` one held for a person's
    * review (stored, not yet evidence), `not_saved` a note nothing took. A refusal still throws and never reaches here.
    */
-  async rememberOutcome(by: PeerId, input: RememberInput): Promise<{ message: string; outcome: "saved" | "candidate" | "not_saved" }> {
+  async rememberOutcome(by: PeerId, input: RememberInput, review?: Task): Promise<{ message: string; outcome: "saved" | "candidate" | "not_saved" }> {
     const requestCheck = this.requestCheck(by);
     const text = composeRememberText(input);
     const task = input.task !== undefined ? this.d.board.get(Number(input.task)) : undefined;
@@ -11556,9 +11555,9 @@ export class Tasks {
     if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: shared memory excludes private data");
     requestCheck();
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
-    // #1329 part 2 (AC4): a memory review proposes and never writes. A note it files is a candidate attributed to the review
-    // card and to the peer that wrote it, whatever `task` the caller named: the card is the run the proposal belongs to.
-    const review = this.reviewCardFor(by);
+    // #1329 part 2 (AC4): a memory review proposes and never writes. The caller passes the card only for a call in the
+    // owner's turn on that card, so a note filed on any other task is an ordinary note; one filed in the review's turn is a
+    // candidate attributed to the card and to the peer that wrote it.
     if (review) {
       if (!this.d.candidates || !this.d.store) return { message: "memory review proposals need the candidate sidecar, which is unavailable; nothing was saved", outcome: "not_saved" };
       const proposal = memoryReviewCandidate({ text, ...(title ? { title } : {}), noteKind: kind }, review.id, by);
