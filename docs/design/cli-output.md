@@ -167,7 +167,9 @@ This issue holds the canonical v1 text. The first `ahub` PR commits it as `docs/
 The [2026-11-25 inventory snapshot](cli-output-inventory.md) joins the built-in
 dispatch keys, native adapter commands and rendered help. Refresh the snapshot with
 `bun scripts/cli-output-inventory.ts --write` and compare it with the current checkout using
-`bun scripts/cli-output-inventory.ts --check`. A newer checkout may differ from
+`bun scripts/cli-output-inventory.ts --check`. The comparison runs once per gate as
+`scripts/check.sh`'s `cli output inventory` step, so a help or renderer change that ages the
+snapshot fails the gate instead of waiting for review. A newer checkout may differ from
 the dated snapshot as help and renderers change.
 
 - Help at 80 columns spans 90 dispatch entries and 92 documented command words.
