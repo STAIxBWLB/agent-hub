@@ -224,7 +224,7 @@ test("sdlc merge and authorize-release accept --ascii: ASCII markers, no unicode
 });
 
 // #1654 T3 slice 3b: `--ascii` reaches queue, release, metrics and costs too, and a section mark is `>` with no unicode glyph.
-for (const name of ["queue", "release", "metrics", "costs"]) {
+for (const name of ["status", "explain", "queue", "release", "metrics", "costs"]) {
   test(`sdlc ${name} accepts --ascii: ASCII section marks, no unicode glyphs, the request is unchanged`, async () => {
     const command = commands.find(c => c.name === name)!;
     const f = fixture(); f.serve(command);
