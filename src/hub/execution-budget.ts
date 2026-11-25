@@ -112,9 +112,12 @@ export class ExecutionBudget {
   /** Capability comes from the resolved instance definition, never the peer's spelling. */
   instrumented(peer: string): boolean { return definitionOf(peer, this.instances)?.budget?.instrumented === true; }
 
-  /** The named budget must cover this task and owner; another applicable budget proves nothing. */
+  /**
+   * The named budget must cover this task and owner; another applicable budget proves nothing. #1329 part 2: a `tokens`
+   * limit is a covered resource now that a caller can admit the spend it counted itself, so a review run's cap is a budget.
+   */
   covers(id: string, taskId: number, peer: string, resources: readonly ExecutionUnit[]): boolean {
-    if (!this.instrumented(peer) || !resources.every(unit => UNITS.has(unit) && unit !== "tokens")) return false;
+    if (!this.instrumented(peer) || !resources.every(unit => UNITS.has(unit))) return false;
     const row = this.scopes([taskId], peer).find(row => row.id === id);
     if (!row) return false;
     const limits = fromRow(row).limits;
@@ -144,7 +147,9 @@ export class ExecutionBudget {
           decisions.push(decision); updates.elapsed_ms = elapsed;
         }
         const limit = cfg.limits[unit], current = cfg.used[unit] ?? 0;
-        if (unit === "tokens" || (unit === "model_calls" && cfg.limits.tokens !== undefined)) {
+        // #1329 part 2: `tokens` is admitted like any counted unit, from the delta the caller counted. A caller that admits
+        // model calls against a budget carrying a tokens limit still cannot count them, so that reading stays unknown.
+        if (unit === "model_calls" && cfg.limits.tokens !== undefined) {
           decisions.push({ allowed: false, scope: cfg.id, unit: "tokens", used: cfg.used.tokens ?? 0, limit: cfg.limits.tokens ?? null, remaining: cfg.limits.tokens === undefined ? null : Math.max(0, cfg.limits.tokens - (cfg.used.tokens ?? 0)), reason: "unknown_usage" });
         } else if (limit === undefined) decisions.push({ allowed: true, scope: cfg.id, unit, used: current, limit: null, remaining: null });
         else if (current + amount > limit) decisions.push({ allowed: false, scope: cfg.id, unit, used: current, limit, remaining: Math.max(0, limit - current), reason: "exhausted" });
@@ -174,7 +179,9 @@ function fromRow(row: BudgetRow): ExecutionBudgetStatus {
   const units: ExecutionBudgetStatus["units"] = {};
   for (const [unit, limit] of Object.entries(limits) as [ExecutionUnit, number][]) {
     const current = used[unit] ?? 0, remaining = Math.max(0, limit - current);
-    units[unit] = { used: current, limit, remaining, ...((unit === "tokens" && remaining > 0) ? { reason: "unknown_usage" as const } : (remaining === 0 ? { reason: "exhausted" as const } : {})) };
+    // #1329 part 2: a tokens row now carries what a caller admitted, so a remaining allowance is not `unknown_usage`; a
+    // caller that admits something it cannot count still gets that reason from `admitTasks`.
+    units[unit] = { used: current, limit, remaining, ...(remaining === 0 ? { reason: "exhausted" as const } : {}) };
   }
   const override = row.last_override ? JSON.parse(row.last_override) as ExecutionOverride : undefined;
   return { id: row.id, kind: row.kind, ...(row.task_id === null ? {} : { taskId: row.task_id }), peers: JSON.parse(row.peers), limits, used, units, createdAt: row.created_at, updatedAt: row.updated_at,

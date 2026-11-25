@@ -32276,6 +32276,85 @@ init_permission_mode();
 init_src2();
 init_tool_refusal();
 
+// src/hub/memory-review.ts
+var KEYS2 = new Set(["enabled", "every", "projects", "peer", "max_notes", "max_tokens_run", "max_tokens_week"]);
+var MEMORY_REVIEW_HUB_OPS = new Set([
+  "hub_memory_search",
+  "hub_memory_show",
+  "hub_memory_graph",
+  "hub_memory_correct",
+  "hub_remember",
+  "hub_task_show",
+  "hub_task_list",
+  "hub_task_accept",
+  "hub_task_decline",
+  "hub_task_done",
+  "hub_task_wait",
+  "hub_checkpoint",
+  "hub_task_escalate",
+  "hub_send",
+  "hub_inbox",
+  "hub_specs",
+  "hub_set_title",
+  "hub_ask",
+  "hub_delivery_retry",
+  "hub_delivery_resolve",
+  "hub_check_result",
+  "hub_check_cancel",
+  "hub_source_read",
+  "hub_study_show",
+  "hub_experiment_show",
+  "hub_evidence_read",
+  "hub_lineage_show",
+  "hub_guidance_list",
+  "hub_guidance_show",
+  "hub_supervision_list",
+  "hub_supervision_dismiss",
+  "hub_permission_request"
+]);
+var REVIEW_READS = new Set([
+  "amem_search",
+  "amem_show",
+  "amem_related",
+  "amem_work_state_read",
+  "amem_brief",
+  "amem_consolidate",
+  "amem_consolidate_preview",
+  "vmem_search",
+  "vmem_show",
+  "vmem_list",
+  "vmem_read",
+  "vmem_get",
+  "vmem_report",
+  "vmem_links",
+  "vmem_graph",
+  "vmem_backlinks"
+]);
+var MEMORY_MUTATIONS = new Set([
+  "memory_promote",
+  "memory_demote",
+  "memory_forget",
+  "memory_supersede",
+  "memory_accept",
+  "amem_promote",
+  "amem_demote",
+  "amem_forget",
+  "amem_supersede",
+  "amem_accept",
+  "amem_review_accept",
+  "amem_review_reject",
+  "hub_memory_promote",
+  "hub_memory_demote",
+  "hub_memory_forget",
+  "hub_memory_supersede",
+  "hub_memory_accept",
+  "hub_learn_accept",
+  "hub_learn_reject"
+]);
+var VAULT_WRITES = new Set(["vmem_create", "vmem_patch", "vmem_move", "vmem_delete", "vmem_promote", "vmem_demote", "vmem_merge", "vmem_rewrite", "vmem_archive"]);
+var CODE_EDITS = new Set(["edit", "write", "multiedit", "notebookedit", "str_replace_editor", "apply_patch", "hub_check_start"]);
+var PEER_STARTS = new Set(["peer_start", "hub_peer_start", "hub_peer_hold", "hub_peer_release"]);
+
 // src/hub/tasks.ts
 init_memory_policy();
 

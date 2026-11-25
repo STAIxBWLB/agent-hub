@@ -95,6 +95,7 @@ import { matchesPolicy, matchesPolicyLexically, policyRealPath, insideRoot } fro
 import { isDenied } from "../local/deny.ts";
 import { foldSegment, isHubWritePath } from "./permission-mode.ts";
 import { correctionInput, resolveVisibleMemory } from "./memory-candidates.ts";
+import { memoryReviewCandidate, memoryReviewTask } from "./memory-review.ts";
 import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { createMemorySyncPolicy } from "./memory-sync-policy.ts";
@@ -7688,6 +7689,21 @@ export class Tasks {
   /** Whether a scheduled run may write now: the same holds as every host writer (stopping or recovering, held by the daemon, a storage error). */
   schedulesHeld(): boolean { return !!this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || !!this.d.bus.storageError; }
 
+  /**
+   * #1329 part 2 (AC3): the memory-review card this peer holds a role on, which is what puts the review's tool scope around
+   * its calls. The card is the hub's own (schedule marker in its detail), so a peer cannot widen its scope by writing one, and
+   * a closed or not-yet-started card scopes nothing. The two live states are read by their own query, so a tool call never
+   * scans the whole board.
+   */
+  reviewCardFor(by: PeerId): Task | undefined {
+    if (by === HUB || by === USER) return undefined;
+    for (const state of ["in_progress", "changes_requested"] as const) {
+      const card = this.d.board.list(state).find(task => (task.owner === by || task.reviewer === by) && memoryReviewTask(task));
+      if (card) return card;
+    }
+    return undefined;
+  }
+
   private schedulesRunning = false;
   /** 1 while a schedules pass is running (its PII screen and triage are awaited), so a recovery commit waits for it like it waits for `checksPending` and `autoPullsPending`: a run mid-admission would write after the commit's digest. */
   schedulesPending = (): number => (this.schedulesRunning ? 1 : 0);
@@ -11540,6 +11556,15 @@ export class Tasks {
     if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: shared memory excludes private data");
     requestCheck();
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
+    // #1329 part 2 (AC4): a memory review proposes and never writes. A note it files is a candidate attributed to the review
+    // card and to the peer that wrote it, whatever `task` the caller named: the card is the run the proposal belongs to.
+    const review = this.reviewCardFor(by);
+    if (review) {
+      if (!this.d.candidates || !this.d.store) return { message: "memory review proposals need the candidate sidecar, which is unavailable; nothing was saved", outcome: "not_saved" };
+      const proposal = memoryReviewCandidate({ text, ...(title ? { title } : {}), noteKind: kind }, review.id, by);
+      const id = this.d.candidates.put({ project: this.d.store.project, ...proposal.input }, "public", proposal.origin);
+      return { message: `candidate:${id}; a memory review proposes only, and a person accepts it with amem review; task #${review.id} changed no note`, outcome: "candidate" };
+    }
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
     if (native && "refused" in native) throw new PreEffectToolRefusal(`${native.refused}; save it with horizon "short" or correct the machine/repository privacy policy, then retry`);
     if (task && this.d.memory) this.markMemoryReference(task, by);
