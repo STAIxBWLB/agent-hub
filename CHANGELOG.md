@@ -23,6 +23,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Add `ahub projects move` to keep a moved project's port, board, delivery history and handoff links. Preview first and stop every affected hub before confirming. Refs #1424, hub task 1100.
 
+- Verify Kimi Code 2.7.2 for fresh reviews with isolated model-free broker and native tool-loop evidence. Refs #888, hub task 1120.
+
 - Remove the Qwen dual-output compat-receipt timing flake: the fixture now consumes submits from a poll as well as `fs.watch`, and the proof deadline is a hang guard instead of a 4 s wall-clock bound, so a loaded runner no longer fails at the `first-held` checkpoint. Refs #1669, hub task 1089.
 - Refuse task proposals whose detail exceeds 8000 characters and show how to retry with a spec issue reference. Refs #1648, hub task 1086.
 
@@ -30,7 +32,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Gate the CLI output inventory: `scripts/check.sh` runs `bun scripts/cli-output-inventory.ts --check` with the once-only steps, so a help or renderer change that ages the dated snapshot fails the gate instead of surfacing at review. The step runs once per gate on each operating system, never once per shard. Refs #1654, hub task 1112.
 
-- Verify Kimi Code 2.7.2 for fresh reviews with isolated model-free broker and native tool-loop evidence. Refs #888, hub task 1120.
+- Verify Claude Code 2.1.332 as a headless implementer with an isolated model-free transport and wrapper receipt, allowing it to start without machine-local trust after release (Refs #888, hub task 1118).
 
 ## 0.46.1
 
