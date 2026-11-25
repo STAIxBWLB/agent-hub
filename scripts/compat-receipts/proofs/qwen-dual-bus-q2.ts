@@ -141,6 +141,11 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
     onPermission: async () => { fault = "unexpected-permission"; wake(); return undefined; } });
   const input = join(options.stateDir, "qwen-dual/input.jsonl"), events = join(options.stateDir, "qwen-dual/events.jsonl");
   const untap = bus.tap(wake);
+  // #1669: a watcher event that is coalesced or shed left every predicate unread until the guard expired, which is how
+  // the run once reported the in-flight checkpoint instead of the semantic one. The predicates read the files themselves,
+  // so this poll is the receipt the watch stands for (the same 2 ms the Q2 fixture uses for its submit), not a duration:
+  // an idle run still finishes in its usual ~65 ms because the first wake settles the promise.
+  const tick = setInterval(wake, 2); tick.unref?.();
   const bounded = async <T>(work: Promise<T>, label: string): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try { return await Promise.race([work, new Promise<never>((_, reject) => {
@@ -207,7 +212,7 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
     checkpoint = "passed";
   } catch (error) { checkpoint = error instanceof Checkpoint ? error.checkpoint : "host-proof-error"; }
   finally {
-    controller.abort(); waiters.clear(); untap(); for (const watcher of watchers) watcher.close();
+    controller.abort(); waiters.clear(); clearInterval(tick); untap(); for (const watcher of watchers) watcher.close();
     bus.closeJournal();
     try { await peer.stop(); } catch { cleanupFailures.push("adapter-stop"); if (checkpoint === "passed") checkpoint = "adapter-stop"; }
     try { ownedStopConfirmed = (await ports.stop()).ownedStopConfirmed; } catch { cleanupFailures.push("native-stop"); ownedStopConfirmed = false; }
