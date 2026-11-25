@@ -2309,7 +2309,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const hub = await connect();
       try {
         const reply = await hub.request({ t: "sdlc", op: op === "start" ? "readback-start" : "readback-show", id: task }, 30_000);
-        if (!reply.ok) fail(reply.error, false, undefined, "check ahub sdlc status <task> for the task's lifecycle receipt, then retry");
+        if (!reply.ok) fail(reply.error, false, undefined, `check ahub sdlc status ${task} for the task's lifecycle receipt, then retry`);
         const view = reply.readback;
         if (options.json) return console.log(JSON.stringify(op === "start" ? reply : view ?? null, null, 2));
         if (op === "start") {

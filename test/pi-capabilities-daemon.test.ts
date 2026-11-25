@@ -1,5 +1,6 @@
 import { startFakeModelServer } from "./fakes/model-server.ts";
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -272,6 +273,21 @@ for (const [mode, prints] of [["", false], ['mode = "advise"\n', true]] as const
   expect(reply.acceptance.issue).toBe(418);
   if (prints) expect(reply.readback).toBe(`spec read-back: none (start one with ahub sdlc readback start ${task.id})`);
   else expect(reply).not.toHaveProperty("readback");
+});
+
+test("a corrupt read-back row leaves the person's acceptance recorded and the line says the state is unknown (#1658)", async () => {
+  const edit = "2026-11-23T00:36:36Z";
+  const f = await fixture({ sdlc: 'mode = "advise"\n', specEdit: async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 418, lastEditedAt: edit, updatedAt: edit } } } }) }) });
+  const task = f.task({ sdlc: { stage: "spec", repo: "owner/project", issue: 418 } });
+  f.board.readbackCreate({ task: task.id, taskCreated: task.created, repo: "owner/project", issue: 418, lastEditedAt: edit, updatedAt: edit, reader: "kimi", by: "user", at: 5 });
+  const db = new Database(join(f.stateDir, "hub.db")); db.query("UPDATE spec_readbacks SET body=?").run("PRIVATE_CORRUPTION_CANARY"); db.close();
+  const client = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => client.close());
+  const reply = await client.request({ t: "sdlc", op: "accept", id: task.id, issue: 418, repo: "owner/project" });
+  expect(reply.ok === true, String(reply.error ?? "")).toBe(true);
+  expect(reply.acceptance.issue).toBe(418);
+  expect(reply.readback).toContain("storage unreadable");
+  expect(JSON.stringify(reply)).not.toContain("PRIVATE_CORRUPTION_CANARY");
+  expect(f.board.get(task.id)?.sdlc?.acceptance?.issue).toBe(418);
 });
 
 test("person inspection keeps owner output until the owner reads its result (#418 rework)", async () => {

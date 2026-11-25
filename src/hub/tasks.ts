@@ -8360,10 +8360,13 @@ export class Tasks {
       refusal ??= tried.refusals?.find(row => row.role === "reviewer" && row.peer === peer)?.reason;
     }
     if (!reader) {
-      const reason = refusal
-        ?? (readers.length ? "no eligible reader"
+      // Each answer names what is missing and the one command that changes it: an attached, available reviewer-role peer
+      // that is not the proposer and not a review-only instance.
+      const attach = `attach an available reviewer-role peer and retry ahub sdlc readback start ${current.id}`;
+      const reason = refusal ? `no eligible reader (${refusal}); ${attach}`
+        : readers.length ? `no eligible reader; ${attach}`
           : holders.length ? `every attached reviewer-role peer is a review-only instance, which reads no spec; attach an ordinary reviewer-role peer and retry ahub sdlc readback start ${current.id}`
-            : `no reviewer-role peer is attached and free to read; roster a reviewer-role peer and retry ahub sdlc readback start ${current.id}`);
+            : `no reviewer-role peer is attached and free to read; roster a reviewer-role peer and retry ahub sdlc readback start ${current.id}`;
       return { task: current.id, repo, issue, state: "unavailable", reason };
     }
     check();

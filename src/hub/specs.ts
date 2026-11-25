@@ -19,7 +19,7 @@ const MAX_PARSED_BLOB_CACHE_BYTES = 16 * 1024 * 1024;
 const MAX_BLOB_BATCH_BYTES = 8 * 1024 * 1024;
 const MAX_TRACKED_PATHS_PER_SCOPE = 4096;
 const MAX_REPORT_ITEMS = 500;
-const GIT_SAFE_OPTIONS = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat", "-c", "credential.helper=", "-c", "core.askpass="];
+export const GIT_SAFE_OPTIONS = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat", "-c", "credential.helper=", "-c", "core.askpass="];
 const LIST_KEYS = new Set(["depends-on", "references", "implements", "covers", "tags", "paths"]);
 const TYPES = new Set(["goal", "architecture", "module", "submodule"]);
 const STATUS = new Set(["draft", "active", "deprecated"]);

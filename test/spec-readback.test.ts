@@ -220,6 +220,18 @@ test("a review-only instance is never asked to read, because its port publishes 
   } finally { only.close(); }
 });
 
+test("a rostered reader that routing refuses answers with that reason and the next step", async () => {
+  const f = await readbackFixture({ reviewers: [] });
+  try {
+    // A roster entry with no attached session is routing's `not-attached` refusal, which on its own says nothing to do.
+    f.roles.pi = ["reviewer"];
+    const result = await f.tasks.specReadbackStart("user", f.task.id);
+    expect(result.state).toBe("unavailable");
+    expect(result.reason).toBe(`no eligible reader (not attached); attach an available reviewer-role peer and retry ahub sdlc readback start ${f.task.id}`);
+    expect(f.board.readbackLatest(f.task.id, f.task.created)).toBeUndefined();
+  } finally { f.close(); }
+});
+
 test("a show is for the person, the conductor that started it, the task's own holders and the reader", async () => {
   const f = await readbackFixture();
   try {

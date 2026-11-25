@@ -13459,9 +13459,13 @@ export async function startDaemon(opts: DaemonOptions) {
             try {
               // #1658 AC6: the read-back line prints before the acceptance is recorded, and the acceptance proceeds in every state.
               const accepted = board.get(msg.id)!;
-              const view = tasks.readbackView({ ...accepted, sdlc: { ...(accepted.sdlc ?? { stage: "spec" as const }), repo, issue: msg.issue } }, edit);
+              // A read-back row whose bytes fail their hash is a storage defect, not a reason to refuse the person's
+              // acceptance: the line then says the state is unknown, and the acceptance is recorded as in any other state.
+              let readback: string | undefined;
+              try { readback = readbackAcceptField(tasks.readbackView({ ...accepted, sdlc: { ...(accepted.sdlc ?? { stage: "spec" as const }), repo, issue: msg.issue } }, edit), msg.id).readback; }
+              catch { readback = "spec read-back: storage unreadable (the acceptance is recorded and no state is known; restore a trusted hub.db backup to read it)"; }
               const next = tasks.acceptSpec(USER, msg.id, { repo, issue: msg.issue, edit });
-              reply({ ok: true, acceptance: next.sdlc?.acceptance, ...readbackAcceptField(view, msg.id) });
+              reply({ ok: true, acceptance: next.sdlc?.acceptance, ...(readback ? { readback } : {}) });
             } catch (error) { reply({ ok: false, error: (error as Error).message }); }
           }, () => reply({ ok: false, error: "issue edit time unavailable; nothing was recorded" }));
           return;
