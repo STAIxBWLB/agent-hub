@@ -273,9 +273,9 @@ function fitHeader(report: LayoutReport, columns: number | undefined, name: stri
 export function renderStatus(data: StatusOutput, columns?: number, now = Date.now(), full = false, ascii = false): Span[][] {
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
   // #1654 T3: the shared header, then a section mark per group. Every detail line below keeps its text, so a search for one still finds it.
-  const out: Span[][] = fitHeader(new LayoutReport(columns, ascii), columns, "Status", [data.version, `pid ${data.pid ?? "unknown"}`, `127.0.0.1:${data.controlPort ?? "unknown"}`].filter(Boolean).join("  ")).lines();
+  const out: Span[][] = fitHeader(new LayoutReport(columns, ascii), columns, "Status", [`agent-hub${data.version ? ` ${data.version}` : ""}`, `pid ${data.pid ?? "unknown"}`, `127.0.0.1:${data.controlPort ?? "unknown"}`].filter(Boolean).join("  ")).lines();
   const mark = (name: string, count?: string) => { out.push(...(out.length && out.at(-1)!.length ? [[]] : []), ...new LayoutReport(columns, ascii).section(name, count).lines()); };
-  mark("Hub");
+  const hubStart = out.length; // the Hub section opens here only if a row below lands in it
   if (data.cwd) out.push(...detail("project", data.cwd, columns));
   if (data.runtimeModelsUnavailable === true) out.push(...lines("Runtime models unavailable: could not read a bounded model catalog; run ahub model list for the cause. For a known peer, use ahub model set <peer> <model> or ahub model clear <peer>; repair storage or reduce the retained peer catalog as indicated before listing again.", columns, "attention"));
   else if (Array.isArray(data.runtimeModels)) out.push(...renderRuntimeModels(data.runtimeModels.map(projectModelStatus).filter((row): row is RuntimeModelStatus => row !== null), columns));
@@ -405,6 +405,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (typeof p.oldestQueuedAt === "number") out.push(...detail(`${id} oldest queued`, relative(p.oldestQueuedAt, now), columns, "muted"));
     return out;
   });
+  if (out.length > hubStart) out.splice(hubStart, 0, [], ...new LayoutReport(columns, ascii).section("Hub").lines());
   mark("Peers", peerRows.length ? String(peerRows.length) : undefined);
   if (peerRows.length) out.push(...rows(head, peerRows, columns, peerDetails));
   else out.push(...lines("no peers attached yet (ahub claude | ahub codex | ahub kimi)", columns));

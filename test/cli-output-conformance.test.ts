@@ -420,6 +420,8 @@ describe("CLI output standard v1: each converted view follows the grammar (#1654
           if (columns !== undefined) expect(Bun.stringWidth(line), `${name} at ${columns}: ${line}`).toBeLessThanOrEqual(columns);
         }
         for (let i = 1; i < lines.length; i++) expect(!(lines[i] === "" && lines[i - 1] === ""), `${name} at ${columns}: two blank lines`).toBe(true);
+        // a section mark is followed by a row of its own, never by the next section or the end
+        for (const [i, line] of lines.entries()) if (line.startsWith("▸ ")) expect(lines[i + 1] ?? "", `${name} at ${columns}: empty section ${line}`).not.toBe("");
       }
     });
     test(`${name}: --ascii swaps every glyph and keeps the same line count`, () => {
