@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub status --verbose`, `status --full` and `ahub report` print on the shared Report layout, and the grammar is now checked over the real output of every converted view (hub task 1141, Refs #1654): a header, a `▸` section mark per group, `--ascii` markers, and a header that moves its context to a wrapped line on a terminal too narrow for it. Every detail line keeps its words, `--json` is unchanged. This is the last slice of #1654 T3 and T4.
+
 - `ahub sdlc status` and `explain` print on the shared Report layout (hub task 1137, Refs #1654): a header with the mode, a task table, one section per task with its blockers and gate findings as marker lines, and `--ascii` markers. `sdlc release` also prints a warning line when a release is not ready or native verification is unverified. `--json` is unchanged and every pinned phrase stays.
 
 - `ahub sdlc queue`, `audit show`, `release`, `metrics` and `costs` print on the shared Report layout (hub task 1135, Refs #1654): a header, one section per topic, markers for blockers and units, and `--ascii` markers. A repository name too long for the header wraps on its own line, and a narrow terminal stacks a `kv` value under its key. `--json` is unchanged and every pinned phrase stays.

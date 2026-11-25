@@ -265,7 +265,7 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/output.ts:renderRuntimeModels | CLI | - | Inline / indirect | 0 |
 | src/cli/output.ts:renderRoster | CLI | - | Inline / indirect | 0 |
 | src/cli/output.ts:renderRoles | CLI | - | Inline / indirect | 75 |
-| src/cli/output.ts:renderStatus | CLI | - | Inline / indirect | 60 |
+| src/cli/output.ts:renderStatus | CLI | Direct | LayoutReport | 60 |
 | src/cli/output.ts:renderStatusDefault | CLI | Direct | LayoutReport, heading | 65 |
 | src/cli/output.ts:renderBacklog | CLI | - | table | 52 |
 | src/cli/output.ts:renderBoard | CLI | - | Inline / indirect | 80 |
@@ -280,7 +280,7 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/output.ts:renderQueueShow | CLI | - | Inline / indirect | 17 |
 | src/cli/output.ts:renderModelsStatus | CLI | - | Inline / indirect | 12 |
 | src/cli/output.ts:renderExecutionBudgetStatus | CLI | - | Inline / indirect | 16 |
-| src/cli/output.ts:renderReport | CLI | Direct | Report, moment | 79 |
+| src/cli/output.ts:renderReport | CLI | Direct | LayoutReport, Report, moment | 79 |
 | src/cli/output.ts:renderUsage | CLI | - | Inline / indirect | 61 |
 | src/cli/output.ts:renderLimits | CLI | - | Inline / indirect | 38 |
 | src/cli/output.ts:renderTotal | CLI | - | table | 78 |
@@ -297,7 +297,7 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/sdlc-output.ts:renderSdlcMetrics | CLI | Direct | LayoutReport, grid, moment | 80 |
 | src/cli/sdlc-output.ts:renderSdlcCosts | CLI | Direct | LayoutReport, grid | 39 |
 | src/cli/sdlc-output.ts:renderAuthorization | CLI | Direct | LayoutReport, moment | 46 |
-| src/cli/sdlc-output.ts:renderSdlcMerge | CLI | Direct | LayoutReport | 36 |
+| src/cli/sdlc-output.ts:renderSdlcMerge | CLI | - | Inline / indirect | 36 |
 | src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |
 | src/cli/source-output.ts:renderSourceAdd | CLI | - | heading, pair | 49 |
 | src/cli/source-output.ts:renderSourceList | CLI | - | blank, grid, heading, moment, pair | 62 |

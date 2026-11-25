@@ -213,6 +213,8 @@ export const renderSdlcExplain = (reply: unknown, columns?: number, _now = Date.
 function titled(columns: number | undefined, ascii: boolean, lead: string, name: string): LayoutReport {
   const report = new LayoutReport(columns, ascii);
   if (columns === undefined || textWidth(` ahub ${lead} ${name}`) <= columns) return report.header("ahub", `${lead} ${name}`);
+  // the lead itself may not fit either: it moves to the wrapped line with the name
+  if (textWidth(` ahub ${lead}`) > columns) return report.header("ahub", lead.slice(0, lead.indexOf(" ") < 0 ? lead.length : lead.indexOf(" "))).note(`${lead} ${name}`, "value");
   return report.header("ahub", lead).note(name, "value");
 }
 export function renderSdlcQueue(reply: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
@@ -380,7 +382,7 @@ export function renderSdlcMerge(view: unknown, columns?: number, _now = Date.now
   const refused = list(v?.refused), argv = list(v?.argv);
   const decision = v?.decision === "merge" ? "merge: every gate passed" : v?.decision === "refused" ? `refused by ${plural(refused.length, "gate")}` : "unknown";
   const ran = v?.ran === true ? "yes" : v?.ran === false ? (v?.mode === "dry-run" && argv.length ? "no (dry run: the command above was not run)" : "no") : "unknown";
-  const report = new LayoutReport(columns, ascii).header("ahub", `Guarded merge of task #${v?.task ?? "unknown"}`).section("Decision")
+  const report = titled(columns, ascii, "Guarded merge of task", `#${v?.task ?? "unknown"}`).section("Decision")
     .kv([["mode", v?.mode ?? "unknown"], ["decision", decision], ...(argv.length ? [["command", `gh ${argv.join(" ")}`] as const] : []), ["ran", ran]]);
   if (refused.length) { report.section("Refused", String(refused.length)); for (const gate of refused) report.bullet("fail", terminalText(gate)); }
   const r = v?.result;
