@@ -571,7 +571,7 @@ Every role observation must report the exact full served model and a generic `in
 
 A visible observation-hash mismatch unconditionally latches conflict/unknown before bookkeeping. Provider hashes are never passed through as ledger correlation identities, even if they happen to equal the host correlation hash; ledger identities are always host-computed.
 
-The proposed control operations are `guidance_probe_register`, `guidance_probe_start`, `guidance_probe_show` and `guidance_probe_cancel`, each always replying to rid, including errors. CLI forms are `ahub guidance probe register --file JSON`, `start --id HASH --revision R [--variant G1_CONTENT_ID]`, `show --id HASH` and `cancel --id HASH --revision R`, with optional JSON output. R is the probe CAS revision, not the frozen Task flow revision. There are no MCP probe tools, console mutations or new daemon authority flags. Unknown operation responses give upgrade/restart guidance. An uncertain write response directs an explicit keyed show, never an automatic replay.
+The proposed control operations are `guidance_probe_register`, `guidance_probe_start`, `guidance_probe_show` and `guidance_probe_cancel`, each always replying to rid, including errors. CLI forms are `ahub guidance probe register --file <json>`, `start --id <hash> --revision <n> [--variant <variant-id>]`, `show --id <hash>` and `cancel --id <hash> --revision <n>`, with optional JSON output. `<n>` is the probe CAS revision, not the frozen Task flow revision. There are no MCP probe tools, console mutations or new daemon authority flags. Unknown operation responses give upgrade/restart guidance. An uncertain write response directs an explicit keyed show, never an automatic replay.
 
 The additive conditional recovery feature declares private probe state only when present. Control-client/restart snapshots carry its integrity binding through all existing recovery verification sites; absent legacy state is unchanged. Reads never invoke models, resolve opaque addresses or launch effects.
 
@@ -1107,7 +1107,7 @@ stays open**: nothing here shows actual isolation or effective guidance delivery
 
 ### What a producer or a receipt consumer reads
 
-One read, `Tasks.guidanceProbeReceipts(by, id)`, answered over the control op `guidance_probe_receipts`, the CLI `ahub guidance probe receipts --id HASH [--json]`
+One read, `Tasks.guidanceProbeReceipts(by, id)`, answered over the control op `guidance_probe_receipts`, the CLI `ahub guidance probe receipts --id <hash> [--json]`
 and the guidance panel's `probe` read. It carries the same person-or-current-conductor, session, task-state and privacy fences as `show`, and it is read-only:
 it launches, reserves, writes and prunes nothing, and a read-only Store serves its inputs. The reply is a `ProbeReceiptExport`:
 
