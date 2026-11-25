@@ -372,3 +372,12 @@ test("#1484 a Report with no wrap width keeps every line whole, and one with a w
   expect(free.some(line => /^ {3,}word/.test(line))).toBe(false);
   for (const line of new Report(80).section("S").bullet("warn", long).kv([["note", long]]).render(false)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
 });
+
+test("list views open with the standard header and a counted section, and say so when empty (#1654 T3)", async () => {
+  const { renderQueue, renderTurns, renderProjects, renderOrphans } = await import("../src/cli/output.ts");
+  for (const [name, spans] of [["Queue", renderQueue([], 80)], ["Turns", renderTurns([], 80, Date.now())], ["Projects", renderProjects([], 80, Date.now())], ["Orphans", renderOrphans([], 80)]] as const) {
+    const lines = spans.map(line => line.map(span => span.text).join(""));
+    expect(lines[0]!.startsWith(` ahub ${name}`)).toBe(true);
+    expect(lines.some(line => line.startsWith("▸ "))).toBe(true);
+  }
+});
