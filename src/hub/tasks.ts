@@ -74,7 +74,8 @@ import { cleanCostPlan, costMetrics, CostScopeError, type CostPlan, type ReviewC
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
 import { folderDetail, MAX_NEW_PER_POLL, scheduleNext, SOURCE_ID, scheduledDetail, scheduleKeyOf, type FolderEntry, type FolderRunResult, type FolderScan, type FolderStorePort, type ScannedFile, type ScheduleEntry, type ScheduleRunResult, type ScheduleStore } from "./schedules.ts";
 import { INTAKE_MAX_SOURCES, INTAKE_MAX_TEXT, intakeDetail, intakeSystemPrompt, intakeUserMessage, parseIntakeDetail, parseIntakeSplit, plannerRequestBody } from "./intake.ts";
-import { DEFAULT_BAND, EPISODE_LOOKBACK, sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
+import type { OverviewInput, OverviewTask } from "../ui/overview-model.ts";
+import { DEFAULT_BAND, EPISODE_LOOKBACK, sdlcMetrics, taskSample, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
 import { readSecurityScan } from "./security-baseline.ts";
 import { cleanMergeCost, mergeCostFrom } from "./cost-governance.ts";
 import type { InstancesConfig } from "./instances.ts";
@@ -7508,6 +7509,22 @@ export class Tasks {
     }
     this.backfillCursor = n ? (this.backfillCursor + i) % n : 0;
     return linked;
+  }
+
+  /**
+   * #1514: the Overview view's input. Private tasks keep only the private flag (no title, owner or history); every other task
+   * carries its public title and the first-pass value `taskSample` gives, the one definition `ahub sdlc metrics` reads.
+   */
+  overviewInput(now: number): OverviewInput {
+    const rows = this.d.board.list();
+    const visibleIds = new Set(rows.filter(task => !this.isPii(task)).map(task => task.id));
+    const tasks: OverviewTask[] = rows.map(task => {
+      if (!visibleIds.has(task.id)) return { id: task.id, private: true, title: "", state: task.state, owner: null, created: 0, history: [] };
+      const history = task.history.map(entry => ({ at: entry.at, event: entry.event, ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) }));
+      const sample = taskSample({ id: task.id, history: history.map(({ at, event }) => ({ at, event })) });
+      return { id: task.id, title: String(this.publicView(task).title ?? ""), state: task.state, owner: task.owner ?? null, created: task.created, history, firstPass: sample.first_pass_approval, sampleAt: sample.at };
+    });
+    return { tasks, stalls: this.stalled().filter(stall => visibleIds.has(stall.task)).map(stall => ({ task: stall.task, kind: stall.cause.kind })), now };
   }
 
   /**

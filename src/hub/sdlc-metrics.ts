@@ -261,7 +261,7 @@ export interface MetricsReport {
   bands: BandResult[] | "off";
 }
 
-const rate = (values: readonly (number | null)[]) => {
+export const rate = (values: readonly (number | null)[]) => {
   const known = values.filter((value): value is number => value !== null);
   return { n: known.length, unknown: values.length - known.length, rate: known.length ? round(known.reduce((sum, value) => sum + value, 0) / known.length) : null };
 };

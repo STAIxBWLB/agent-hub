@@ -240,6 +240,8 @@ details.settings-group .row:last-child{border-bottom:0}
 .task-card .task-stage{font-size:var(--text-xs)}
 .board-columns .empty{padding:var(--space-2) 0}
 /* #1483 R5: the roadmap view. Lanes stack at 900px so the page never scrolls sideways on a phone. */
+.overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3);padding:var(--space-4)}.overview-card{border:1px solid var(--line,#8884);border-radius:8px;padding:var(--space-3);min-width:0}.overview-card h3{margin:0 0 var(--space-2);font-size:1rem}.overview-card ul{margin:0;padding:0;list-style:none}.overview-card li{display:flex;justify-content:space-between;gap:var(--space-2);overflow-wrap:anywhere}.overview-bars{display:flex;align-items:flex-end;gap:2px;height:48px}.overview-bars i{flex:1;background:currentColor;opacity:.6;min-height:1px}
+@media(max-width:900px){.overview-grid{grid-template-columns:minmax(0,1fr);padding:var(--space-3)}}
 .roadmap-lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3);padding:var(--space-4)}
 .roadmap-lane{display:flex;flex-direction:column;gap:var(--space-2);min-width:0}
 .roadmap-lane h3{font-size:var(--text-sm);color:var(--muted)}
@@ -460,6 +462,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <button type="button" data-view-target="message"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><span class="nav-label">Message</span></button>
 <button type="button" data-view-target="memory"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-memory"/></svg><span class="nav-label">Memory</span></button>
 <button type="button" data-view-target="settings"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings"/></svg><span class="nav-label">Settings</span></button>
+<button type="button" data-view-target="overview"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-board"/></svg><span class="nav-label">Overview</span></button>
 <button type="button" data-view-target="roadmap"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-board"/></svg><span class="nav-label">Roadmap</span></button>
 </nav>
 <div class="shell-body">
@@ -468,6 +471,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <div id="notice" class="notice" role="status" aria-live="polite" aria-label="Notices"></div>
 <section class="task-board-section" aria-labelledby="tasks-title" data-view="board"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="cancelled">Cancelled</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span><span id="task-scope" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><button id="plan-open" type="button" class="primary" aria-haspopup="dialog">Plan</button><button id="board-back" type="button" hidden>Back to board</button><span id="board-focus-title" class="meta" hidden></span><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-milestone-filter">Milestone<select id="task-milestone-filter"><option value="">All milestones</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"><div class="skeleton skeleton-board" aria-hidden="true"><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div></div><p class="empty">Loading the board...</p></div></section>
 <div class="stack">
+<section id="overview-section" aria-labelledby="overview-title" data-view="overview" hidden><div class="section-head"><h2 id="overview-title">Overview</h2><span id="overview-count" class="meta"></span></div><div id="overview-grid" class="overview-grid"><p class="empty">Loading the overview...</p></div></section>
 <section id="roadmap-section" aria-labelledby="roadmap-title" data-view="roadmap" hidden><div class="section-head"><h2 id="roadmap-title">Roadmap</h2><div class="filters"><button id="roadmap-new" type="button" class="primary" aria-haspopup="dialog">New milestone</button><button id="roadmap-check" type="button">Check drift</button><span id="roadmap-count" class="meta"></span></div></div><p id="roadmap-drift" class="meta" role="status" aria-live="polite"></p><div id="roadmap-lanes" class="roadmap-lanes"><p class="empty">Loading the roadmap...</p></div><section id="roadmap-unplaced" aria-labelledby="roadmap-unplaced-title" hidden><div class="section-head"><h3 id="roadmap-unplaced-title">Unplaced</h3><div class="filters"><button id="roadmap-triage" type="button">Suggest placements</button><span id="roadmap-unplaced-count" class="meta"></span></div></div><div id="roadmap-tray" class="roadmap-tray"></div></section></section>
 <section id="office-section" aria-labelledby="office-title" data-view="office" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">Office mode</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title" data-view="stream" hidden><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
@@ -536,7 +540,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <dialog id="task-detail-dialog" aria-labelledby="task-detail-title"><div class="dialog-head"><h2 id="task-detail-title">Task details</h2><button id="task-detail-close" type="button" autofocus>Close details</button></div><div id="task-detail-content"></div></dialog>
 <dialog id="roadmap-detail-dialog" aria-labelledby="roadmap-detail-title"><div class="dialog-head"><h2 id="roadmap-detail-title">Milestone</h2><button id="roadmap-detail-close" type="button" autofocus>Close milestone</button></div><div id="roadmap-detail-content"></div></dialog>
 <dialog id="keys-dialog" aria-labelledby="keys-title"><div class="dialog-head"><h2 id="keys-title">Keyboard shortcuts</h2><button type="button" id="keys-close" aria-label="Close shortcuts"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"/></svg></button></div>
-<dl class="keys-list"><div><dt><kbd>1</kbd>-<kbd>8</kbd></dt><dd>Switch view: Board, Office, Stream, Agents, Message, Memory, Settings, Roadmap</dd></div><div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the open sheet or task detail</dd></div></dl>
+<dl class="keys-list"><div><dt><kbd>1</kbd>-<kbd>9</kbd></dt><dd>Switch view: Board, Office, Stream, Agents, Message, Memory, Settings, Roadmap, Overview</dd></div><div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the open sheet or task detail</dd></div></dl>
 <p class="meta">Keys are ignored while you type in a field, and with Ctrl, Alt or Cmd held.</p></dialog>
 <footer>Loopback session. Private task content stays in the terminal. Reopen with <code>ahub ui</code> when your session expires.</footer>
 <script>
@@ -546,6 +550,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 /* BOARD_MODEL */
 /* ADAPTER_DISPLAY */
 /* NEEDS_MODEL */
+/* OVERVIEW_MODEL */
 /* ROADMAP_MODEL */
 /* OFFICE_MODEL */
 const officeView = (() => {
@@ -556,7 +561,7 @@ const officeView = (() => {
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
 const officeControl = document.getElementById('office-view'); officeControl.value = officeView.get(); document.getElementById('office-section').hidden = officeView.get() === 'off'; officeControl.addEventListener('change', () => { officeView.set(officeControl.value); if (lastSnapshot) render(lastSnapshot); else document.getElementById('office-section').hidden = officeView.get() === 'off'; applyDashboardView(); });
 // dashboard-navigation-begin
-const DASHBOARD_VIEWS = ['board','office','stream','agents','message','memory','settings','roadmap'];
+const DASHBOARD_VIEWS = ['board','office','stream','agents','message','memory','settings','roadmap','overview'];
 let currentView = dashboardCookie.get('agent-hub-view', 'board');
 if (!DASHBOARD_VIEWS.includes(currentView)) currentView = 'board';
 function applyDashboardView() {
@@ -2162,6 +2167,24 @@ async function roadmapSettleSuggestion(actionName, id, button) {
   catch (error) { if (!stopped) notice(error.message, true); }
   finally { if (button && !stopped) button.disabled = false; }
 }
+function renderOverview(snapshot) {
+  const block = snapshot && snapshot.overview;
+  if (!block || !Array.isArray(block.throughput)) { if (currentView === 'overview') update('overview-grid', 'loading', target => empty(target, 'Loading the overview...')); return; }
+  const pct = (rate) => rate === null || rate === undefined ? 'unknown' : Math.round(rate * 100) + '%';
+  const when = (time) => time === null || time === undefined ? 'unknown' : new Date(time).toISOString().replace('T', ' ').replace(/:[0-9.]+Z$/, '');
+  const card = (title, body) => { const box = el('div', '', 'overview-card'); box.append(el('h3', title)); box.append(body); return box; };
+  const list = (rows, empty_) => { const ul = el('ul'); if (!rows.length) ul.append(el('li', empty_)); for (const [a, b] of rows) { const li = el('li'); li.append(el('span', a), el('span', b)); ul.append(li); } return ul; };
+  const bars = (values, label) => { const wrap = el('div', '', 'overview-bars'); const max = values.reduce((top, value) => value > top ? value : top, 0) || 1; for (const value of values) { const bar = document.createElement('i'); bar.style.height = Math.round((value / max) * 100) + '%'; bar.title = label + ' ' + value; wrap.append(bar); } return wrap; };
+  $('overview-count').textContent = block.withheld ? block.withheld + ' private withheld' : '';
+  update('overview-grid', block, target => {
+    const weekly = el('div'); weekly.append(bars(block.throughput.map(w => w.done), 'done'), list([['proposed / done, 8 weeks', block.throughput.map(w => w.proposed + '/' + w.done).join(' ')]], ''));
+    target.append(card('Throughput per week', weekly));
+    target.append(card('Pulse per day', bars(block.pulse.map(d => d.events), 'events')));
+    target.append(card('Peer health, 30 days', list(block.health.map(h => [h.peer, 'first pass ' + pct(h.firstPass.rate) + ' of ' + h.firstPass.n + (h.firstPass.unknown ? ' (' + h.firstPass.unknown + ' unknown)' : '') + ', turn errors unknown']), 'No owned tasks.')));
+    target.append(card('Peer workload', list(block.workload.map(w => [w.peer, w.open + ' open: ' + Object.entries(w.states).map(([s, n]) => s + ' ' + n).join(', ')]), 'No open owned tasks.')));
+    target.append(card('Recent trouble', list(block.trouble.map(r => ['#' + r.task + ' ' + r.title, r.kind + ' ' + when(r.at)]), 'Nothing failed recently.')));
+  });
+}
 function renderRoadmap(snapshot) {
   const block = roadmapData(snapshot);
   if (!block) {
@@ -2393,6 +2416,7 @@ function render(snapshot) {
   if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), assignable, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); if (draftChoicesPending) { restoreDraft(true); draftChoicesPending = false; } }
   renderBoard(snapshot, peers, ids);
   renderRoadmap(snapshot);
+  renderOverview(snapshot);
   if (roadmapDetailId !== null) refreshRoadmapDetail();
   renderSources(snapshot.sources);
   renderApprovals(snapshot.permissions);
