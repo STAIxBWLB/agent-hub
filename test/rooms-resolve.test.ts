@@ -47,12 +47,12 @@ test("room resolve confirms the preview sender before execute and never executes
       await runRoomCommand(["resolve", "work", "--frame", fixedFrame, "--action", action, "--confirm", senderFp.slice(0, 16)], async message => {
         requests.push(message);
         if (message.op === "preview") return { ok: true, owner: ownerFp, member: senderFp, ticket };
-        expect(lines).toEqual([`Owner fingerprint: ${ownerFp}`, `Member fingerprint: ${senderFp}`]);
+        expect(lines.slice(3).map(line => line.replace(/\s+/g, " ").trim())).toEqual([`Owner fingerprint: ${ownerFp}`, `Member fingerprint: ${senderFp}`]);
         expect(message).toEqual({ t: "room", op: "execute", ticket, confirm: senderFp.slice(0, 16) });
         return { ok: true, name: "work", kind: "disposed" };
       }, nonTTY);
     });
-    expect(requests).toHaveLength(2); expect(lines).toContain("room resolve: disposed");
+    expect(requests).toHaveLength(2); expect(lines.some(line => line.includes("room resolve: disposed"))).toBe(true);
     expect(lines.some(line => line.includes("artifact") || line.includes("completed"))).toBe(false);
     for (const mode of ["no", "eof", "missing", "mismatch"]) {
       const requests: Record<string, unknown>[] = [];

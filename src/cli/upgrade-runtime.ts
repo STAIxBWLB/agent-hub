@@ -32,6 +32,7 @@ import { recoveryLock } from "../hub/recovery-store.ts";
 import { decodeRestoreReceipt, restoreTransition, type RestoreReceipt, type RestoreEvidence, type RestoreTransition } from "./upgrade-restore-state.ts";
 import { RecoveryDeferredHubError } from "../hub/deferred-hub.ts";
 import { RecoveryPreservationError, RecoveryPresentationError, type RecoveryNativeCause } from "./upgrade-presentation-data.ts";
+import { warnLine } from "./warn-line.ts";
 
 // #489 H4: the reconnect, unmanaged reconnect, control request, terminal idle and shutdown waits are settings now (`recovery.*`, src/hub/operational-settings.ts), read by `readRecoveryWaits` at the start of
 // each wait. Their defaults are the constants that stood here: an unmanaged Claude's plugin retries with a backoff of at most 30 s and three of those bound its reconnect wait (#206, 90 s); managed TUI startup
@@ -849,7 +850,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       await control(p, "release", id, instance);
       if (previous.state === "ready" && previous.bookmark.operationId !== id) {
         try { retireRecoveryContinuity(p.stateDir, { projectId: p.id, projectRoot: p.root, operationId: previous.bookmark.operationId, digest: previous.digest }, "recovery_released"); }
-        catch { console.error("Pi continuity retirement is unconfirmed after successful recovery release; inspect the retained bookmark before another automatic start"); }
+        catch { warnLine("Pi continuity retirement is unconfirmed after successful recovery release: inspect the retained bookmark before another automatic start"); }
       }
     },
     closeTerminals: async (planned, progress, op, save) => {

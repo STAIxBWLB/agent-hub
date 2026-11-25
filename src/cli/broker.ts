@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { BrokerStore, BrokerStoreError } from "../broker/store.ts";
 import { decodeBase64url, RoomCryptoError } from "../rooms/crypto.ts";
 import { startBroker, BrokerServerError, type BrokerOptions } from "../broker/server.ts";
+import { warnLine } from "./warn-line.ts";
 
 export const BROKER_USAGE = "usage: ahub broker serve [--hostname <host>] [--port <0..65535>] [--public-url <ws[s]://host/>] [--owner <fingerprint>]... [--state-dir <dir>] | broker room drop <room> --yes [--state-dir <dir>]";
 export function brokerOptions(args: readonly string[], stateDir: string): BrokerOptions {
@@ -45,7 +46,7 @@ export async function runBrokerCommand(args: readonly string[], stateDir: string
   const options = brokerOptions(args, stateDir);
   const broker = await startBroker(options);
   console.log(`broker listening at ${broker.publicUrl} (ciphertext relay; application delivery is not acknowledged here)`);
-  const stop = () => { void broker.stop().catch(() => { process.exitCode = 1; console.error("broker: stop failed"); }); };
+  const stop = () => { void broker.stop().catch(() => { process.exitCode = 1; warnLine("broker: stop failed"); }); };
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
   try { await broker.closed; }
   finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }

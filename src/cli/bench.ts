@@ -13,6 +13,7 @@ import { processSignature } from "../pi/process-signature.ts";
 import { loadConfig } from "../hub/daemon.ts";
 import { addonState, detectTooling, type Addon, type AddonName } from "../hub/tooling.ts";
 import { VERSION } from "../version.ts";
+import { warnLine } from "./warn-line.ts";
 
 /** What the runner needs from the world, so tests can drive it without a terminal. */
 export interface BenchIo {
@@ -65,7 +66,7 @@ export const defaultIo = (stateDir: string, cwd: string, peer?: string): BenchIo
       // ours) is the group killed outright; any other refusal (not provably ours, an unreadable process table) leaves
       // it alone and says so. A leader start-time record at spawn would let stopOwnedProcess sweep it itself.
       if (/still has members \(/.test(error.message)) try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ }
-      else console.error(`  bench: a command's process group could not be stopped and may still run in the tree (${error.message})`);
+      else warnLine(`bench: a command's process group could not be stopped and may still run in the tree: ${error.message}`);
     });
     return { code: timedOut || interrupted ? null : code ?? null, timedOut, interrupted };
   },

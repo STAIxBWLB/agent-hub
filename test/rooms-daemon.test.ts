@@ -153,7 +153,7 @@ test("saying No leaves an enrollment invite unconsumed and its roster uninstalle
     console.log = (...values: unknown[]) => { lines.push(values.map(String).join(" ")); };
     try {
       await expect(runRoomCommand(mode === "mismatch" ? [...args, "--confirm", wrong] : args, message => { sent.push(message); return client.request(message); }, { isTTY: () => mode === "no", answer: async prompt => {
-        expect(lines).toHaveLength(2); expect(lines[0]).toStartWith("Owner fingerprint:"); expect(lines[1]).toStartWith("Member fingerprint:");
+        expect(lines).toHaveLength(5); expect(lines[3]).toMatch(/^ {2}Owner fingerprint: /); expect(lines[4]).toMatch(/^ {2}Member fingerprint: /);
         expect(prompt).toContain("[y/N]"); return "n";
       } })).rejects.toThrow(mode === "no" ? "not confirmed" : "confirmation");
     } finally { console.log = original; }

@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { atomicPrivateJSON } from "../hub/recovery-store.ts";
 import type { ControlClient } from "../hub/control-client.ts";
+import { warnLine } from "./warn-line.ts";
 
 /** The only terminal commands used by this adapter. Keep this list in sync with Orca's public CLI. */
 export type OrcaTerminalCommand = "list" | "show" | "wait" | "close" | "create";
@@ -544,7 +545,7 @@ export function terminalLaunchCandidate(value: unknown, projectRoot: string, sta
 /** Old daemons may launch the TUI, but cannot turn a pre-attach candidate into recovery authority. */
 export async function registerTerminalLaunch(client: Pick<ControlClient, "features" | "request">, row: RecordedTerminalLaunch, operationId?: string): Promise<void> {
   if (!client.features.includes("terminal_owner")) {
-    console.error("terminal launcher is unrecorded; upgrade the running hub for managed terminal recovery");
+    warnLine("terminal launcher is unrecorded: upgrade the running hub for managed terminal recovery", "ahub upgrade");
     return;
   }
   const result = await client.request({ t: "terminal_launch", launch: row, ...(operationId ? { operationId } : {}) });

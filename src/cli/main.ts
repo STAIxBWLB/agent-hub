@@ -307,7 +307,7 @@ function audit(outcome: "run" | "refused" | "invalid"): void {
   try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, outcome, cmd === "answer" && args.includes("--instructed")); }
   catch {
     if (delegatedPeer) fail("live-test delegation audit unavailable; nothing was executed");
-    console.error("ahub: CLI audit could not be recorded (outbox unavailable or full)");
+    warn("CLI audit could not be recorded: outbox unavailable or full");
   }
 }
 if (identity.role === "invalid") { audit("invalid"); fail(`${identity.reason}; use ahub console or a terminal with no agent markers`); }
@@ -573,7 +573,7 @@ async function orphanDoctor(kill: boolean, options: ReturnType<typeof outputOpti
   else printOutput(renderOrphans(orphans, options.columns, Date.now(), kill), options.color);
   let failed = 0;
   const diagnostic = (text: string) => options.json
-    ? console.error(paint([{ text }], false))
+    ? warn(text)
     : printOutput(wrap(text, options.columns ?? Infinity).map(text => [{ text }]), options.color);
   if (kill) for (const { project, pids } of orphans) for (const pid of pids) if (!(await killOrphan(pid, project.root, diagnostic))) failed++;
   if (failed) fail(`${failed} orphaned hub process(es) could not be stopped`);
@@ -601,8 +601,8 @@ function fail(message: string, refusalAudited=false, authorityRefused?:boolean, 
   process.exit(failureExitCode(message));
 }
 function operationalIncomplete(result: {complete?:boolean;incompleteReason?:unknown;truncated?:boolean}, history: "log"|"event"): void {
-  if(result.complete===false)console.error(`ahub: operational output is incomplete: ${typeof result.incompleteReason==="string"?terminalText(result.incompleteReason).replace(/[\r\n]+/g," ").slice(0,200):"public privacy or history coverage unavailable"}`);
-  else if(result.truncated)console.error(`ahub: operational ${history} history is truncated`);
+  if(result.complete===false)warn(`operational output is incomplete: ${typeof result.incompleteReason==="string"?terminalText(result.incompleteReason).replace(/[\r\n]+/g," ").slice(0,200):"public privacy or history coverage unavailable"}`);
+  else if(result.truncated)warn(`operational ${history} history is truncated`);
 }
 
 async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false, connection?: ControlClient, timeoutMs?: number): Promise<string> {
@@ -618,7 +618,7 @@ async function taskOp(op: string, a: Record<string, unknown>, throwOnError = fal
       if(operationalAuditReady ? res.authorityRefused!==false : res.authorityRefused===true)audit("refused"); // a domain error is not a refusal (#1547)
       // #711: an agent shell refused something only the person may do is told why it counts as an agent. The refusal and the authority stay as they were.
       const cause = agentShellCause(identity, String(res.error));
-      if (cause) console.error(`ahub: ${res.error}\n${cause}`), process.exit(1);
+      if (cause) console.error(errorLines(`${res.error}\n${cause}`, undefined, !!process.stderr.isTTY, asciiMarkers(process.env, process.argv.includes("--ascii"))).join("\n")), process.exit(1);
       fail(res.error,res.refusalAudited===true,res.authorityRefused);
     }
     return res.text;
@@ -693,7 +693,7 @@ function spawnRecovery(operation: RecoveryOperation, quiet = false, presentation
   const child = spawn(process.execPath, [join(operation.sourceRoot, "src/cli/main.js"), ...liveTestArgs, "recovery-run", operation.id], {
     cwd, detached: true, stdio: "ignore", env: { ...process.env, AGENTHUB_RECOVERY_OPERATION: operation.id, ...(conductorPeer ? { AGENTHUB_PEER_ID: conductorPeer, AGENTHUB_RECOVERY_CONDUCTOR: conductorPeer } : {}) },
   });
-  child.on("error", () => console.error(`runner launch failed; use ${recoveryCommand(operation, "resume")}`));
+  child.on("error", () => warn("runner launch failed", recoveryCommand(operation, "resume")));
   child.unref();
   // #215: the operation's own coordinator, which has every recovery command; the global ahub may be older mid-upgrade.
   if (!quiet) {
@@ -859,13 +859,13 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     process.on("SIGINT", () => {});
     const code = await new Promise<number>((resolve) => {
       const child = spawn(process.execPath, argv, { cwd, stdio: "inherit", env: { ...process.env, AGENTHUB_UPGRADE_HANDOVER: "1" } });
-      child.on("error", (error) => { console.error(`ahub: cannot run bun x: ${error.message}`); resolve(1); });
+      child.on("error", (error) => { warn(`cannot run bun x: ${error.message}`); resolve(1); });
       child.on("close", (status) => resolve(status ?? 1));
     });
     process.exit(code);
   }
   if (kind === "upgrade" && await stoppedUpgrade(to!, allStopped, display, yes, dry)) return;
-  if (kind === "upgrade") console.error("ahub: Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode. To keep ACP: ahub settings set peers.kimi.start_mode headless");
+  if (kind === "upgrade") warn("Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode", "ahub settings set peers.kimi.start_mode headless");
   if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io), display.options);
   const plan = await makeUpgradePlan(kind, to ?? VERSION, cwd, undefined, conductorPeer);
   if (conductorPeer) await preflightConductorRecovery(plan, conductorPeer);
@@ -874,8 +874,8 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   // fresh start in them. `--json` keeps the document and the stderr lines (#206) exactly as they were.
   if (display.json) {
     if (!jsonApply) console.log(JSON.stringify(plan, null, 2));
-    for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
-    for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);
+    for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) warn(`${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
+    for (const p of plan.projects) for (const peer of p.freshStart ?? []) warn(`${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);
   } else printRecovery(renderUpgradePlan(plan, VERSION, display.options, yes && !dry));
   const blockers = [...plan.blockers, ...plan.projects.flatMap((p) => p.blockers.map((b) => `${p.project.id}: ${b}`))];
   if (display.json) for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
@@ -1017,7 +1017,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         const formatting = recoveryFormatting(coordinator, display.options);
         const code = await new Promise<number>(resolve => {
           const child = spawn(process.execPath, [coordinator, "recovery", "reattach", selected.id, selected.peer, ...formatting], { cwd, stdio: display.json ? ["inherit", "ignore", "inherit"] : "inherit", env: process.env });
-          child.on("error", () => { console.error(`ahub: coordinator could not start; ${recoveryCommand(operation, "status")}`); resolve(1); });
+          child.on("error", () => { warn("coordinator could not start", recoveryCommand(operation, "status")); resolve(1); });
           child.on("close", status => resolve(status ?? 1));
         });
         process.exitCode = code;
@@ -1194,7 +1194,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         url = res.url;
       } finally { hub.close(); }
     }
-    if (settings) console.error("Settings session: for 15 minutes this dashboard session may change permission modes, routing and start settings.");
+    if (settings) warn("Settings session: for 15 minutes this dashboard session may change permission modes, routing and start settings");
     if (args.includes("--no-open")) return console.log(url);
     const opener = process.platform === "darwin" ? "open" : "xdg-open";
     const opened = spawnSync(opener, [url], { stdio: "ignore", timeout: 10_000 });
@@ -1313,7 +1313,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         result = await runInitPrompt({ ask, print: line => console.log(terminalText(line)) },
           { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), machineResearch: initResearchDefault(cwd, initMachine?.researchEnabled), installedPeers: installedPeers(), packs: [...loadPacks(cwd).packs.keys()], discoverChecks: async () => (await discoverInitChecks(cwd)).names, shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
       } finally { rl.close(); }
-      if (!result.ok) { console.error(`ahub init: ${result.reason === "refused" ? result.message : result.reason === "interrupted" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === "refused" ? 1 : 0; return; }
+      if (!result.ok) { if (result.reason === "refused") console.error(errorLines(`init: ${result.message}`, undefined, !!process.stderr.isTTY, asciiMarkers(process.env, process.argv.includes("--ascii"))).join("\n")); else warn(`init: ${result.reason === "interrupted" ? `interrupted: ${result.message}` : result.message}`); process.exitCode = result.reason === "refused" ? 1 : 0; return; }
       requestedProfile = result.answers.profile; request = result.answers.request; asked = Object.keys(request.values).length > 0; shadow = result.answers.shadow; releaseGuard = result.answers.releaseGuard;
     }
     request = withInitResearch(cwd, request, initMachine?.researchEnabled);
@@ -1327,7 +1327,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const defaults = readAutonomyDefaults(hubHome(), [cwd]);
       const inherit = inheritAutonomy ? autonomyInheritanceChange(cwd, defaults.enabled, request.autonomy) : undefined;
       if (inherit) plan.push(inherit);
-      if (defaults.notice) console.error(defaults.notice);
+      if (defaults.notice) warn(defaults.notice);
       // #1627 A: the hub-owned jcode home is part of the plan, never written by a dry run.
       const homePlan = args.includes("--no-jcode-home") ? undefined : initJcodeHome();
       if (homePlan?.applicable) for (const line of homePlan.lines) plan.push({ action: homePlan.plan?.exists ? "modify" : "create", path: homePlan.plan!.home, reason: line.trim() });
@@ -1347,15 +1347,15 @@ const commands: Record<string, () => Promise<void> | void> = {
       const homeInit = initJcodeHome();
       if (homeInit.applicable && homeInit.plan) {
         for (const line of homeInit.lines) console.log(terminalText(line));
-        if (homeInit.switchHome) { try { writeJcodeHomeConfig(cwd, homeInit.plan.home); console.log(`jcode_home now points at ${homeInit.plan.home}`); } catch (error) { console.error((error as Error).message); process.exitCode = 1; } }
+        if (homeInit.switchHome) { try { writeJcodeHomeConfig(cwd, homeInit.plan.home); console.log(`jcode_home now points at ${homeInit.plan.home}`); } catch (error) { warn((error as Error).message); process.exitCode = 1; } }
         if (!homeInit.plan.exists) {
-          if (jcodeHomeBlocked(homeInit.plan.home)) console.error(`jcode home ${homeInit.plan.home} is not a plain directory; nothing was created there`);
+          if (jcodeHomeBlocked(homeInit.plan.home)) warn(`jcode home ${homeInit.plan.home} is not a plain directory: nothing was created there`);
           else {
             try {
               applyJcodeHome(homeInit.plan);
               const installed = installSkillsInJcodeHome(join(import.meta.dir, "..", "..", "plugins", "agent-hub", "skills"), homeInit.plan.home);
               console.log(`wrote ${homeInit.plan.home}; hub skills: ${installed.filter(entry => entry.action === "install" || entry.action === "replace").length} installed`);
-            } catch (error) { console.error(`jcode home was not fully set up: ${(error as Error).message}`); process.exitCode = 1; }
+            } catch (error) { warn(`jcode home was not fully set up: ${(error as Error).message}`); process.exitCode = 1; }
           }
         }
       }
@@ -1398,7 +1398,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!args.includes("--no-agents") && !liveTest && caller.role === "console" && identity.role === "console" && !process.env.AGENTHUB_RECOVERY_OPERATION) {
       try {
         const chosen = effectiveStartAgents(cwd, loadConfig(cwd).start.agents, hubHome(), [cwd]);
-        if (chosen.notice) console.error(chosen.notice);
+        if (chosen.notice) warn(chosen.notice);
         for (const line of await startProjectAgents({ root: cwd, stateDir }, chosen.agents)) console.log(terminalText(line));
       } catch (error) { warn(`default agents were not started: ${terminalText((error as Error).message)}`); }
     }
@@ -1631,7 +1631,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (options.json) return console.log(JSON.stringify(result.deliveries, null, 2));
         printOutput(renderQueue(result.deliveries, options.columns, Date.now()), options.color);
         // #1096: rows a resolution already settled are history, hidden by default; say how many and how to see them, on stderr so a pipe of the table stays clean.
-        if (result.hiddenSettled) console.error(`${result.hiddenSettled} settled deliver${result.hiddenSettled === 1 ? "y" : "ies"} hidden (already resolved); ahub queue list --all shows them`);
+        if (result.hiddenSettled) warn(`${result.hiddenSettled} settled deliver${result.hiddenSettled === 1 ? "y" : "ies"} hidden (already resolved); ahub queue list --all shows them`);
         return;
       }
       if (operation === "discard") {
@@ -1880,7 +1880,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (liveTest && !["list", "status"].includes(args[0] ?? "")) fail(LIVE_TEST_PERSON_REFUSAL);
     const { runRoomCommand, roomCommandError } = await import("./room.ts");
     const hub = await connect();
-    try { await runRoomCommand(args, message => hub.request(message)); }
+    try { const look = outputOptions([]); await runRoomCommand(args, message => hub.request(message), undefined, { columns: look.columns, color: look.color, ascii: asciiMarkers(process.env, false) }); }
     catch (error) { fail(roomCommandError(error)); }
     finally { hub.close(); }
   },
@@ -1925,7 +1925,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         origin = absolute; kind = "file";
       }
     } catch (error) { return fail(`cannot register ${isUrl ? "that URL" : target}: ${(error as Error).message}`); }
-    const projections = new TextProjections({ cwd, stateDir, config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log: line => console.error(line) });
+    const projections = new TextProjections({ cwd, stateDir, config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log: line => warn(line) });
     const extension = /\.[A-Za-z0-9]{1,16}$/.exec(isUrl ? new URL(origin).pathname : origin)?.[0] ?? "";
     let converted: ProjectedText | undefined;
     const verdict = screenRegistration({ bytes, kind, ...(absolute ? { path: absolute, typedPath: resolve(cwd, target) } : {}) }, {
@@ -2088,7 +2088,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       catch (error) {
         if (byColumn) fail("board column dependency context unavailable; retry with a complete snapshot");
         allTasks = null;
-        console.error(paint([{ text: `ahub: board dependency stages unavailable; showing filtered rows without stages: ${String((error as Error).message).replace(/[\n\t]/g, " ")}` }], false));
+        warn(`dependency stages unavailable; showing filtered rows without stages: ${String((error as Error).message).replace(/[\n\t]/g, " ")}`);
       }
     }
     if (byColumn) {
@@ -3324,7 +3324,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // "changed no files" is true of the files the hub observes and false of the turn: with a submodule dirty it says what it can and cannot see instead.
     console.log((first.restore.length ? `turn ${id} changed:\n  ${first.restore.join("\n  ")}` : unobserved.length ? `turn ${id} changed no files the hub can restore` : `turn ${id} changed no files`) + unobservedNote);
     console.log("(every change made in the project during the turn counts as its own, including any by Claude or by you)");
-    const projections = new TextProjections({ cwd: undoCwd, stateDir, config: undoConfig.text_projection ?? {}, deny: undoConfig.local.deny, readAllow: undoConfig.local.read_allow, log: line => console.error(line) });
+    const projections = new TextProjections({ cwd: undoCwd, stateDir, config: undoConfig.text_projection ?? {}, deny: undoConfig.local.deny, readAllow: undoConfig.local.read_allow, log: line => warn(line) });
     const preview = projectedDiff({ repo, from: endTree, to: startTree, paths: first.restore, projections, deny: undoConfig.local.deny, privatePath: path => matchesPolicy(undoCwd, join(repo.top, path), undoConfig.pii?.paths ?? []) });
     if (preview) console.log(terminalText("Undo preview (end snapshot to start snapshot):\n" + preview));
 
@@ -3773,7 +3773,7 @@ async function runConductorCommand(): Promise<void> {
         const external = selection.peer !== cmd && (peerConfig.declaredExternalInstances?.some(row => row.id === selection.peer && row.kind === cmd)
           || projectCatalog.externalDefinitions.some(definition => definition.kind === cmd));
         if (external) fail("external module instances require an explicit person start");
-        await requireActiveConfiguredAcp(hub, cmd, selection.peer, text => console.error(text));
+        await requireActiveConfiguredAcp(hub, cmd, selection.peer, text => warn(text));
         console.log(await taskOp("hub_peer_start", { peer: selection.peer, mode: "headless" }, false, hub, 70_000));
       } finally { hub.close(); }
       return;
