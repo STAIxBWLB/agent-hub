@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board, TASK_REASONS } from "../src/hub/board.ts";
+import { ROLE_TEXT } from "../src/hub/hub-tools.ts";
 import { compactRow } from "../src/hub/task-list-page.ts";
 import { sdlcMetrics, type MetricTask } from "../src/hub/sdlc-metrics.ts";
 import { loadRouting } from "../src/hub/routing.ts";
@@ -48,6 +49,14 @@ test("AC2: parallel siblings with overlapping paths are refused before the task 
     await tasks.propose("codex", { title: "another planner", class: "implement", reason: "parallel", refs: { paths: ["docs/roles.md"] }, backlog: true });
     expect(board.list().length).toBe(4);
   } finally { done(); }
+});
+
+test("AC3: the planner role text grows by at most 400 characters", () => {
+  const before = "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.";
+  const grown = ROLE_TEXT.planner!.length - before.length;
+  expect(ROLE_TEXT.planner!.startsWith(before)).toBe(true);
+  expect(grown).toBeGreaterThan(0);
+  expect(grown).toBeLessThanOrEqual(400);
 });
 
 test("AC4: metrics group task count, review rounds and tokens by reason, with unset as its own group", () => {
