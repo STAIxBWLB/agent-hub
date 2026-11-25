@@ -201,22 +201,35 @@ export const renderSdlcExplain = (reply: unknown, columns?: number, _now = Date.
 // ---- sdlc queue / release -----------------------------------------------------------------------------------------
 
 /** `ahub sdlc queue <repo>`: the merge order, then each open PR's gates. */
-export function renderSdlcQueue(reply: unknown, columns?: number, _now = Date.now()): Span[][] {
+/** The header line does not wrap: a name that fits the terminal stays in it, a longer one moves to a wrapped row under a short header. */
+function titled(columns: number | undefined, ascii: boolean, lead: string, name: string): LayoutReport {
+  const report = new LayoutReport(columns, ascii);
+  if (columns === undefined || textWidth(` ahub ${lead} ${name}`) <= columns) return report.header("ahub", `${lead} ${name}`);
+  return report.header("ahub", lead).note(name, "value");
+}
+export function renderSdlcQueue(reply: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const report = (reply as any)?.report ?? {};
   const rows = list(report.rows);
-  const out: Line[] = [...heading(`Merge queue ${report.repo ?? "unknown repository"}`, columns)];
-  if (report.complete === false) out.push(...para("incomplete: a read failed or the board changed during it; do not merge from this order", columns, "attention"));
-  if (report.truncated) out.push(...para("truncated: more open PRs than one read covers", columns, "attention"));
-  if (!rows.length) return [...out, [s("no open PR is linked to a task", "muted")]];
-  out.push(...pair("order", list(report.order).length ? list(report.order).map((pr: number) => `#${pr}`).join(", ") : "none decided", columns, 9));
-  if (list(report.unordered).length) out.push(...pair("unordered", list(report.unordered).map((pr: number) => `#${pr}`).join(", "), columns, 9, "attention"));
-  out.push(blank, ...grid(["PR", "TASKS", "READY", "HEAD", "AFTER"], rows.map(row => [s(`#${row.pr}`, "issueRef"), s(list(row.tasks).map((id: number) => `#${id}`).join(" ") || "-", "taskRef"), s(yes(row.ready), readyTone(row.ready)), s(row.private ? "private" : short(row.head)), s(list(row.after).map((pr: number) => `#${pr}`).join(" ") || "-")]), columns));
-  for (const row of rows) {
-    if (!list(row.blockers).length && !row.findings?.openImportant) continue;
-    out.push(blank, [s(`#${row.pr}`, "issueRef")], ...bullets("blockers", list(row.blockers), columns, "attention", "  "));
+  const out = titled(columns, ascii, "Merge queue", String(report.repo ?? "unknown repository"));
+  if (report.complete === false || report.truncated) {
+    out.section("Caution");
+    if (report.complete === false) out.bullet("warn", "incomplete: a read failed or the board changed during it; do not merge from this order");
+    if (report.truncated) out.bullet("warn", "truncated: more open PRs than one read covers");
   }
-  if (list(report.conflicts).length) out.push(blank, ...bullets("file conflicts", list(report.conflicts).map((c: any) => `#${c.left} and #${c.right} share ${plural(c.files ?? 0, "file")} (${c.order === "person_required" ? "the person orders them" : "dependency order"})`), columns, "attention"));
-  return out;
+  if (!rows.length) return out.note("no open PR is linked to a task").lines();
+  const prs = (items: unknown) => list(items).map((pr: number) => `#${pr}`).join(", ");
+  out.section("Order").kv([["order", list(report.order).length ? prs(report.order) : "none decided"], ...(list(report.unordered).length ? [["unordered", prs(report.unordered)] as const] : [])]);
+  out.section("Pull requests", String(rows.length)).append(grid(["PR", "TASKS", "READY", "HEAD", "AFTER"], rows.map(row => [s(`#${row.pr}`, "issueRef"), s(list(row.tasks).map((id: number) => `#${id}`).join(" ") || "-", "taskRef"), s(yes(row.ready), readyTone(row.ready)), s(row.private ? "private" : short(row.head)), s(list(row.after).map((pr: number) => `#${pr}`).join(" ") || "-")]), columns));
+  const blocked = rows.filter(row => list(row.blockers).length || row.findings?.openImportant);
+  if (blocked.length) {
+    out.section("Blockers", String(blocked.length));
+    for (const row of blocked) { out.note(`#${row.pr}`, "value"); for (const item of list(row.blockers)) out.bullet("warn", terminalText(item), true); }
+  }
+  if (list(report.conflicts).length) {
+    out.section("File conflicts", String(list(report.conflicts).length));
+    for (const c of list(report.conflicts) as any[]) out.bullet("warn", `#${c.left} and #${c.right} share ${plural(c.files ?? 0, "file")} (${c.order === "person_required" ? "the person orders them" : "dependency order"})`);
+  }
+  return out.lines();
 }
 /** One line for the audit's unit states, shared by `audit show` and the release readback. */
 function auditStates(a: any): string {
@@ -224,49 +237,57 @@ function auditStates(a: any): string {
   return `${c.covered ?? 0} covered${a?.prior ? ` (${a.prior} prior)` : ""}, ${c.deferred ?? 0} deferred, ${c.out_of_scope ?? 0} out of scope, ${c.planned ?? 0} planned`;
 }
 /** `ahub sdlc audit show`: the ledger's counts first, then each unit, then the findings. An open important finding shows its id and status only, unless the caller is the person. */
-export function renderSdlcAudit(reply: unknown, columns?: number, _now = Date.now()): Span[][] {
+export function renderSdlcAudit(reply: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const a = (reply as any)?.audit;
-  if (!a) return [...heading("Security audit", columns), ...pair("audits", "none started: run ahub sdlc audit start", columns, 10, "muted")];
-  const out: Line[] = [...heading(`Security audit ${a.audit} (task #${a.task})`, columns)];
-  out.push(...pair("source", `${short(a.ref)}, profile ${a.profile}${a.scoped ? ", scoped" : ""}`, columns, 10), ...pair("coverage", `${a.partial ? "partial: " : ""}${auditStates(a)}`, columns, 10, a.partial || a.counts?.planned ? "attention" : undefined));
+  if (!a) return new LayoutReport(columns, ascii).header("ahub", "Security audit").section("Audit").kv([["audits", "none started: run ahub sdlc audit start"]]).lines();
+  const out = titled(columns, ascii, "Security audit", `${a.audit} (task #${a.task})`);
   const f = a.findings ?? {};
-  out.push(...pair("findings", `${f.verified ?? 0} verified, ${f.candidate ?? 0} candidate (unverified), ${f.needsValidation ?? 0} needs validation, ${f.rejected ?? 0} rejected, ${f.settled ?? 0} settled, ${f.other ?? 0} other`, columns, 10, f.candidate ? "attention" : undefined));
-  for (const u of list(a.units)) out.push(...pair(String(u.state).replace("_", " "), `${u.unit}${u.prior ? ` (prior audit ${u.prior.audit})` : ""}${u.reason ? `: ${u.reason}` : ""}`, columns, 14, u.state === "planned" ? "attention" : undefined, "  "));
-  for (const item of list(a.items)) out.push(...pair(String(item.status), `${item.id} (${item.severity}, ${item.disposition})${item.withheld ? ", details withheld" : item.path ? ` ${item.path}` : ""}`, columns, 14, item.status === "candidate" ? "attention" : undefined, "  "));
-  if (a.withheld) out.push(...pair("withheld", `${a.withheld} open important finding${a.withheld === 1 ? "" : "s"}: boundary text is shown to the person only`, columns, 10, "muted"));
-  return out;
+  out.section("Summary").kv([["source", `${short(a.ref)}, profile ${a.profile}${a.scoped ? ", scoped" : ""}`], ["coverage", `${a.partial ? "partial: " : ""}${auditStates(a)}`],
+    ["findings", `${f.verified ?? 0} verified, ${f.candidate ?? 0} candidate (unverified), ${f.needsValidation ?? 0} needs validation, ${f.rejected ?? 0} rejected, ${f.settled ?? 0} settled, ${f.other ?? 0} other`]]);
+  if (list(a.units).length) {
+    out.section("Units", String(list(a.units).length));
+    for (const u of list(a.units) as any[]) out.bullet(u.state === "planned" ? "warn" : "ok", `${String(u.state).replace("_", " ")}: ${terminalText(u.unit)}${u.prior ? ` (prior audit ${u.prior.audit})` : ""}${u.reason ? `: ${terminalText(u.reason)}` : ""}`);
+  }
+  if (list(a.items).length) {
+    out.section("Findings", String(list(a.items).length));
+    for (const item of list(a.items) as any[]) out.bullet(item.status === "candidate" ? "warn" : "ok", `${String(item.status)}: ${terminalText(item.id)} (${item.severity}, ${item.disposition})${item.withheld ? ", details withheld" : item.path ? ` ${terminalText(item.path)}` : ""}`);
+  }
+  if (a.withheld) out.note(`${a.withheld} open important finding${a.withheld === 1 ? "" : "s"}: boundary text is shown to the person only`);
+  return out.lines();
 }
 /** `ahub sdlc release <repo> [live-issue...]`: source, document, issue and authorization evidence, then what blocks the release. */
-export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.now()): Span[][] {
+export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.now(), ascii = false): Span[][] {
   const r = (reply as any)?.report ?? {};
-  const out: Line[] = [...heading(`Release readiness ${r.repo ?? "unknown repository"}`, columns)];
-  const w = 12;
-  out.push(...pair("version", r.version ?? (r.releasePolicy ? "undetermined" : "unknown"), columns, w), ...pair("head", short(r.head), columns, w), ...pair("tag", r.tag ? `${r.tag} at ${short(r.tagCommit)}` : "none", columns, w));
-  out.push(...pair("source ready", yes(r.sourceReady), columns, w, readyTone(r.sourceReady)), ...pair("native", String(r.native ?? "unverified"), columns, w, "attention"), ...pair("release ready", yes(r.ready), columns, w, readyTone(r.ready)));
-  out.push(...pair("commits", `${plural(list(r.commits).length, "commit")} since the last tag`, columns, w));
-  if (list(r.mergedPrs).length) out.push(...pair("merged PRs", list(r.mergedPrs).map((p: any) => `#${p.pr}`).join(", "), columns, w));
+  const out = titled(columns, ascii, "Release readiness", String(r.repo ?? "unknown repository"));
+  out.section("Source").kv([["version", r.version ?? (r.releasePolicy ? "undetermined" : "unknown")], ["head", short(r.head)], ["tag", r.tag ? `${r.tag} at ${short(r.tagCommit)}` : "none"],
+    ["commits", `${plural(list(r.commits).length, "commit")} since the last tag`], ...(list(r.mergedPrs).length ? [["merged PRs", list(r.mergedPrs).map((p: any) => `#${p.pr}`).join(", ")] as const] : [])]);
+  out.section("Readiness").kv([["source ready", yes(r.sourceReady)], ["native", String(r.native ?? "unverified")], ["release ready", yes(r.ready)]]);
   const docs = r.documents;
-  if (r.releasePolicy?.docsSource === "none") out.push(blank, ...pair("documents", r.releasePolicy.authorization === "matched" ? "none (explicit exemption recorded)" : "none (configured exemption; no matching authorization)", columns, w, "muted"));
+  out.section("Documents");
+  if (r.releasePolicy?.docsSource === "none") out.kv([["documents", r.releasePolicy.authorization === "matched" ? "none (explicit exemption recorded)" : "none (configured exemption; no matching authorization)"]]);
   else {
-    out.push(blank, ...pair("documents", docs ? `${docs.fresh ? "fresh" : "not fresh"}, ${plural(docs.errors ?? 0, "error")}, ${plural(list(docs.documents).length, "document")}` : "not read", columns, w, docs?.fresh ? "success" : "attention"));
-    for (const d of list(docs?.documents)) if (d.state !== "fresh") out.push(...pair(d.state, `${d.path ?? "(path withheld)"}${d.dirty ? " (uncommitted changes)" : ""}`, columns, w, "attention", "  "));
+    out.kv([["documents", docs ? `${docs.fresh ? "fresh" : "not fresh"}, ${plural(docs.errors ?? 0, "error")}, ${plural(list(docs.documents).length, "document")}` : "not read"]]);
+    for (const d of list(docs?.documents) as any[]) if (d.state !== "fresh") out.bullet("warn", `${d.state}: ${terminalText(d.path ?? "(path withheld)")}${d.dirty ? " (uncommitted changes)" : ""}`);
   }
-  if (r.releasePolicy) out.push(...pair("release policy", `version ${r.releasePolicy.versionSource}, docs ${r.releasePolicy.docsSource}, authorization ${r.releasePolicy.authorization}`, columns, w, r.releasePolicy.authorization === "matched" ? "success" : "attention"));
-  if (list(r.liveIssues).length) out.push(blank, ...grid(["ISSUE", "STATE"], list(r.liveIssues).map((i: any) => [s(`#${i.id}`, "issueRef"), s(i.state, i.state === "closed" ? "success" : "attention")]), columns));
-  const a = r.authorization;
-  if (a) out.push(blank, ...pair("authorization", `${a.state}: version ${a.receipt?.version ?? "unknown"} at ${short(a.receipt?.commit)}, approved ${moment(a.receipt?.at, now)}`, columns, w, a.state === "matched" ? "success" : "attention"));
-  else out.push(blank, ...pair("authorization", r.releasePolicy ? `none recorded for ${r.releasePolicy.versionSource}: run ahub sdlc authorize-release <version>` : "none recorded: run ahub sdlc authorize-release <version>", columns, w, "muted"));
-  for (const t of list(r.trains)) out.push(...pair(`train #${t.release?.id ?? "?"}`, `${t.readiness?.trigger ?? "unknown"}${list(t.readiness?.blockers).length ? `, ${list(t.readiness.blockers).join("; ")}` : ""}`, columns, w, list(t.readiness?.blockers).length ? "attention" : undefined));
+  if (r.releasePolicy) out.kv([["release policy", `version ${r.releasePolicy.versionSource}, docs ${r.releasePolicy.docsSource}, authorization ${r.releasePolicy.authorization}`]]);
+  if (list(r.liveIssues).length) out.section("Live issues", String(list(r.liveIssues).length)).append(grid(["ISSUE", "STATE"], list(r.liveIssues).map((i: any) => [s(`#${i.id}`, "issueRef"), s(i.state, i.state === "closed" ? "success" : "attention")]), columns));
+  const au = r.authorization;
+  out.section("Authorization").kv([["authorization", au ? `${au.state}: version ${au.receipt?.version ?? "unknown"} at ${short(au.receipt?.commit)}, approved ${moment(au.receipt?.at, now)}`
+    : r.releasePolicy ? `none recorded for ${r.releasePolicy.versionSource}: run ahub sdlc authorize-release <version>` : "none recorded: run ahub sdlc authorize-release <version>"]]);
+  if (list(r.trains).length) {
+    out.section("Trains", String(list(r.trains).length));
+    for (const tr of list(r.trains) as any[]) out.bullet(list(tr.readiness?.blockers).length ? "warn" : "ok", `train #${tr.release?.id ?? "?"}: ${tr.readiness?.trigger ?? "unknown"}${list(tr.readiness?.blockers).length ? `, ${list(tr.readiness.blockers).join("; ")}` : ""}`);
+  }
   const sa = r.securityAudit;
-  if (sa) out.push(blank, ...pair("security audit", `${short(sa.ref)} ${sa.profile}${sa.partial ? " (partial)" : ""}: ${auditStates(sa)}${sa.findings?.candidate ? `, ${sa.findings.candidate} unverified candidate${sa.findings.candidate === 1 ? "" : "s"}` : ""}`, columns, w, sa.partial || sa.counts?.planned ? "attention" : undefined));
+  if (sa) out.section("Security audit").kv([["security audit", `${short(sa.ref)} ${sa.profile}${sa.partial ? " (partial)" : ""}: ${auditStates(sa)}${sa.findings?.candidate ? `, ${sa.findings.candidate} unverified candidate${sa.findings.candidate === 1 ? "" : "s"}` : ""}`]]);
   const rm = r.releaseMetrics;
   if (rm) {
-    const mean = (values: unknown[]) => { const known = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v)); return known.length ? span(known.reduce((a, b) => a + b, 0) / known.length) : "unknown"; };
-    out.push(blank, ...pair("releases", `${list(rm.intervals).length ? `interval ${mean(list(rm.intervals).map((i: any) => i.ms))} mean over ${plural(list(rm.intervals).length, "gap")}` : "interval unknown (needs two shipped releases with history)"}; lead time ${mean(list(rm.approvalToReleaseMs).map((x: any) => x.ms))} mean approval to release; hotfix rate ${percent(rm.hotfixRate)}${rm.hotfixCount === null || rm.hotfixCount === undefined ? "" : ` (${rm.hotfixCount})`}`, columns, w));
-    if (list(rm.unknown).length) out.push(...pair("unknown", `${plural(list(rm.unknown).length, "release")} without complete history: ${list(rm.unknown).map((id: number) => `#${id}`).join(", ")}`, columns, w, "attention", "  "));
+    const mean = (values: unknown[]) => { const known = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v)); return known.length ? span(known.reduce((x, y) => x + y, 0) / known.length) : "unknown"; };
+    out.section("Release history").kv([["releases", `${list(rm.intervals).length ? `interval ${mean(list(rm.intervals).map((i: any) => i.ms))} mean over ${plural(list(rm.intervals).length, "gap")}` : "interval unknown (needs two shipped releases with history)"}; lead time ${mean(list(rm.approvalToReleaseMs).map((x: any) => x.ms))} mean approval to release; hotfix rate ${percent(rm.hotfixRate)}${rm.hotfixCount === null || rm.hotfixCount === undefined ? "" : ` (${rm.hotfixCount})`}`],
+      ...(list(rm.unknown).length ? [["unknown", `${plural(list(rm.unknown).length, "release")} without complete history: ${list(rm.unknown).map((id: number) => `#${id}`).join(", ")}`] as const] : [])]);
   }
-  out.push(...bullets("blockers", list(r.blockers), columns, "attention"));
-  return out;
+  if (list(r.blockers).length) { out.section("Blockers", String(list(r.blockers).length)); for (const item of list(r.blockers)) out.bullet("warn", terminalText(item)); }
+  return out.lines();
 }
 
 // ---- sdlc metrics / costs -----------------------------------------------------------------------------------------
@@ -279,54 +300,53 @@ const SUMMARY_ROWS: [string, string, boolean][] = [
 ];
 const BAND_TONE: Record<string, Tone> = { ok: "success", log: "muted", diagnose: "attention", propose: "failure" };
 /** `ahub sdlc metrics [--since ...]`: times and counts from board history, the two approval rates, stalls and band tiers. */
-export function renderSdlcMetrics(result: unknown, columns?: number, now = Date.now()): Span[][] {
+export function renderSdlcMetrics(result: unknown, columns?: number, now = Date.now(), ascii = false): Span[][] {
   const m = result as any;
-  const out: Line[] = [...heading("SDLC metrics", columns)];
-  out.push(...pair("window", m?.since === null || m?.since === undefined ? "all recorded history" : `since ${moment(m.since, now)}`, columns, 10),
-    ...pair("tasks", `${m?.tasks ?? 0} counted${m?.withheldPrivate ? `, ${m.withheldPrivate} private withheld` : ""}`, columns, 10));
-  if (m?.securityScan && typeof m.securityScan === "object") {
-    out.push(...pair("security scan", Object.entries(m.securityScan).map(([source, value]) => `${source}: ${value === null ? "unknown" : value}`).join(", "), columns, 14));
-  }
+  const out = new LayoutReport(columns, ascii).header("ahub", "SDLC metrics");
+  out.section("Scope").kv([["window", m?.since === null || m?.since === undefined ? "all recorded history" : `since ${moment(m.since, now)}`], ["tasks", `${m?.tasks ?? 0} counted${m?.withheldPrivate ? `, ${m.withheldPrivate} private withheld` : ""}`],
+    ...(m?.securityScan && typeof m.securityScan === "object" ? [["security scan", Object.entries(m.securityScan).map(([source, value]) => `${source}: ${value === null ? "unknown" : value}`).join(", ")] as const] : [])]);
   const metrics = m?.metrics ?? {};
   const value = (n: unknown, time: boolean) => time ? span(n) : count(n);
-  out.push(blank, ...grid(["METRIC", "N", "UNKNOWN", "MEAN", "MEDIAN", "P90", "MAX"], SUMMARY_ROWS.map(([key, label, time]) => {
+  out.section("Times and counts").append(grid(["METRIC", "N", "UNKNOWN", "MEAN", "MEDIAN", "P90", "MAX"], SUMMARY_ROWS.map(([key, label, time]) => {
     const x = metrics[key] ?? {};
     return [s(label), s(count(x.n)), s(count(x.unknown), x.unknown ? "attention" : "muted"), s(value(x.mean, time)), s(value(x.median, time)), s(value(x.p90, time)), s(value(x.max, time))];
   }), columns));
-  out.push(blank, ...grid(["RATE", "N", "UNKNOWN", "VALUE"], [["first_pass_approval", "first-pass approval"], ["first_pass_check", "first-pass check"]].map(([key, label]) => {
+  out.section("Approval rates").append(grid(["RATE", "N", "UNKNOWN", "VALUE"], [["first_pass_approval", "first-pass approval"], ["first_pass_check", "first-pass check"]].map(([key, label]) => {
     const x = metrics[key!] ?? {};
     return [s(label), s(count(x.n)), s(count(x.unknown), x.unknown ? "attention" : "muted"), s(percent(x.rate), x.rate === null || x.rate === undefined ? "muted" : "number")];
   }), columns));
   // #1647: the split reasons, `unset` for tasks proposed without one.
   const reasons = Object.entries((m?.byReason ?? {}) as Record<string, { tasks?: number; reviewRounds?: number; tokens?: number | null }>);
-  if (reasons.length) out.push(blank, ...grid(["REASON", "TASKS", "REVIEW ROUNDS", "TOKENS"], reasons.map(([reason, x]) => [s(reason), s(count(x.tasks)), s(count(x.reviewRounds)), s(x.tokens === null || x.tokens === undefined ? "unknown" : count(x.tokens), x.tokens === null || x.tokens === undefined ? "muted" : "number")]), columns));
+  if (reasons.length) out.section("Split reasons", String(reasons.length)).append(grid(["REASON", "TASKS", "REVIEW ROUNDS", "TOKENS"], reasons.map(([reason, x]) => [s(reason), s(count(x.tasks)), s(count(x.reviewRounds)), s(x.tokens === null || x.tokens === undefined ? "unknown" : count(x.tokens), x.tokens === null || x.tokens === undefined ? "muted" : "number")]), columns));
   const st = m?.stalls;
-  if (st) out.push(blank, ...pair("stalls", `${st.open ?? 0} open${Object.keys(st.byKind ?? {}).length ? ` (${Object.entries(st.byKind).map(([k, n]) => `${k} ${n}`).join(", ")})` : ""}, ${st.doneWithoutWrites ?? 0} done without writes`, columns, 10, st.open ? "attention" : undefined));
-  if (m?.bands === "off" || m?.bands === undefined) out.push(...pair("bands", "off", columns, 10, "muted"));
+  if (st) out.section("Stalls").kv([["stalls", `${st.open ?? 0} open${Object.keys(st.byKind ?? {}).length ? ` (${Object.entries(st.byKind).map(([k, n]) => `${k} ${n}`).join(", ")})` : ""}, ${st.doneWithoutWrites ?? 0} done without writes`]]);
+  out.section("Bands");
+  if (m?.bands === "off" || m?.bands === undefined) out.kv([["bands", "off"]]);
   else {
-    out.push(blank, ...grid(["BAND", "TIER", "BASELINE", "LAST", "Z", "SUBJECT"], list(m.bands).map((b: any) => [s(String(b.metric).replaceAll("_", " ")), s(b.tier, BAND_TONE[b.tier] ?? undefined), s(count(b.baseline)), s(count(b.last)), s(count(b.z)), s(b.lastTask ? `${b.subject === "release" ? "release " : b.subject === "scan" ? "scan " : ""}#${b.lastTask}` : "-", "taskRef")]), columns));
-    for (const b of list(m.bands)) if (b.reason && b.tier !== "ok") out.push(...para(`${String(b.metric).replaceAll("_", " ")}: ${b.reason}`, columns, "muted", "  ", 2));
+    out.append(grid(["BAND", "TIER", "BASELINE", "LAST", "Z", "SUBJECT"], list(m.bands).map((b: any) => [s(String(b.metric).replaceAll("_", " ")), s(b.tier, BAND_TONE[b.tier] ?? undefined), s(count(b.baseline)), s(count(b.last)), s(count(b.z)), s(b.lastTask ? `${b.subject === "release" ? "release " : b.subject === "scan" ? "scan " : ""}#${b.lastTask}` : "-", "taskRef")]), columns));
+    for (const b of list(m.bands) as any[]) if (b.reason && b.tier !== "ok") out.note(`${String(b.metric).replaceAll("_", " ")}: ${terminalText(b.reason)}`);
   }
-  return out;
+  return out.lines();
 }
 /** `ahub sdlc costs [repo]`: review and CI cost of each linked merged PR, grouped by repository. */
-export function renderSdlcCosts(result: unknown, columns?: number, _now = Date.now()): Span[][] {
+export function renderSdlcCosts(result: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const c = result as any;
   const rows = list(c?.rows);
-  const out: Line[] = [...heading("SDLC costs", columns)];
-  if (!rows.length) out.push([s("no linked merged PR has cost evidence", "muted")]);
+  const out = new LayoutReport(columns, ascii).header("ahub", "SDLC costs");
+  if (!rows.length) out.note("no linked merged PR has cost evidence");
   const repos = [...new Set(rows.map(row => String(row.repo)))];
   for (const repo of repos) {
-    out.push(...(out.length > 1 ? [blank] : []), ...wrap(repo, room(columns), 2).map((line): Line => [s(line, "info")]), ...grid(["PR", "ROUNDS", "CI", "RERUNS", "FULL", "DELTA", "REVIEW", "UNK", "OK"], rows.filter(row => String(row.repo) === repo).map(row => [
+    const own = rows.filter(row => String(row.repo) === repo);
+    out.section("Repository", String(own.length)).note(repo, "value").append(grid(["PR", "ROUNDS", "CI", "RERUNS", "FULL", "DELTA", "REVIEW", "UNK", "OK"], own.map(row => [
       s(`#${row.pr}`, "issueRef"), s(count(row.reviewRounds)), s(count(row.ciRuns)), s(count(row.ciReruns)), s(count(row.fullReReviews)), s(count(row.deltaReviews)), s(span(row.reviewMs)),
       s(count(row.unknownReviewScopes), row.unknownReviewScopes ? "attention" : "muted"), s(row.complete ? "yes" : "no", row.complete ? "success" : "attention")]), columns));
-    for (const row of rows.filter(row => String(row.repo) === repo && row.fullGateRuns !== undefined)) {
-      out.push(...para(`#${row.pr}: full gates ${count(row.fullGateRuns)} (success ${count(row.successfulGateRuns)}, failed ${count(row.failedGateRuns)}, cancelled ${count(row.cancelledGateRuns)}, other ${count(row.otherGateRuns)}); macOS shards ${count(row.macosShardRuns)}`, columns));
+    for (const row of own.filter(row => row.fullGateRuns !== undefined)) {
+      out.note(`#${row.pr}: full gates ${count(row.fullGateRuns)} (success ${count(row.successfulGateRuns)}, failed ${count(row.failedGateRuns)}, cancelled ${count(row.cancelledGateRuns)}, other ${count(row.otherGateRuns)}); macOS shards ${count(row.macosShardRuns)}`, "value");
     }
   }
-  if (c?.truncated) out.push(blank, ...para("truncated: more PRs than one read covers, or a read was incomplete", columns, "attention"));
-  if (c?.privateTasks === "withheld") out.push(...para("private tasks are withheld", columns, "muted"));
-  return out;
+  if (c?.truncated) out.bullet("warn", "truncated: more PRs than one read covers, or a read was incomplete");
+  if (c?.privateTasks === "withheld") out.note("private tasks are withheld");
+  return out.lines();
 }
 
 // ---- sdlc authorize-release ---------------------------------------------------------------------------------------
