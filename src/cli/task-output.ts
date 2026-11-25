@@ -102,6 +102,7 @@ function taskBlock(task: any, columns: number | undefined, now: number, detail: 
   const w = 10;
   out.push(...pair("state", `${dash(task?.state)}${task?.cancelled ? " (cancelled)" : ""}`, columns, w, stateTone(task?.state), "  "),
     ...pair("class", dash(task?.class), columns, w, undefined, "  "), ...pair("owner", taskHolderText(task, "owner"), columns, w, undefined, "  "), ...pair("reviewer", taskHolderText(task, "reviewer"), columns, w, undefined, "  "));
+  if (typeof task?.reason === "string") out.push(...pair("reason", task.reason, columns, w, undefined, "  "));
   if (task?.planner !== undefined) out.push(...pair("planner", taskHolderText(task, "planner"), columns, w, undefined, "  "));
   if (task?.reserved) out.push(...pair("reserved", task.reserved, columns, w, undefined, "  "));
   // #1454: a recorded wait, with whether it has passed: a passed one means the idle ladder restarts, so it reads as attention.

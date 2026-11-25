@@ -136,3 +136,9 @@ It preserves the 1cbbc57 message text/facts/acceptance instruction without catal
 or task guidance, using the same routing choice for both implementations.
 This fixture passes in the actual53/0 integration group. Full final gates and
 native consumption remain pending.
+
+## Task reasons (#1647)
+
+`hub_task_propose` takes an optional `reason`, the one reason a planner split or handed off the work. The set is closed: `explore` (understanding needs more than one batch of lookups), `parallel` (independent units with disjoint `refs.paths`, each taking minutes, not seconds), `context` (the planner's own context is running out), `verify` (the verifier task a high risk tier requires, #1645), `capability` (another peer has the vendor, account, tool or sandbox the work needs) and `person` (the person asked for the split). Omitted stays legal and shows as `unset`. An unknown value is refused with the allowed values.
+
+The reason is stored on the task and shown by `hub_task_show`, `hub_task_list` and the board. Size, file count and token budget are never reasons and never gates. Siblings proposed with `parallel` by one planner for the same dependencies and repository must touch disjoint paths (prefix overlap); an overlap is refused before the task exists, naming both tasks and the paths. `ahub sdlc metrics` groups task count, review rounds and tokens by reason, with `unset` as its own group.

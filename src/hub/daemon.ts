@@ -3063,6 +3063,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let questionStore!: QuestionStore;
   startupTimings.mark("task_ports");
   const tasks: Tasks = new Tasks({
+    taskTokens: () => Object.fromEntries(usageRollup.query({ by: "task" }).rows.flatMap(row => /^\d+$/.test(row.key) ? [[Number(row.key), row.counted.value]] : [])),
     ownerQuestionWait: (task, peer) => questionStore?.ownerWait(task, peer),
     guidanceProbes: { store: guidanceProbeStore, session: by => {
       const request = guidanceProbeRequestContext.getStore();

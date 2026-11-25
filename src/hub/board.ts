@@ -200,6 +200,9 @@ const experimentPage = (after: number, limit: number): void => {
 
 export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] as const;
 export type TaskClass = (typeof CLASSES)[number];
+/** #1647: why a planner split or handed off this task. A closed set, so the board can group cost and rework by it; absent on every task proposed before it existed. */
+export const TASK_REASONS = ["explore", "parallel", "context", "verify", "capability", "person"] as const;
+export type TaskReason = (typeof TASK_REASONS)[number];
 /** #1403 A4: one security audit as stored. `units` is the ledger; it changes only through `Board.auditReport`. */
 export interface StoredAudit { id: number; task: number; taskCreated: number; ref: string; since?: string; profile: AuditProfile; scoped: boolean; at: number; by: string; units: AuditUnit[] }
 const EVIDENCE_HISTORY_WINDOW = 1024;
@@ -473,6 +476,8 @@ export interface Task extends PlanningFields {
   profileClass?: string;
   /** Catalog guidance id only, never an authority role (#295). */
   role?: string;
+  /** #1647: the named reason this task was split off. Absent means none was given. */
+  reason?: TaskReason;
   owner: PeerId | null;
   /** Null for legacy rows; only Tasks chooses or changes a planner. */
   planner?: PeerId | null;
@@ -629,6 +634,7 @@ export class Board {
     this.db.run("CREATE TABLE IF NOT EXISTS task_code_symbols (task INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
     this.db.run("DELETE FROM task_code_symbols WHERE task NOT IN (SELECT id FROM tasks) OR task IN (SELECT id FROM tasks WHERE json_valid(signals) AND EXISTS (SELECT 1 FROM json_each(signals) WHERE value IN ('pii','pii_path')))");
     if (!have.has("task_role")) this.db.run("ALTER TABLE tasks ADD COLUMN task_role TEXT");
+    if (!have.has("task_reason")) this.db.run("ALTER TABLE tasks ADD COLUMN task_reason TEXT");
     if (!have.has("project_profile")) this.db.run("ALTER TABLE tasks ADD COLUMN project_profile TEXT");
     for (const col of ["rank", "priority", "release", "planned_start", "due"]) {
       if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN "${col}" INTEGER`);
@@ -2463,7 +2469,7 @@ export class Board {
     })();
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; planner?: PeerId | null; plannerReason?: PlannerReason; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; draft?: boolean; external?: GitHubSource }, createdHook?: (task: Task) => void): Task {
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; planner?: PeerId | null; plannerReason?: PlannerReason; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; reason?: TaskReason; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; draft?: boolean; external?: GitHubSource }, createdHook?: (task: Task) => void): Task {
     // Host-only synchronous DB bookkeeping. Never sourced from task input or called with I/O/screens.
     if (createdHook !== undefined) {
       if (typeof createdHook !== "function") throw new Error("invalid host proposal hook");
@@ -2474,8 +2480,8 @@ export class Board {
     const history: HistoryEntry[] = [{ at: now, by, ...instructedHistory(by), ...chosen, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
     const { lastInsertRowid } = this.taskWrite(() => {
       const inserted = this.db
-      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue, planner, draft) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null, planner, t.draft && t.backlog ? 1 : 0);
+      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue, planner, draft, task_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null, planner, t.draft && t.backlog ? 1 : 0, t.reason ?? null);
       if (this.proposalPlanner && !Object.hasOwn(t, "planner") && t.plannerReason === undefined) {
         const selected = this.proposalPlanner(this.get(Number(inserted.lastInsertRowid))!);
         const binding = plannerMetadata(selected.planner, selected.plannerReason);
@@ -3370,6 +3376,8 @@ function parse(row: Record<string, unknown>): Task {
   delete out.external_repo; delete out.external_issue;
   if (out.task_role != null) out.role = out.task_role;
   delete out.task_role;
+  if (typeof out.task_reason === "string" && (TASK_REASONS as readonly string[]).includes(out.task_reason)) out.reason = out.task_reason;
+  delete out.task_reason;
   if (out.planned_start != null) out.plannedStart = out.planned_start;
   delete out.planned_start;
   if (out.planning_revision) out.planningRevision = out.planning_revision;

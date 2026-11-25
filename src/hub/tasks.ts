@@ -116,7 +116,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type NoteInput, type Scope, type Tier } from "@staix/agent-mem";
-import { HOST_SPEC_ACCEPTANCE_CARRY, HOST_MERGE_ADOPTION, HOST_ROADMAP_DRAFT, parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type SpecAcceptanceCandidate, type SpecAcceptanceCommit, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
+import { HOST_SPEC_ACCEPTANCE_CARRY, HOST_MERGE_ADOPTION, HOST_ROADMAP_DRAFT, parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, TASK_REASONS, type TaskReason, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type SpecAcceptanceCandidate, type SpecAcceptanceCommit, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -177,6 +177,8 @@ export interface AuditView extends AuditSummary {
   notUpdated?: string[];
 }
 export interface TasksDeps {
+  /** #1647 AC4: the hub's own token increments per task (a task id to its count, null when unknown), for the metrics grouped by reason. Read-only; absent means no reading. */
+  taskTokens?: () => Readonly<Record<number, number | null>>;
   /** Timing-only owner question evidence for the idle-owner ladder. */
   ownerQuestionWait?: (task: number, peer: PeerId) => { open: boolean; settled?: number } | undefined;
   /** Private host-owned probe ledger and fixture ports. No configuration, wire or model-selected runner. */
@@ -472,6 +474,9 @@ export class AssignmentSupersededError extends Error {
 export const normPath = (p: string) => p.replace(/^(\.\/)+/, "").replace(/\/{2,}/g, "/").replace(/\/+$/, "") || ".";
 
 /** Same path, or one is a directory of the other; the project root (`.`) holds everything. */
+/** #1647: how many overlapping paths a parallel-sibling refusal names, so the text stays one line. */
+const PARALLEL_PATHS_NAMED = 5;
+
 export const samePlace = (a: string, b: string) => {
   const [x, y] = [normPath(a), normPath(b)];
   return x === "." || y === "." || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
@@ -3931,6 +3936,31 @@ export class Tasks {
     return sent;
   }
 
+  /** #1647: the optional reason a task was split off. Absent stays legal; anything outside the closed set is refused before any effect, naming the allowed values. */
+  private proposalReason(value: unknown): TaskReason | undefined {
+    if (value === undefined || value === null || value === "") return undefined;
+    if (typeof value !== "string" || !(TASK_REASONS as readonly string[]).includes(value)) throw new PreEffectToolRefusal(`reason must be one of ${TASK_REASONS.join(", ")}; omit it when no reason applies, then call hub_task_propose again`);
+    return value as TaskReason;
+  }
+
+  /**
+   * #1647 AC2: siblings proposed for one plan, by one planner with the same dependencies and `reason: "parallel"`, must touch disjoint `refs.paths` (prefix overlap, `samePlace`).
+   * Refused before the new task exists, naming both tasks and the paths.
+   * ponytail: the board has no plan-revision id on a task, so "one plan" is the same proposer, the same `after` set, the same repository and an open state; ceiling: two unrelated
+   * parallel batches by one planner with equal dependencies read as siblings; upgrade: record the planning revision on the task and compare within it.
+   */
+  private parallelSiblingsDisjoint(by: PeerId, title: string, refs: TaskRefs, deps: number[]): void {
+    const mine = refs.paths ?? [];
+    if (!mine.length) return;
+    const scope = this.repositories.scope(refs), key = [...deps].sort((a, b) => a - b).join(",");
+    for (const other of this.d.board.list()) {
+      if (other.reason !== "parallel" || isClosedTaskState(other.state) || other.history[0]?.by !== by || this.isPii(other)) continue;
+      if ([...(other.deps ?? [])].sort((a, b) => a - b).join(",") !== key || this.repositories.scope(other.refs).key !== scope.key) continue;
+      const shared = mine.filter(path => (other.refs.paths ?? []).some(theirs => samePlace(path, theirs)));
+      if (shared.length) throw new PreEffectToolRefusal(`parallel siblings must touch disjoint paths: "${title}" and task #${other.id} both touch ${shared.slice(0, PARALLEL_PATHS_NAMED).join(", ")}; call hub_task_propose again with disjoint refs.paths, or without reason parallel, or keep the work as one task you own`);
+    }
+  }
+
   /** Preview every fixed GitHub call from a complete inventory; confirmation binds both calls and local bindings. */
   async roadmapSync(by: PeerId, input: { apply?: boolean; confirm?: string } = {}): Promise<{ repo: string; calls: string[][]; bindings: { milestone: number; number: number }[]; fingerprint: string; applied: boolean }> {
     this.roadmapReadAuthority(by);
@@ -4885,7 +4915,7 @@ export class Tasks {
     return updated; // a failed readback may follow a durable release write
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; needs_network?: unknown; needs_worktree?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown; [HOST_ROADMAP_DRAFT]?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined, hostCreatedHook?: (task: Task) => void): Promise<Task> {
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; reason?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; needs_network?: unknown; needs_worktree?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown; [HOST_ROADMAP_DRAFT]?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined, hostCreatedHook?: (task: Task) => void): Promise<Task> {
     const requestCheck = this.requestCheck(by, fence);
     const detail = String(input.detail ?? "");
     if (detail.length > 8000) throw new PreEffectToolRefusal(
@@ -4930,6 +4960,8 @@ export class Tasks {
     }
     // An owner for work that waits is reserved (issue #207): routing offers it to that peer first once it is ready.
     const reserved = backlog || this.waitsFor({ deps }).length ? input.owner : undefined;
+    const reason = this.proposalReason(input.reason);
+    if (reason === "parallel") this.parallelSiblingsDisjoint(by, title, cleanRefs(input.refs), deps);
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
     const profile = this.d.profile ?? "dev";
     let baseGiven: TaskClass | undefined;
@@ -4973,7 +5005,7 @@ export class Tasks {
     let selected;
     try { selected = taskRole(input.role, cls, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
-    const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" || given !== undefined && given !== cls || this.d.profileData && this.d.profileData !== projectProfile("dev") ? { profile, profileClass: given ?? cls, ...(profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
+    const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(reason ? { reason } : {}), ...(profile !== "dev" || given !== undefined && given !== cls || this.d.profileData && this.d.profileData !== projectProfile("dev") ? { profile, profileClass: given ?? cls, ...(profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
     if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (prior) return prior; }
     if (reserved) this.requireCapabilities({ ...draft, signals, ...(external ? { external } : {}) }, reserved);
     this.warmRepository({ refs: draft.refs, plan });
@@ -7490,7 +7522,7 @@ export class Tasks {
       if (!Number.isFinite(cutoff) || cutoff < 0) throw new PreEffectToolRefusal("since must be a time (YYYY-MM-DD or an ISO timestamp) or milliseconds");
     }
     const rows = this.d.board.list();
-    const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), history: task.history.map(entry => ({ at: entry.at, event: entry.event,
+    const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), ...(task.reason ? { reason: task.reason } : {}), history: task.history.map(entry => ({ at: entry.at, event: entry.event,
       ...(["check run passed", "check run failed"].includes(entry.event) && entry.requestHead ? { requestHead: entry.requestHead } : {}), ...(entry.event === "done" && (entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head) ? { requestHead: entry.requestHead ?? entry.reviewCost?.head ?? entry.specReport?.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
     const visibleIds = new Set(rows.filter(task => !this.isPii(task)).map(task => task.id));
     const byKind: Record<string, number> = {};
@@ -7507,7 +7539,12 @@ export class Tasks {
       if (at !== null) mergedAt[task.id] = at;
       if (cost) { ciReruns[task.id] = cost.ciReruns; ciRuns[task.id] = cost.ciRuns; reviews[task.id] = cost.reviews; firstPass[task.id] = cost.firstPass ?? null; fullGateRuns[task.id] = cost.fullGateRuns ?? null; successfulGateRuns[task.id] = cost.successfulGateRuns ?? null; failedGateRuns[task.id] = cost.failedGateRuns ?? null; cancelledGateRuns[task.id] = cost.cancelledGateRuns ?? null; otherGateRuns[task.id] = cost.otherGateRuns ?? null; macosShardRuns[task.id] = cost.macosShardRuns ?? null; }
     }
-    return { ...sdlcMetrics(tasks, { ...(cutoff !== undefined ? { since: cutoff } : {}), ...(this.d.sdlc?.config().bands ? { bands: this.d.sdlc.config().bands } : {}), stalls, mergedAt, ciReruns, ciRuns, reviews, firstPass, fullGateRuns, successfulGateRuns, failedGateRuns, cancelledGateRuns, otherGateRuns, macosShardRuns, external: this.externalSeries(), ...(merged ?? {}) }), ...(this.securityScanCounts() ? { securityScan: this.securityScanCounts() } : {}) };
+    return { ...sdlcMetrics(tasks, { ...(cutoff !== undefined ? { since: cutoff } : {}), ...(this.d.sdlc?.config().bands ? { bands: this.d.sdlc.config().bands } : {}), stalls, mergedAt, ciReruns, ciRuns, reviews, firstPass, fullGateRuns, successfulGateRuns, failedGateRuns, cancelledGateRuns, otherGateRuns, macosShardRuns, ...(this.d.taskTokens ? { tokens: this.safeTaskTokens() } : {}), external: this.externalSeries(), ...(merged ?? {}) }), ...(this.securityScanCounts() ? { securityScan: this.securityScanCounts() } : {}) };
+  }
+
+  /** Optional usage must never break a metrics read: a failing source reads as no tokens at all. */
+  private safeTaskTokens(): Readonly<Record<number, number | null>> {
+    try { return this.d.taskTokens?.() ?? {}; } catch { return {}; }
   }
 
   /** Latest configured scan source counts; no repository or alert text is projected. */
