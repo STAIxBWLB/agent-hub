@@ -68,11 +68,11 @@ test("reviewer assignment walks past a configured print peer with the reviewer l
   });
   expect(result.reviewer).toBe("claude");
   expect(result.refusals?.some(row => row.peer === "printer" && row.reason.includes("advisory answers"))).toBe(true);
+  const instances = { printer: { kind: "printer", roles: ["reviewer"], start_mode: "headless" },
+    "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" } };
   const pooled = assign(task, { codex: "idle", printer: "idle", "claude-review": "idle" }, routing, {
     adapterCatalog: catalog, candidates: ["codex"], roles: { printer: ["reviewer"], "claude-review": ["reviewer"] },
-    instances: { printer: { kind: "printer", roles: ["reviewer"], start_mode: "headless" },
-      "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" } },
-    reviewPool: { pool: ["printer", "claude"], required: true },
+    instances, reviewPool: { pool: ["printer", "claude"], required: true },
   });
   expect(pooled.reviewer).toBe("claude-review");
   expect(pooled.reviewSelection?.walk.map(row => row.id).filter(Boolean)).toEqual(["claude-review"]);
