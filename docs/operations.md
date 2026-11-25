@@ -6844,7 +6844,7 @@ Native launcher connections retry transport timeouts/unclean closes with bounded
 
 ## amem runtime (agent-mem#13 P4)
 
-The hub accepts @staix/agent-mem <!-- facts:agent-mem-pin -->>=0.33.0 <1.0.0<!-- /facts:agent-mem-pin --> (a range `bun.lock` resolves; a newer plain release in it with a supported host API needs no hub release) for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
+The hub accepts @staix/agent-mem <!-- facts:agent-mem-pin -->>=0.39.0 <1.0.0<!-- /facts:agent-mem-pin --> (a range `bun.lock` resolves; a newer plain release in it with a supported host API needs no hub release) for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
 
 ## Person-run backlog legs (#1176)
 
