@@ -661,12 +661,18 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
  */
 const POLL_MS = 2_000, INBOX_MAX_AGE_MS = 1_000, SPACE_MAX_AGE_MS = POLL_MS;
 
+// The pinned console contract accepts extra manifest fields and continues using panels as its route allowlist.
+const capabilities = {
+  actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...RESULT_ADVERTISED, ...REVIEW_ACTIONS],
+  reads: ["lineage"], confirm: true, multiProject: true, inbox: true, inboxMaxAgeMs: INBOX_MAX_AGE_MS,
+  space: true, spaceMaxAgeMs: SPACE_MAX_AGE_MS,
+};
+
 const plugin: ConsolePlugin = {
   manifest: {
     api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: POLL_MS,
     panels: [...DASHBOARD_VIEWS.map((id, order) => ({ id, title: TITLES[id], order })), { id: "guidance", title: "Guidance", order: DASHBOARD_VIEWS.length }],
-    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...RESULT_ADVERTISED, ...REVIEW_ACTIONS], confirm: true, multiProject: true,
-      inbox: true, inboxMaxAgeMs: INBOX_MAX_AGE_MS, space: true, spaceMaxAgeMs: SPACE_MAX_AGE_MS },
+    capabilities,
   },
   async open(ctx) { return createProvider({ home: ctx.home, log: ctx.log, features: ctx.features }); },
 };
