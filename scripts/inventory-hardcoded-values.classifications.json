@@ -2294,6 +2294,7 @@
   "src/hub/review-findings.ts:MAX_ITEMS:constant:MAX_ITEMS=64#0": "operational",
   "src/hub/review-material.ts:READ_MS:constant:READ_MS=8000#0": "operational",
   "src/hub/reviewer-pool-config.ts:reviewerPoolConfig:inline:pool.length > 16=16#0": "contract",
+  "src/hub/risk-tier.ts:RISK_REVIEW_FLOOR:constant:RISK_REVIEW_FLOOR=1#0": "safety floor",
   "src/hub/roadmap-check.ts:ROADMAP_FINDING_LIMIT:constant:ROADMAP_FINDING_LIMIT=100#0": "contract",
   "src/hub/roadmap-decompose.ts:DECOMPOSE_ITEMS:constant:DECOMPOSE_ITEMS=40#0": "safety floor",
   "src/hub/roadmap-decompose.ts:DECOMPOSE_ITEM_CHARS:constant:DECOMPOSE_ITEM_CHARS=300#0": "safety floor",

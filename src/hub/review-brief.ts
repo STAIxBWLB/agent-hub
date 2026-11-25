@@ -45,6 +45,8 @@ export interface ReviewBrief {
   ruleGroups: { sources: string[]; paths: string[] }[];
   /** Paths in the plain name list of the range that the brief does not list: read them directly. */
   unlisted: string[];
+  /** #1645 T4: the tier this head was filed at and what it still owes, already rendered by `risk-tier.ts`; absent without a `[risk]` table. */
+  risk?: string;
 }
 
 /** A bounded, public summary of the design specs affected by one exact task head. */
@@ -221,6 +223,7 @@ export function renderReviewBrief(brief: ReviewBrief): string {
   const file = (f: BriefFile) => `- ${f.oldPath ? `${f.oldPath} -> ` : ""}${f.path} (${f.status}${f.insertions !== undefined ? `, +${f.insertions} -${f.deletions}` : ""})`;
   return [
     `Review brief: head ${brief.head} against ${brief.base} (merge base ${brief.mergeBase}); ${brief.reviewable.length} reviewable, ${brief.excluded.length} excluded${brief.withheld ? `, ${brief.withheld} withheld by the privacy policy` : ""}.`,
+    ...(brief.risk ? [brief.risk] : []),
     ...(brief.reviewable.length ? ["Reviewable:", ...brief.reviewable.map(file)] : ["Reviewable: none (record why in the note)."]),
     ...(brief.excluded.length ? ["Excluded (still read their diff when it matters):", ...brief.excluded.map(e => `- ${e.oldPath ? `${e.oldPath} -> ` : ""}${e.path} (${e.status}): ${e.reason}`)] : []),
     ...renderCodeSymbols(brief),

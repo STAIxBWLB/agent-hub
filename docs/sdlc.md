@@ -587,6 +587,24 @@ companions = ["agents", "local-ipc"]
 - `advise` records an approval without a pass and adds the requirement to the advice. `enforce` refuses the approval (before any board effect) and blocks the merge queue row and the merge gate, for `required` and for `unknown`. The review request tells the reviewer a pass is required, or that applicability is unknown, and points to the checklist. PII tasks carry no pass.
 - `ahub sdlc status` and the merge queue show a `security pass` line; the queue shows the strictest state when a PR has several holders.
 
+## Minimum review by risk tier (#1645)
+
+`.agenthub/sdlc.toml` may name the paths that make a filed change `high`, and the ones that keep it `low`:
+
+```toml
+[risk]
+high = ["src/hub/sdlc-merge.ts", "src/local/**"]
+low = ["docs/**", "*.md"]
+```
+
+- **Derivation.** At `hub_task_done`, from the change's complete file inventory - the one plan conformance and the security pass read, never the worktree. A path no pattern names is `medium`, and a path `[security] paths` matches is always `high`, so a project with a security table never derives `low` from a change its security pass treats as sensitive. The tier is stored as `sdlc.risk = {tier, head, matched}`, recomputed when a task is re-filed, and a tier recorded for another head is never read: an incomplete or unreadable inventory records no tier at all rather than `medium`.
+- **The table.** `low` and `medium` need one reviewer; `high` needs one reviewer plus a verifier card owned by a peer other than the implementer. The one-review floor is never lowered, and a plan's `review` metadata may ask for more than the tier's minimum, never for less.
+- **Verifier card identity.** A verifier is a `test`-class card (the lifecycle table above gives that stage the acting role verifier/reviewer) whose `refs.repo` and `refs.branch` equal the change's and whose `refs.commit` is the filed head, in state `approved`, owned by a peer other than the implementer. No field and no card shape is added for it: the rule is `riskVerifier` in `src/hub/risk-tier.ts`, and the verdict, the review request, the brief, `hub_task_show` and these docs read that one function. A card that verified an older head does not count, so a high change whose branch moved needs a card for the new head. A task filed without `refs.branch` is matched by repository and head instead, so a card can still satisfy it.
+- **Enforce and advise.** An approving verdict on a `high` task with no such card is refused before any board write, and the refusal names its continuation (`hub_task_propose` with class `test`, the same branch or, for a task filed without one, the repository, plus `refs.commit` the filed head). `advise` records the risk line in the verdict's note and allows the approval. A project with no `[risk]` table derives no tier, so its verdicts, plan reviews and merge gates behave exactly as before.
+- **Plan metadata (AC5).** `plan.review` is cost metadata and no tier exists before a filed inventory, so the plan review compares it against the floor: `reviewers: 0` or `scope: none` is reported in `advise` and refused in `enforce`, with the corrected plan review as its continuation. The comparison against a tier's own minimum happens where the tier exists - the review request, the review brief and the merge gate.
+- **Where it shows.** The review request, the review brief, the verdict's note and `hub_task_show` (as `risk`) carry one line, `risk <tier> (<n> paths decided it); minimum <what the tier owes>`, then `; verifier card <id> is approved` when the board holds one or `; no verifier card by another peer is approved at this head` when it does not. The line states what is owed; the command that supplies it belongs to the refusal, which writes its continuation where it is thrown. In `enforce` the merge gate refuses a plan whose own review asked for less than the tier's minimum, naming `hub_plan_review` as the continuation.
+- `ahub init` writes the table commented out in a newly created `sdlc.toml`, so the feature is discoverable without a project being opted in. Tier counts against rework rounds over four weeks of dogfood are the person's own follow-up.
+
 ## Security audit with a coverage ledger (hub task 896, #1403 A4, A5)
 
 A recurring, read-only read of the security-sensitive surfaces, on request. It needs the lifecycle on (`advise` or `enforce`) and the `[security]` table above.

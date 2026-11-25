@@ -1,5 +1,6 @@
 import { findingsForHead, findingHead, findingTally } from "./review-findings.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
+import { riskMinimum, riskPlanFloor } from "./risk-tier.ts";
 import { evalGapBlockers, evalGateView, evalReportedGap, evalRequiredChecks, readEvalFor, type EvalResult } from "./eval-gate.ts";
 import { mergeCostFrom } from "./cost-governance.ts";
 import { latestCheckRuns, parsePrEvidence, readPrCostHistory, readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord, type SdlcReceipt } from "./sdlc.ts";
@@ -202,6 +203,14 @@ export function localGates(input: { subject: DeliveryTask; state: string; taskSt
   }
   if (findingTally(findingsForHead(subject.findings ?? [], findingHead(subject.receipt, input.head ? { head: input.head } : undefined))).openImportant > 0) gates.push("open Important finding");
   if (subject.receipt && stageDefinition(config, subject.receipt.stage)?.base === "release") gates.push("release PR: person consent required");
+  // #1645 T4: the merge gate names the tier, and in enforce refuses the one gap the board can still show here: a plan whose own review metadata asked for
+  // less than the tier's minimum. The verifier check belongs to the verdict (T3) and is not repeated - a card approved for this head cannot un-approve it -
+  // and the tier is read only for the head it was derived at (T2), so a moved head makes no claim here either.
+  const risk = subject.receipt?.risk;
+  if (risk && config.mode === "enforce") {
+    const floor = riskPlanFloor(subject.plan?.planReview, riskMinimum(risk.tier));
+    if (floor) gates.push(`risk ${risk.tier} (${risk.matched} path${risk.matched === 1 ? "" : "s"} decided it): ${floor}; record a plan review that meets it with hub_plan_review, then merge`);
+  }
   return gates;
 }
 

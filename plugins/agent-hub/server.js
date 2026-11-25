@@ -32155,6 +32155,7 @@ init_sdlc();
 
 // src/hub/sdlc-merge.ts
 init_review_findings();
+init_risk_tier();
 init_eval_gate();
 init_cost_governance();
 init_sdlc();

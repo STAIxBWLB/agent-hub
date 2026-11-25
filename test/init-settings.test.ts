@@ -10,6 +10,13 @@ import { loadConfig } from "../src/hub/daemon.ts";
 import { loadSdlc } from "../src/hub/sdlc.ts";
 
 // #1065 T1: the init settings table, its plan rows, validated writes, flags and help.
+/** #1645 T4: a newly created sdlc.toml carries the `[risk]` table commented out, after the keys `ahub init` writes. */
+const RISK_SCAFFOLD = `# Minimum review by risk tier (#1645): globs that make a change high, or that keep it low. A path no pattern names is medium, and a
+# path under [security] is always high. With this table commented out no tier is derived and every review stays as it is today.
+# [risk]
+# high = ["src/hub/sdlc-merge.ts", "src/local/**"]
+# low = ["docs/**", "*.md"]
+`;
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
@@ -40,7 +47,7 @@ test("each settings flag writes its key to the stated file on a new project (#10
   expect(config.pi.enabled).toBe(true);
   expect(config.memory.inject_tokens).toBe(2000); // a neighbour key of a written one is the template's
   expect(p.json(cwd, "config.local.json")).toEqual({ start: { agents: ["claude", "codex"] } });
-  expect(p.text(cwd, "sdlc.toml")).toBe('mode = "enforce"\nrequired_checks = ["unit"]\n');
+  expect(p.text(cwd, "sdlc.toml")).toBe(`mode = "enforce"\nrequired_checks = ["unit"]\n${RISK_SCAFFOLD}`);
   expect(loadSdlc(cwd).mode).toBe("enforce");
   expect(loadConfig(cwd).coordination).toBe("turn-free");
 });
@@ -51,7 +58,7 @@ test("every flag of the table writes a different key in the right file, and --me
   const config = p.json(cwd, "config.json");
   expect([config.memory.enabled, config.snapshots.enabled, config.pi.enabled, config.coordination]).toEqual([true, true, false, "advisory"]);
   expect(p.json(cwd, "config.local.json").start.agents).toEqual([]);
-  expect(p.text(cwd, "sdlc.toml")).toBe('mode = "advise"\n');
+  expect(p.text(cwd, "sdlc.toml")).toBe(`mode = "advise"\n${RISK_SCAFFOLD}`);
   // The table lists exactly the flags the CLI owns, so a row added later is reachable and tested through the same path.
   expect(INIT_SETTING_FLAGS.slice().sort()).toEqual(["--required-checks", "--research", "--no-research", "--agents", "--autonomy", "--coordination", "--memory", "--no-memory", "--no-pi", "--no-snapshots", "--no-specs", "--pi", "--sdlc", "--snapshots", "--spec-review", "--specs", "--track-config", "--no-track-config", "--conductor", "--planner", "--reviewer"].sort());
   expect(new Set(INIT_SETTINGS.map(row => row.id)).size).toBe(INIT_SETTINGS.length);
@@ -78,7 +85,7 @@ test("--dry-run --json shows the same rows as the write and writes nothing (#106
   const config = p.json(cwd, "config.json");
   expect([config.coordination, config.memory.enabled, config.pi.enabled]).toEqual(["turn-free", false, true]);
   expect(p.json(cwd, "config.local.json").start.agents).toEqual(["codex"]);
-  expect(p.text(cwd, "sdlc.toml")).toBe('mode = "advise"\n');
+  expect(p.text(cwd, "sdlc.toml")).toBe(`mode = "advise"\n${RISK_SCAFFOLD}`);
 });
 
 test("without a settings flag the dry-run JSON is the bare list it always was, and the human preview lists old -> new (#1065 AC1)", () => {

@@ -41,6 +41,16 @@ const choice = <T extends string>(id: string, flag: string, values: readonly T[]
   throw new Error(`${flag}: "${text.slice(0, 48)}" is not ${values.join(", ")}; nothing was written`);
 };
 
+/** #1645 T4: the commented `[risk]` example a newly created sdlc.toml carries, so the tier table is discoverable without a project being opted in. */
+const RISK_SCAFFOLD = [
+  "# Minimum review by risk tier (#1645): globs that make a change high, or that keep it low. A path no pattern names is medium, and a",
+  "# path under [security] is always high. With this table commented out no tier is derived and every review stays as it is today.",
+  "# [risk]",
+  '# high = ["src/hub/sdlc-merge.ts", "src/local/**"]',
+  '# low = ["docs/**", "*.md"]',
+  "",
+].join("\n");
+
 export const INIT_SETTINGS: readonly InitSettingDef[] = [
   { id: "start.agents", flags: [{ flag: "--agents" }], file: "config.local.json", path: ["start", "agents"], allowed: `${START_AGENTS_ALLOWED.join(", ")} or none`, describe: "agents ahub up starts",
     parse: text => {
@@ -244,6 +254,11 @@ export function planInitSettings(request: InitSettingsRequest, texts: InitSettin
     next[file] = current[file]!;
     rows.push({ key: row.id, file, ...(held === undefined ? {} : { from: held }), to } as InitSettingRow);
   }
+  // #1645 T4: a newly created sdlc.toml carries the `[risk]` table as a commented example, so the tier feature is discoverable without a project being on.
+  // Written once, after every key this plan sets, because a comment block in the middle would push a later top-level key below it. Comments only, so the
+  // file parses exactly as it did before, and only on creation: a file a person already holds is never rewritten by `ahub init`.
+  const sdlc = next["sdlc.toml"];
+  if (texts["sdlc.toml"] === null && sdlc) next["sdlc.toml"] = `${sdlc}${sdlc.endsWith("\n") ? "" : "\n"}${RISK_SCAFFOLD}`;
   // #1408 T2: the role choices, judged against the config.json this plan produces and the local file; each peer whose roles change is written as one explicit list.
   if (ROLE_KEYS.some(key => Object.hasOwn(request.values, key))) {
     const changes = planRoles(request.values, parsed("config.json"), parsed("config.local.json"));
