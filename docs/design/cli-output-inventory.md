@@ -273,7 +273,7 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/output.ts:renderBoardColumns | CLI | - | Inline / indirect | 80 |
 | src/cli/output.ts:renderDoctor | CLI | Direct | LayoutReport | 15 |
 | src/cli/output.ts:renderProjects | CLI | - | Inline / indirect | 37 |
-| src/cli/output.ts:renderQueue | CLI | - | Inline / indirect | 24 |
+| src/cli/output.ts:renderQueue | CLI | - | table | 24 |
 | src/cli/output.ts:renderTurns | CLI | - | moment | 68 |
 | src/cli/output.ts:renderOrphans | CLI | - | Inline / indirect | 39 |
 | src/cli/output.ts:renderOrphanCleanup | CLI | - | Inline / indirect | 30 |
