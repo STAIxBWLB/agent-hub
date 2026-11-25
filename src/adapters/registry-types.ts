@@ -1,3 +1,4 @@
+import type { ConfiguredPrintOptions } from "./configured-print.ts";
 /** One host-latched runtime choice; applied binds the captured revision and boundary, never a later value. */
 export interface ModelOverrideSelection {
   readonly model: string | undefined;
@@ -32,7 +33,7 @@ import type { BuiltinCliEntry } from "./definitions/native-cli-entry-types.ts";
 import type { NativePreviewBuilder } from "./definitions/native-cli-preview-common.ts";
 
 export type StartForm = "tui" | "headless";
-export type DaemonEngine = "codex-appserver" | "acp" | "qwen-dual" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print" | "reviewer-print" | "claude-implementer";
+export type DaemonEngine = "codex-appserver" | "acp" | "qwen-dual" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print" | "reviewer-print" | "claude-implementer" | "configured-print";
 
 /** Existing buildLaunch inputs plus the startup-bound instance and project identity. */
 export interface LaunchContext {
@@ -76,7 +77,8 @@ export type DaemonPorts =
   | { local: LocalOptions }
   | { claudePrint: ClaudePrintOptions }
   | { reviewerPrint: ReviewerPrintOptions }
-  | { claudeImplementer: ClaudeImplementerOptions };
+  | { claudeImplementer: ClaudeImplementerOptions }
+  | { configuredPrint: Omit<ConfiguredPrintOptions, "declaration"> };
 
 export interface CreateContext<Ports extends DaemonPorts = DaemonPorts> {
   instance: string;
@@ -239,7 +241,7 @@ export interface AdapterDefinition {
     ownedFlags: readonly string[];
     conductorStartArgs?(args: string[]): { mode?: StartForm } | Error;
   };
-  identity: { mcp: "acp-session" | "project-file" | "env" | "channel-plugin"; currentChild?: true };
+  identity: { mcp: "acp-session" | "project-file" | "env" | "channel-plugin" | "none"; currentChild?: true };
   /** Who owns the session title; only hub-owned slots receive hub_set_title. */
   title?: "native" | "hub";
   /** Fixed builtins only: the title slot survives native-session restoration. Absent means ephemeral. */

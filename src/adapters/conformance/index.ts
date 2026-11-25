@@ -2,6 +2,7 @@
 export { registerConformance, registerExternalChannelConformance, until, type AdapterConformance, type ConformanceFixture } from "./kit.ts";
 export { registerAcpConformance, type AcpConformanceOptions } from "./acp.ts";
 export { registerCodexConformance } from "./codex.ts";
+export { registerPrintConformance } from "./print.ts";
 export { registerOwnedAcpConformance } from "./owned-acp.ts";
 export { registerLocalConformance, registerPiConformance } from "./local-pi.ts";
 export { createFromDefinition, expire } from "./factories.ts";

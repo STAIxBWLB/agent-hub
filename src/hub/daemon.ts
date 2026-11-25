@@ -295,7 +295,7 @@ import { DEFAULT_SPECS_CONFIG, parseSpecsConfig, type SpecsConfig } from "./spec
 
 export interface HubConfig {
   adapter_modules?: readonly AdapterModuleDeclaration[];
-  adapters?: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>>;
+  adapters?: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAdapterConfig>>;
   /** Person-owned declarations, read only from an untracked machine-local file. Bound for this daemon lifetime. */
   instances?: InstancesConfig;
   watchdog_ms: number;
@@ -3322,7 +3322,10 @@ export async function startDaemon(opts: DaemonOptions) {
     offerRead: (peer, envelopeId) => journal.offerRead(peer, envelopeId),
     offerPullOnly: (id) => { const peer = bus.peers.get(id); return peer?.pullOnly === true; },
     stallNotice: stall => { supervision.taskStalled(stall); },
-    roles: config.roles,
+    get roles() {
+      if (!configuredIds.some(id => definitionOf(id)?.start.daemonPort === "configured-print")) return config.roles;
+      return Object.fromEntries(Object.entries(config.roles).filter(([id]) => definitionOf(id)?.start.daemonPort !== "configured-print"));
+    },
     turnFree,
     coordination: () => config.coordination === "turn-free",
     capable: (peer) => capable.has(peer),
@@ -9162,6 +9165,30 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch (error) { await kimi.stop().catch(stop => log(`kimi stop after a failed start: ${(stop as Error).message}`)); throw error; }
       return { ok: true };
     }
+    if (adapter?.start.daemonPort === "configured-print" && adapter.start.create) {
+      if (Object.entries(args).some(([key, value]) => key !== "mode" && value !== undefined))
+        return { ok: false, error: "configured print accepts no launch overrides or resume options" };
+      if (retainedOwner?.pendingOwnedProcess) return { ok: false, error: "configured print cleanup is unconfirmed; stop the peer before starting it again" };
+      const print = adapter.start.create({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config,
+        permission: "read-only", mcpServers: [], daemon: DAEMON_PORTS["configured-print"]({
+          cwd: executionCwd, stateDir: opts.stateDir,
+          deny: () => [...config.local.deny, ...(config.pii?.paths ?? [])],
+          privateTurn: envs => contextPii(peer) || turns.get(peer)?.private === true || envs.some(env => {
+            const task = env.refs?.task ? board.get(Number(env.refs.task)) : undefined;
+            return task ? tasks.isPii(task) : false;
+          }),
+          publicText: boundedSafe,
+        }) });
+      try {
+        startCurrent?.(); await print.start(); startCurrent?.();
+        bus.add(print);
+        print.onState?.(print.state);
+      } catch (error) {
+        await print.stop().catch(() => { bus.add(print); });
+        throw error;
+      }
+      return { ok: true, policy: "unmanaged" };
+    }
     if (adapter?.transport === "acp" && adapter.start.create && adapter.start.launch) {
       // Configured ACP definitions own immutable argv and policy; builtins retain their verified launch port.
       const launch = adapter.start.launch({ instance: peer, form: "headless", projectRoot: opts.cwd, stateDir: opts.stateDir, entrypoint: CLI_ENTRY,
@@ -11634,6 +11661,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // #1054: an older daemon ignores the completion tables, so an open run or a completion nobody has seen would be lost silently.
       if (completionStore.hasPending() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("completions"))) return `target lacks completions; ${completionStore.openRuns().length ? "open runs cannot be kept by that daemon: let them settle (ahub status), then retry; " : ""}unread results cannot be kept by that daemon: read them (ahub results --read-all), or use a supporting release`;
       if (externalIds.size && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("external_adapter_modules"))) return "target lacks external_adapter_modules; verified external definitions cannot be preserved by that daemon";
+      if (configuredIds.some(id => definitionOf(id)?.start.daemonPort === "configured-print") && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("configured_print"))) return "target lacks configured_print; print adapter declarations cannot be preserved by that daemon";
       if (configuredIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("configured_acp"))) return "target lacks configured_acp; project adapter definitions cannot be preserved by that daemon";
       if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return "target lacks peer_instances; declared instance identities cannot be restored by that daemon";
       if (extraIds.some(id => adapterCatalog.definitionOf(declarations[id]!.kind)?.transport === "claude-channel" && declarations[id]!.roles?.includes("implementer")) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("role_stages"))) return "target lacks role_stages; declared Claude implementer authority cannot be restored by that daemon";

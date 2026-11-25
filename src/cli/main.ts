@@ -223,7 +223,7 @@ function localDeclarations(): { scope: Pick<InstanceRoleConfig, "instances" | "c
   catch (error) { return { scope: { catalog: createProjectAdapterCatalog() }, error: startupDiagnostic(error) }; }
 }
 const projectCatalog = peerConfig.catalog;
-const configuredCommand = !definitionOf(given) && (projectCatalog.definitionOf(given)?.permission.genericAcp !== undefined || peerConfig.declaredExternalInstances?.some(row => row.kind === given) === true);
+const configuredCommand = !definitionOf(given) && (projectCatalog.definitionOf(given)?.permission.genericAcp !== undefined || projectCatalog.definitionOf(given)?.start.daemonPort === "configured-print" || peerConfig.declaredExternalInstances?.some(row => row.kind === given) === true);
 const unboundCaller = detectCliIdentity(process.env);
 const markerNeedsDeclaration = unboundCaller.role === "invalid" && unboundCaller.reason === "AGENTHUB_PEER_ID conflicts with native agent marker"
   && process.env.AGENTHUB_PEER_ID !== undefined && !definitionOf(process.env.AGENTHUB_PEER_ID);
@@ -1110,7 +1110,9 @@ const commands: Record<string, () => Promise<void> | void> = {
   help: () => {
     const color = resolveColor(undefined, streamEnv(!!process.stdout.isTTY), "ahub") === true;
     const topic = asksHelp(args[0]) ? undefined : args[0];
-    const text = topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.permission.genericAcp !== undefined
+    const text = topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.start.daemonPort === "configured-print"
+      ? `ahub ${topic} [--mode headless] [--print-command | --dry-run]\nConfigured print runs one sandboxed process per public advisory request. Declare it in untracked .agenthub/config.local.json, restart the hub, then enable roster.${topic}.`
+      : topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.permission.genericAcp !== undefined
       ? configuredAcpHelp(topic) : renderHelp(process.stdout.columns ?? 80, color, topic, undefined, asciiMarkers(process.env, args.includes("--ascii")));
     if (!text) fail(`unknown command "${topic}"; run ahub help`);
     console.log(text);

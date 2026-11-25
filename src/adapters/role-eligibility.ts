@@ -38,6 +38,7 @@ export function roleEligibility(peer: string, role: EligibleRole, startMode?: St
  */
 export function adapterCeiling(peer: string, declared: readonly string[], catalog?: ProjectAdapterCatalog): string[] {
   const definition = lookup(peer, catalog), ceiling = definition?.routing?.allowedRoles;
+  if (definition?.start.daemonPort === "configured-print") return declared.filter(role => role === "advisor" || role === "reviewer");
   return declared.filter(role => (!ceiling || ceiling.includes(role)) && (role !== "planner" || !definition || definition.projection?.plannerEligible === true));
 }
 
@@ -47,6 +48,10 @@ export function adapterCeiling(peer: string, declared: readonly string[], catalo
  */
 export function applyRoleCeiling(peer: string, declared: readonly string[], startMode: StartMode | undefined, catalog?: ProjectAdapterCatalog): { roles: string[]; notices: string[] } {
   const definition = lookup(peer, catalog), ceiling = definition?.routing?.allowedRoles;
+  if (definition?.start.daemonPort === "configured-print") {
+    const roles = adapterCeiling(peer, declared, catalog);
+    return { roles, notices: roles.length === declared.length ? [] : [`roles.${peer}: configured print keeps advisory roles only`] };
+  }
   const notices: string[] = [];
   const roles = declared.filter(role => {
     if (ceiling && !ceiling.includes(role)) return false;

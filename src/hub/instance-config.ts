@@ -29,7 +29,7 @@ export interface DeclaredExternalInstance {
 }
 export interface InstanceRoleConfig {
   adapter_modules?: readonly AdapterModuleDeclaration[];
-  adapters?: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>>;
+  adapters?: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAdapterConfig>>;
   instances?: InstancesConfig;
   /** Unresolved or refused module declarations, excluded from executable policy. */
   declaredExternalInstances?: readonly DeclaredExternalInstance[];
@@ -61,13 +61,13 @@ export function withoutInertInstancePolicy(raw: Record<string, unknown>, rows: r
 export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigLayer[] = readInstanceConfigLayers(cwd), externalDefinitions?: readonly AdapterDefinition[]): InstanceRoleConfig {
   const moduleConfig = readAdapterModuleDeclarations(cwd, layers);
   const ignored: string[] = [...moduleConfig.ignored];
-  let adapters: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>> | undefined, rawInstances: unknown;
+  let adapters: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAdapterConfig>> | undefined, rawInstances: unknown;
   for (const { name, raw } of layers) {
     const keys = ["adapters", "instances"].filter(key => raw[key] !== undefined);
     if (!keys.length) continue;
     const refusal = name !== "config.local.json" ? "declarations are machine-local config.local.json values" : configRefusal(cwd, name);
     if (refusal) { ignored.push(`${keys.join(", ")} in .agenthub/${name} ignored: ${refusal}`); continue; }
-    if (raw.adapters !== undefined) adapters = raw.adapters as Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>>;
+    if (raw.adapters !== undefined) adapters = raw.adapters as Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAdapterConfig>>;
     if (raw.instances !== undefined) rawInstances = raw.instances;
   }
   let external = externalDefinitions;
