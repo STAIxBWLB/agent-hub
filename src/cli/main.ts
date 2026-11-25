@@ -2300,6 +2300,38 @@ const commands: Record<string, () => Promise<void> | void> = {
       } finally { hub.close(); }
       return;
     }
+    if (sub === "readback") {
+      // #1658: a read-back is a report for the person, started and read by the person or the current conductor.
+      const options = outputOptions(), words = outputArguments(), op = words[1], target = words[2];
+      if (!["start", "show"].includes(op ?? "") || words.length !== 3) fail("usage: ahub sdlc readback start <task> [--json] | ahub sdlc readback show <task> [--json]");
+      const task = Number(target);
+      if (!Number.isSafeInteger(task) || task <= 0) fail("usage: ahub sdlc readback start <task> [--json] | ahub sdlc readback show <task> [--json]");
+      const hub = await connect();
+      try {
+        const reply = await hub.request({ t: "sdlc", op: op === "start" ? "readback-start" : "readback-show", id: task }, 30_000);
+        if (!reply.ok) fail(reply.error, false, undefined, "check ahub sdlc status <task> for the task's lifecycle receipt, then retry");
+        const view = reply.readback;
+        if (options.json) return console.log(JSON.stringify(op === "start" ? reply : view ?? null, null, 2));
+        if (op === "start") {
+          const state = String(reply.state ?? "");
+          console.log(state === "requested" || state === "reported"
+            ? `task #${task}: spec read-back ${reply.readback} ${state === "reported" ? "already reported" : "requested"}${state === "requested" ? ` from ${reply.reader}` : ""} (${reply.repo}#${reply.issue})`
+            : `task #${task}: spec read-back unavailable: ${reply.reason ?? "no eligible reader"}`);
+          return;
+        }
+        if (!view || view.status === "none") return console.log(`task #${task}: no spec read-back; start one with ahub sdlc readback start ${task}`);
+        if (view.status === "private") return console.log(`task #${task}: read-back ${view.readback} belongs to a private task; its report is not printed here`);
+        if (view.status === "requested") return console.log(`task #${task}: read-back ${view.readback} requested from ${view.reader}; the reader has not reported yet`);
+        console.log(`task #${task}: read-back ${view.readback} of ${view.repo}#${view.issue} by ${view.reader}`);
+        if (view.report.cannot_paraphrase) console.log(`cannot paraphrase: ${view.report.cannot_paraphrase}`);
+        else { console.log(`proposes: ${view.report.proposes}`); console.log(`existing: ${view.report.existing}`); }
+        for (const item of view.report.undefined ?? []) console.log(`undefined: ${item.term} (${item.where})`);
+        for (const item of view.report.open_decisions ?? []) console.log(`open decision: ${item.decision} (${item.where})`);
+        for (const path of view.report.refs ?? []) console.log(`ref: ${path}`);
+        for (const path of view.missing_refs ?? []) console.log(`missing ref: ${path}`);
+      } finally { hub.close(); }
+      return;
+    }
     if (sub === "accept") {
       // #481 S1: the person accepts the task's spec issue at its current body; agent shells are refused before this runs.
       const flags = takeFlags(args.slice(2), ["--issue", "--repo"], []);
@@ -2309,6 +2341,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       try {
         const reply = await hub.request({ t: "sdlc", op: "accept", id, issue, ...(repo ? { repo } : {}) }, 30_000);
         if (!reply.ok) fail(reply.error);
+        // #1658 AC6: the line names the read-back state read before the acceptance; the acceptance proceeds in every state.
+        if (reply.readback) console.log(reply.readback);
         console.log(`task #${id}: spec issue #${issue} accepted at body edit ${reply.acceptance?.lastEditedAt ?? "never"}`);
       } finally { hub.close(); }
       return;

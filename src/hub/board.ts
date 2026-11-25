@@ -37,6 +37,7 @@ export type { SpecAck, SpecRef, SpecTaskReport } from "./specs-task.ts";
 import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
 import { parseSurveyFindings, parseSurveyVetDecisions, surveyArray, surveyObject, surveyPath, surveyText, surveyFindingId, surveyPass, type SurveyFinding, type SurveyVetDecision, SURVEY_FOCUS, SURVEY_LIMITS, type SurveyFocus } from "./advisor-survey.ts";
 import { parseConsideredEntry, type ConsideredEntry } from "./considered-findings.ts";
+import { parseSpecReadbackReport, READBACK_STORE_BYTES, type SpecReadbackReport } from "./spec-readback.ts";
 
 export interface StoredSurvey { id: number; task: number; taskCreated: number; repo: string; ref: string; focus?: SurveyFocus; by: string; at: number; withheld?: true }
 export interface StoredSurveyFinding { finding: SurveyFinding; foundBy: string; foundAt: number; decision?: SurveyVetDecision; decisionBy?: string; decisionAt?: number }
@@ -44,6 +45,11 @@ export interface SurveyPreparedCard { id: string; key: string; title: string; de
 export interface SurveyApplyInput { findings: SurveyFinding[]; decisions: SurveyVetDecision[]; by: string; at: number; cards?: SurveyPreparedCard[]; rejections?: ConsideredEntry[]; reconsiderations?: ConsideredEntry[]; withheld?: true }
 export interface SurveyWriteFence { boardRevision: number; taskCreated: number; taskFlowRevision: number; owner: string }
 export interface StoredRejectedFinding { id: number; entry: ConsideredEntry; reconsideredBy: number[] }
+/**
+ * #1658: one read-back request per task incarnation, issue and body edit time. The request is stored on it like a survey
+ * report; `reader` is the peer the hub asked and `report` is what it sent back, only through `readbackReport`.
+ */
+export interface StoredReadback { id: number; task: number; taskCreated: number; repo: string; issue: number; lastEditedAt: string | null; updatedAt: string; reader: string; by: string; at: number; report?: SpecReadbackReport; missingRefs?: string[] }
 const SURVEY_STORE_LIMIT = 1000, SURVEY_STORE_BYTES = 64 * 1024;
 const surveyStorageFailure = (): never => { throw new Error("survey storage invalid; stop the hub and restore a trusted hub.db backup before retrying"); };
 const surveyInputFailure = (): never => { throw new Error("invalid survey storage input or changed binding"); };
@@ -54,6 +60,23 @@ function surveyCreateInput(input: unknown): Omit<StoredSurvey, "id"> {
   if (typeof row.ref !== "string" || !/^[a-f0-9]{40}$/.test(row.ref) || row.withheld !== undefined && row.withheld !== true) return surveyInputFailure();
   return { task: surveyInteger(row.task), taskCreated: surveyInteger(row.taskCreated, 0), repo: surveyText(row.repo, 1024), ref: row.ref,
     ...(row.focus === undefined ? {} : { focus: (typeof row.focus === "string" && (SURVEY_FOCUS as readonly string[]).includes(row.focus) ? row.focus as SurveyFocus : surveyInputFailure()) }), by: surveyText(row.by, 128), at: surveyInteger(row.at, 0), ...(row.withheld === true ? { withheld: true } : {}) };
+}
+const readbackStamp = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 40 && !Number.isNaN(Date.parse(value));
+/** #1658: a read-back row is the request plus, once sent, the reader's bounded report, inside the bound the parser accepts; never a verdict or a score. */
+function readbackInput(input: unknown): Omit<StoredReadback, "id"> {
+  const row = surveyObject(input, ["task", "taskCreated", "repo", "issue", "lastEditedAt", "updatedAt", "reader", "by", "at", "report", "missingRefs"]);
+  if (!readbackStamp(row.updatedAt) || row.lastEditedAt !== null && !readbackStamp(row.lastEditedAt)
+    || !Number.isSafeInteger(row.issue) || (row.issue as number) < 1
+    || row.report !== undefined && row.missingRefs === undefined) return surveyInputFailure();
+  const refs = row.missingRefs === undefined ? undefined : surveyArray(row.missingRefs, 64).map(surveyPath);
+  if (refs && new Set(refs).size !== refs.length) return surveyInputFailure();
+  const report = row.report === undefined ? undefined : parseSpecReadbackReport(row.report);
+  const body = { task: surveyInteger(row.task), taskCreated: surveyInteger(row.taskCreated, 0), repo: surveyText(row.repo, 1024), issue: row.issue as number,
+    lastEditedAt: (row.lastEditedAt ?? null) as string | null, updatedAt: row.updatedAt, reader: surveyText(row.reader, 128), by: surveyText(row.by, 128), at: surveyInteger(row.at, 0) };
+  if (report && report.task !== body.task) return surveyInputFailure();
+  const value = { ...body, ...(report === undefined ? {} : { report, missingRefs: refs! }) };
+  if (Buffer.byteLength(JSON.stringify(value)) > READBACK_STORE_BYTES) return surveyInputFailure();
+  return value;
 }
 function surveyStoredFinding(input: unknown): StoredSurveyFinding {
   const row = surveyObject(input, ["finding", "foundBy", "foundAt", "decision", "decisionBy", "decisionAt"]), finding = parseSurveyFindings([row.finding])[0]!;
@@ -742,6 +765,10 @@ export class Board {
       withheld INTEGER NOT NULL DEFAULT 0, UNIQUE(task_id,task_created))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS advisor_survey_findings (
       survey INTEGER NOT NULL, finding_id TEXT NOT NULL, body TEXT NOT NULL, body_sha256 TEXT NOT NULL, PRIMARY KEY(survey,finding_id))`);
+    // #1658: one spec read-back request per task incarnation, issue and body edit time. Private like a survey; the edit time is the key column, so a later body starts a second row.
+    this.db.run(`CREATE TABLE IF NOT EXISTS spec_readbacks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, task_created INTEGER NOT NULL, issue INTEGER NOT NULL, edit TEXT NOT NULL,
+      body TEXT NOT NULL, body_sha256 TEXT NOT NULL, UNIQUE(task_id,task_created,issue,edit))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS considered_findings (
       id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, finding_id TEXT NOT NULL, pass TEXT NOT NULL, kind TEXT NOT NULL,
       body TEXT NOT NULL, body_sha256 TEXT NOT NULL, replay_key TEXT NOT NULL UNIQUE, prior_ids TEXT NOT NULL, withheld INTEGER NOT NULL DEFAULT 0)`);
@@ -1441,6 +1468,67 @@ export class Board {
         return value;
       });
     } catch { return surveyStorageFailure(); }
+  }
+  /** No report exists yet for a request whose reader was never chosen; `unavailable` is a receipt fact, not a row. */
+  readbackCreate(input: { task: number; taskCreated: number; repo: string; issue: number; lastEditedAt: string | null; updatedAt: string; reader: string; by: string; at: number }): number {
+    const row = readbackInput(input);
+    const write = () => {
+      const task = this.get(row.task);
+      if (!task || task.created !== row.taskCreated || task.signals.includes("pii") || task.signals.includes("pii_path")) return surveyInputFailure();
+      const known = this.readbackOfTask(row.task, row.taskCreated, row.issue, row.lastEditedAt);
+      if (known) {
+        const identity = (value: Omit<StoredReadback, "id">) => JSON.stringify([value.task, value.taskCreated, value.repo, value.issue, value.lastEditedAt, value.updatedAt, value.reader, value.by]);
+        if (identity(known) !== identity(row)) return surveyInputFailure();
+        return known.id;
+      }
+      const body = JSON.stringify(row);
+      const saved = this.taskWrite(() => this.db.query("INSERT INTO spec_readbacks(task_id,task_created,issue,edit,body,body_sha256) VALUES(?,?,?,?,?,?)")
+        .run(row.task, row.taskCreated, row.issue, row.lastEditedAt ?? "", body, surveyHash(body)));
+      return Number(saved.lastInsertRowid);
+    };
+    return this.pendingChanges ? write() : this.atomic(write);
+  }
+  readbackOfTask(taskId: number, created: number, issue: number, edit: string | null): StoredReadback | undefined {
+    surveyInteger(taskId); surveyInteger(created, 0); surveyInteger(issue);
+    if (edit !== null && (typeof edit !== "string" || edit.length > 40)) return surveyInputFailure();
+    const row = this.db.query("SELECT id FROM spec_readbacks WHERE task_id=? AND task_created=? AND issue=? AND edit=?").get(taskId, created, issue, edit ?? "") as { id: number } | null;
+    return row ? this.readback(row.id) : undefined;
+  }
+  /** The newest request for this task incarnation: the one `status` and `show` report on. */
+  readbackLatest(taskId: number, created: number): StoredReadback | undefined {
+    surveyInteger(taskId); surveyInteger(created, 0);
+    const row = this.db.query("SELECT id FROM spec_readbacks WHERE task_id=? AND task_created=? ORDER BY id DESC LIMIT 1").get(taskId, created) as { id: number } | null;
+    return row ? this.readback(row.id) : undefined;
+  }
+  readback(id: number): StoredReadback | undefined {
+    surveyInteger(id);
+    const row = this.db.query(`SELECT id,task_id,task_created,issue,CASE WHEN length(CAST(edit AS BLOB))<=40 THEN edit END AS edit,
+      CASE WHEN length(CAST(body AS BLOB))<=${READBACK_STORE_BYTES} THEN body END AS body,CASE WHEN length(CAST(body_sha256 AS BLOB))=64 THEN body_sha256 END AS body_sha256
+      FROM spec_readbacks WHERE id=?`).get(id) as { id: number; task_id: number; task_created: number; issue: number; edit: string | null; body: string | null; body_sha256: string } | null;
+    if (!row) return;
+    try {
+      if (!row.body || surveyHash(row.body) !== row.body_sha256) return surveyStorageFailure();
+      const value = readbackInput(JSON.parse(row.body));
+      if (value.task !== row.task_id || value.taskCreated !== row.task_created || value.issue !== row.issue || (value.lastEditedAt ?? "") !== row.edit) return surveyStorageFailure();
+      return { id: row.id, ...value };
+    } catch { return surveyStorageFailure(); }
+  }
+  /** One report per request: an identical replay returns the stored row, anything else is refused rather than replaced. */
+  readbackReport(id: number, report: unknown, missingRefs: unknown): StoredReadback {
+    surveyInteger(id);
+    const parsed = parseSpecReadbackReport(report), refs = surveyArray(missingRefs, 64).map(surveyPath);
+    if (new Set(refs).size !== refs.length) return surveyInputFailure();
+    return this.atomic(() => {
+      const current = this.readback(id) ?? surveyInputFailure();
+      if (parsed.task !== current.task) return surveyInputFailure();
+      if (current.report) {
+        if (JSON.stringify(current.report) !== JSON.stringify(parsed) || JSON.stringify(current.missingRefs) !== JSON.stringify(refs)) return surveyInputFailure();
+        return current;
+      }
+      const { id: _id, ...next } = { ...current, report: parsed, missingRefs: refs }, body = JSON.stringify(next);
+      this.taskWrite(() => this.db.query("UPDATE spec_readbacks SET body=?,body_sha256=? WHERE id=?").run(body, surveyHash(body), id));
+      return { id, ...next };
+    });
   }
   private consideredWrite(input: unknown, kind: "rejected" | "reconsidered", priorIDs: readonly number[] = []): number {
     const entry = parseConsideredEntry(input), task = this.get(entry.source.task);

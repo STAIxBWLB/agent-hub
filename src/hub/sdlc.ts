@@ -1,6 +1,7 @@
 import { parseIssueLabels, parseRedFirst, testIntegrityBlockers, type RedFirstReceipt, type TestIntegrity } from "./test-integrity.ts";
 import { planConformanceBlockers, type PlanConformance } from "./plan-conformance.ts";
 import { riskPolicy, type RiskPolicy, type RiskRecord } from "./risk-tier.ts";
+import type { ReadbackView } from "./spec-readback.ts";
 import { controlWriteSpan } from "./control-write-trace.ts";
 import { DEFAULT_MAX_NITS, findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CostPlan } from "./cost-governance.ts";
@@ -427,15 +428,20 @@ export function specState(receipt: SdlcReceipt | undefined, edit: SpecEdit | und
   if (!edit) return "unknown";
   return edit.lastEditedAt === accepted.lastEditedAt ? "current" : "changed";
 }
+/** #1658: the body a status list compares a read-back against, because a list makes no issue read of its own. */
+export function acceptedSpecEdit(receipt: SdlcReceipt | undefined): SpecEdit | undefined {
+  const accepted = receipt?.acceptance;
+  return accepted ? { lastEditedAt: accepted.lastEditedAt, updatedAt: accepted.updatedAt } : undefined;
+}
 export const SPEC_STATE_TEXT: Record<Exclude<SpecState, "current">, string> = {
   missing: "spec acceptance missing: the person runs ahub sdlc accept <task> --issue <n>",
   changed: "spec changed after acceptance: the person re-accepts with ahub sdlc accept <task> --issue <n>",
   unknown: "spec edit time unknown: the issue could not be read",
 };
-export interface SdlcStatus { /** #1403 A2: shown only for an enabled lifecycle that configures `[security]`. */ securityPass?: SecurityPassView; evalGate?: EvalGate; testIntegrity?: TestIntegrity; planConformance?: PlanConformance & { accepted?: boolean; earlierPushes?: "unknown"; revisionsAfterFirstObservedPush?: number }; findings?: ReviewFindingTally; spec?: { issue: number; state: SpecState }; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
+export interface SdlcStatus { /** #1403 A2: shown only for an enabled lifecycle that configures `[security]`. */ securityPass?: SecurityPassView; evalGate?: EvalGate; testIntegrity?: TestIntegrity; planConformance?: PlanConformance & { accepted?: boolean; earlierPushes?: "unknown"; revisionsAfterFirstObservedPush?: number }; findings?: ReviewFindingTally; spec?: { issue: number; state: SpecState }; /** #1658: the read-back against the issue's current body; absent when no spec receipt exists. */ readback?: ReadbackView; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
 /** The acceptance-criteria checklist (#481 S8, Compliance pass) counts once recorded, and on every task under the retired gsd-lite setting. Off keeps #257's output. */
 export const criteriaRequired = (config: SdlcConfig, receipt: SdlcReceipt | undefined): boolean => config.workflow === "gsd-lite" || (config.mode !== "off" && !!checklistOf(receipt));
-export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = [], commit?: string, plan?: SdlcStatus["planConformance"], integrity?: TestIntegrity, evalResult?: EvalResult, securityPass?: SecurityPassView): SdlcStatus {
+export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = [], commit?: string, plan?: SdlcStatus["planConformance"], integrity?: TestIntegrity, evalResult?: EvalResult, securityPass?: SecurityPassView, readback?: ReadbackView): SdlcStatus {
   const stage = receipt?.stage ?? config.stages[0] ?? "spec", blockers: string[] = [];
   const definition = stageDefinition(config, stage);
   const evalGate = evidence ? evalGateView(config, evidence, evalResult) : undefined;
@@ -474,7 +480,7 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
   const shown = criteria && (criteriaRequired(config, receipt) || definition && [...definition.entry_gates, ...definition.exit_gates].includes("criteria"));
   // Shown, not counted as a readiness blocker: the spec gate is build entry (#481 S1).
   const spec = config.mode !== "off" && receipt?.issue ? { spec: { issue: receipt.issue, state: specState(receipt, specEdit) } } : {};
-  return { ...spec, ...(security ? { securityPass: security } : {}), ...(evalGate ? { evalGate } : {}), ...(config.mode !== "off" && integrity ? { testIntegrity: integrity } : {}), ...(config.mode !== "off" && plan ? { planConformance: plan } : {}), ...(findings ? { findings } : {}), ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
+  return { ...spec, ...(readback ? { readback } : {}), ...(security ? { securityPass: security } : {}), ...(evalGate ? { evalGate } : {}), ...(config.mode !== "off" && integrity ? { testIntegrity: integrity } : {}), ...(config.mode !== "off" && plan ? { planConformance: plan } : {}), ...(findings ? { findings } : {}), ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
     actor: !definition ? "person" : shown && criteria.blockers.length ? "reviewer/person" : config.definitions ? definition.actor : baseActor(definition.base),
     // #694: the identity blocker keeps its exact text for gate matching; the next step says how to supply it.
     next: blockers[0] === "issue identity missing" ? "issue identity missing: name one issue (title #N, refs or hub_sdlc_record)" : blockers[0] ?? "person may inspect merge readiness; no automatic merge" };

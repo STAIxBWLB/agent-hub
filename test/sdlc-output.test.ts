@@ -268,3 +268,14 @@ test("a time is an absolute minute and an age, never a raw ISO string; terminal 
   const text = renderSdlcStatus(hostile, 80, NOW).map(line => paint(line, false)).join("\n");
   expect(text).not.toContain("\x1b"); expect(text).toContain("red");
 });
+
+test("#1658: the status view prints the spec read-back line for one task, and omits it without a read-back", () => {
+  const render = (readback: unknown) => renderSdlcStatus({ ok: true, mode: "advise", truncated: false,
+    rows: [{ id: 9, title: "Spec review", stage: "spec", mode: "advise", ready: false, actor: "person", next: "ask the person", blockers: [], receipt: { repo: "owner/repo", issue: 1658 }, readback }] }, 120, NOW)
+    .map(line => paint(line, false)).join("\n");
+  expect(render(undefined)).not.toContain("read-back");
+  expect(render({ state: "stale" })).toContain("read-back");
+  expect(render({ state: "stale" })).toContain("stale (the body changed after the last one)");
+  expect(render({ state: "current", undefined: [{ term: "receipt", where: "Storage" }], open_decisions: [], missing_refs: [] })).toContain("1 undefined term");
+  expect(render({ state: "private" })).toContain("withheld");
+});
