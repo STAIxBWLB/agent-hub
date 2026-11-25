@@ -211,6 +211,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub memory decay [--days <n>] [--json]", "list long-term entries older than N days (default 90) that no open goal links; review only, nothing is changed"],
     ["ahub memory declined [--json]", "list declined physical outbound row ids and safe rule labels; never shows row text; reports incomplete scans explicitly"],
     ["ahub memory profile-check [--json]", "read-only check of the running hubs' memory bindings against their memory profiles; exits 1 when one is not ready"],
+    ["ahub memory review on|off|status [--json]", "the person's switch for the scheduled memory review: on needs both token caps in memory.review, off stops the schedule at once and cancels the review card a run left open; status shows the period, the caps and the next run"],
     ["ahub goal [list] [--all] | show <id> [--json]", "long-term tasks: state, which machine holds each and until when, linked board tasks"],
     ["ahub goal new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task> | state <id> <state> | done <id> | take <id> [--force]", "a person's changes to long-term tasks (link also the configured conductor's); take --force voids other machines' claims"],
   ]],

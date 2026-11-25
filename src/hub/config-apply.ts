@@ -19,6 +19,7 @@ import { checkStartAgents } from "./start-agents.ts";
 import { catalogAssignments } from "./roles.ts";
 import { resolveProfile } from "./profiles.ts";
 import { foldersConfig, schedulesConfig } from "./schedules.ts";
+import { MEMORY_REVIEW_CAP_MAX, MEMORY_REVIEW_MAX_NOTES, memoryReviewConfig } from "./memory-review.ts";
 import { corpusConfig } from "./corpus-config.ts";
 import { taskSweepConfig } from "./task-sweep.ts";
 import { projectionConfig } from "./text-projection.ts";
@@ -183,6 +184,14 @@ export const validatePetConfig: Check = (v, k) => {
   block(petFields)(stripLegacyPetWindow(v), k);
 };
 shapes.set(validatePetConfig, { fields: petFields });
+// #1329: memory.review is a block inside the memory block, so the key walk needs its own shape, and its whole-block rule
+// (an enable without both caps is refused) runs after the leaf types.
+const memoryReviewFields: Record<string, Check> = {
+  enabled: bool, every: text, projects: strings, peer: text, max_notes: number(1, MEMORY_REVIEW_MAX_NOTES, true),
+  max_tokens_run: number(1, MEMORY_REVIEW_CAP_MAX, true), max_tokens_week: number(1, MEMORY_REVIEW_CAP_MAX, true),
+};
+const memoryReviewCheck: Check = (v, k) => { if (v === undefined) return; block(memoryReviewFields)(v, k); memoryReviewConfig(v); };
+shapes.set(memoryReviewCheck, { fields: memoryReviewFields });
 const nativeValidators = { bool, text, strings, argv, number, words, block };
 const researchRunners: Check = value => { parseResearchRunners(value); };
 shapes.set(researchRunners, { item: block({ publicKey: text, projects: strings, revoked: bool }) });
@@ -197,7 +206,8 @@ const schema: Record<string, Check> = {
   adapters: v => { createProjectAdapterCatalog(v); }, instances: v => { validateInstances(v, createProjectAdapterCatalog()); }, pet: validatePetConfig,
   batch_max: number(1, 100_000, true), batch_ms: number(0, 2_147_483_647), queue_cap: number(1, 1_000_000, true),
   memory: block({ enabled: bool, worker_url: text, inject_tokens: number(0, 1_000_000, true), brief_items: number(0, 10_000, true), native: bool,
-    short_ttl_days: number(1, 3650, true), sync_interval_min: number(0, 1440, true), suggest_edges: bool, preface_unused_after: number(0, 100_000, true) }),
+    short_ttl_days: number(1, 3650, true), sync_interval_min: number(0, 1440, true), suggest_edges: bool, preface_unused_after: number(0, 100_000, true),
+    review: memoryReviewCheck }),
   roster: peerMap(bool), roles: map(strings), planner: words(PLANNER_PEERS), profile: words(["dev", "research", "writing", "general"]),
   profile_overrides: (v, k) => { map(() => {})(v, k); const fields = object(v, k); for (const name of ["classes", "role_text", "catalog_roles"]) if (fields[name] !== undefined) map(() => {})(fields[name], `${k}.${name}`); resolveProfile("dev", v); },
   catalog_roles: (v, k) => { map(() => {})(v, k); catalogAssignments(v); },
@@ -312,6 +322,9 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
   const operational = operationalNumber(key);
   if (operational) return { applies: operational.applies, ...(operational.restartReason ? { reason: operational.restartReason } : {}) };
   if (key === "memory.sync_interval_min") return { applies: "live" };
+  // #1329: the rest of `memory` quiesces consumers and a profile, but the review block has none: it only decides whether a
+  // schedule entry exists, and the daemon reads it at every schedule path, so the switch takes effect on the reload itself.
+  if (key === "memory.review" || key.startsWith("memory.review.")) return { applies: "live" };
   if (nextMemory.has(key)) return { applies: "next use" };
   for (const [path, reason] of Object.entries(restart)) if (key === path || key.startsWith(`${path}.`)) return { applies: "restart", reason };
   if ([...live].some(path => key === path || key.startsWith(`${path}.`))) return { applies: "live" };
