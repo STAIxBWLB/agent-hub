@@ -725,13 +725,13 @@ var init_compat = __esm(() => {
   COMPAT = {
     pi: {
       label: "Pi",
-      verified: ["1.4.0", "1.5.0", "1.5.2"],
+      verified: ["1.4.0", "1.5.0", "1.5.2", "1.6.0"],
       gate: "contract",
       probe: ["pi", "--version"],
       config: "pi.cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0, 1.5.0 and 1.5.2. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
-      receipt: "docs/verification/2026-11-14-pi-152-compat.md"
+      trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0, 1.5.0, 1.5.2 and 1.6.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
+      receipt: "docs/verification/2026-11-25-pi-160-compat.md"
     },
     "claude-implementer": {
       label: "Claude headless implementer",
@@ -754,12 +754,12 @@ var init_compat = __esm(() => {
     },
     "kimi-review": {
       label: "Kimi reviewer (kimi-code)",
-      verified: ["2.2.0", "2.3.0", "2.3.1", "2.3.2", "2.4.1", "2.5.1"],
+      verified: ["2.2.0", "2.3.0", "2.3.1", "2.3.2", "2.4.1", "2.5.1", "2.7.2"],
       gate: "isolation",
       probe: ["kimi", "--version"],
       parse: (out) => plain(out.trim()),
       trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven.",
-      receipt: "docs/verification/2026-11-06-kimi-251-reviewer-compat.md"
+      receipt: "docs/verification/2026-11-25-kimi-272-reviewer-compat.md"
     },
     "kimi-tui": {
       label: "Kimi TUI completion facts",

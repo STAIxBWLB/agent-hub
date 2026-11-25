@@ -710,30 +710,38 @@ export function renderDoctor(checks: DoctorCheck[], columns?: number, _now = Dat
   return report.lines();
 }
 
-export function renderProjects(projects: any[], columns?: number, _now = Date.now()): Span[][] {
+/** #1654 T3: a list view is ` ahub <Name>` and one `▸` section holding its table. An empty list prints only its one-line empty state, as `ahub board` does (`test/reset.test.ts` pins `no retained deliveries`). */
+function listReport(name: string, columns: number | undefined, ascii: boolean, context?: string): LayoutReport {
+  return new LayoutReport(columns, ascii).header("ahub", name, context);
+}
+export function renderProjects(projects: any[], columns?: number, _now = Date.now(), ascii = false): Span[][] {
   if (!projects.length) return lines("No registered projects. Run ahub init in a project directory.", columns);
-  return rows(["PROJECT", "STATE", "PEERS", "TASKS", "ROOT"], projects.map(project => {
+  const report = listReport("Projects", columns, ascii);
+  return report.section("Projects", String(projects.length)).append(rows(["PROJECT", "STATE", "PEERS", "TASKS", "ROOT"], projects.map(project => {
     const tasks = Object.entries(project.status?.tasks ?? {}).map(([state, n]) => `${n} ${state}`).join(", ");
     return [span(project.id, "info"), span(project.state ?? "unknown", stateTone(project.state ?? "")),
       span(project.status ? Object.keys(project.status.peers ?? {}).length : "unknown", "number"), { ...span(tasks || "-"), items: Object.entries(project.status?.tasks ?? {}).map(([state, n]) => `${n} ${state}`) }, span(project.root)];
-  }), columns, projects.map(project => project.error ? detail("error", project.error, columns, "failure") : []));
+  }), columns, projects.map(project => project.error ? detail("error", project.error, columns, "failure") : []))).lines();
 }
-export function renderQueue(deliveries: any[], columns?: number, now = Date.now()): Span[][] {
+export function renderQueue(deliveries: any[], columns?: number, now = Date.now(), ascii = false): Span[][] {
   if (!deliveries.length) return lines("no retained deliveries", columns);
+  const report = listReport("Queue", columns, ascii);
   const s = initialConsoleState(); s.panel = 4;
   const data = deliveries.map(delivery => {
     const row = cells(s, { ...delivery, id: String(delivery.id) }, false, now);
     row[1] = span(row[1]!.text, peerTone(delivery.peer)); return row;
   });
-  return rows([...TABLES[4]!], data, columns, deliveries.map(delivery => delivery.important ? detail("priority", "important", columns, "attention") : []));
+  const table = rows([...TABLES[4]!], data, columns, deliveries.map(delivery => delivery.important ? detail("priority", "important", columns, "attention") : []));
+  return report.section("Queue", String(deliveries.length)).append(table).lines();
 }
 const moment = (value: unknown, now: number) => {
   const at = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
   return Number.isFinite(at) ? relative(at, now) : "unknown";
 };
-export function renderTurns(turns: any[], columns?: number, now = Date.now()): Span[][] {
+export function renderTurns(turns: any[], columns?: number, now = Date.now(), ascii = false): Span[][] {
   if (!turns.length) return lines("no turns recorded (they need a git work tree and snapshots.enabled)", columns);
-  return rows(["TURN", "PEER", "STARTED", "STATE", "FILES"], turns.map(turn => {
+  const report = listReport("Turns", columns, ascii);
+  return report.section("Turns", String(turns.length)).append(rows(["TURN", "PEER", "STARTED", "STATE", "FILES"], turns.map(turn => {
     const state = !turn.ended ? "running" : !turn.end_tree ? "no end snapshot" : "completed";
     const files = turn.changed ?? [];
     // #798 D2: a dirty submodule is listed beside the files, tagged, so a turn that edited only a submodule never reads "0 files".
@@ -741,25 +749,28 @@ export function renderTurns(turns: any[], columns?: number, now = Date.now()): S
     const shown = [...files, ...unobserved.map(path => `${path} (changed, contents unobserved)`)];
     return [span(turn.id, "info"), span(turn.peer ?? "unknown", peerTone(turn.peer)), span(moment(turn.started, now), "muted"),
       span(state, state === "running" ? "attention" : state === "no end snapshot" ? "failure" : "success"), { ...span(`${plural(files.length, "file")}${shown.length ? `: ${shown.join(", ")}` : ""}`), ...(shown.length ? { items: shown, pathItems: true, prefix: `${plural(files.length, "file")}:` } : {}) }];
-  }), columns);
+  }), columns)).lines();
 }
-export function renderOrphans(orphans: { project: any; pids: number[] }[], columns?: number, _now = Date.now(), killing = false): Span[][] {
+export function renderOrphans(orphans: { project: any; pids: number[] }[], columns?: number, _now = Date.now(), killing = false, ascii = false): Span[][] {
   if (!orphans.length) return lines("no orphaned hub registrations", columns);
-  return [...lines("orphaned hub registrations (the project root is gone):", columns, "strong"),
-    ...rows(["PROJECT", "STATE", "PIDS", "ROOT"], orphans.map(({ project, pids }) => [span(project.id, "info"), span(pids.length ? "live" : "no live process", pids.length ? "attention" : "muted"), span(pids.length ? pids.join(", ") : "-", "number"), span(project.root)]), columns),
-    ...(killing ? [] : [[], ...lines("kill live orphans with ahub doctor --orphans --kill", columns)]),
-    ...orphans.flatMap(({ project }) => detail("forget", `ahub projects remove ${project.id}`, columns))];
+  const report = listReport("Orphans", columns, ascii, "orphaned hub registrations (the project root is gone)");
+  report.section("Orphans", String(orphans.length)).append(
+    rows(["PROJECT", "STATE", "PIDS", "ROOT"], orphans.map(({ project, pids }) => [span(project.id, "info"), span(pids.length ? "live" : "no live process", pids.length ? "attention" : "muted"), span(pids.length ? pids.join(", ") : "-", "number"), span(project.root)]), columns));
+  if (!killing && orphans.some(({ pids }) => pids.length)) report.section("Next").next("ahub doctor --orphans --kill");
+  for (const { project } of orphans) report.next(`ahub projects remove ${project.id}`);
+  return report.lines();
 }
 /** `ahub doctor --orphans --kill` from the conductor's shell (#812, #899): the hub inspects and stops only its own positively identified process; the shell prints what it answered. */
-export function renderOrphanCleanup(result: unknown, columns?: number, _now = Date.now()): Span[][] {
+export function renderOrphanCleanup(result: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const r = result as any;
   const stopped: number[] | undefined = Array.isArray(r?.stopped) ? r.stopped.filter((pid: unknown) => typeof pid === "number") : undefined;
-  const out = stopped === undefined ? lines("stopped processes unknown", columns, "attention")
-    : stopped.length ? lines(`stopped ${stopped.length} orphaned hub process${stopped.length === 1 ? "" : "es"}: ${stopped.join(", ")}`, columns, "success")
-    : lines("no orphaned hub process to stop", columns, "muted");
-  if (r?.self === true) out.push(...lines("this hub was itself an orphan and is stopping", columns, "attention"));
-  if (r?.unknown === true) out.push(...lines("a candidate could not be confirmed stopped; a person can inspect it with ahub doctor --orphans", columns, "attention"));
-  return out;
+  const report = listReport("Orphan cleanup", columns, ascii).section("Cleanup");
+  if (stopped === undefined) report.bullet("unknown", "stopped processes unknown");
+  else if (stopped.length) report.bullet("ok", `stopped ${stopped.length} orphaned hub process${stopped.length === 1 ? "" : "es"}: ${stopped.join(", ")}`);
+  else report.note("no orphaned hub process to stop");
+  if (r?.self === true) report.bullet("warn", "this hub was itself an orphan and is stopping");
+  if (r?.unknown === true) report.bullet("warn", "a candidate could not be confirmed stopped").next("ahub doctor --orphans");
+  return report.lines();
 }
 const TIME_FIELD = /^(?:at|ts|started|ended|created|updated|expires)$|(?:At|Until)$/;
 const ID_FIELD = /^(?:id|trace|previousId|sessionId|threadId|operationId|turnId|envelopeIds)$/;

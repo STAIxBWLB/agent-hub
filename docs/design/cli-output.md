@@ -108,6 +108,7 @@ Glyphs are semantic; each pairs with one role. Code uses named constants, never 
 
 ## Layout grammar
 
+- **List views** (#1654 T3): `projects`, `queue`, `turns` and the orphan views build a `LayoutReport` with `listReport`: header, one counted section holding the table, a bare one-line empty state (no header or section, as `ahub board`) and `next` steps. `--json` is unchanged.
 - **Header**: one line, ` <tool> <Report>` in `header`, followed on the same line or the next by one line of context in `hint` (version, pid, endpoint, project path). One per report. Never in `--json`.
 - **Section**: one blank line, then `▸ <Name>` (ASCII `> <Name>`) in `section`, optionally followed by a count in `hint`: `▸ Peers (4 of 10 online)`. No blank line after it.
 - **Key/value row**: two-space indent, `Key:` padded to the widest key in that section, two spaces, value. A key wider than 28 cells wraps its value to the next line at a four-space indent. An empty value is `(unset)` in `hint`. Keys are words, never repeated entity names: under a peer heading write `form`, not `claude form`.

@@ -4,9 +4,15 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- agy 1.5.16 stays unverified (hub task 1122, Refs #888 and #1280). The new [receipt](docs/verification/2026-11-25-agy-1.5.16.md) records the CLI surface leg as passing on a scratch copy of the binary, with the real `~/.local/bin/agy` hashed identically before and after, and the hooks, close and actual-launcher nonce legs as not run because the task801 producers are gone. `verified` is unchanged.
+
+- Pi 1.6.0 is a verified version (hub task 1121, Refs #888). The new [receipt](docs/verification/2026-11-25-pi-160-compat.md) repeats every leg of the 1.5.2 one model-free against `@earendil-works/pi-coding-agent@1.6.0` installed into a scratch prefix: native identity, real CLI extension load and RPC session identity, SDK extension registration, the managed tool callback and receipt replay, a failed tool result, and zero provider requests. The launcher entry file hash is unchanged. Other Pi versions, including 1.5.3 and 1.6.1, still need the person's `ahub agents trust pi <version>`.
+
 - Raise the `@staix/agent-mem` floor to 0.39.0, so a host can call `MemoryStore.unsettledTaskKeys` (agent-mem#610) without feature detection, for #1445 / hub task 1085. On first open, each populated profile rebuilds a separate v6 derived index from existing rows: a one-time startup cost plus extra disk. The v5 index stays beside it for 0.38.0, or an N-1 0.45.0 hub, sharing the home. HOST_API_VERSION stays 1 and no store or sync format floor is raised. A hub that resolves agent-mem 0.38.0 or older now refuses memory at load. Refs #1664, hub task 1117.
 
 - Finish the help grammar of `ahub help <command>`: Details names each form and says what it does instead of repeating the usage, operands are lowercase `<placeholders>` (`<n>`, `<hash>`, `<ms>`, `<json>`, `<token>`, `<date>`) in usage and in the guidance and roadmap usage errors, and a usage line breaks only between bracket groups. Flags, `--json` and exit codes are unchanged. Refs #1654, hub task 1114.
+
+- Render the project, queue, turn and orphan listings through the shared report layout: a ` ahub <Name>` header, a counted section, a note for an empty list and next steps. `--json`, flags and exit codes are unchanged (Refs #1654, hub task 1115).
 
 - Let a planner name why work is split off: an optional `reason` on `hub_task_propose` (explore, parallel, context, verify, capability, person) is stored on the task and shown by `hub_task_show`, `hub_task_list`, `ahub task show` and the board, an unknown value is refused naming the allowed values, `parallel` siblings with overlapping `refs.paths` are refused before any task exists, and `ahub sdlc metrics` groups task count, review rounds and tokens by reason with `unset` as its own group. The planner role text gains one sentence. Refs #1647, hub task 1109.
 
@@ -22,6 +28,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Add a shrink-only unused-export ratchet: `bun scripts/unused-exports.ts --check` fails on an export of `src/` that nothing imports, or that only tests import, unless `scripts/unused-exports.baseline.json` knows it, and a baseline entry that is gone or used now must leave it. Entry points come from `package.json` and the bundles `scripts/build.mjs` builds, and a name reached only through a string is declared with a `// used-by: <file>` comment above its declaration. `scripts/check.sh` runs it with the once-only steps, and one seed turns it red (Refs #1649, hub task 1093).
 
 - Add `ahub projects move` to keep a moved project's port, board, delivery history and handoff links. Preview first and stop every affected hub before confirming. Refs #1424, hub task 1100.
+
+- Verify Kimi Code 2.7.2 for fresh reviews with isolated model-free broker and native tool-loop evidence. Refs #888, hub task 1120.
 
 - Remove the Qwen dual-output compat-receipt timing flake: the fixture now consumes submits from a poll as well as `fs.watch`, and the proof deadline is a hang guard instead of a 4 s wall-clock bound, so a loaded runner no longer fails at the `first-held` checkpoint. Refs #1669, hub task 1089.
 - Refuse task proposals whose detail exceeds 8000 characters and show how to retry with a spec issue reference. Refs #1648, hub task 1086.

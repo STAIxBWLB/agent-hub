@@ -359,18 +359,19 @@ test("every COMPAT entry names a receipt that exists and has a watcher source, s
   // The receipt to repeat is the newest one for each of the three #843 AC5 CLIs.
   expect(COMPAT.jcode.receipt).toBe("docs/verification/2026-11-22-jcode-1.0.3.md");
   expect(COMPAT.agy.receipt).toBe("docs/verification/2026-11-08-agy-1.5.3.md");
-  expect(COMPAT.pi.receipt).toBe("docs/verification/2026-11-14-pi-152-compat.md");
+  expect(COMPAT.pi.receipt).toBe("docs/verification/2026-11-25-pi-160-compat.md");
 });
 
-test("Pi 1.4.0, 1.5.0 and 1.5.2 have exact receipt gates; other versions need the person's trust (#843 AC2, #888)", () => {
-  expect(COMPAT.pi.verified).toEqual(["1.4.0", "1.5.0", "1.5.2"]);
+test("Pi 1.4.0, 1.5.0, 1.5.2 and 1.6.0 have exact receipt gates; other versions need the person's trust (#843 AC2, #888)", () => {
+  expect(COMPAT.pi.verified).toEqual(["1.4.0", "1.5.0", "1.5.2", "1.6.0"]);
+  expect(assessVersion("pi", "1.6.0", [])).toEqual({ ok: true, state: "verified", version: "1.6.0" });
   expect(assessVersion("pi", "1.4.0", [])).toEqual({ ok: true, state: "verified", version: "1.4.0" });
   expect(assessVersion("pi", "1.5.0", [])).toEqual({ ok: true, state: "verified", version: "1.5.0" });
   expect(assessVersion("pi", "1.5.2", [])).toEqual({ ok: true, state: "verified", version: "1.5.2" });
   expect(COMPAT.pi.gate).toBe("contract");
   expect(COMPAT.pi).not.toHaveProperty("line");
   expect(COMPAT.pi.parse("1.4.0\n")).toBe("1.4.0");
-  for (const version of ["1.4.1", "1.5.1", "1.5.3", "1.5.2-rc.1", "1.4.0-rc.1"]) {
+  for (const version of ["1.4.1", "1.5.1", "1.5.3", "1.6.1", "1.6.0-rc.1", "1.5.2-rc.1", "1.4.0-rc.1"]) {
     const verdict = assessVersion("pi", version, []);
     expect(verdict).toMatchObject({ ok: false, state: "refused" });
     if (!verdict.ok) expect(verdict.reason).toContain(`ahub agents trust pi ${version}`);
@@ -426,6 +427,12 @@ test("the Pi 1.5.2 receipt names the exact package, isolation and every repeated
 });
 
 
+test("the Pi 1.6.0 receipt names the exact package, isolation and every repeated leg (#888)", () => {
+  const receipt = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-25-pi-160-compat.md"), "utf8");
+  expect(receipt).toMatch(/[0-9a-f]{64}/);
+  for (const leg of ["sha512-", "Native identity", "Real CLI extension load", "Installed SDK extension registration", "Managed tool callback", "Failed tool result", "Host permission modes", "Provider requests", "PASS", "Not verified"]) expect(receipt, leg).toContain(leg);
+});
+
 test("Qwen ACP 0.26.8 and 0.27.0 retain their independent receipts and historical dual refusals (#888)", () => {
   expect(assessVersion("qwen", "0.26.8", [])).toEqual({ ok: true, state: "verified", version: "0.26.8" });
   expect(assessVersion("qwen", "0.27.0", [])).toEqual({ ok: true, state: "verified", version: "0.27.0" });
@@ -441,10 +448,12 @@ test("Qwen ACP 0.26.8 and 0.27.0 retain their independent receipts and historica
 });
 
 
-test("Kimi reviewer 2.5.1 is exact-receipt verified without trusting nearby versions (#888)", () => {
+test("Kimi reviewer 2.5.1 and 2.7.2 are exact-receipt verified without trusting nearby versions (#888)", () => {
   expect(assessVersion("kimi-review", "2.5.1", [])).toEqual({ ok: true, state: "verified", version: "2.5.1" });
-  expect(COMPAT["kimi-review"].receipt).toBe("docs/verification/2026-11-06-kimi-251-reviewer-compat.md");
-  for (const near of ["2.5.0", "2.5.2", "2.5.1-rc.1", "kimi 2.5.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
+  expect(assessVersion("kimi-review", "2.7.2", [])).toEqual({ ok: true, state: "verified", version: "2.7.2" });
+  expect(COMPAT["kimi-review"].receipt).toBe("docs/verification/2026-11-25-kimi-272-reviewer-compat.md");
+  expect(assessVersion("kimi-tui", "2.7.2", []).ok).toBe(false);
+  for (const near of ["2.5.0", "2.5.2", "2.5.1-rc.1", "kimi 2.5.1", "2.7.1", "2.7.3", "2.7.2-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
 });
 
 test("Qwen dual-output 0.27.0 has an exact independent receipt without a version line (#888)", () => {
