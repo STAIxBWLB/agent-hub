@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 
-// #1635: the real hub's ui_snapshot carries the board's own write counter, a bare number, so acon's revision() can poll it.
+// #1635: the real hub answers a console-role `board_revision` with the board's own write counter, a bare number, so acon's revision() can poll it without a board snapshot.
 
 const dirs: string[] = [];
 const cleanup: (() => unknown)[] = [];
@@ -14,7 +14,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-test("ui_snapshot carries boardRevision, stable without a write and changed by a task-board write (#1635 AC2)", async () => {
+test("board_revision is a bare number, stable without a write, changed by a task-board write, and a ui_snapshot does not carry it (#1635 AC2)", async () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "ahub-boardrev-"))); dirs.push(home);
   const previous = process.env.AGENTHUB_HOME;
   process.env.AGENTHUB_HOME = home;
@@ -25,12 +25,15 @@ test("ui_snapshot carries boardRevision, stable without a write and changed by a
   cleanup.push(() => daemon.stop());
   const person = await ControlClient.connect(stateDir, { role: "console" });
   cleanup.push(() => person.close());
-  const first = await person.request({ t: "ui_snapshot", after: 0 });
+  const read = async () => await person.request({ t: "board_revision" });
+  const first = await read();
+  expect(first.ok).toBe(true);
   expect(Number.isSafeInteger(first.boardRevision)).toBe(true);
-  expect((await person.request({ t: "ui_snapshot", after: 0 })).boardRevision).toBe(first.boardRevision);
+  expect((await read()).boardRevision).toBe(first.boardRevision);
   const proposed = await person.request({ t: "task", op: "hub_task_propose", args: { title: "revision fixture", class: "implement", owner: "codex" } });
   expect(proposed.ok, String(proposed.error)).toBe(true);
-  const after = await person.request({ t: "ui_snapshot", after: 0 });
-  expect(after.boardRevision).toBeGreaterThan(first.boardRevision);
-  expect(typeof after.boardRevision).toBe("number"); // a bare number: no title or other text is folded into it
+  expect((await read()).boardRevision).toBeGreaterThan(first.boardRevision);
+  // The reply is the number alone: no title, task or other text rides along.
+  expect(Object.keys(await read()).filter((key) => !["rid", "t", "ok", "boardRevision"].includes(key))).toEqual([]);
+  expect("boardRevision" in await person.request({ t: "ui_snapshot", after: 0 })).toBe(false);
 });

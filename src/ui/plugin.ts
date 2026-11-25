@@ -187,7 +187,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
-  const { list, act, answer, receipt, consoleControl, lineage, guidance, guidanceProbe } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
+  const { list, act, answer, receipt, consoleControl, lineage, guidance, guidanceProbe, boardRevision } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
   const dashboard = panelAssets(), guide = guidancePanelAssets();
   const assets = { css: `${dashboard.css}\n${guide.css}`, js: `${dashboard.js.replace("export default (host) => {", "const createDashboard = (host) => {")}\n${guide.js.replace("export default (host) => {", "const createGuidance = (host) => {")}\nexport default (host) => {
     const dashboardMount = host.mount.ownerDocument.createElement('div'), guidanceMount = host.mount.ownerDocument.createElement('div');
@@ -615,13 +615,11 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         out[key] = "0";
         if (key !== "board") continue;
         const projects = await running();
-        // Each running project's hub answers with its board's write counter, a bare number; only ids and numbers are folded, never a title or any task text.
-        const parts = await Promise.all(projects.map(async (project) => {
-          const snap = await Promise.resolve(act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "board" })).catch(() => null) as Record<string, unknown> | null;
-          const counter = snap && typeof snap.boardRevision === "number" && Number.isSafeInteger(snap.boardRevision) ? snap.boardRevision : "?";
-          return `${project.id}:${project.instanceId}:${counter}`;
-        }));
-        out[key] = parts.length ? createHash("sha256").update(parts.sort().join("|")).digest("hex").slice(0, 32) : "0";
+        // A bare number per running project from the cheap console-role `board_revision` read, never the board snapshot. Only ids and numbers are folded, never a title or any task text.
+        // One unknown counter (an older hub, a failed read, a project that vanished) makes the whole value "0": the console fetches, instead of believing the board never changes.
+        const counters = await Promise.all(projects.map(async (project) => ({ project, counter: await boardRevision({ projectId: project.id, instanceId: project.instanceId }) })));
+        out[key] = counters.length && counters.every(({ counter }) => counter !== undefined)
+          ? createHash("sha256").update(counters.map(({ project, counter }) => `${project.id}:${project.instanceId}:${counter}`).sort().join("|")).digest("hex").slice(0, 32) : "0";
       }
       return out;
     },
