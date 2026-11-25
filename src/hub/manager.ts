@@ -323,7 +323,21 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch { return { ok: false, error: "guidance probe status is unavailable; refresh the probe id or upgrade the hub before retrying" }; }
     finally { client?.close(); }
   };
-  return { list, act, answer, receipt, consoleControl, lineage, guidance, guidanceProbe };
+  // #1635: the acon provider's cheap board change token. A port of its own like `lineage`, never an `act` action: it sends the console-role `board_revision` message and gets one bare number back,
+  // instead of the full board snapshot. An older hub answers an unknown message with ok:false, and any failure is `undefined` so the caller serves "always fetch".
+  const boardRevision = async (target: { projectId: unknown; instanceId: unknown }): Promise<number | undefined> => {
+    if (options.stopping?.()) return undefined;
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project || typeof target.instanceId !== "string" || !target.instanceId) return undefined;
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      const result = await client.request({ t: "board_revision" }, options.forwardTimeoutMs?.("board_revision", 3_000) ?? 3_000);
+      return result.ok === true && typeof result.boardRevision === "number" && Number.isSafeInteger(result.boardRevision) ? result.boardRevision : undefined;
+    } catch { return undefined; }
+    finally { client?.close(); }
+  };
+  return { list, act, answer, receipt, consoleControl, lineage, guidance, guidanceProbe, boardRevision };
 }
 
 export async function startManager(options: ManagerOptions = {}): Promise<ManagerHandle> {

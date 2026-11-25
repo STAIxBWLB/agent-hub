@@ -42,11 +42,15 @@ type ActionResult =
   | ({ ok: true } & Record<string, unknown>)
   | { ok: false; error: string; unconfirmed?: true }
   | { ok: false; needsConfirm: true; preview: string[]; fingerprint: string; verb?: string; warnings?: string[] };
+/** #1635: scopes answered per `revision()` call; the rest are dropped, and each key is cut to 200 characters. */
+const REVISION_MAX_SCOPES = 20;
 export interface ConsoleProvider {
   assets: { js: string; css?: string };
   snapshot(input: { after: number; panel: string } & Record<string, unknown>): Promise<Record<string, unknown>>;
   action(input: { action: string; confirmed?: true; fingerprint?: string } & Record<string, unknown>, meta?: ActionMeta): Promise<ActionResult>;
   asset?(input: { id: string }): Promise<{ bytes: Uint8Array; mime: string; name: string } | null>;
+  /** #1635: an opaque change token per scope, so a console polls cheaply. `board` changes on every task-board write across the running projects; any other scope is "0". */
+  revision?(scopes: string[]): Promise<Record<string, string>>;
   close?(): Promise<void>;
 }
 export interface ConsolePlugin {
@@ -183,7 +187,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
-  const { list, act, answer, receipt, consoleControl, lineage, guidance, guidanceProbe } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
+  const { list, act, answer, receipt, consoleControl, lineage, guidance, guidanceProbe, boardRevision } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
   const dashboard = panelAssets(), guide = guidancePanelAssets();
   const assets = { css: `${dashboard.css}\n${guide.css}`, js: `${dashboard.js.replace("export default (host) => {", "const createDashboard = (host) => {")}\n${guide.js.replace("export default (host) => {", "const createGuidance = (host) => {")}\nexport default (host) => {
     const dashboardMount = host.mount.ownerDocument.createElement('div'), guidanceMount = host.mount.ownerDocument.createElement('div');
@@ -604,6 +608,21 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         return null;
       }
     },
+    async revision(scopes) {
+      const out: Record<string, string> = {};
+      for (const scope of scopes.slice(0, REVISION_MAX_SCOPES)) {
+        const key = typeof scope === "string" ? scope.slice(0, 200) : "";
+        out[key] = "0";
+        if (key !== "board") continue;
+        const projects = await running();
+        // A bare number per running project from the cheap console-role `board_revision` read, never the board snapshot. Only ids and numbers are folded, never a title or any task text.
+        // One unknown counter (an older hub, a failed read, a project that vanished) makes the whole value "0": the console fetches, instead of believing the board never changes.
+        const counters = await Promise.all(projects.map(async (project) => ({ project, counter: await boardRevision({ projectId: project.id, instanceId: project.instanceId }) })));
+        out[key] = counters.length && counters.every(({ counter }) => counter !== undefined)
+          ? createHash("sha256").update(counters.map(({ project, counter }) => `${project.id}:${project.instanceId}:${counter}`).sort().join("|")).digest("hex").slice(0, 32) : "0";
+      }
+      return out;
+    },
     async close() { if (owned) registry.close(); },
   };
 
@@ -666,6 +685,7 @@ const capabilities = {
   actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...RESULT_ADVERTISED, ...REVIEW_ACTIONS],
   reads: ["lineage"], confirm: true, multiProject: true, inbox: true, inboxMaxAgeMs: INBOX_MAX_AGE_MS,
   space: true, spaceMaxAgeMs: SPACE_MAX_AGE_MS,
+  // ponytail: `revision: true` is not declared. The pinned @staix/agent-console 0.2.0 has no revision contract (agent-console#123); the provider answers revision() already. Ceiling: a console that never asks. Upgrade: declare it when the pin moves to the 0.3.x that ships the contract.
 };
 
 const plugin: ConsolePlugin = {

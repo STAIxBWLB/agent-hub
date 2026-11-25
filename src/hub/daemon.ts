@@ -13966,6 +13966,11 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ t: "questions", ok: false, error: "questions are shown to the person: use the console" });
         return void reply({ t: "questions", ok: true, questions: questionStore.list(msg.state === "all" ? {} : { state: "open" }, 100).map(questionView), answeredQuestions: instructedQuestionViews() });
       }
+      // #1635: the board's write counter alone, for acon's revision polling. A console-role read of one bare number: no task, title or text, and no board write. An older hub answers an unknown message with ok:false, which the plugin maps to "0" (always fetch).
+      case "board_revision": {
+        if (c.role !== "console") return void reply({ t: "board_revision", ok: false, error: "the board revision is read by the console" });
+        return void reply({ t: "board_revision", ok: true, boardRevision: board.statusRevision() });
+      }
       // #1054: a person's receipt for a result. Console role ONLY, like `permit`: a peer's connection, a `hub_send` body or a tool result that quotes a receipt is text and never reaches
       // the store. A snapshot or a `results` read never writes one. Every message gets a reply (rid), a refusal included.
       case "result_seen": {
