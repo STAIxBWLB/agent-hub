@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Board, TASK_REASONS } from "../src/hub/board.ts";
 import { ROLE_TEXT } from "../src/hub/hub-tools.ts";
 import { compactRow } from "../src/hub/task-list-page.ts";
-import { reasonGroups, UNSET_REASON, type MetricTask } from "../src/hub/sdlc-metrics.ts";
+import { sdlcMetrics, type MetricTask } from "../src/hub/sdlc-metrics.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { Bus } from "../src/hub/bus.ts";
@@ -64,9 +64,9 @@ test("AC4: metrics group task count, review rounds and tokens by reason, with un
     { id: 1, reason: "parallel", history: done(2) }, { id: 2, reason: "parallel", history: done(1) },
     { id: 3, history: done(1) }, { id: 4, reason: "explore", history: [] }, { id: 5, private: true, reason: "person", history: done(1) },
   ];
-  const groups = reasonGroups(tasks, new Set([1, 2, 3, 4, 5]), { 1: 100, 2: 50, 3: null });
+  const groups = sdlcMetrics(tasks, { tokens: { 1: 100, 2: 50, 3: null } }).byReason;
   expect(groups.parallel).toEqual({ tasks: 2, reviewRounds: 3, tokens: 150 });
-  expect(groups[UNSET_REASON]).toEqual({ tasks: 1, reviewRounds: 1, tokens: null });
+  expect(groups.unset).toEqual({ tasks: 1, reviewRounds: 1, tokens: null });
   expect(groups.explore).toEqual({ tasks: 1, reviewRounds: 0, tokens: null });
   expect(groups.person).toBeUndefined();   // a private task is never grouped
 });

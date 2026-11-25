@@ -222,11 +222,11 @@ export function controlEpisode(points: readonly { value: number; task: number }[
 }
 
 /** #1647 AC4: one group per reason a task was split off for, `unset` for the tasks proposed without one. Tokens are the hub's own increments; `null` when no task of the group has a reading. */
-export interface ReasonGroup { tasks: number; reviewRounds: number; tokens: number | null }
-export const UNSET_REASON = "unset";
+interface ReasonGroup { tasks: number; reviewRounds: number; tokens: number | null }
+const UNSET_REASON = "unset";
 
 /** Group the counted tasks by reason. A review round is one `done` (a request for review); tokens sum the tasks that have a reading and stay unknown, never 0, when none does. */
-export function reasonGroups(tasks: readonly MetricTask[], samples: ReadonlySet<number>, tokens: Readonly<Record<number, number | null>> = {}): Record<string, ReasonGroup> {
+function reasonGroups(tasks: readonly MetricTask[], samples: ReadonlySet<number>, tokens: Readonly<Record<number, number | null>> = {}): Record<string, ReasonGroup> {
   const groups: Record<string, ReasonGroup> = {};
   for (const task of tasks) {
     if (task.private || !samples.has(task.id)) continue;
