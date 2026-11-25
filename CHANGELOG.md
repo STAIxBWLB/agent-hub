@@ -30,6 +30,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Gate the CLI output inventory: `scripts/check.sh` runs `bun scripts/cli-output-inventory.ts --check` with the once-only steps, so a help or renderer change that ages the dated snapshot fails the gate instead of surfacing at review. The step runs once per gate on each operating system, never once per shard. Refs #1654, hub task 1112.
 
+- Verify Kimi Code 2.7.2 for fresh reviews with isolated model-free broker and native tool-loop evidence. Refs #888, hub task 1120.
+
 ## 0.46.1
 
 - Resolve `@staix/agent-mem` 0.38.0 in `bun.lock` so the repository's tests and CI run on the version a fresh install resolves; the declared range `>=0.33.0 <1.0.0` is unchanged. The recovery package refuses a ranged `@staix/cli-output` pin with the output message again when agent-mem declares it. Refs #1664, hub task 1084.

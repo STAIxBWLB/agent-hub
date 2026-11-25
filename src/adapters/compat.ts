@@ -44,12 +44,13 @@ export const COMPAT = {
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),
     trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md).",
     receipt: "docs/verification/2026-11-14-codex-0169-reviewer-isolation.md" },
-  // Kimi 2.3.0 / Qwen 0.26.0 receipt: docs/verification/2026-10-22-kimi-qwen-compat.md; Kimi 2.3.1: docs/verification/2026-10-25-kimi-231-reviewer-compat.md; Kimi 2.3.2: docs/verification/2026-10-26-kimi-232-reviewer-compat.md; Kimi 2.4.1: docs/verification/2026-10-31-kimi-241-reviewer-compat.md; Kimi 2.5.1: docs/verification/2026-11-06-kimi-251-reviewer-compat.md
-  "kimi-review": { label: "Kimi reviewer (kimi-code)", verified: ["2.2.0", "2.3.0", "2.3.1", "2.3.2", "2.4.1", "2.5.1"], gate: "isolation", probe: ["kimi", "--version"],
+  // Kimi 2.3.0 / Qwen 0.26.0 receipt: docs/verification/2026-10-22-kimi-qwen-compat.md; Kimi 2.3.1: docs/verification/2026-10-25-kimi-231-reviewer-compat.md; Kimi 2.3.2: docs/verification/2026-10-26-kimi-232-reviewer-compat.md; Kimi 2.4.1: docs/verification/2026-10-31-kimi-241-reviewer-compat.md; Kimi 2.5.1: docs/verification/2026-11-06-kimi-251-reviewer-compat.md; 2.7.2: docs/verification/2026-11-25-kimi-272-reviewer-compat.md
+  "kimi-review": { label: "Kimi reviewer (kimi-code)", verified: ["2.2.0", "2.3.0", "2.3.1", "2.3.2", "2.4.1", "2.5.1", "2.7.2"], gate: "isolation", probe: ["kimi", "--version"],
     parse: out => plain(out.trim()),
     trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven.",
-    receipt: "docs/verification/2026-11-06-kimi-251-reviewer-compat.md" },
+    receipt: "docs/verification/2026-11-25-kimi-272-reviewer-compat.md" },
   // The interactive TUI's native-turn and background readbacks are a separate contract from headless ACP and reviewer isolation.
+  // 2.7.2 model-free checks and pending live TUI legs: docs/verification/2026-11-25-kimi-tui-272.md
   "kimi-tui": { label: "Kimi TUI completion facts", verified: ["2.5.2"], gate: "contract", probe: ["kimi", "--version"],
     parse: out => plain(out.trim()),
     trustNote: "Only 2.5.2 has a live receipt for turn.prompt/turn.ended/prompt completion rows, background task inventory and launcher-bound plugin hooks. Another version keeps completion receipts disabled.",
