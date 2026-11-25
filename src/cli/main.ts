@@ -2239,13 +2239,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "costs") {
       if (args.length > 2) fail("usage: ahub sdlc costs [owner/repository]");
       const text = await taskOp("hub_sdlc_costs", { ...(args[1] ? { repo: args[1] } : {}) });
-      return showToolText(renderSdlcCosts, text, present!);
+      return showToolText((data, columns, now) => renderSdlcCosts(data, columns, now, asciiMarkers(process.env, process.argv.includes("--ascii"))), text, present!);
     }
     if (sub === "metrics") {
       const flags = takeFlags(args.slice(1), ["--since"], []);
       if (flags.rest.length) fail("usage: ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]");
       const text = await taskOp("hub_sdlc_metrics", { ...(flags.one["--since"] !== undefined ? { since: flags.one["--since"] } : {}) });
-      return showToolText(renderSdlcMetrics, text, present!);
+      return showToolText((data, columns, now) => renderSdlcMetrics(data, columns, now, asciiMarkers(process.env, process.argv.includes("--ascii"))), text, present!);
     }
     if (sub === "plan-review") {
       const revision = Number(args[2]);

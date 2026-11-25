@@ -223,6 +223,24 @@ test("sdlc merge and authorize-release accept --ascii: ASCII markers, no unicode
   expect(release.stdout).not.toMatch(/[✓✗⚠▸]/);
 });
 
+// #1654 T3 slice 3b: `--ascii` reaches queue, release, metrics and costs too, and a section mark is `>` with no unicode glyph.
+for (const name of ["queue", "release", "metrics", "costs"]) {
+  test(`sdlc ${name} accepts --ascii: ASCII section marks, no unicode glyphs, the request is unchanged`, async () => {
+    const command = commands.find(c => c.name === name)!;
+    const f = fixture(); f.serve(command);
+    const plainRun = await f.run([...command.argv, "--color=never"]);
+    const ascii = await f.run([...command.argv, "--ascii", "--color=never"]);
+    expect(ascii.code, ascii.stderr).toBe(0);
+    expect(ascii.stderr).not.toContain("usage");
+    expect(ascii.stdout).toMatch(/^> /m);
+    expect(ascii.stdout).not.toMatch(/[\u2713\u2717\u26a0\u25b8]/);
+    expect(plainRun.stdout).toMatch(/^\u25b8 /m);
+    const sent = f.requests.filter(r => r.t === "sdlc" || r.t === "task");
+    expect(sent.map(r => JSON.stringify({ ...r, rid: 0 }))).toHaveLength(2);
+    expect(JSON.stringify({ ...sent[0], rid: 0 })).toBe(JSON.stringify({ ...sent[1], rid: 0 }));
+  });
+}
+
 test("the other sdlc subcommands keep their argv: --json is not stripped from them", async () => {
   const f = fixture(); f.serve(commands[0]);
   const refused = await f.run(["sdlc", "record", "7", "{}", "--json"]);

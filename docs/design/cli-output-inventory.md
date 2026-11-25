@@ -156,7 +156,7 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | intake | fail (3), showToolText (2), renderIntakeChange (1), renderIntake (1) |
 | deliverables | fail (2), console.log (5) |
 | board | fail (8), console.log (3), showToolText (1), renderHandoffs (1), console.error (1), printOutput (2), renderBoardColumns (1), renderBoard (1) |
-| sdlc | printOutput (2), fail (51), console.log (35), process.stdout.write (2), showToolText (2), renderSdlcMerge (1) |
+| sdlc | printOutput (2), fail (51), console.log (35), process.stdout.write (2), showToolText (2), renderSdlcCosts (1), renderSdlcMetrics (1), renderSdlcMerge (1) |
 | task | showToolText (3), fail (15), console.log (7), renderHandoffs (1), renderHandoffReceipt (1), console.error (1) |
 | review | fail (5), console.log (2) |
 | remember | console.log (1) |
@@ -291,11 +291,11 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/schedule-output.ts:renderScheduleChange | CLI | - | heading, pair | 17 |
 | src/cli/sdlc-output.ts:renderSdlcConfiguration | CLI | - | heading, pair | 68 |
 | src/cli/sdlc-output.ts:renderSdlcSurvey | CLI | - | heading, pair | 23 |
-| src/cli/sdlc-output.ts:renderSdlcQueue | CLI | - | blank, grid, heading, pair | 30 |
-| src/cli/sdlc-output.ts:renderSdlcAudit | CLI | - | heading, pair | 51 |
-| src/cli/sdlc-output.ts:renderSdlcRelease | CLI | - | blank, grid, heading, moment, pair | 71 |
-| src/cli/sdlc-output.ts:renderSdlcMetrics | CLI | - | blank, grid, heading, moment, pair | 80 |
-| src/cli/sdlc-output.ts:renderSdlcCosts | CLI | - | blank, grid, heading, wrap | 37 |
+| src/cli/sdlc-output.ts:renderSdlcQueue | CLI | - | grid | 36 |
+| src/cli/sdlc-output.ts:renderSdlcAudit | CLI | Direct | LayoutReport | 50 |
+| src/cli/sdlc-output.ts:renderSdlcRelease | CLI | - | grid, moment | 74 |
+| src/cli/sdlc-output.ts:renderSdlcMetrics | CLI | Direct | LayoutReport, grid, moment | 80 |
+| src/cli/sdlc-output.ts:renderSdlcCosts | CLI | Direct | LayoutReport, grid | 39 |
 | src/cli/sdlc-output.ts:renderAuthorization | CLI | Direct | LayoutReport, moment | 46 |
 | src/cli/sdlc-output.ts:renderSdlcMerge | CLI | Direct | LayoutReport | 36 |
 | src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |

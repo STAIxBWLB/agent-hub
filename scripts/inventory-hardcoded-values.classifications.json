@@ -881,6 +881,8 @@
   "src/cli/recovery-version-preflight.ts:words:inline:value.length <= 32=32#0": "safety floor",
   "src/cli/sdlc-output.ts:grid:inline:floor.reduce=0#0": "operational",
   "src/cli/sdlc-output.ts:renderSdlcAudit:inline:f.settled ?? 0=0#0": "contract",
+  "src/cli/sdlc-output.ts:renderSdlcMetrics:inline:st.doneWithoutWrites ?? 0=0#0": "contract",
+  "src/cli/sdlc-output.ts:renderSdlcMetrics:inline:st.open ?? 0=0#0": "contract",
   "src/cli/sdlc-release-guard.ts:<anonymous>:inline:word.length <= 4096=4096#0": "safety floor",
   "src/cli/sdlc-release-guard.ts:hookText:inline:value.length <= 4096=4096#0": "safety floor",
   "src/cli/sdlc-release-guard.ts:literal:inline:value.length <= 4096=4096#0": "safety floor",

@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub sdlc queue`, `audit show`, `release`, `metrics` and `costs` print on the shared Report layout (hub task 1135, Refs #1654): a header, one section per topic, markers for blockers and units, and `--ascii` markers. A repository name too long for the header wraps on its own line, and a narrow terminal stacks a `kv` value under its key. `--json` is unchanged and every pinned phrase stays.
+
 - `ahub sdlc authorize-release` and `ahub sdlc merge` print on the shared Report layout (hub task 1116, Refs #1654): a header, `Authorization`, `Decision`, `Refused` and `Result` sections, one `✗` line per refused gate, and `--ascii` markers (now accepted as a presentation flag by both commands), plus a `✗` or `⚠` line when a merge did not happen. `--json` is unchanged and every pinned phrase stays.
 
 - Refuse a recovery target that predates stored spec read-backs, and make the read-back's own answers say what to do next. `spec_readbacks` gains its `DAEMON_FEATURES` name, a `Board.hasSpecReadbacksState()` floor in `incompatibleRecoveryTarget`, and a counts-and-digest proof that joins `integrity()` and the restart comparison only while rows exist, so a handover to an older daemon is refused instead of silently dropping the grants, and a row that fails its hash refuses as unknown storage. A routing refusal now reaches the person inside the read-back's continuation instead of as a bare "not attached", the CLI fallback prints the real task id, `ahub sdlc accept` records the acceptance when a row is corrupt (printing that the state is unknown), and `spec-readback` reuses the hardened `GIT_SAFE_OPTIONS`. Refs #1658, hub task 1129.

@@ -273,7 +273,8 @@ export class Report {
       const label = `${terminalText(key)}:`, text = terminalText(raw ?? "").trim();
       const value = (line: string): Span => text ? { text: line, role: "value" } : { text: "(unset)", role: "hint" };
       const lead = " ".repeat(indent);
-      if (keys[index]! > 28) {
+      // a terminal too narrow to leave 10 cells beside the label stacks the value under its key, like a key wider than 28
+      if (keys[index]! > 28 || this.columns !== undefined && indent + pad + 2 + 10 > this.columns) {
         this.push([{ text: `${lead}${label}`, role: "key" }]);
         for (const line of text ? this.fit(text, (this.columns ?? 0) - indent - 2) : [""]) this.push([{ text: `${lead}  ` }, value(line)]);
         continue;
