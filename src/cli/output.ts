@@ -710,13 +710,13 @@ export function renderDoctor(checks: DoctorCheck[], columns?: number, _now = Dat
   return report.lines();
 }
 
-/** #1654 T3: a list view is ` ahub <Name>` and one `▸` section holding its table; an empty list says so in the section, with the step that fills it. */
+/** #1654 T3: a list view is ` ahub <Name>` and one `▸` section holding its table. An empty list prints only its one-line empty state, as `ahub board` does (`test/reset.test.ts` pins `no retained deliveries`). */
 function listReport(name: string, columns: number | undefined, ascii: boolean, context?: string): LayoutReport {
   return new LayoutReport(columns, ascii).header("ahub", name, context);
 }
 export function renderProjects(projects: any[], columns?: number, _now = Date.now(), ascii = false): Span[][] {
+  if (!projects.length) return lines("No registered projects. Run ahub init in a project directory.", columns);
   const report = listReport("Projects", columns, ascii);
-  if (!projects.length) return report.section("Projects").note("no registered projects").next("ahub init").lines();
   return report.section("Projects", String(projects.length)).append(rows(["PROJECT", "STATE", "PEERS", "TASKS", "ROOT"], projects.map(project => {
     const tasks = Object.entries(project.status?.tasks ?? {}).map(([state, n]) => `${n} ${state}`).join(", ");
     return [span(project.id, "info"), span(project.state ?? "unknown", stateTone(project.state ?? "")),
@@ -724,8 +724,8 @@ export function renderProjects(projects: any[], columns?: number, _now = Date.no
   }), columns, projects.map(project => project.error ? detail("error", project.error, columns, "failure") : []))).lines();
 }
 export function renderQueue(deliveries: any[], columns?: number, now = Date.now(), ascii = false): Span[][] {
+  if (!deliveries.length) return lines("no retained deliveries", columns);
   const report = listReport("Queue", columns, ascii);
-  if (!deliveries.length) return report.section("Queue").note("no retained deliveries").lines();
   const s = initialConsoleState(); s.panel = 4;
   const data = deliveries.map(delivery => {
     const row = cells(s, { ...delivery, id: String(delivery.id) }, false, now);
@@ -739,8 +739,8 @@ const moment = (value: unknown, now: number) => {
   return Number.isFinite(at) ? relative(at, now) : "unknown";
 };
 export function renderTurns(turns: any[], columns?: number, now = Date.now(), ascii = false): Span[][] {
+  if (!turns.length) return lines("no turns recorded (they need a git work tree and snapshots.enabled)", columns);
   const report = listReport("Turns", columns, ascii);
-  if (!turns.length) return report.section("Turns").note("no turns recorded: they need a git work tree and snapshots.enabled").lines();
   return report.section("Turns", String(turns.length)).append(rows(["TURN", "PEER", "STARTED", "STATE", "FILES"], turns.map(turn => {
     const state = !turn.ended ? "running" : !turn.end_tree ? "no end snapshot" : "completed";
     const files = turn.changed ?? [];
@@ -752,8 +752,8 @@ export function renderTurns(turns: any[], columns?: number, now = Date.now(), as
   }), columns)).lines();
 }
 export function renderOrphans(orphans: { project: any; pids: number[] }[], columns?: number, _now = Date.now(), killing = false, ascii = false): Span[][] {
-  const report = listReport("Orphans", columns, ascii, "the project root is gone");
-  if (!orphans.length) return report.section("Orphans").note("no orphaned hub registrations").lines();
+  if (!orphans.length) return lines("no orphaned hub registrations", columns);
+  const report = listReport("Orphans", columns, ascii, "orphaned hub registrations (the project root is gone)");
   report.section("Orphans", String(orphans.length)).append(
     rows(["PROJECT", "STATE", "PIDS", "ROOT"], orphans.map(({ project, pids }) => [span(project.id, "info"), span(pids.length ? "live" : "no live process", pids.length ? "attention" : "muted"), span(pids.length ? pids.join(", ") : "-", "number"), span(project.root)]), columns));
   if (!killing && orphans.some(({ pids }) => pids.length)) report.section("Next").next("ahub doctor --orphans --kill");
