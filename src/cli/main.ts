@@ -142,7 +142,7 @@ import { agentShellCause, classifyPeerCommand, cliCommandLabel, detectCliIdentit
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { installedVersions } from "./console-versions.ts";
-import { errorLines, failureExitCode } from "./error-format.ts";
+import { errorLines, failureExitCode, warningLines } from "./error-format.ts";
 import { asciiMarkers, paint, permissionBoundary, resolveColor, streamEnv, wrap, type Span } from "./console-state.ts";
 import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderStatusDefault, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
@@ -264,8 +264,8 @@ const requireNamedPeerFeature = (hub: ControlClient, peer: string | undefined) =
 /** The project config, saying on stderr which machine-local fields it had to ignore (issue #17). */
 const projectConfig = () => {
   const config = loadConfig(cwd);
-  for (const line of config.ignored ?? []) console.error(`note: ${line}; only a config file nobody committed may set it`);
-  for (const line of config.releasePolicyNotices ?? []) console.error(`note: ${line}`);
+  for (const line of config.ignored ?? []) warn(`${line}: only a config file nobody committed may set it`);
+  for (const line of config.releasePolicyNotices ?? []) warn(line);
   return config;
 };
 const stateDir = selected.stateDir;
@@ -417,7 +417,7 @@ const connect = async (timeoutMs = 3000) => {
     : { role: "console", projectRoot: cwd, ...(delegatedAuditHub ? { instanceId: delegatedAuditHub.instanceId } : {}) }, timeoutMs);
 };
 
-const connectLaunch = () => retryLaunchConnect(connect, () => console.error("hub busy, retrying"));
+const connectLaunch = () => retryLaunchConnect(connect, () => warn("hub busy: retrying"));
 
 /** #1627 A: what init does for the hub-owned jcode home, read-only. */
 function initJcodeHome() {
@@ -585,6 +585,10 @@ function startupDiagnostic(error: unknown): string {
   return message.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 512) || "invalid startup configuration";
 }
 
+/** A stderr warning that does not end the command (standard v1, Messages). */
+function warn(message: string, next?: string): void {
+  console.error(warningLines(message, next, !!process.stderr.isTTY, asciiMarkers(process.env, process.argv.includes("--ascii"))).join("\n"));
+}
 /**
  * CLI output standard v1, Messages: `ahub: <what failed>: <why>` on stderr; with a terminal on stderr it leads with the fail marker, and a piped line
  * keeps the plain `ahub: ` form so a script or agent matching it still works. `next` is a complete, copyable command printed on a second line (ASCII
@@ -1316,7 +1320,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     try { request = await withInitChecks(cwd, request); } catch (error) { return fail((error as Error).message); }
     // `--autonomy off` skips the machine inheritance on a new project; `inherit` is today's behaviour. Neither changes an existing project.
     const inheritAutonomy = newProject && request.autonomy !== "off";
-    if (!newProject && request.autonomy !== undefined) console.error("note: --autonomy applies to a new project only; this project already exists, so its autonomy settings are unchanged");
+    if (!newProject && request.autonomy !== undefined) warn("--autonomy applies to a new project only: this project already exists, so its autonomy settings are unchanged");
     if (args.includes("--dry-run")) {
       const plan = planInit(cwd, requestedProfile, shadow, releaseGuard, request);
       const rows = initSettingRows(cwd, requestedProfile, shadow, releaseGuard, request);
@@ -1396,7 +1400,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         const chosen = effectiveStartAgents(cwd, loadConfig(cwd).start.agents, hubHome(), [cwd]);
         if (chosen.notice) console.error(chosen.notice);
         for (const line of await startProjectAgents({ root: cwd, stateDir }, chosen.agents)) console.log(terminalText(line));
-      } catch (error) { console.error(`default agents were not started: ${terminalText((error as Error).message)}`); }
+      } catch (error) { warn(`default agents were not started: ${terminalText((error as Error).message)}`); }
     }
     if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir, liveTest, installed: consoleInstalled() });
   },
@@ -2460,7 +2464,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const textWords = withoutSeparator(flags.rest);
     const cls = flags.one["--class"] ?? (positional ? textWords[0] : undefined);
     const title = (positional ? textWords.slice(1) : textWords).join(" ");
-    if (positional) console.error(`note: "${cls}" was taken as the class and left out of the title; use --class <c> when the title itself starts with that word`);
+    if (positional) warn(`"${cls}" was taken as the class and left out of the title`, "use --class <c> when the title itself starts with that word");
     console.log(await taskOp("hub_task_propose", { ...(cls ? { class: cls } : {}), title, owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}), ...(flags.many["--after"]?.length ? { after: flags.many["--after"].map(Number) } : {}), ...(urgent ? { urgent: true } : {}), ...(needsNetwork ? { needs_network: true } : {}), ...(needsWorktree ? { needs_worktree: true } : {}), ...(backlog ? { backlog: true } : {}) }));
   },
 
@@ -2576,7 +2580,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (positional.length > 2 || positional.some(arg => arg.startsWith("--")) || (mode !== undefined && !isPermissionMode(mode))) fail("usage: ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]");
     if (mode === "never-ask" && !args.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
     const { scope: permissionScope, error: permissionScopeError } = localDeclarations();
-    if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer, permissionScope.instances, permissionScope.catalog)}; approval prompts are disabled${permissionScopeError ? ` (project config unreadable: ${permissionScopeError})` : ""}`);
+    if (mode === "never-ask" && peer) warn(`never-ask: ${permissionBoundary(peer, permissionScope.instances, permissionScope.catalog)}: approval prompts are disabled${permissionScopeError ? ` (project config unreadable: ${permissionScopeError})` : ""}`);
     const hub = await connect();
     try {
       const reply = await hub.request({ t: "permission", ...(peer ? { peer } : {}), ...(mode ? { mode, confirmed: args.includes("--yes") } : {}) }, 35_000);
@@ -2734,7 +2738,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const peer = def?.group === "Permissions" || def?.group === "Roster" ? def.path.at(-1)! : undefined;
     if (sub === "set" && value === "never-ask" && !flags.includes("--preview")) {
       if (!flags.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
-      console.error(`never-ask: ${permissionBoundary(peer!, settingScope.instances, settingScope.catalog)}; approval prompts are disabled`);
+      warn(`never-ask: ${permissionBoundary(peer!, settingScope.instances, settingScope.catalog)}: approval prompts are disabled`);
     }
     const hub = await connect();
     try {

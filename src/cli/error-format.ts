@@ -17,3 +17,10 @@ export function errorLines(message: string, next: string | undefined, terminal: 
   const first = terminal ? `${MARKERS.fail[ascii ? "ascii" : "glyph"]} ${line}` : line;
   return next ? [first, `  ${MARKERS.next[ascii ? "ascii" : "glyph"]} ${terminalText(next)}`] : [first];
 }
+
+/** A stderr warning or note that does not end the command: `ahub: warning: <what>: <why>` and an optional `→ next` line (standard v1, Messages). Pure, like `errorLines`. */
+export function warningLines(message: string, next: string | undefined, terminal: boolean, ascii: boolean): string[] {
+  const line = `ahub: warning: ${message}`;
+  const first = terminal ? `${MARKERS.warn[ascii ? "ascii" : "glyph"]} ${line}` : line;
+  return next ? [first, `  ${MARKERS.next[ascii ? "ascii" : "glyph"]} ${terminalText(next)}`] : [first];
+}

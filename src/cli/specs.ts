@@ -20,7 +20,7 @@ export function runSpecs(args: readonly string[], root: string, config: SpecsCon
     else if (arg === "--require-fresh" && command === "check" && !requireFresh) requireFresh = true;
     else if (arg === "--base" && command === "check" && base === undefined) {
       base = rest[++index];
-      if (!base || base.startsWith("-")) { io.error("specs: --base needs a Git reference; name a commit or branch"); return 1; }
+      if (!base || base.startsWith("-")) { io.error("ahub: specs: --base needs a Git reference; name a commit or branch"); return 1; }
     } else if (command === "covers" && !arg.startsWith("-")) paths.push(arg);
     else { io.error(usage); return 1; }
   }
@@ -32,8 +32,8 @@ export function runSpecs(args: readonly string[], root: string, config: SpecsCon
       if (json) io.out(JSON.stringify(report));
       else {
         for (const spec of report.specs) io.out(terminalText(`${spec.id} (${spec.path}): ${spec.title}`));
-        for (const item of report.items) io.error(terminalText(`specs: ${item.severity} ${item.code}: ${item.message}; ${item.nextSteps}`));
-        if (report.truncated) io.error("specs: scan truncated; narrow specs.roots and run ahub specs check again");
+        for (const item of report.items) io.error(terminalText(`ahub: specs: ${item.severity} ${item.code}: ${item.message}; ${item.nextSteps}`));
+        if (report.truncated) io.error("ahub: specs: scan truncated; narrow specs.roots and run ahub specs check again");
       }
       return report.errors ? 1 : 0;
     }
@@ -49,7 +49,7 @@ export function runSpecs(args: readonly string[], root: string, config: SpecsCon
     }
     return report.errors || requireFresh && report.stale ? 1 : 0;
   } catch (error) {
-    io.error(terminalText(`specs: ${error instanceof Error ? error.message : "inspection unavailable"}; check the repository and specs configuration, then run ahub specs check again`));
+    io.error(terminalText(`ahub: specs: ${error instanceof Error ? error.message : "inspection unavailable"}; check the repository and specs configuration, then run ahub specs check again`));
     return 1;
   }
 }
@@ -104,15 +104,15 @@ export async function runSpecsStamp(args: readonly string[], root: string, confi
   }
   if (!targets.length) { io.error(STAMP_USAGE); return 1; }
   if (!terminal.isTTY) {
-    io.error("specs: stamping records a person's review and needs a terminal, even with --yes; run ahub specs stamp in your own terminal, or in ahub console; nothing was written");
+    io.error("ahub: specs: stamping records a person's review and needs a terminal, even with --yes; run ahub specs stamp in your own terminal, or in ahub console; nothing was written");
     return 1;
   }
   try {
     const engine = new SpecsEngine(root, config);
     const plan = engine.stampPlan(targets);
     if (plan.refusals.length) {
-      for (const refusal of plan.refusals) io.error(terminalText(`specs: ${refusal}`));
-      io.error("specs: nothing was written");
+      for (const refusal of plan.refusals) io.error(terminalText(`ahub: specs: ${refusal}`));
+      io.error("ahub: specs: nothing was written");
       return 1;
     }
     const short = (sha: string | null) => sha === null ? "none" : sha.slice(0, 12);
@@ -123,7 +123,7 @@ export async function runSpecsStamp(args: readonly string[], root: string, confi
     // Every file's new bytes are made before anyone is asked, so a document that cannot be stamped is refused up front and no file is written for it, and what the person approves is
     // exactly what is written. `original` is what the new bytes were made from.
     const prepared = prepareStamps(engine.rootPath, changing);
-    if (typeof prepared === "string") { io.error(terminalText(`specs: ${prepared}; nothing was written`)); return 1; }
+    if (typeof prepared === "string") { io.error(terminalText(`ahub: specs: ${prepared}; nothing was written`)); return 1; }
     if (!yes && !await terminal.ask(`Record that you reviewed ${changing.length === 1 ? "this document" : `these ${changing.length} documents`} against HEAD ${plan.head.slice(0, 12)}?`)) {
       io.out("specs: not stamped; nothing was written");
       return 0;
@@ -131,12 +131,12 @@ export async function runSpecsStamp(args: readonly string[], root: string, confi
     // The answer may have taken minutes. Revalidate what the person was shown before any write: HEAD, every target's plan row (so a covered path that became dirty is refused), and each
     // file's bytes. Any difference refuses the whole run.
     const again = engine.stampPlan(targets);
-    const changed = again.refusals.length ? again.refusals.map(refusal => `specs: ${refusal}`)
-      : again.head !== plan.head || JSON.stringify(again.rows) !== JSON.stringify(plan.rows) ? ["specs: HEAD or a document's covered paths changed while you were deciding"]
-      : prepared.filter(file => !readFileSync(file.absolute).equals(file.original)).map(file => `specs: ${file.path} changed while you were deciding`);
+    const changed = again.refusals.length ? again.refusals.map(refusal => `ahub: specs: ${refusal}`)
+      : again.head !== plan.head || JSON.stringify(again.rows) !== JSON.stringify(plan.rows) ? ["ahub: specs: HEAD or a document's covered paths changed while you were deciding"]
+      : prepared.filter(file => !readFileSync(file.absolute).equals(file.original)).map(file => `ahub: specs: ${file.path} changed while you were deciding`);
     if (changed.length) {
       for (const line of changed) io.error(terminalText(line));
-      io.error("specs: nothing was written; review the current state and run ahub specs stamp again");
+      io.error("ahub: specs: nothing was written; review the current state and run ahub specs stamp again");
       return 1;
     }
     // ponytail: a change in the instant between this recheck and the renames below is not seen; each rename is atomic and the diff is the person's to review before committing, so there is no lock. A lock file if two people stamp one checkout.
@@ -144,7 +144,7 @@ export async function runSpecsStamp(args: readonly string[], root: string, confi
     io.out(`specs: stamped ${changing.length} document${changing.length === 1 ? "" : "s"} at ${plan.head.slice(0, 12)}; review the diff and commit it`);
     return 0;
   } catch (error) {
-    io.error(terminalText(`specs: ${error instanceof Error ? error.message : "stamping unavailable"}; check the repository and specs configuration, then run ahub specs stamp again`));
+    io.error(terminalText(`ahub: specs: ${error instanceof Error ? error.message : "stamping unavailable"}; check the repository and specs configuration, then run ahub specs stamp again`));
     return 1;
   }
 }
