@@ -11457,20 +11457,38 @@ export class Tasks {
     }
   }
 
-  /** An approved task's decision, contract and fail notes move to long-term; its short-term entries start to expire (#258). */
-  /**
-   * At hub start: an approved task whose settle entry a crash or a failed write cut off is settled now, so its
-   * decisions, contracts and fails still reach long-term memory and its findings get their deadline.
-   */
+  /** Repair approved tasks whose notes were left unsettled by an interrupted write (#258, #1445). */
   reconcileMemory(): number {
-    if (!this.d.store) return 0;
+    const st = this.d.store;
+    if (!st) return 0;
     let n = 0;
-    for (const t of this.d.board.list("approved")) {
-      if (this.isPii(t)) continue;
-      try { this.d.memoryCheck?.(); const key = this.memoryKey(t); if (this.d.store.store.hasTask(key) && !this.d.store.store.settled(key, { includeLegacy: true }) && this.settleMemory(t)) n++; }
-      catch { /* fail-open: tried again at the next start */ }
-    }
+    let after: string | undefined;
+    do {
+      try { this.d.memoryCheck?.(); } catch { return n; }
+      let page: ReturnType<MemoryStore["unsettledTaskKeys"]> | undefined;
+      try { page = st.store.unsettledTaskKeys?.(st.project, { after }); }
+      catch { /* Use the point predicates for this startup if a readable index cannot refresh. */ }
+      if (!page) {
+        for (const task of this.d.board.list("approved")) if (this.reconcileMemoryTask(task, st.store)) n++;
+        return n;
+      }
+      for (const key of page.keys) {
+        const id = /#(\d+)@\d+$/.exec(key)?.[1];
+        const task = id === undefined ? undefined : this.d.board.get(Number(id));
+        if (task?.state === "approved" && this.memoryKey(task) === key && this.reconcileMemoryTask(task, st.store)) n++;
+      }
+      after = page.next;
+    } while (after !== undefined);
     return n;
+  }
+
+  private reconcileMemoryTask(task: Task, store: MemoryStore): boolean {
+    if (this.isPii(task)) return false;
+    try {
+      this.d.memoryCheck?.();
+      const key = this.memoryKey(task);
+      return store.hasTask(key) && !store.settled(key, { includeLegacy: true }) && this.settleMemory(task);
+    } catch { return false; /* Tried again at the next start. */ }
   }
 
   private settleMemory(task: Task): boolean {
