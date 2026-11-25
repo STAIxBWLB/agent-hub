@@ -1995,11 +1995,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     // config through the settings writer; nothing in a card's text is written.
     const split = splitPresentation(args);
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
-    const usage = "usage: ahub learn list [--all] | accept <id> | reject <id> [--json] [--color=auto|always|never]";
+    const usage = "usage: ahub learn list [--all] [--accepted] | accept <id> | reject <id> [--json] [--color=auto|always|never]";
     const [sub, ...rest] = split.operands;
-    if (sub === "list" && rest.every(arg => arg === "--all")) {
-      const all = rest.includes("--all");
-      return showToolText(data => renderLearnList(data, present.columns, all), await taskOp("learn_list", { ...(all ? { all: true } : {}) }), present);
+    if (sub === "list" && rest.every(arg => arg === "--all" || arg === "--accepted")) {
+      const all = rest.includes("--all"), accepted = rest.includes("--accepted");
+      // #1642 T2: `--accepted` is the outcome view of the lines already accepted, so --all (the decided candidates) has nothing to add there.
+      if (all && accepted) return fail("usage: ahub learn list [--all] [--accepted] (pass one of them)");
+      return showToolText(data => renderLearnList(data, present.columns, all, accepted), await taskOp("learn_list", { ...(all ? { all: true } : {}), ...(accepted ? { accepted: true } : {}) }), present);
     }
     const [id, ...extra] = rest;
     if ((sub !== "accept" && sub !== "reject") || !id || extra.length || !/^[1-9]\d*$/.test(id)) return fail(usage);

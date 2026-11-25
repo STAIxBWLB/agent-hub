@@ -563,7 +563,7 @@ test("the real CLI: an agent shell is refused for every learn form before any co
 test("the real CLI as the person: list, accept and reject round-trip against a daemon, in text and in --json, and bad usage is refused before any request", async () => {
   const { f, seed, card } = await daemonWithCandidate();
   await openDaemon(f, seed);
-  const usage = "usage: ahub learn list [--all] | accept <id> | reject <id>";
+  const usage = "usage: ahub learn list [--all] [--accepted] | accept <id> | reject <id>";
   for (const args of [["learn"], ["learn", "bogus"], ["learn", "accept"], ["learn", "accept", "0"], ["learn", "accept", "x"], ["learn", "accept", "1", "2"], ["learn", "list", "--nope"], ["learn", "reject"]]) {
     const result = await cli(f.cwd, args);
     expect(result.code, args.join(" ")).toBe(2); // a usage error (#1484)

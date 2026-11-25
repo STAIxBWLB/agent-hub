@@ -99,7 +99,8 @@ import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { createMemorySyncPolicy } from "./memory-sync-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { criteriaView, unmetCriteriaIds, workflowHash } from "./workflow.ts";
-import { candidateCard, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS, overridesDiff, parseCandidateCard, selectGroups, type CriterionGroup } from "./learning.ts";
+import { candidateCard, CHECKLIST_MAX_LINES, checklistLineMarker, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS, overridesDiff, parseCandidateCard, parseRemovalCard, removalCard, removalKey, selectGroups, withoutChecklistLine, type CriterionGroup } from "./learning.ts";
+import { acceptanceSuffix, FOLLOWUP_DEFAULTS, outcomeOf, rateIn, readAcceptance, removalDue, weakest, type AcceptanceRecord, type OutcomeView, type Rate } from "./learn-followup.ts";
 /** #514b: how a closed candidate card says what the person decided; `learnCandidates` reads them back. */
 const LEARN_ACCEPTED = "candidate accepted", LEARN_REJECTED = "candidate rejected";
 /** What the person decided on a candidate card, read from its cancellation: only an entry the person wrote counts, so no other note can pass for a verdict. Undefined while it is open or closed for another reason. */
@@ -1328,23 +1329,49 @@ export class Tasks {
     }
     return rows;
   }
+  /** The board rows a learning count may read: a PII row and one whose text the screen refuses are evidence of nothing (#514a, #1642). */
+  private learnRows(): Task[] {
+    return this.d.board.list().filter(row => this.candidateTextAllowed(`${row.profile ?? ""} ${row.profileClass ?? ""} ${row.class}`, row));
+  }
   /** The distinct tasks that name this criterion unmet on this profile and class in the window, from the board as it is now: the count the written line states is recomputed, never read from the card. */
   private learnEvidence(card: { profile: string; class: string; criterion: string }): { tasks: number[] } {
-    const eligible = this.d.board.list().filter(row => this.candidateTextAllowed(`${row.profile ?? ""} ${row.profileClass ?? ""} ${row.class}`, row));
-    const group = groupUnmetCriteria(eligible, { windowMs: LEARNING_DEFAULTS.windowMs, now: Date.now() }).find(g => g.profile === card.profile && g.class === card.class && g.criterion === card.criterion);
+    const group = groupUnmetCriteria(this.learnRows(), { windowMs: LEARNING_DEFAULTS.windowMs, now: Date.now() }).find(g => g.profile === card.profile && g.class === card.class && g.criterion === card.criterion);
     return { tasks: group?.tasks ?? [] };
   }
+  /** One card the person may act on: an addition candidate (#514a/b) or a removal candidate (#1642 T3). Only the key line of either is read. */
+  private learnCard(id: unknown): { id: number; kind: "addition"; profile: string; class: string; criterion: string } | { id: number; kind: "removal"; profile: string; class: string; criterion: string; windowStart: number } {
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) throw new PreEffectToolRefusal("id must be a positive task number");
+    const task = this.d.board.get(id);
+    if (!task) throw new PreEffectToolRefusal(`no task #${id}`);
+    const addition = parseCandidateCard(task), removal = parseRemovalCard(task);
+    if ("refused" in addition && "refused" in removal) throw new PreEffectToolRefusal(`task #${id}: ${addition.refused}; it is not a checklist removal card either (${removal.refused}). ahub learn list --all shows the cards this command acts on`);
+    if (task.state !== "backlog" && task.state !== "proposed") throw new PreEffectToolRefusal(`task #${id} is already ${task.state === "cancelled" ? "closed" : task.state}`);
+    return "refused" in addition ? { id, kind: "removal", ...removal as { profile: string; class: string; criterion: string; windowStart: number } } : { id, kind: "addition", ...addition };
+  }
   /**
-   * #514b: what `ahub learn accept` would write for card `id`, or why not. Person only. It reads ONLY the card's key line (`parseCandidateCard`), requires the card to be open, and builds the
+   * #514b: what `ahub learn accept` would write for card `id`, or why not. Person only. It reads ONLY the card's key line, requires the card to be open, and builds the
    * line from the board's own evidence with `overridesDiff`: nothing of the card's text is parsed as a value. The daemon adds the line to the stored checklist and writes it through the settings path.
+   * #1642 T3: a removal card answers with the criterion's checklist-line prefix instead of a line to add; `marker` in the reply tells the two apart.
    */
-  learnAcceptPlan(by: PeerId, id: unknown): { id: number; profile: string; class: string; criterion: string; line: string; tasks: number } {
+  learnAcceptPlan(by: PeerId, id: unknown): { id: number; profile: string; class: string; criterion: string; line: string; tasks: number }
+    | { id: number; profile: string; class: string; criterion: string; windowStart: number; marker: string } {
     if (by !== USER) throw new PreEffectToolRefusal("ahub learn accept is a person's command");
     const card = this.learnCard(id);
+    if (card.kind === "removal") return { id: card.id, profile: card.profile, class: card.class, criterion: card.criterion, windowStart: card.windowStart, marker: checklistLineMarker(card.criterion) };
     const evidence = this.learnEvidence(card);
     if (!evidence.tasks.length) throw new PreEffectToolRefusal(`no task in the window still names ${card.criterion} unmet on ${card.profile}/${card.class}: nothing to accept; reject the card to close it`);
     const line = overridesDiff({ ...card, tasks: evidence.tasks }).profile_overrides.review_checklist[0]!;
     return { id: card.id, profile: card.profile, class: card.class, criterion: card.criterion, line, tasks: evidence.tasks.length };
+  }
+  /**
+   * #1642 T1: the unmet rate over the 30 days before an acceptance, read from the board as it is now (tasks naming the criterion unmet / tasks reviewed for that profile
+   * and class). Person only; it writes nothing and the daemon records the answer on the closed card.
+   */
+  learnBeforeRate(by: PeerId, id: unknown): Rate {
+    if (by !== USER) throw new PreEffectToolRefusal("ahub learn accept is a person's command");
+    const card = this.learnCard(id);
+    const now = Date.now();
+    return rateIn(this.learnRows(), card, now - FOLLOWUP_DEFAULTS.windowMs, now);
   }
   /**
    * #514b: whether `ahub learn accept` already decided this card. Person only. A card the person accepted answers `"accepted"`, so a repeat accept is a no-write success (the plan's idempotency);
@@ -1355,27 +1382,87 @@ export class Tasks {
     if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return undefined;
     const task = this.d.board.get(id);
     if (!task || learnVerdict(task) !== "accepted") return undefined;
-    const parsed = parseCandidateCard(task);
-    return "refused" in parsed ? undefined : { id, ...parsed };
-  }
-  /** The card, which must be an open candidate the hub filed. */
-  private learnCard(id: unknown): { id: number; profile: string; class: string; criterion: string } {
-    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) throw new PreEffectToolRefusal("id must be a positive task number");
-    const task = this.d.board.get(id);
-    if (!task) throw new PreEffectToolRefusal(`no task #${id}`);
-    const parsed = parseCandidateCard(task);
-    if ("refused" in parsed) throw new PreEffectToolRefusal(`task #${id}: ${parsed.refused}`);
-    if (task.state !== "backlog" && task.state !== "proposed") throw new PreEffectToolRefusal(`task #${id} is already ${task.state === "cancelled" ? "closed" : task.state}`);
-    return { id, ...parsed };
+    const addition = parseCandidateCard(task);
+    if (!("refused" in addition)) return { id, profile: addition.profile, class: addition.class, criterion: addition.criterion };
+    const removal = parseRemovalCard(task);
+    return "refused" in removal ? undefined : { id, profile: removal.profile, class: removal.class, criterion: removal.criterion };
   }
   /**
    * #514b: closes a candidate card after the person's verdict, through `cancel` (never a direct board write): the row stays, the verdict is in its history, and because the dedupe key is the card's
    * detail the same criterion is never filed again. `accepted` is recorded only after the write succeeded (the daemon calls this last); a repeat of either verdict is refused by `learnCard`.
+   * #1642 T1: an addition's acceptance carries its before rate in a fixed suffix of the same note; a removal's does not need one, because the line it removed stops being followed.
    */
-  async learnClose(by: PeerId, id: unknown, verdict: "accepted" | "rejected"): Promise<Task> {
+  async learnClose(by: PeerId, id: unknown, verdict: "accepted" | "rejected", record?: Rate): Promise<Task> {
     if (by !== USER) throw new PreEffectToolRefusal("ahub learn is a person's command");
     const card = this.learnCard(id);
-    return this.cancel(card.id, USER, { reason: verdict === "accepted" ? `${LEARN_ACCEPTED} by the person: its review checklist line was written to config.local.json` : `${LEARN_REJECTED} by the person` });
+    const reason = verdict === "rejected"
+      ? `${LEARN_REJECTED} by the person${card.kind === "removal" ? ": the follow-up window starts again" : ""}`
+      : card.kind === "addition"
+        ? `${LEARN_ACCEPTED} by the person: its review checklist line was written to config.local.json${record ? acceptanceSuffix(record) : ""}`
+        : `${LEARN_ACCEPTED} by the person: its review checklist line was removed from config.local.json`;
+    return this.cancel(card.id, USER, { reason });
+  }
+  /**
+   * #1642 T2: the accepted lines this checklist still carries, each with what its criterion did since. A line the person removed, or edited beyond the generated prefix,
+   * is not followed; every checklist line no accepted card accounts for is counted as untracked (a hand-written line is never followed). Person only, and counts only:
+   * the lines themselves are the caller's own checklist text and are never echoed by the hub.
+   */
+  learnFollowed(by: PeerId, current: readonly string[], now = Date.now()): { checklist: { lines: number; max: number; characters: number }; followed: (OutcomeView & { removal?: { id: number; state: string } })[]; untracked: number } {
+    if (by !== USER) throw new PreEffectToolRefusal("ahub learn is a person's command");
+    return this.followedLines(current, now);
+  }
+  /** The outcome rows `learnFollowed` returns, without the person gate, so the hub's own removal proposal can read them after a review. */
+  private followedLines(current: readonly string[], now: number): { checklist: { lines: number; max: number; characters: number }; followed: (OutcomeView & { removal?: { id: number; state: string } })[]; untracked: number } {
+    const rows = this.learnRows(), cards = this.d.board.list();
+    const accepted = cards.flatMap(card => { const parsed = parseCandidateCard(card); return "refused" in parsed || learnVerdict(card) !== "accepted" ? [] : [{ card, parsed }]; });
+    const removals = cards.flatMap(card => { const parsed = parseRemovalCard(card); return "refused" in parsed ? [] : [{ card, parsed }]; });
+    const closedAt = (card: Task): number | undefined => card.history.findLast(entry => entry.event === "cancelled" && entry.by === USER)?.at;
+    const followed: (OutcomeView & { removal?: { id: number; state: string } })[] = [];
+    for (const { card, parsed } of accepted) {
+      const marker = checklistLineMarker(parsed.criterion);
+      if (!current.some(entry => entry.startsWith(marker))) continue;
+      const closed = card.history.findLast(entry => entry.event === "cancelled" && entry.by === USER);
+      const acceptedAt = closed?.at ?? card.updated;
+      const resets = removals.filter(item => item.parsed.profile === parsed.profile && item.parsed.class === parsed.class && item.parsed.criterion === parsed.criterion && learnVerdict(item.card) === "rejected")
+        .flatMap(item => { const at = closedAt(item.card); return at === undefined ? [] : [at]; });
+      const windowStart = Math.max(acceptedAt, ...resets);
+      const before = readAcceptance(closed?.note) ?? rateIn(rows, parsed, acceptedAt - FOLLOWUP_DEFAULTS.windowMs, acceptedAt);
+      const view = outcomeOf({ ...parsed, card: card.id, acceptedAt, before }, rows, { now, windowStart });
+      const open = removals.find(item => item.parsed.profile === parsed.profile && item.parsed.class === parsed.class && item.parsed.criterion === parsed.criterion
+        && item.parsed.windowStart === windowStart && (item.card.state === "backlog" || item.card.state === "proposed"));
+      followed.push({ ...view, ...(open ? { removal: { id: open.card.id, state: open.card.state } } : {}) });
+    }
+    const tracked = accepted.map(({ parsed }) => checklistLineMarker(parsed.criterion));
+    return {
+      checklist: { lines: current.length, max: CHECKLIST_MAX_LINES, characters: current.reduce((sum, entry) => sum + entry.length, 0) },
+      followed,
+      untracked: current.filter(entry => !tracked.some(marker => entry.startsWith(marker))).length,
+    };
+  }
+  /**
+   * #1642 T3: one backlog card per followed line that has enough reviews in the window and did not get rarer. It files, it never removes: accepting the card is the
+   * person's own command through the settings writer. The dedupe key carries the follow-up window, so a rejected card starts a new window and can be filed again later.
+   */
+  private proposeRemovalCandidates(by: PeerId, withheld: boolean): void {
+    if (withheld || this.d.privateTurn?.(by)) return;
+    const current = this.d.profileData?.review_checklist ?? [];
+    if (!current.length) return;
+    const rows = this.d.board.list();
+    const keys = new Set(rows.filter(row => row.class === "plan" && row.history[0]?.by === HUB)
+      .flatMap(row => row.detail?.split("\n").filter(entry => entry.startsWith("Checklist removal key: ")) ?? []));
+    const created: number[] = [];
+    for (const view of this.followedLines(current, Date.now()).followed) {
+      if (view.removal || !removalDue(view)) continue;
+      const key = removalKey(view);
+      if (keys.has(key)) continue;
+      const card = removalCard(view, Math.round(FOLLOWUP_DEFAULTS.windowMs / 86_400_000));
+      const draft = { title: card.title, detail: card.detail, refs: { paths: ["docs/profiles.md"] } };
+      const signals = this.signalsFor(draft);
+      if (this.isPii({ signals }) || !this.candidateTextAllowed(`${card.title}\n${card.detail}`)) continue;
+      const proposal = this.d.board.propose(HUB, { ...draft, class: "plan", backlog: true, signals });
+      this.incomingBacklog.add(proposal.id); keys.add(key); created.push(proposal.id);
+    }
+    for (const id of created) this.releaseNotice(`task #${id}: checklist removal candidate proposed in the backlog`);
   }
   /**
    * #514a: the same recurrence path for recurring UNMET CRITERIA. A criterion id that reviews keep naming unmet on the same profile and class, on at least
@@ -1394,11 +1481,15 @@ export class Tasks {
     // No await separates the durable dedupe read from creation; concurrent verdicts see the first card.
     const groups = groupUnmetCriteria(eligible, { windowMs: LEARNING_DEFAULTS.windowMs, now: Date.now() });
     const unitsOf = (group: CriterionGroup) => this.workUnits(eligible.filter(row => group.tasks.includes(row.id)));
+    // #1642 T3: at the cap, a candidate card names the followed line that is doing least, so the person sees what one more line would cost.
+    const current = this.d.profileData?.review_checklist ?? [];
+    const weakestLine = current.length >= CHECKLIST_MAX_LINES ? weakest(this.followedLines(current, Date.now()).followed) : undefined;
+    const hint = weakestLine ? `The checklist is at its cap of ${CHECKLIST_MAX_LINES} lines; adding this one means removing one. The weakest followed line is criterion ${weakestLine.criterion} (${weakestLine.status}, ${weakestLine.since.unmet}/${weakestLine.since.reviewed} tasks naming it unmet since acceptance).` : "";
     for (const group of selectGroups(groups, { named, threshold: LEARNING_DEFAULTS.threshold, max: LEARNING_DEFAULTS.maxGroups, has: g => keys.has(criterionKey(g)), units: unitsOf })) {
       const card = candidateCard(group, Math.round(LEARNING_DEFAULTS.windowMs / 86_400_000), unitsOf(group));
-      const draft = { title: card.title, detail: card.detail, refs: { paths: ["docs/profiles.md"] } };
+      const draft = { title: card.title, detail: hint ? `${card.detail}\n${hint}` : card.detail, refs: { paths: ["docs/profiles.md"] } };
       const signals = this.signalsFor(draft);
-      if (this.isPii({ signals }) || !this.candidateTextAllowed(`${card.title}\n${card.detail}`)) continue;
+      if (this.isPii({ signals }) || !this.candidateTextAllowed(`${card.title}\n${draft.detail}`)) continue;
       const proposal = this.d.board.propose(HUB, { ...draft, class: "plan", backlog: true, signals });
       this.incomingBacklog.add(proposal.id); keys.add(criterionKey(group)); created.push(proposal.id);
     }
@@ -10833,7 +10924,7 @@ export class Tasks {
       // A proposal storage failure cannot roll back the saved verdict; another matching verdict retries it.
       this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
       this.releaseNotice(`task #${next.id}: review saved but finding follow-up proposal unavailable`, () => this.proposeFindingFollowUps(next, by, withheld));
-      this.releaseNotice(`task #${next.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(next, by, withheld));
+      this.releaseNotice(`task #${next.id}: review saved but recurring-criterion proposal unavailable`, () => { this.proposeCriterionCandidates(next, by, withheld); this.proposeRemovalCandidates(by, withheld); });
       return result(next);
     }
     this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
@@ -10842,7 +10933,7 @@ export class Tasks {
     this.recordConsideredAfter(rejected, parsed.filter(finding => finding.disposition === "false_positive"), "review", findingHead ?? reviewedHead);
     void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld || observerExcluded);
     if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
-    if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(rejected, by, withheld));
+    if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-criterion proposal unavailable`, () => { this.proposeCriterionCandidates(rejected, by, withheld); this.proposeRemovalCandidates(by, withheld); });
     if (!observerExcluded && candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
       try { this.d.memoryCheck?.(); this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
     }

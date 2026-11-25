@@ -44,7 +44,7 @@ Overview width: 79 cells. Dispatch entries: 90. Help command words: 92.
 | jcode | adapter | 80 | Agents / start optional Jcode, in its TUI or headless (44) | Yes | --mode --model --provider-profile --session-id --print-command --as | Repeated forms, Bracket wraps |
 | kill | main.ts | 57 | Daemon and runtime / stop this project's hub (23) | No | - | Repeated forms |
 | kimi | adapter | 80 | Agents / start Kimi in its own TUI, or headless over ACP (47) | Yes | --print-command --mode --model --as | Repeated forms |
-| learn | main.ts | 80 | Tasks and review / review recurring-criterion candidates (37) | Yes | --all --json --color | Repeated forms |
+| learn | main.ts | 80 | Tasks and review / review recurring-criterion candidates (37) | Yes | --all --accepted --json --color | Repeated forms |
 | lineage | main.ts | 80 | History and reports / execution metadata and evidence strengths (41) | Yes | --task --attempt --root --task-scope --task-created --cursor --nodes --edges --bytes --json --revision --ref --from | Repeated forms, Bracket wraps, Uppercase operand |
 | local | adapter | 80 | Agents / start the hub-native worker on self-hosted models (49) | Yes | --route --model --as | Repeated forms |
 | logs | main.ts | 78 | Daemon and runtime / show the hub log (16) | Yes | -f | Repeated forms |
@@ -152,7 +152,7 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | schedule | showToolText (3), renderScheduleList (1), fail (1), renderScheduleRun (1), renderScheduleChange (1) |
 | study | fail (2), showToolText (6), renderStudyEvidence (2), renderSynthesisReadiness (1), renderExperiments (1), renderStudyShow (1), renderStudyList (1), renderStudyReceipt (1) |
 | capabilities | fail (1), showToolText (1), renderCapabilities (1) |
-| learn | showToolText (2), renderLearnList (1), fail (1), renderLearnChange (1) |
+| learn | fail (2), showToolText (2), renderLearnList (1), renderLearnChange (1) |
 | intake | fail (3), showToolText (2), renderIntakeChange (1), renderIntake (1) |
 | deliverables | fail (2), console.log (5) |
 | board | fail (8), console.log (3), showToolText (1), renderHandoffs (1), console.error (1), printOutput (2), renderBoardColumns (1), renderBoard (1) |
@@ -217,28 +217,28 @@ Interpolated and daemon-supplied strings require runtime fixtures. They are coun
 | models | src/cli/main.ts:1584 | stdout | 11 |
 | say | src/cli/main.ts:1608 | stdout | 46 |
 | roadmap | src/cli/main.ts:1812 | stdout | 46 |
-| deliverables | src/cli/main.ts:2047 | stdout | 70 |
-| sdlc | src/cli/main.ts:2152 | stdout | 29 |
-| ask | src/cli/main.ts:2463 | stdout | 9 |
-| ask | src/cli/main.ts:2466 | stdout | 54 |
-| roster | src/cli/main.ts:2583 | stdout | 19 |
-| roster | src/cli/main.ts:2590 | stdout | 19 |
-| autonomy | src/cli/main.ts:2641 | stdout | 75 |
-| settings | src/cli/main.ts:2734 | stdout | 39 |
-| settings | src/cli/main.ts:2747 | stdout | 33 |
-| settings | src/cli/main.ts:2778 | stdout | 33 |
-| answer | src/cli/main.ts:2823 | stdout | 17 |
-| bench | src/cli/main.ts:2964 | stdout | 107 |
-| usage | src/cli/main.ts:3148 | stderr | 121 |
-| undo | src/cli/main.ts:3284 | stdout | 103 |
-| undo | src/cli/main.ts:3289 | stdout | 53 |
-| kill | src/cli/main.ts:3306 | stdout | 18 |
-| kill | src/cli/main.ts:3310 | stdout | 11 |
-| reset | src/cli/main.ts:3324 | stdout | 36 |
-| reset | src/cli/main.ts:3348 | stdout | 56 |
-| reset | src/cli/main.ts:3354 | stdout | 39 |
-| reset | src/cli/main.ts:3357 | stdout | 11 |
-| reset | src/cli/main.ts:3392 | stdout | 96 |
+| deliverables | src/cli/main.ts:2049 | stdout | 70 |
+| sdlc | src/cli/main.ts:2154 | stdout | 29 |
+| ask | src/cli/main.ts:2465 | stdout | 9 |
+| ask | src/cli/main.ts:2468 | stdout | 54 |
+| roster | src/cli/main.ts:2585 | stdout | 19 |
+| roster | src/cli/main.ts:2592 | stdout | 19 |
+| autonomy | src/cli/main.ts:2643 | stdout | 75 |
+| settings | src/cli/main.ts:2736 | stdout | 39 |
+| settings | src/cli/main.ts:2749 | stdout | 33 |
+| settings | src/cli/main.ts:2780 | stdout | 33 |
+| answer | src/cli/main.ts:2825 | stdout | 17 |
+| bench | src/cli/main.ts:2966 | stdout | 107 |
+| usage | src/cli/main.ts:3150 | stderr | 121 |
+| undo | src/cli/main.ts:3286 | stdout | 103 |
+| undo | src/cli/main.ts:3291 | stdout | 53 |
+| kill | src/cli/main.ts:3308 | stdout | 18 |
+| kill | src/cli/main.ts:3312 | stdout | 11 |
+| reset | src/cli/main.ts:3326 | stdout | 36 |
+| reset | src/cli/main.ts:3350 | stdout | 56 |
+| reset | src/cli/main.ts:3356 | stdout | 39 |
+| reset | src/cli/main.ts:3359 | stdout | 11 |
+| reset | src/cli/main.ts:3394 | stdout | 96 |
 
 ## Renderer candidates
 
@@ -260,7 +260,8 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/intake-output.ts:renderIntake | CLI | - | blank, grid, heading, pair | 79 |
 | src/cli/intake-output.ts:renderIntakeChange | CLI | - | grid, heading | 48 |
 | src/cli/learn-output.ts:renderLearnList | CLI | - | blank, grid, heading | 53 |
-| src/cli/learn-output.ts:renderLearnChange | CLI | - | blank, heading, pair | 63 |
+| src/cli/learn-output.ts:renderLearnAccepted | CLI | - | blank, grid, heading | Unmeasured |
+| src/cli/learn-output.ts:renderLearnChange | CLI | - | blank, heading, pair | 66 |
 | src/cli/output.ts:renderRuntimeModels | CLI | - | Inline / indirect | 0 |
 | src/cli/output.ts:renderRoster | CLI | - | Inline / indirect | 0 |
 | src/cli/output.ts:renderRoles | CLI | - | Inline / indirect | 75 |
