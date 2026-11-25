@@ -8340,7 +8340,10 @@ export class Tasks {
     check();
     if (!edit) throw new PreEffectToolRefusal(`the issue's edit time could not be read; check gh authentication and retry ahub sdlc readback start ${task.id}`);
     const current = this.need(task.id, false, true);
-    if (current.created !== task.created || current.history.length !== task.history.length) throw new PreEffectToolRefusal(`task #${task.id} changed during the read-back read; retry ahub sdlc readback start ${task.id}`);
+    // #1658: the start reads the issue between the two reads of the task, so the refusal names which race it saw: a
+    // recreated incarnation (a row per incarnation) or a task that gained a history entry while the body was read.
+    if (current.created !== task.created) throw new PreEffectToolRefusal(`task #${task.id} was recreated while its spec issue was read, and a read-back belongs to one incarnation; retry ahub sdlc readback start ${task.id}`);
+    if (current.history.length !== task.history.length) throw new PreEffectToolRefusal(`task #${task.id} gained a history entry while its spec issue was read, so the read-back would be filed against a changed task; retry ahub sdlc readback start ${task.id}`);
     const known = this.d.board.readbackOfTask(current.id, current.created, issue, edit.lastEditedAt);
     if (known) return { task: current.id, repo, issue, state: known.report ? "reported" : "requested", readback: known.id, reader: known.reader };
     const proposer = current.history.find(entry => entry.event === "proposed" && entry.by !== HUB)?.by ?? current.owner ?? undefined;

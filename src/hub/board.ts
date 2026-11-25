@@ -1479,7 +1479,9 @@ export class Board {
       const known = this.readbackOfTask(row.task, row.taskCreated, row.issue, row.lastEditedAt);
       if (known) {
         const identity = (value: Omit<StoredReadback, "id">) => JSON.stringify([value.task, value.taskCreated, value.repo, value.issue, value.lastEditedAt, value.updatedAt, value.reader, value.by]);
-        if (identity(known) !== identity(row)) return surveyInputFailure();
+        // A start that raced another start, or an issue comment that moved `updatedAt` under the same `lastEditedAt`, finds
+        // the earlier row here. It is never overwritten: the row stands and the caller reads it.
+        if (identity(known) !== identity(row)) throw new Error(`read-back ${known.id} already holds this task, issue and body for a different read; run ahub sdlc readback show ${row.task} for the request that stands`);
         return known.id;
       }
       const body = JSON.stringify(row);
