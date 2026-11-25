@@ -731,7 +731,8 @@ export function renderQueue(deliveries: any[], columns?: number, now = Date.now(
     const row = cells(s, { ...delivery, id: String(delivery.id) }, false, now);
     row[1] = span(row[1]!.text, peerTone(delivery.peer)); return row;
   });
-  return report.section("Queue", String(deliveries.length)).append(rows([...TABLES[4]!], data, columns, deliveries.map(delivery => delivery.important ? detail("priority", "important", columns, "attention") : []))).lines();
+  const table = rows([...TABLES[4]!], data, columns, deliveries.map(delivery => delivery.important ? detail("priority", "important", columns, "attention") : []));
+  return report.section("Queue", String(deliveries.length)).append(table).lines();
 }
 const moment = (value: unknown, now: number) => {
   const at = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
