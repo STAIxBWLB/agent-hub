@@ -8,7 +8,8 @@ import { sanitize } from "../src/hub/envelope.ts";
 import { renderHelp } from "../src/cli/help.ts";
 import { renderStatus, renderStatusDefault, renderReport } from "../src/cli/output.ts";
 import { summarize } from "../src/hub/report.ts";
-import { renderAuthorization, renderSdlcAudit, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "../src/cli/sdlc-output.ts";
+import { renderAuthorization, renderSdlcAudit, renderSdlcConfiguration, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcSurvey } from "../src/cli/sdlc-output.ts";
+import { renderBacklogResult, renderGroom, renderReleaseList, renderReleaseShow, renderTaskCancel, renderTaskShow } from "../src/cli/task-output.ts";
 import { PALETTE, Report, TONE_ROLE, paint, table, wrap } from "../src/cli/console-state.ts";
 import { errorLines, failureExitCode } from "../src/cli/error-format.ts";
 import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, SGR_RESET, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
@@ -394,6 +395,7 @@ describe("CLI output standard v1: each converted view follows the grammar (#1654
   const A = "a".repeat(40), NOW = 1_800_000_000_000;
   const peer = { state: "idle", doing: "", since: NOW - 60_000, tokens: 0 };
   const status = { version: "0.40.0", pid: 4242, controlPort: 12345, cwd: "/work/project", peers: { claude: peer }, tasks: { in_progress: 2 } } as any;
+  const taskCard = { id: 7, title: "Implement the human output for every task command with a title long enough to need wrapping", detail: "A long detail line that wraps.", class: "implement", owner: "jcode", reviewer: "claude", planner: "claude", state: "in_review", refs: { repo: "owner/repo", branch: "feat/x", commit: A, paths: ["src/cli/task-output.ts"] }, plan: { paths: ["src/cli/task-output.ts"], symbols: ["renderTaskShow"] }, deps: [1, 2, 3], created: NOW - 7_200_000, updated: NOW - 60_000, rank: 3, priority: 1, planningRevision: 4, flowRevision: 9, approval: { head: A, latestHead: A, current: true }, symbolOverlaps: [{ task: 8, files: ["src/hub/tasks.ts"], sameFileDifferentSymbols: true }], deliverables: { state: "approved", changedSinceReview: true, files: [{ id: "d1", sha256: "b".repeat(64), state: "changed", path: "docs/report.md", format: "md" }] }, reviews: [{ kind: "approved", reviewer: "claude", at: NOW - 3_600_000 }], history: [{ at: NOW - 60_000, by: "claude", event: "changes_requested", note: "a note" }] };
   const views: Record<string, (columns: number | undefined, ascii: boolean) => ReturnType<typeof renderSdlcMerge>> = {
     "status --verbose": (c, a) => renderStatus(status, c, NOW, false, a),
     "status": (c, a) => renderStatusDefault(status, c, NOW, a),
@@ -407,6 +409,16 @@ describe("CLI output standard v1: each converted view follows the grammar (#1654
     "sdlc metrics": (c, a) => renderSdlcMetrics({ since: null, tasks: 1, metrics: {}, bands: "off" }, c, NOW, a),
     "sdlc costs": (c, a) => renderSdlcCosts({ rows: [{ repo: "owner/repo", pr: 830, reviewRounds: 1, ciRuns: 2, complete: true }] }, c, NOW, a),
     "sdlc audit": (c, a) => renderSdlcAudit({ audit: { audit: "A1", task: 7, ref: A, profile: "standard", counts: { covered: 1 }, findings: {}, units: [], items: [] } }, c, NOW, a),
+    // #1654 AC3: the views that still used the old heading/pair/grid helpers
+    "sdlc configure": (c, a) => renderSdlcConfiguration({ by: "claude", restartPending: ["sdlc.toml"], lines: ["mode advise", "required checks unit, lint"], backup: "/work/project/.agenthub/sdlc.toml.bak" }, c, NOW, a),
+    "sdlc survey": (c, a) => renderSdlcSurvey({ task: 7, survey: 3, ref: A, focus: "tests", items: [{ finding: { id: "F1", evidence: "src/cli/a.ts:1", impact: "high", fix_sketch: "guard the call" }, decision: { verdict: "accepted" }, rejected: [{ id: "R1", change: "unknown", reason: "covered by an existing guard" }] }], rejected: [{ id: "R2", status: "unknown", reason: "older survey" }] }, c, NOW, a),
+    "task show": (c, a) => renderTaskShow(taskCard, c, NOW, a),
+    "task cancel": (c, a) => renderTaskCancel({ ...taskCard, state: "cancelled", cancelled: { reason: "superseded by the new plan", supersededBy: "#8" } }, c, NOW, a),
+    "backlog plan": (c, a) => renderBacklogResult("plan", { ...taskCard, state: "backlog", planningRevision: 0, history: [{ at: NOW - 1000, by: "claude", event: "planned", note: "priority 1" }] }, c, NOW, a),
+    "backlog split": (c, a) => renderBacklogResult("split", { parent: taskCard, children: [{ id: 21, title: "first part", state: "backlog", deps: [] }, { id: 22, title: "second part", state: "backlog", deps: [21] }] }, c, NOW, a),
+    "backlog groom": (c, a) => renderGroom({ items: [{ kind: "overlap", task: 7, related: [8, 9], code: "tests", personCommand: "ahub backlog return 7 3 reason" }], unknown: [11], truncated: true, privateTasks: "withheld" }, c, NOW, a),
+    "release list": (c, a) => renderReleaseList([{ id: 2, name: "0.18.0", goal: "Readable output", order: 2, state: "active", revision: 4, plannedStart: NOW - 86_400_000, tasks: [{ id: 7, state: "in_progress" }], afterCut: null }], c, NOW, a),
+    "release show": (c, a) => renderReleaseShow({ id: 2, name: "0.18.0", goal: "Readable output", order: 2, state: "active", revision: 4, tasks: [], afterCutUnknown: [41], afterCutUnknownCount: 1, afterCut: null }, c, NOW, a),
   };
   const text = (lines: ReturnType<typeof renderSdlcMerge>) => lines.map(line => line.map(span => span.text).join(""));
   for (const [name, render] of Object.entries(views)) {
@@ -431,4 +443,25 @@ describe("CLI output standard v1: each converted view follows the grammar (#1654
       expect(unicode.some(line => line.startsWith("▸ ")) || name === "report" || name === "status --verbose").toBe(true);
     });
   }
+});
+
+// #1654 AC3: the header-fit rule is one Report behavior, not three copies.
+describe("Report.titled: the header fits, else the context moves to a note (#1654 AC3)", () => {
+  const rows = (report: InstanceType<typeof Report>) => report.lines().map(line => line.map(span => span.text).join(""));
+  test("a context that fits stays on the header line after two spaces; inline joins it by one space", () => {
+    expect(rows(new Report(80).titled("ahub", "Status", "v1  pid 2"))).toEqual([" ahub Status  v1  pid 2"]);
+    expect(rows(new Report(80).titled("ahub", "Merge queue", "owner/repo", true))).toEqual([" ahub Merge queue owner/repo"]);
+    expect(rows(new Report(undefined).titled("ahub", "Merge queue", "owner/" + "x".repeat(200), true))).toHaveLength(1);
+  });
+  test("a context that does not fit moves to one wrapped note under a short header; nothing passes the width", () => {
+    const narrow = rows(new Report(24).titled("ahub", "Status", "127.0.0.1:12345  pid 4242"));
+    expect(narrow[0]).toBe(" ahub Status");
+    expect(narrow.slice(1).join(" ")).toContain("127.0.0.1:12345");
+    const long = rows(new Report(24).titled("ahub", "Guarded merge of task", "#7", true));
+    for (const line of long) expect(cellWidth(line)).toBeLessThanOrEqual(24);
+    expect(long.join(" ").replace(/\s+/g, " ")).toContain("Guarded merge of task #7");
+  });
+  test("an empty context is no context", () => {
+    expect(rows(new Report(80).titled("ahub", "Status", ""))).toEqual([" ahub Status"]);
+  });
 });

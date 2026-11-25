@@ -289,15 +289,15 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/schedule-output.ts:renderScheduleList | CLI | - | blank, grid, heading, moment, pair | 82 |
 | src/cli/schedule-output.ts:renderScheduleRun | CLI | - | heading, pair | 27 |
 | src/cli/schedule-output.ts:renderScheduleChange | CLI | - | heading, pair | 17 |
-| src/cli/sdlc-output.ts:renderSdlcConfiguration | CLI | - | heading, pair | 68 |
-| src/cli/sdlc-output.ts:renderSdlcSurvey | CLI | - | heading, pair | 23 |
-| src/cli/sdlc-output.ts:renderSdlcQueue | CLI | - | grid | 36 |
+| src/cli/sdlc-output.ts:renderSdlcConfiguration | CLI | Direct | LayoutReport | 70 |
+| src/cli/sdlc-output.ts:renderSdlcSurvey | CLI | Direct | LayoutReport | 29 |
+| src/cli/sdlc-output.ts:renderSdlcQueue | CLI | Direct | LayoutReport, grid | 36 |
 | src/cli/sdlc-output.ts:renderSdlcAudit | CLI | Direct | LayoutReport | 50 |
-| src/cli/sdlc-output.ts:renderSdlcRelease | CLI | - | grid, moment | 74 |
+| src/cli/sdlc-output.ts:renderSdlcRelease | CLI | Direct | LayoutReport, grid, moment | 74 |
 | src/cli/sdlc-output.ts:renderSdlcMetrics | CLI | Direct | LayoutReport, grid, moment | 80 |
 | src/cli/sdlc-output.ts:renderSdlcCosts | CLI | Direct | LayoutReport, grid | 39 |
 | src/cli/sdlc-output.ts:renderAuthorization | CLI | Direct | LayoutReport, moment | 46 |
-| src/cli/sdlc-output.ts:renderSdlcMerge | CLI | - | Inline / indirect | 36 |
+| src/cli/sdlc-output.ts:renderSdlcMerge | CLI | Direct | LayoutReport | 36 |
 | src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |
 | src/cli/source-output.ts:renderSourceAdd | CLI | - | heading, pair | 49 |
 | src/cli/source-output.ts:renderSourceList | CLI | - | blank, grid, heading, moment, pair | 62 |
@@ -308,12 +308,12 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/study-output.ts:renderStudyEvidence | CLI | - | heading, pair | 77 |
 | src/cli/study-output.ts:renderSynthesisReadiness | CLI | - | heading, pair | 101 |
 | src/cli/tail-render.ts:renderTailEvent | CLI | - | Inline / indirect | 17 |
-| src/cli/task-output.ts:renderTaskShow | CLI | - | Inline / indirect | 52 |
-| src/cli/task-output.ts:renderTaskCancel | CLI | - | heading, pair | 52 |
-| src/cli/task-output.ts:renderBacklogResult | CLI | - | blank, grid, heading, pair | 52 |
-| src/cli/task-output.ts:renderGroom | CLI | - | blank, grid, heading, pair | 50 |
-| src/cli/task-output.ts:renderReleaseList | CLI | - | blank | 41 |
-| src/cli/task-output.ts:renderReleaseShow | CLI | - | Inline / indirect | 41 |
+| src/cli/task-output.ts:renderTaskShow | CLI | Direct | Report | 60 |
+| src/cli/task-output.ts:renderTaskCancel | CLI | Direct | Report | 60 |
+| src/cli/task-output.ts:renderBacklogResult | CLI | Direct | Report, grid | 60 |
+| src/cli/task-output.ts:renderGroom | CLI | Direct | Report, grid | 50 |
+| src/cli/task-output.ts:renderReleaseList | CLI | Direct | Report | 41 |
+| src/cli/task-output.ts:renderReleaseShow | CLI | Direct | Report | 41 |
 | src/cli/upgrade-output.ts:renderUpgradePlan | CLI | - | Inline / indirect | 55 |
 | src/cli/upgrade-output.ts:renderStoppedPlan | CLI | - | Inline / indirect | 56 |
 | src/cli/upgrade-output.ts:renderStoppedResults | CLI | - | Inline / indirect | 60 |
