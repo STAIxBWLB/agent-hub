@@ -291,6 +291,9 @@ export function renderSdlcMetrics(result: unknown, columns?: number, now = Date.
     const x = metrics[key!] ?? {};
     return [s(label), s(count(x.n)), s(count(x.unknown), x.unknown ? "attention" : "muted"), s(percent(x.rate), x.rate === null || x.rate === undefined ? "muted" : "number")];
   }), columns));
+  // #1647: the split reasons, `unset` for tasks proposed without one.
+  const reasons = Object.entries((m?.byReason ?? {}) as Record<string, { tasks?: number; reviewRounds?: number; tokens?: number | null }>);
+  if (reasons.length) out.push(blank, ...grid(["REASON", "TASKS", "REVIEW ROUNDS", "TOKENS"], reasons.map(([reason, x]) => [s(reason), s(count(x.tasks)), s(count(x.reviewRounds)), s(x.tokens === null || x.tokens === undefined ? "unknown" : count(x.tokens), x.tokens === null || x.tokens === undefined ? "muted" : "number")]), columns));
   const st = m?.stalls;
   if (st) out.push(blank, ...pair("stalls", `${st.open ?? 0} open${Object.keys(st.byKind ?? {}).length ? ` (${Object.entries(st.byKind).map(([k, n]) => `${k} ${n}`).join(", ")})` : ""}, ${st.doneWithoutWrites ?? 0} done without writes`, columns, 10, st.open ? "attention" : undefined));
   if (m?.bands === "off" || m?.bands === undefined) out.push(...pair("bands", "off", columns, 10, "muted"));

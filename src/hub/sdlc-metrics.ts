@@ -14,6 +14,8 @@ export type BandTier = typeof BAND_TIERS[number];
 export interface MetricTask {
   id: number;
   private?: boolean;
+  /** #1647: why the task was split off; absent reads as `unset`. */
+  reason?: string;
   /** `evidenceOnly` marks a code-scope verdict with no open finding (#852): it is not a rework round. `requestHead` is the head a `done` asked review for (requestHead, with historical fallbacks); `verdictHead` the head a verdict was bound to (reviewFindings.head). Compared for equality only, never printed. */
   history: { at: number; event: string; requestHead?: string; verdictHead?: string; evidenceOnly?: true }[];
 }
@@ -219,9 +221,29 @@ export function controlEpisode(points: readonly { value: number; task: number }[
   return { ...now, episode: points[start]!.task };
 }
 
+/** #1647 AC4: one group per reason a task was split off for, `unset` for the tasks proposed without one. Tokens are the hub's own increments; `null` when no task of the group has a reading. */
+export interface ReasonGroup { tasks: number; reviewRounds: number; tokens: number | null }
+export const UNSET_REASON = "unset";
+
+/** Group the counted tasks by reason. A review round is one `done` (a request for review); tokens sum the tasks that have a reading and stay unknown, never 0, when none does. */
+export function reasonGroups(tasks: readonly MetricTask[], samples: ReadonlySet<number>, tokens: Readonly<Record<number, number | null>> = {}): Record<string, ReasonGroup> {
+  const groups: Record<string, ReasonGroup> = {};
+  for (const task of tasks) {
+    if (task.private || !samples.has(task.id)) continue;
+    const key = task.reason ?? UNSET_REASON, group = groups[key] ??= { tasks: 0, reviewRounds: 0, tokens: null };
+    group.tasks++;
+    group.reviewRounds += task.history.filter(entry => entry.event === "done").length;
+    const used = tokens[task.id];
+    if (typeof used === "number" && Number.isFinite(used)) group.tokens = (group.tokens ?? 0) + used;
+  }
+  return groups;
+}
+
 export interface MetricsReport {
   since: number | null;
   tasks: number;
+  /** #1647: count, review rounds and tokens grouped by the reason a task was split off. */
+  byReason: Record<string, ReasonGroup>;
   withheldPrivate: number;
   securityScan?: Record<string, number | null>;
   metrics: {
@@ -248,7 +270,7 @@ const rate = (values: readonly (number | null)[]) => {
  * The whole report from board tasks. `since` keeps samples that count at or after it; `mergedAt` and `ciReruns` come from bounded
  * PR readbacks keyed by task id and are optional. Private tasks are counted as withheld and read for nothing else.
  */
-export function sdlcMetrics(tasks: readonly MetricTask[], opts: { since?: number; bands?: BandsConfig; stalls?: StallCounts; mergedAt?: Readonly<Record<number, number>>; ciReruns?: Readonly<Record<number, number | null>>; ciRuns?: Readonly<Record<number, number | null>>; reviews?: Readonly<Record<number, number | null>>; firstPass?: Readonly<Record<number, 0 | 1 | null>>; fullGateRuns?: Readonly<Record<number, number | null>>; successfulGateRuns?: Readonly<Record<number, number | null>>; failedGateRuns?: Readonly<Record<number, number | null>>; cancelledGateRuns?: Readonly<Record<number, number | null>>; otherGateRuns?: Readonly<Record<number, number | null>>; macosShardRuns?: Readonly<Record<number, number | null>>; external?: Partial<Record<BandMetric, readonly SeriesPoint[]>> } = {}): MetricsReport {
+export function sdlcMetrics(tasks: readonly MetricTask[], opts: { since?: number; bands?: BandsConfig; stalls?: StallCounts; mergedAt?: Readonly<Record<number, number>>; ciReruns?: Readonly<Record<number, number | null>>; ciRuns?: Readonly<Record<number, number | null>>; reviews?: Readonly<Record<number, number | null>>; firstPass?: Readonly<Record<number, 0 | 1 | null>>; fullGateRuns?: Readonly<Record<number, number | null>>; successfulGateRuns?: Readonly<Record<number, number | null>>; failedGateRuns?: Readonly<Record<number, number | null>>; cancelledGateRuns?: Readonly<Record<number, number | null>>; otherGateRuns?: Readonly<Record<number, number | null>>; macosShardRuns?: Readonly<Record<number, number | null>>; /** #1647: the hub's own token increments per task, when a usage source is wired. */ tokens?: Readonly<Record<number, number | null>>; external?: Partial<Record<BandMetric, readonly SeriesPoint[]>> } = {}): MetricsReport {
   const visible = tasks.filter(task => !task.private);
   const all = visible.map(task => taskSample(task, { mergedAt: opts.mergedAt?.[task.id], ciReruns: opts.ciReruns?.[task.id], ciRuns: opts.ciRuns?.[task.id], reviews: opts.reviews?.[task.id], firstPass: opts.firstPass?.[task.id], fullGateRuns: opts.fullGateRuns?.[task.id], successfulGateRuns: opts.successfulGateRuns?.[task.id], failedGateRuns: opts.failedGateRuns?.[task.id], cancelledGateRuns: opts.cancelledGateRuns?.[task.id], otherGateRuns: opts.otherGateRuns?.[task.id], macosShardRuns: opts.macosShardRuns?.[task.id] }));
   const samples = opts.since === undefined ? all : all.filter(sample => sample.at >= opts.since!);
@@ -257,6 +279,7 @@ export function sdlcMetrics(tasks: readonly MetricTask[], opts: { since?: number
     : "off";
   return {
     since: opts.since ?? null, tasks: samples.length, withheldPrivate: tasks.length - visible.length,
+    byReason: reasonGroups(tasks, new Set(samples.map(sample => sample.id)), opts.tokens),
     metrics: {
       acceptance_to_plan_ms: summarize(samples.map(s => s.acceptance_to_plan_ms)), accepted_to_plan_ms: summarize(samples.map(s => s.accepted_to_plan_ms)), acceptance_to_first_review_ms: summarize(samples.map(s => s.acceptance_to_first_review_ms)),
       acceptance_to_merge_ms: summarize(samples.map(s => s.acceptance_to_merge_ms)),

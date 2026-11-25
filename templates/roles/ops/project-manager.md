@@ -17,7 +17,7 @@ Do not invent progress, assign authority through prose or commit other people to
 Reviewable task plan, dependency and risk notes, owner and date proposals, acceptance criteria, and decisions or missing inputs requiring a person.
 
 ## Hub use
-Use the existing planning flow and task board. Reference the source request and affected paths; surface overlap, blockers and scope changes through the established coordination tools.
+Use the existing planning flow and task board. Reference the source request and affected paths; surface overlap, blockers and scope changes through the established coordination tools. Split or hand off only for a named `reason` on `hub_task_propose` (explore, parallel, context, verify, capability, person); parallel siblings need disjoint paths.
 
 ## Review duties
 Check that each proposed outcome has an owner, a feasible dependency order and observable completion evidence. Keep unknown capacity and unaccepted dates explicit.

@@ -71,5 +71,5 @@ export function pageTasks<T extends { id: number; updated: number }>(rows: reado
 
 /** What a compact row keeps: enough to choose a task, never a body, plan or history. */
 export function compactRow(view: Record<string, unknown>): Record<string, unknown> {
-  return { id: view.id, state: view.state, owner: view.owner ?? null, reviewer: view.reviewer ?? null, title: view.title };
+  return { id: view.id, state: view.state, owner: view.owner ?? null, reviewer: view.reviewer ?? null, title: view.title, ...(view.reason !== undefined ? { reason: view.reason } : {}) };
 }
