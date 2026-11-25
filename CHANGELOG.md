@@ -10,6 +10,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Raise the `@staix/agent-mem` floor to 0.39.0, so a host can call `MemoryStore.unsettledTaskKeys` (agent-mem#610) without feature detection, for #1445 / hub task 1085. On first open, each populated profile rebuilds a separate v6 derived index from existing rows: a one-time startup cost plus extra disk. The v5 index stays beside it for 0.38.0, or an N-1 0.45.0 hub, sharing the home. HOST_API_VERSION stays 1 and no store or sync format floor is raised. A hub that resolves agent-mem 0.38.0 or older now refuses memory at load. Refs #1664, hub task 1117.
 
+- At startup, use agent-mem's outstanding-task index to repair interrupted memory settlements, checking the current board for approval and privacy before each repair. Refs #1445, hub task 1085.
+
 - Finish the help grammar of `ahub help <command>`: Details names each form and says what it does instead of repeating the usage, operands are lowercase `<placeholders>` (`<n>`, `<hash>`, `<ms>`, `<json>`, `<token>`, `<date>`) in usage and in the guidance and roadmap usage errors, and a usage line breaks only between bracket groups. Flags, `--json` and exit codes are unchanged. Refs #1654, hub task 1114.
 
 - Render the project, queue, turn and orphan listings through the shared report layout: a ` ahub <Name>` header, a counted section, a note for an empty list and next steps. `--json`, flags and exit codes are unchanged (Refs #1654, hub task 1115).

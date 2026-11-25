@@ -2,8 +2,8 @@ import { InvocationLedger } from "../src/hub/invocations.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { Database } from "bun:sqlite";
-import { MemoryStore, migrate, taskKey } from "@staix/agent-mem";
-import { afterEach, expect, test } from "bun:test";
+import { entryId, MEMORY_SCHEMA, MemoryStore, migrate, taskKey, type NoteInput, type OpInput } from "@staix/agent-mem";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -3723,6 +3723,84 @@ test("start reconciliation preserves migrated legacy settlements without authori
     store?.close(); bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("startup memory reconciliation reads outstanding keys and repairs only approved work (#1445)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-unsettled-")), project = "synthetic/settlement";
+  const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
+  const store = new MemoryStore({ home: join(dir, "home"), deferPromotions: true });
+  const tasks = new Tasks({ board, bus, cwd: dir, project, routing: () => loadRouting(dir), notify: () => {}, store: { store, project, repo: project } });
+  try {
+    const rows: (NoteInput | OpInput)[] = [];
+    const note = (key: string) => rows.push({ op: "note", project, scope: "project", tier: "short", kind: "finding", peer: "codex", source: "hub", task: key, text: "fixture finding", about: [] });
+    const at = new Date().toISOString();
+    const create = (approved: boolean, signals?: string[]) => {
+      const task = board.propose(USER, { title: "fixture task", class: "implement", signals });
+      if (approved) {
+        board.update(task.id, "codex", "accepted", { owner: "codex", state: "in_progress" });
+        board.update(task.id, "codex", "done", { state: "approved" });
+      }
+      return task;
+    };
+    const keyOf = (task: ReturnType<typeof create>) => taskKey(project, task);
+    for (let i = 0; i < 1000; i++) {
+      const key = keyOf(create(true));
+      note(key);
+      rows.push({ op: "settle", target: key, actor: "claude", by: at });
+    }
+    const openKeys = Array.from({ length: 20 }, () => keyOf(create(false)));
+    const interrupted = [keyOf(create(true)), keyOf(create(true))];
+    const privateKey = keyOf(create(true, ["pii_path"]));
+    const replaced = create(true);
+    const oldKey = keyOf({ ...replaced, created: replaced.created - 1 });
+    const otherProject = taskKey("synthetic/other", replaced);
+    for (const key of [...openKeys, ...interrupted, privateKey, oldKey, otherProject]) note(key);
+    const segment = join(store.dir, "local", store.machine.id + ".jsonl");
+    const seed = () => {
+      writeFileSync(segment, rows.splice(0).map(row => {
+        const body = { ...row, schema: MEMORY_SCHEMA, at, machine: store.machine.id } as const;
+        return JSON.stringify({ ...body, id: entryId(body) });
+      }).join("\n") + "\n", { flag: "a" });
+      store.refresh();
+    };
+    seed();
+    const fullPass = board.list("approved").filter(task => {
+      const key = keyOf(task);
+      return !tasks.isPii(task) && store.hasTask(key) && !store.settled(key, { includeLegacy: true });
+    }).map(keyOf).sort();
+    expect(fullPass).toEqual(interrupted.sort());
+
+    const discover = store.unsettledTaskKeys.bind(store);
+    const page = spyOn(store, "unsettledTaskKeys").mockImplementation((projectKey, options) => discover(projectKey, { ...options, limit: 4 }));
+    const boardList = spyOn(board, "list");
+    const lookup = spyOn(board, "get");
+    const hasTask = spyOn(store, "hasTask");
+    const settle = spyOn(store, "settle");
+    try {
+      expect(tasks.reconcileMemory()).toBe(fullPass.length);
+      expect(boardList).not.toHaveBeenCalled();
+      expect(page.mock.calls.length).toBeGreaterThan(1);
+      expect(lookup.mock.calls.length).toBeLessThanOrEqual(openKeys.length + interrupted.length + 2);
+      expect(hasTask.mock.calls.map(([key]) => key).sort()).toEqual(fullPass);
+      expect(settle.mock.calls.map(([key]) => key).sort()).toEqual(fullPass);
+      for (const key of [...openKeys, privateKey, oldKey, otherProject, keyOf(replaced)]) expect(store.settled(key)).toBe(false);
+      for (const key of interrupted) expect(store.settled(key)).toBe(true);
+      expect(tasks.reconcileMemory()).toBe(0);
+      expect(boardList).not.toHaveBeenCalled();
+
+      const pending = keyOf(create(true));
+      note(pending);
+      seed();
+      page.mockImplementation(() => { throw new Error("fixture index unavailable"); });
+      expect(tasks.reconcileMemory()).toBe(1);
+      expect(boardList).toHaveBeenCalledWith("approved");
+      expect(store.settled(pending)).toBe(true);
+    } finally {
+      for (const spy of [page, boardList, lookup, hasTask, settle]) spy.mockRestore();
+    }
+  } finally {
+    store.close(); bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);
 
 test("by default the third consecutive changes_requested escalates, the second keeps the owner (#488)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-escalate3-"));

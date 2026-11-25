@@ -178,6 +178,10 @@ Review independence and declared scope are different controls. Selection exclude
 
 Task text and private-turn words can reach owners, reviewers, overlap notices and memory. Public views use the host's current privacy projection; PII tasks remain stubs for unauthorized observers, and private turns cannot write ordinary shared task text. The projection belongs at the shared boundary because filtering individual callers would leave another observer exposed ([#198](https://github.com/STAIxBWLB/agent-hub/issues/198), [#230](https://github.com/STAIxBWLB/agent-hub/issues/230)).
 
+## Startup memory settlement (#1445)
+
+The host pages agent-mem's outstanding task keys for the bound project. Each candidate must match a current approved task's full key, pass the current privacy policy, and still have an entry and no visible settlement. Legacy settlements count. The host checks that the memory profile is current before each page and each repair. A discovery refusal falls back to the approved-task point checks for that startup. Writes behind the page cursor are eligible at the next startup.
+
 ## Spec acceptance carry-over (#1328 T4)
 
 `Tasks` may reuse an original person's stored acceptance at existing build-entry gates, using one host `readSpecEdit` observation for carry and the ordinary verdict. Gates return only a virtual receipt and an opaque host proof without a write. `Tasks.acceptSpec` remains USER-only; tools and lifecycle receipt fields cannot create acceptance. `assign()` remains pure and its offer/gate order is unchanged.
