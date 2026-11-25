@@ -17324,7 +17324,7 @@ var init_spec_readback = __esm(() => {
   init_git();
   init_advisor_survey();
   READBACK_REPORT_BYTES = 320 * 1024;
-  READBACK_STORE_BYTES = 384 * 1024;
+  READBACK_STORE_BYTES = READBACK_REPORT_BYTES + 128 * 1024;
 });
 
 // src/hub/board.ts
