@@ -266,8 +266,11 @@ in-stack from the same `Tasks` projection the CLI and MCP read. This lineage rea
 adds no protocol message, panel id or action id, and leaves `DASHBOARD_VIEWS` and
 the advertised actions unchanged. Independent features, such as the read-only
 Guidance panel, may append their own panels to `manifest.panels` under their own
-contracts. An older console that never asks for lineage keeps working. Equivalent
-admitted views are therefore a property of one read path, not a comparison of two.
+contracts. The provider advertises `capabilities.reads: ["lineage"]` for consoles
+that support non-navigation reads (#1632). Agent-console 0.2.0 loads the manifest
+and refuses the lineage route with HTTP 400. Its shell renders a one-line refresh
+error for the refused request. End-to-end route admission awaits a published
+agent-console 0.3.x. Equivalent admitted views share the same read path.
 
 `src/ui/plugin.ts` answers `snapshot({panel: "lineage", ...})` with
 `{ok: true, panel: "lineage", lineage, lines}`. The lines come from
