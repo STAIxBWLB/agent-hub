@@ -2094,7 +2094,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   sdlc: async () => {
     const args = sdlcOperands(), present = SDLC_READ.includes(args[0] ?? "") ? outputOptions() : undefined;
     /** The human form (#814). Each site keeps its own `if (present.json) console.log(JSON.stringify(...))`, so the JSON branch stays visible to the guard test. */
-    const human = (render: (data: any, columns?: number, now?: number) => Span[][], data: unknown) => printOutput(render(data, present!.columns, Date.now()), present!.color);
+    const human = (render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][], data: unknown) => printOutput(render(data, present!.columns, Date.now(), asciiMarkers(process.env, args.includes("--ascii"))), present!.color);
     const sub = args[0], id = args[1] === undefined ? undefined : Number(args[1]);
     if (sub === "configure") {
       const parsed = takeFlags(args.slice(1), ["--mode", "--required-checks"], []);
@@ -2295,7 +2295,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (!reply.ok) fail(reply.error);
         const view = { task: reply.task, mode: reply.mode, ran: reply.ran, decision: reply.decision, ...(reply.argv ? { argv: reply.argv } : {}), ...(reply.refused ? { refused: reply.refused } : {}), ...(reply.result ? { result: reply.result } : {}) };
         if (display.json) console.log(JSON.stringify(view, null, 2));
-        else printOutput(renderSdlcMerge(view, display.columns, Date.now()), display.color);
+        else printOutput(renderSdlcMerge(view, display.columns, Date.now(), asciiMarkers(process.env, args.includes("--ascii"))), display.color);
         if (reply.decision === "refused" || reply.ran && reply.result?.state !== "merged") process.exitCode = 1;
       } finally { hub.close(); }
       return;

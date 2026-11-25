@@ -2,7 +2,7 @@
 // Layout follows #284: aligned columns from the shared `table`, long text wrapped under its label (never cut),
 // semantic tones, readable times (`2026-10-25 14:20 UTC (3h05m ago)`, never a raw ISO string). `--json` is the caller's
 // branch and prints the hub's reply untouched, so nothing here may be the only copy of a field.
-import { duration, plural, relative, table, terminalText, wrap, type Span, type Tone } from "./console-state.ts";
+import { duration, plural, relative, table, terminalText, wrap, Report as LayoutReport, type Span, type Tone } from "./console-state.ts";
 import { readbackSummary, type ReadbackView } from "../hub/spec-readback.ts";
 
 type Line = Span[];
@@ -332,37 +332,32 @@ export function renderSdlcCosts(result: unknown, columns?: number, _now = Date.n
 // ---- sdlc authorize-release ---------------------------------------------------------------------------------------
 
 /** `ahub sdlc authorize-release <version>`: what the person just approved. */
-export function renderAuthorization(authorization: unknown, columns?: number, now = Date.now()): Span[][] {
+export function renderAuthorization(authorization: unknown, columns?: number, now = Date.now(), ascii = false): Span[][] {
   const a = authorization as any;
-  const w = 8;
-  return [...heading("Release authorized", columns),
-    ...pair("version", a?.version ?? "unknown", columns, w), ...pair("commit", short(a?.commit), columns, w), ...pair("by", a?.by ?? "unknown", columns, w),
-    ...pair("at", moment(a?.at, now), columns, w), ...pair("docs", a?.docs?.source === "none" ? "none (explicit exemption)" : a?.docs ? `${a.docs.fresh ? "fresh" : "not fresh"}, ${plural(a.docs.documents ?? 0, "document")}, digest ${short(a.docs.digest)}` : "unknown", columns, w),
-    ...pair("id", a?.id ?? "unknown", columns, w, "muted"), blank,
-    ...para("A daemon restart revokes this authorization.", columns, "muted")];
+  const docs = a?.docs?.source === "none" ? "none (explicit exemption)" : a?.docs ? `${a.docs.fresh ? "fresh" : "not fresh"}, ${plural(a.docs.documents ?? 0, "document")}, digest ${short(a.docs.digest)}` : "unknown";
+  return new LayoutReport(columns, ascii).header("ahub", "Release authorized")
+    .section("Authorization")
+    .kv([["version", a?.version ?? "unknown"], ["commit", short(a?.commit)], ["by", a?.by ?? "unknown"], ["at", moment(a?.at, now)], ["docs", docs], ["id", a?.id ?? "unknown"]])
+    .note("A daemon restart revokes this authorization.").lines();
 }
 
 // ---- sdlc merge ---------------------------------------------------------------------------------------------------
 
 const MERGE_STATE: Record<string, [string, Tone]> = { merged: ["merged", "success"], not_merged: ["not merged", "failure"], unknown: ["merge state unknown", "attention"] };
 /** `ahub sdlc merge <task> [--dry-run]` (#899): the hub's decision, every gate that refused it, the `gh` command, and GitHub's readback after a run. */
-export function renderSdlcMerge(view: unknown, columns?: number, _now = Date.now()): Span[][] {
+export function renderSdlcMerge(view: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const v = view as any;
-  const w = 8, refused = list(v?.refused), argv = list(v?.argv);
-  const out: Line[] = [...heading(`Guarded merge of task #${v?.task ?? "unknown"}`, columns)];
-  out.push(...pair("mode", v?.mode ?? "unknown", columns, w, v?.mode === "off" ? "attention" : undefined));
-  if (v?.decision === "merge") out.push(...pair("decision", "merge: every gate passed", columns, w, "success"));
-  else if (v?.decision === "refused") out.push(...pair("decision", `refused by ${plural(refused.length, "gate")}`, columns, w, "attention"));
-  else out.push(...pair("decision", "unknown", columns, w, "attention"));
-  out.push(...bullets("refused", refused, columns, "attention", "  "));
-  if (argv.length) out.push(...pair("command", `gh ${argv.join(" ")}`, columns, w));
+  const refused = list(v?.refused), argv = list(v?.argv);
+  const decision = v?.decision === "merge" ? "merge: every gate passed" : v?.decision === "refused" ? `refused by ${plural(refused.length, "gate")}` : "unknown";
   const ran = v?.ran === true ? "yes" : v?.ran === false ? (v?.mode === "dry-run" && argv.length ? "no (dry run: the command above was not run)" : "no") : "unknown";
-  out.push(...pair("ran", ran, columns, w, v?.ran === true ? undefined : "muted"));
+  const report = new LayoutReport(columns, ascii).header("ahub", `Guarded merge of task #${v?.task ?? "unknown"}`).section("Decision")
+    .kv([["mode", v?.mode ?? "unknown"], ["decision", decision], ...(argv.length ? [["command", `gh ${argv.join(" ")}`] as const] : []), ["ran", ran]]);
+  if (refused.length) { report.section("Refused", String(refused.length)); for (const gate of refused) report.bullet("fail", terminalText(gate)); }
   const r = v?.result;
   if (r && typeof r === "object") {
-    const [state, tone] = MERGE_STATE[String(r.state)] ?? ["merge state unknown", "attention" as Tone];
-    out.push(blank, ...pair("result", `${state}, gh exit ${count(r.exit)}${r.mergeCommit ? `, merge commit ${short(r.mergeCommit)}` : ""}`, columns, w, tone));
-    if (r.cleanup) out.push(...pair("cleanup", `branch cleanup ${String(r.cleanup).replaceAll("_", " ")}${r.reason ? ` (${String(r.reason).replaceAll("_", " ")})` : ""}`, columns, w, r.cleanup === "deleted" ? undefined : "muted"));
+    const [state] = MERGE_STATE[String(r.state)] ?? ["merge state unknown"];
+    report.section("Result").kv([["result", `${state}, gh exit ${count(r.exit)}${r.mergeCommit ? `, merge commit ${short(r.mergeCommit)}` : ""}`],
+      ...(r.cleanup ? [["cleanup", `branch cleanup ${String(r.cleanup).replaceAll("_", " ")}${r.reason ? ` (${String(r.reason).replaceAll("_", " ")})` : ""}`] as const] : [])]);
   }
-  return out;
+  return report.lines();
 }
