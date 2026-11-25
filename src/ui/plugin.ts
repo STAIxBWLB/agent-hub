@@ -42,11 +42,15 @@ type ActionResult =
   | ({ ok: true } & Record<string, unknown>)
   | { ok: false; error: string; unconfirmed?: true }
   | { ok: false; needsConfirm: true; preview: string[]; fingerprint: string; verb?: string; warnings?: string[] };
+/** #1635: scopes answered per `revision()` call; the rest are dropped, and each key is cut to 200 characters. */
+const REVISION_MAX_SCOPES = 20;
 export interface ConsoleProvider {
   assets: { js: string; css?: string };
   snapshot(input: { after: number; panel: string } & Record<string, unknown>): Promise<Record<string, unknown>>;
   action(input: { action: string; confirmed?: true; fingerprint?: string } & Record<string, unknown>, meta?: ActionMeta): Promise<ActionResult>;
   asset?(input: { id: string }): Promise<{ bytes: Uint8Array; mime: string; name: string } | null>;
+  /** #1635: an opaque change token per scope, so a console polls cheaply. `board` changes on every task-board write across the running projects; any other scope is "0". */
+  revision?(scopes: string[]): Promise<Record<string, string>>;
   close?(): Promise<void>;
 }
 export interface ConsolePlugin {
@@ -604,6 +608,23 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         return null;
       }
     },
+    async revision(scopes) {
+      const out: Record<string, string> = {};
+      for (const scope of scopes.slice(0, REVISION_MAX_SCOPES)) {
+        const key = typeof scope === "string" ? scope.slice(0, 200) : "";
+        out[key] = "0";
+        if (key !== "board") continue;
+        const projects = await running();
+        // Each running project's hub answers with its board's write counter, a bare number; only ids and numbers are folded, never a title or any task text.
+        const parts = await Promise.all(projects.map(async (project) => {
+          const snap = await Promise.resolve(act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "board" })).catch(() => null) as Record<string, unknown> | null;
+          const counter = snap && typeof snap.boardRevision === "number" && Number.isSafeInteger(snap.boardRevision) ? snap.boardRevision : "?";
+          return `${project.id}:${project.instanceId}:${counter}`;
+        }));
+        out[key] = parts.length ? createHash("sha256").update(parts.sort().join("|")).digest("hex").slice(0, 32) : "0";
+      }
+      return out;
+    },
     async close() { if (owned) registry.close(); },
   };
 
@@ -666,6 +687,7 @@ const capabilities = {
   actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...RESULT_ADVERTISED, ...REVIEW_ACTIONS],
   reads: ["lineage"], confirm: true, multiProject: true, inbox: true, inboxMaxAgeMs: INBOX_MAX_AGE_MS,
   space: true, spaceMaxAgeMs: SPACE_MAX_AGE_MS,
+  // ponytail: `revision: true` is not declared. The pinned @staix/agent-console 0.2.0 has no revision contract (agent-console#123); the provider answers revision() already. Ceiling: a console that never asks. Upgrade: declare it when the pin moves to the 0.3.x that ships the contract.
 };
 
 const plugin: ConsolePlugin = {

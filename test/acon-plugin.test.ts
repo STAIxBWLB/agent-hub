@@ -21,7 +21,8 @@ afterEach(() => { for (const s of servers.splice(0)) s.stop(true); for (const d 
 const PERMISSION = { t: "permission", id: "perm-1", peer: "kimi", title: "execute: fixture command", createdAt: 1_790_000_000_000, expiresAt: Date.now() + 60_000,
   options: [{ optionId: "yes", kind: "allow_once", name: "Allow" }, { optionId: "no", kind: "reject_once", name: "Deny" }] };
 
-function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number; features?: readonly string[]; stallReview?: boolean; forwardTimeoutMs?: (action:string, nominalMs:number)=>number } = {}) {
+function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number; features?: readonly string[]; stallReview?: boolean; forwardTimeoutMs?: (action:string, nominalMs:number)=>number; omitBoardRevision?: boolean } = {}) {
+  const board = { revision: 3 };
   const home = mkdtempSync(join(tmpdir(), "ahub-acon-")); dirs.push(home);
   const project: ProjectRecord = { id: "p1", root: "/tmp/acon-project", stateDir: join(home, "state"), basePort: 4700, instanceId: "i1", pid: 42 };
   const registry = { get: (id: string) => id === project.id ? project : undefined, list: () => [project], close() {} } as any;
@@ -34,7 +35,7 @@ function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number; features
       const m = JSON.parse(String(data));
       if (m.t === "hello") return void ws.send(JSON.stringify({ rid: m.rid, t: "welcome", cwd: project.root, projectId: project.id, instanceId: "i1" }));
       if (m.t === "ui_snapshot" && o.stallSnapshots) { snapshots.push(m); return; }
-      if (m.t === "ui_snapshot") { snapshots.push(m); return void ws.send(JSON.stringify({ rid: m.rid, ok: true, cursor: 1, peers: {}, permissions,
+      if (m.t === "ui_snapshot") { snapshots.push(m); return void ws.send(JSON.stringify({ rid: m.rid, ok: true, cursor: 1, ...(o.omitBoardRevision ? {} : { boardRevision: board.revision }), peers: {}, permissions,
         status: { peers: { kimi: { state: "busy", queued: 2, permissionMode: "default" }, codex: { state: "idle" } } },
         events: [{ seq: 1, event: { t: "envelope", env: { from: "codex", to: ["kimi"], kind: "chat", priority: "status", ts: Date.now(), body: "MARKER-1012 body", refs: { task: "7" } } } }],
         tasks: [{ id: 7, title: "Review the parser", detail: "MARKER-1012 detail", class: "implement", state: "in_review", owner: "codex", reviewer: "user" }, { id: 8, title: "Other", state: "in_review", owner: "codex", reviewer: "claude" }, { id: 9, title: "Wire the space", class: "implement", state: "in_progress", owner: "kimi" }] })); }
@@ -47,7 +48,7 @@ function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number; features
   writeFileSync(join(project.stateDir, "status.json"), JSON.stringify({ pid: process.pid, controlPort: hub.port, protocol: PROTOCOL, cwd: project.root, projectId: project.id, instanceId: "i1" }));
   writeFileSync(join(project.stateDir, "control-token"), "scripted-token");
   const provider = createProvider({ home, registry, lifecycle, features: o.features, forwardTimeoutMs:o.forwardTimeoutMs, ...(o.spaceBudgetMs ? { spaceBudgetMs: o.spaceBudgetMs } : {}) });
-  return { home, provider, actions, snapshots, controls };
+  return { home, provider, actions, snapshots, controls, board };
 }
 
 describe("acon plugin manifest", () => {
@@ -59,6 +60,38 @@ describe("acon plugin manifest", () => {
 });
 
 describe("acon plugin provider (D1)", () => {
+  test("revision('board') changes on a board write and is stable without one, other scopes are 0 (#1635 AC2)", async () => {
+    const { provider, board } = fixture();
+    const first = await provider.revision!(["board", "inbox", "nope"]);
+    const again = await provider.revision!(["board"]);
+    expect(again.board).toBe(first.board);
+    expect(first.board).not.toBe("0");
+    expect(first.board!.length).toBeLessThanOrEqual(200);
+    expect(first.inbox).toBe("0");
+    expect(first.nope).toBe("0");
+    board.revision++; // a task-board write bumps the hub's counter
+    expect((await provider.revision!(["board"])).board).not.toBe(first.board);
+  });
+  test("revision() answers at most 20 scopes and cuts each key to 200 characters (#1635)", async () => {
+    const { provider } = fixture();
+    const many = Array.from({ length: 30 }, (_, i) => `s${i}`);
+    expect(Object.keys(await provider.revision!(many))).toHaveLength(20);
+    const long = "x".repeat(500);
+    const out = await provider.revision!([long]);
+    expect(Object.keys(out)[0]!.length).toBe(200);
+    expect(Object.values(out).every((v) => v.length <= 200)).toBe(true);
+  });
+  test("a hub snapshot without boardRevision still renders and the board revision stays a stable value (#1635 AC3)", async () => {
+    const { provider } = fixture({ omitBoardRevision: true });
+    const snap = await provider.snapshot({ after: 0, panel: "board", projectId: "p1", instanceId: "i1", view: "board" });
+    expect(snap.ok).toBe(true);
+    const a = (await provider.revision!(["board"])).board, b = (await provider.revision!(["board"])).board;
+    expect(a).toBe(b);
+  });
+  test("the manifest does not declare revision until the pinned acon ships the contract (#1635)", () => {
+    expect(plugin.manifest.capabilities).not.toHaveProperty("revision");
+    expect(plugin.manifest.panels.map((p) => p.id)).toEqual([...DASHBOARD_VIEWS, "guidance"]);
+  });
   test("intake forwards through the existing manager action boundary without confirmation (#1144)", async () => {
     const { provider, actions } = fixture();
     expect(plugin.manifest.capabilities?.actions).toContain("intake");

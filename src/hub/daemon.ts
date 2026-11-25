@@ -10423,6 +10423,8 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(input?.view === "agents" ? { results: resultsView(session) } : {}),
       events: uiEvents.filter((e) => e.seq > after),
       cursor: uiSequence,
+      // #1635: the board's own write counter (a bare number, never task text), so a console can tell the board changed without reading it. Additive and optional: older pages ignore it and PROTOCOL stays.
+      boardRevision: board.statusRevision(),
       memorySync: memoryProfileStatus(true).sync,
       ...settingsSnapshot(session),
       starts: startPlans(),
