@@ -448,10 +448,12 @@ test("Qwen ACP 0.26.8 and 0.27.0 retain their independent receipts and historica
 });
 
 
-test("Kimi reviewer 2.5.1 is exact-receipt verified without trusting nearby versions (#888)", () => {
+test("Kimi reviewer 2.5.1 and 2.7.2 are exact-receipt verified without trusting nearby versions (#888)", () => {
   expect(assessVersion("kimi-review", "2.5.1", [])).toEqual({ ok: true, state: "verified", version: "2.5.1" });
-  expect(COMPAT["kimi-review"].receipt).toBe("docs/verification/2026-11-06-kimi-251-reviewer-compat.md");
-  for (const near of ["2.5.0", "2.5.2", "2.5.1-rc.1", "kimi 2.5.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
+  expect(assessVersion("kimi-review", "2.7.2", [])).toEqual({ ok: true, state: "verified", version: "2.7.2" });
+  expect(COMPAT["kimi-review"].receipt).toBe("docs/verification/2026-11-25-kimi-272-reviewer-compat.md");
+  expect(assessVersion("kimi-tui", "2.7.2", []).ok).toBe(false);
+  for (const near of ["2.5.0", "2.5.2", "2.5.1-rc.1", "kimi 2.5.1", "2.7.1", "2.7.3", "2.7.2-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
 });
 
 test("Qwen dual-output 0.27.0 has an exact independent receipt without a version line (#888)", () => {
