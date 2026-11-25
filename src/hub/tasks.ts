@@ -8338,20 +8338,26 @@ export class Tasks {
     if (known) return { task: current.id, repo, issue, state: known.report ? "reported" : "requested", readback: known.id, reader: known.reader };
     const proposer = current.history.find(entry => entry.event === "proposed" && entry.by !== HUB)?.by ?? current.owner ?? undefined;
     // #1658: any attached reviewer-role peer may read (the owner's T1 ruling), never the proposer and never the owner, which
-    // may be the session that wrote the spec. Routing still judges each one, with the proposer in the owner's place.
+    // may be the session that wrote the spec. A review-only instance is not a reader: its tool port publishes neither
+    // hub_task_spec nor hub_readback_report (`src/adapters/reviewer-mcp.ts`), so a request filed to it could not be answered.
+    // Routing still judges each candidate, with the proposer in the owner's place.
     const skip = new Set<PeerId>([...(proposer ? [proposer] : []), ...(current.owner ? [current.owner] : [])]);
     const holders = Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => !isRemotePeerId(peer) && roles.includes("reviewer") && !skip.has(peer)).map(([peer]) => peer).sort();
+    const readers = holders.filter(peer => this.d.reviewOnly?.(peer) !== true);
     const draft: Task = { ...current, owner: proposer ?? current.owner };
-    const first = holders.length ? current.id % holders.length : 0;
+    const first = readers.length ? current.id % readers.length : 0;
     let reader: PeerId | undefined, refusal: string | undefined;
-    for (const peer of [...holders.slice(first), ...holders.slice(0, first)]) {
+    for (const peer of [...readers.slice(first), ...readers.slice(0, first)]) {
       const tried = assign(draft, this.states(), this.d.routing(), { ...this.weights(current.class, draft), candidates: [], namedReviewer: peer, ...(proposer ? { notReviewer: proposer } : {}) });
       if (tried.reviewer === peer) { reader = peer; break; }
       refusal ??= tried.refusals?.find(row => row.role === "reviewer" && row.peer === peer)?.reason;
     }
     if (!reader) {
-      const reason = refusal ?? (holders.length ? "no eligible reader" : "no reviewer-role peer is attached and free to read");
-      return { task: current.id, repo, issue, state: "unavailable", reason: `${reason}; roster a reviewer-role peer and retry ahub sdlc readback start ${current.id}` };
+      const reason = refusal
+        ?? (readers.length ? "no eligible reader"
+          : holders.length ? `every attached reviewer-role peer is a review-only instance, which reads no spec; attach an ordinary reviewer-role peer and retry ahub sdlc readback start ${current.id}`
+            : `no reviewer-role peer is attached and free to read; roster a reviewer-role peer and retry ahub sdlc readback start ${current.id}`);
+      return { task: current.id, repo, issue, state: "unavailable", reason };
     }
     check();
     const readback = this.d.board.readbackCreate({ task: current.id, taskCreated: current.created, repo, issue, lastEditedAt: edit.lastEditedAt, updatedAt: edit.updatedAt, reader, by, at: this.d.now?.() ?? Date.now() });

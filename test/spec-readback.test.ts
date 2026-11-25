@@ -116,7 +116,7 @@ class Peer extends BasePeer { async start() { this.setState("idle"); } async sto
  * #1658 T3/T4: a lifecycle task whose receipt names an issue, with a stubbed issue read. `cwd` is the git checkout the
  * ref check reads, kept apart from the board's temporary directory.
  */
-async function readbackFixture(options: { proposer?: string; mode?: "advise" | "off"; edit?: { lastEditedAt: string | null; updatedAt: string } | null; reviewers?: string[] } = {}) {
+async function readbackFixture(options: { proposer?: string; mode?: "advise" | "off"; edit?: { lastEditedAt: string | null; updatedAt: string } | null; reviewers?: string[]; reviewOnly?: string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-readback-tasks-")), board = new Board(join(root, "hub.db")), bus = new Bus({ batchMs: 0 });
   const close = () => { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); };
   for (const id of ["claude", "codex", "kimi"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
@@ -125,8 +125,10 @@ async function readbackFixture(options: { proposer?: string; mode?: "advise" | "
   const reviewers = options.reviewers ?? ["codex"];
   const roles = Object.fromEntries(["claude", "codex", "kimi"].map(id => [id, [...(reviewers.includes(id) ? ["reviewer"] : ["implementer"]), ...(id === "kimi" ? ["planner"] : [])]]));
   const notices: string[] = [];
+  const reviewOnly = options.reviewOnly ?? [];
   const deps: TasksDeps = { cwd: process.cwd(), project: "readback-fixture", repository: "fixture/readback", board, bus, roles,
     notify: text => { notices.push(text); }, routing: () => loadRouting(root), piiScreen: async () => ({ label: "clear", ms: 0 }),
+    reviewOnly: peer => reviewOnly.includes(peer),
     sdlc: { config: () => config, gh: async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 1658, lastEditedAt: edit?.lastEditedAt ?? null, updatedAt: edit?.updatedAt ?? "2026-11-23T00:36:36Z" } } } }) }) } };
   const tasks = new Tasks(deps);
   const proposed = board.propose(options.proposer ?? "user", { title: "Spec read-back fixture", class: "implement" });
@@ -172,6 +174,19 @@ test("no eligible reader answers unavailable and writes nothing; the proposer is
     expect(result.reason).toMatch(/roster a reviewer-role peer/);
     expect(f.board.readbackLatest(f.task.id, f.task.created)).toEqual(before);
   } finally { f.close(); }
+});
+
+test("a review-only instance is never asked to read, because its port publishes neither the spec nor the report tool", async () => {
+  const f = await readbackFixture({ reviewers: ["codex", "kimi"], reviewOnly: ["kimi"] });
+  try { expect((await f.tasks.specReadbackStart("user", f.task.id)).reader).toBe("codex"); }
+  finally { f.close(); }
+  const only = await readbackFixture({ reviewers: ["codex"], reviewOnly: ["codex"] });
+  try {
+    const result = await only.tasks.specReadbackStart("user", only.task.id);
+    expect(result.state).toBe("unavailable");
+    expect(result.reason).toMatch(/every attached reviewer-role peer is a review-only instance.*ahub sdlc readback start/);
+    expect(only.board.readbackLatest(only.task.id, only.task.created)).toBeUndefined();
+  } finally { only.close(); }
 });
 
 test("a show is for the person, the conductor that started it, the task's own holders and the reader", async () => {
