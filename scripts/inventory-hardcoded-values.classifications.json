@@ -2578,7 +2578,7 @@
   "src/hub/spec-readback.ts:MAX_REFS:constant:MAX_REFS=64#0": "safety floor",
   "src/hub/spec-readback.ts:PATH_BYTES:constant:PATH_BYTES=512#0": "safety floor",
   "src/hub/spec-readback.ts:READBACK_REPORT_BYTES:constant:READBACK_REPORT_BYTES=320 * 1024#0": "safety floor",
-  "src/hub/spec-readback.ts:READBACK_STORE_BYTES:constant:READBACK_STORE_BYTES=384 * 1024#0": "safety floor",
+  "src/hub/spec-readback.ts:READBACK_STORE_BYTES:inline:READBACK_STORE_BYTES=128 * 1024#0": "safety floor",
   "src/hub/spec-readback.ts:TEXT_BYTES:constant:TEXT_BYTES=1024#0": "safety floor",
   "src/hub/spec-readback.ts:timeout:inline:timeout=5000#0": "safety floor",
   "src/hub/specs-config.ts:parseSpecsConfig:inline:roots.length > 1024=1024#0": "contract",

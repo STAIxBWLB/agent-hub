@@ -93,7 +93,9 @@ test("stores a report at every field limit, so the store bound covers the parser
     const maximal = { task: f.task.id, proposes: text, existing: text, undefined: terms, open_decisions: decisions, refs };
     expect(parseSpecReadbackReport(maximal)).toEqual(maximal);
     const id = f.board.readbackCreate(f.request);
-    expect(f.board.readbackReport(id, maximal, []).report).toEqual(maximal);
+    f.board.readbackReport(id, maximal, []);
+    // Readable afterwards: a row over the store bound is masked as corrupt, which a legal report must never become.
+    expect(f.board.readback(id)?.report).toEqual(maximal);
   } finally { f.close(); }
 });
 

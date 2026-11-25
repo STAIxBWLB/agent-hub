@@ -9,10 +9,11 @@ const PATH_BYTES = 512;
 /**
  * #1658: the size bounds a report is judged by. Every field at its own limit is about 100 KB of text; JSON escaping can
  * double that, so the report bound covers the doubled worst case and the stored row's bound covers the report plus its
- * missing-ref list (64 paths at 512 bytes each). A report inside every field limit therefore never fails at storage.
+ * missing-ref list (64 paths at 512 bytes each, escaped). A report inside every field limit is therefore always stored
+ * readable, never a row the board would later mask as corrupt.
  */
 const READBACK_REPORT_BYTES = 320 * 1024;
-export const READBACK_STORE_BYTES = 384 * 1024;
+export const READBACK_STORE_BYTES = READBACK_REPORT_BYTES + 128 * 1024;
 
 interface ReadbackDetails {
   undefined?: { term: string; where: string }[];
