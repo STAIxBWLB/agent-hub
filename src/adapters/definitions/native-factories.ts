@@ -90,4 +90,5 @@ export const DAEMON_PORTS = {
   "reviewer-print": (options: Extract<DaemonPorts, { reviewerPrint: unknown }>["reviewerPrint"]) => ({ reviewerPrint: options }),
   "claude-implementer": (options: Extract<DaemonPorts, { claudeImplementer: unknown }>["claudeImplementer"]) => ({ claudeImplementer: options }),
   "claude-print": (options: Extract<DaemonPorts, { claudePrint: unknown }>["claudePrint"]) => ({ claudePrint: options }),
+  "configured-print": (options: Extract<DaemonPorts, { configuredPrint: unknown }>["configuredPrint"]) => ({ configuredPrint: options }),
 } satisfies Record<DaemonEngine, unknown>;

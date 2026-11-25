@@ -1,11 +1,12 @@
 import { basename } from "node:path";
 import { types } from "node:util";
 import { AcpPeer } from "./acp.ts";
+import { ConfiguredPrintPeer, type ConfiguredPrintAdapterConfig } from "./configured-print.ts";
 import type { AdapterDefinition } from "./registry-types.ts";
 import type { PermissionMode } from "../hub/permission-mode.ts";
 import { shellQuote } from "../cli/shell-quote.ts";
 
-export interface ConfiguredAcpAdapterConfig {
+interface ConfiguredAcpAdapterConfig {
   transport: "acp";
   command: string;
   args?: readonly string[];
@@ -15,6 +16,8 @@ export interface ConfiguredAcpAdapterConfig {
   permission?: Partial<Record<PermissionMode, string>>;
   readOnly?: string;
 }
+export type ConfiguredAdapterConfig = ConfiguredAcpAdapterConfig | ConfiguredPrintAdapterConfig;
+
 const fail = (field: string, reason: string): never => { throw new Error(`${field}: ${reason}`); };
 /** Core command namespace is reserved; configured kinds cannot shadow operational CLI actions. */
 export const CONFIGURED_ACP_RESERVED_COMMANDS = Object.freeze(["help", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "recovery-run", "upgrade", "restart", "recovery", "models", "say", "queue", "watch", "tail", "budget", "backlog", "release", "board", "sdlc", "task", "review", "remember", "ask", "route", "pause", "resume", "stop", "permission", "roster", "settings", "permit", "pet", "status", "logs", "export", "bench", "memory", "goal", "research", "report", "facts", "check-path", "turns", "undo", "kill", "reset", "role", "doctor"]);
@@ -46,6 +49,43 @@ function freeze<T>(value: T): T {
   return value;
 }
 
+function configuredPrintDefinition(kind: string, input: Record<string, PropertyDescriptor>, at: string): AdapterDefinition {
+  if (Object.keys(input).some(key => !["transport", "command", "args", "stdin", "versionArgs", "versionPin", "timeoutS", "displayName", "roles"].includes(key)))
+    return fail(at, "unknown or privileged print field");
+  const command = text(input.command?.value, `${at}.command`);
+  const args = input.args ? list(input.args.value, `${at}.args`, 128) : [];
+  const stdin = input.stdin?.value;
+  const placeholders = args.reduce((count, arg) => count + arg.split("{prompt}").length - 1, 0);
+  if (input.stdin && stdin !== true || (stdin === true ? placeholders !== 0 : placeholders !== 1))
+    return fail(at, "choose stdin: true or exactly one {prompt} placeholder");
+  const versionArgs = list(input.versionArgs?.value, `${at}.versionArgs`, 128);
+  if (!versionArgs.length || versionArgs.some(arg => arg.includes("{prompt}"))) return fail(`${at}.versionArgs`, "requires fixed version probe arguments");
+  const versionPin = text(input.versionPin?.value, `${at}.versionPin`, 256).trim();
+  const timeoutS = input.timeoutS?.value;
+  if (!Number.isInteger(timeoutS) || timeoutS < 1 || timeoutS > 300) return fail(`${at}.timeoutS`, "must be an integer from 1 to 300");
+  const displayName = text(input.displayName?.value, `${at}.displayName`, 256);
+  const roles = list(input.roles?.value, `${at}.roles`, 2);
+  const advisory = roles.filter((role): role is "reviewer" | "advisor" => role === "reviewer" || role === "advisor");
+  if (!roles.length || advisory.length !== roles.length || new Set(roles).size !== roles.length) return fail(`${at}.roles`, "only unique reviewer and advisor roles are supported");
+  const declaration: ConfiguredPrintAdapterConfig = freeze({ transport: "print", command, args, ...(stdin === true ? { stdin } : {}), versionArgs, versionPin, timeoutS, displayName, roles: advisory });
+  return freeze<AdapterDefinition>({
+    api: 1, kind, family: kind, displayName, roles: advisory, transport: "hub-native", optional: true, defaultOnRoster: false,
+    trust: { onPrem: false, hubSandboxed: true }, identity: { mcp: "none" },
+    start: {
+      daemonPort: "configured-print", forms: ["headless"], defaultForm: "headless", conductorStartable: false, hubSwitches: [], ownedFlags: [],
+      preflight: request => request.form && request.form !== "headless" ? "configured print supports headless only" : undefined,
+      create: context => {
+        if (!("configuredPrint" in context.daemon)) throw new Error("configured print transport options required");
+        return new ConfiguredPrintPeer(context.instance, { ...context.daemon.configuredPrint, declaration });
+      },
+    },
+    permission: { unmanaged: "configured print has no native approval channel; read-only sandbox applies" },
+    session: { idField: "sessionId", currentId: () => undefined, recoveryRefusal: () => "configured print has no retained session; stop it before recovery and start it again afterwards" },
+    turnEnd: "adapter", cli: { command: kind, launchConfigKeys: [`adapters.${kind}.command`, `adapters.${kind}.args`], startWords: () => [kind] },
+    display: { palette: { fg: "white", bg: "black" } },
+  });
+}
+
 /** Pure local declaration compiler; file provenance and runtime process ownership remain host checks. */
 export function configuredAcpDefinitions(raw: unknown, builtinKinds: readonly string[]): readonly AdapterDefinition[] {
   if (raw === undefined) return Object.freeze([]);
@@ -56,8 +96,9 @@ export function configuredAcpDefinitions(raw: unknown, builtinKinds: readonly st
     const at = `adapters.${kind}`;
     if (!/^[a-z][a-z0-9-]{0,31}$/.test(kind) || reserved.has(kind)) return fail(at, "kind is invalid, reserved or collides with a builtin");
     const input = fields(descriptor.value, at);
+    if (input.transport?.value === "print") return configuredPrintDefinition(kind, input, at);
     if (Object.keys(input).some(key => !["transport", "command", "args", "displayName", "roles", "identity", "permission", "readOnly"].includes(key))) return fail(at, "unknown or privileged field");
-    if (input.transport?.value !== "acp") return fail(`${at}.transport`, "must be acp");
+    if (input.transport?.value !== "acp") return fail(`${at}.transport`, "must be acp or print");
     const command = text(input.command?.value, `${at}.command`), args = input.args ? list(input.args.value, `${at}.args`, 128) : [];
     // The supported contract is a foreground owned stdio process, never an attachment/proxy selector.
     if ([command, ...args].some(arg => /^--(?:leader|attach|connect|remote)(?:-|=|$)/.test(arg))) return fail(`${at}.args`, "attach/leader selectors are unsupported; command must run foreground owned ACP stdio");

@@ -5059,6 +5059,23 @@ Version line (#589, owner decision 2026-10-20): agy updates itself, so the launc
 - The first explicit acceptance/self-claim of the ownership span captures its baseline through the guarded host `ownerAccepted` callback; later re-acceptance cannot move it. An acceptance manufactured by done has no pre-work baseline and leaves D2 unknown; it adds no capture ahead of the existing review projection. Acceptance and done snapshots use the existing hardened snapshot machinery and shared 250 ms burst budget. Declared instances require their current execution adapter/root binding; canonical-checkout dirtiness cannot substitute for an instance's evidence. Unknown, disabled, private, missing/pruned or restart-lost captures never become empty evidence. Native writing-turn boundaries hash shared branch refs with one budgeted `for-each-ref` probe, without exposing names. HEAD or any shared branch-ref movement is progress, including commit-only turns in ignored worktrees. A canonical-root turn with recorded branch/commit, `.worktrees` paths or SDLC PR/head evidence remains unknown when its visible tree/refs are empty; a canonical tree cannot disprove work elsewhere. Even without recorded hints, negative canonical evidence additionally requires a bounded `git worktree list --porcelain -z` proof of a sole worktree at both boundaries and no ignored `.worktrees` directory. Uncommitted/detached work elsewhere therefore remains unknown before its first ref movement. The shadow repository compares its own private Git directory as the registered bare main-worktree path, preserving the same metadata validation and unknown-on-failure rules. Builtin-owner D1 is deliberately inert while `.worktrees` exists; the upgrade path is binding each owner to its actual execution worktree. Both probes cap output at 1 MiB and share the same snapshot deadline; no raw ref names or worktree paths escape. Check start/cancel, escalation and memory correction are task-tool effects alongside existing mutations; read-only check results are not. No snapshot is added during a private snapshot window; a PII notice, if trusted evidence is available, uses only `publicTitle`. Capturing private evidence and restoring acceptance baselines across daemon restarts remain outside this advisory.
 - Structured `no-writes` stalls feed the S9 grooming digest and status. S7 consumers receive additive `stalls.noWrites` and `stalls.doneWithoutWrites` counts from cost reporting over that report's existing bounded, public, repository/PR-scoped tasks; they are not a count of every board row. No model call, automatic reassignment, done gate or new write endpoint is added.
 
+## Amendment: config-only advisory print transport (#1515)
+
+An untracked, machine-local adapter declaration may choose `transport: "print"`.
+It supplies fixed command and argv, a literal version probe argv and whole-output
+pin, a deadline and an advisory role set. Input uses exactly one `{prompt}`
+placeholder or stdin. The host uses the existing owned print child and requires
+the read-only sandbox before the version probe or any turn. Each child receives
+a scrubbed environment and no hub MCP authority. Private or PII requests are
+refused before spawn. Stdout is capped and marked when truncated. Nonzero exit or
+timeout keeps a screened stderr tail and reports a failed turn after cleanup.
+
+A `reviewer` or `advisor` declaration denotes an advisory peer. The stdout
+answer is delivered as a peer message. It does not carry verdict authority and
+the task reviewer pool and assignment walk exclude the peer. The host advertises
+the configured-print feature for recovery compatibility and refuses a retained
+print session. The real non-ACP receipt is person-run.
+
 ## Amendment: config-only ACP adapters, A3 (#451, #486)
 
 A3 adds declarative ACP definitions. It does not add A4 module loading, executable

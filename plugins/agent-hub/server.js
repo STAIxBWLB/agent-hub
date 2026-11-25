@@ -1955,10 +1955,10 @@ class OwnedPrintChild {
   stderrUnknown = false;
   settled = false;
   stderrAfterSettlement() {
-    if (!this.options.captureStderr || !this.settled || !this.stderrEnded || this.stderrUnknown || this.options.current?.() === false)
+    if (!(this.options.captureStderr || this.options.captureStderrTail) || !this.settled || !this.stderrEnded || this.stderrUnknown || this.options.current?.() === false)
       return { status: "unknown" };
     try {
-      return { status: "complete", text: new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(this.stderrChunks)) };
+      return { status: "complete", text: new TextDecoder("utf-8", { fatal: !this.options.captureStderrTail }).decode(Buffer.concat(this.stderrChunks)) };
     } catch {
       return { status: "unknown" };
     }
@@ -1972,7 +1972,7 @@ class OwnedPrintChild {
       cwd: options.cwd,
       detached: true,
       env: applyTurnAttribution(peerChildEnv(options.peer, options.envMode === "replace" ? options.env : { ...process.env, ...options.env }), options.attribution),
-      stdio: ["pipe", "pipe", options.captureStderr ? "pipe" : "ignore"]
+      stdio: ["pipe", "pipe", options.captureStderr || options.captureStderrTail ? "pipe" : "ignore"]
     });
     const frameLimit = options.maxFrameBytes ?? 256 * 1024, outputLimit = options.maxOutputBytes ?? 4 * 1024 * 1024;
     let buffer = "", outputBytes = 0;
@@ -1984,10 +1984,21 @@ class OwnedPrintChild {
         options.onLimit?.();
       }
     };
-    if (options.captureStderr) {
+    if (options.captureStderr || options.captureStderrTail) {
       child.stderr.on("data", (chunk) => {
         if (this.stderrUnknown)
           return;
+        if (options.captureStderrTail) {
+          if (options.current?.() === false) {
+            this.stderrUnknown = true;
+            this.stderrChunks = [];
+            return;
+          }
+          const limit = 64 * 1024;
+          const tail = Buffer.concat([...this.stderrChunks, chunk.subarray(-limit)]);
+          this.stderrChunks = [Buffer.from(tail.subarray(-limit))];
+          return;
+        }
         this.stderrBytes += chunk.length;
         if (options.current?.() === false || this.stderrBytes > 64 * 1024) {
           this.stderrUnknown = true;
@@ -2033,6 +2044,18 @@ class OwnedPrintChild {
       child.stdout.on("data", (chunk) => {
         if (!current())
           return;
+        if (options.onOutput) {
+          const remaining = outputLimit - outputBytes;
+          try {
+            if (remaining > 0)
+              options.onOutput(chunk.subarray(0, remaining));
+          } catch {}
+          outputBytes += chunk.length;
+          if (outputBytes > outputLimit)
+            limit();
+          options.onActivity?.();
+          return;
+        }
         outputBytes += chunk.length;
         if (outputBytes > outputLimit)
           return limit();
@@ -2058,9 +2081,11 @@ class OwnedPrintChild {
           return limit();
         options.onActivity?.();
       });
+      const streamsClosed = options.onOutput ? new Promise((resolveClose) => child.once("close", () => resolveClose())) : undefined;
       child.once("exit", (code) => {
         options.onLeaderExit?.();
-        this.stop().then(() => {
+        this.stop().then(async () => {
+          await streamsClosed;
           this.settled = true;
           resolve(code);
         }, (error) => reject(new PrintChildCleanupError(error.message)));
@@ -21513,7 +21538,8 @@ var init_native_factories = __esm(() => {
     "local-worker": (options) => ({ local: options }),
     "reviewer-print": (options) => ({ reviewerPrint: options }),
     "claude-implementer": (options) => ({ claudeImplementer: options }),
-    "claude-print": (options) => ({ claudePrint: options })
+    "claude-print": (options) => ({ claudePrint: options }),
+    "configured-print": (options) => ({ configuredPrint: options })
   };
 });
 
@@ -23991,6 +24017,172 @@ var init_qwen = __esm(() => {
   };
 });
 
+// src/adapters/configured-print.ts
+import { statSync as statSync7 } from "fs";
+import { isAbsolute as isAbsolute11 } from "path";
+function executableIdentity(file) {
+  const stat = statSync7(file);
+  if (!stat.isFile())
+    throw new Error("print command must name an executable file");
+  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
+}
+var OUTPUT_LIMIT, STDERR_DISPLAY_LIMIT = 2000, SANDBOX = "/usr/bin/sandbox-exec", ConfiguredPrintPeer;
+var init_configured_print = __esm(() => {
+  init_claude_print_child();
+  init_envelope();
+  init_project();
+  init_deny();
+  init_sandbox();
+  OUTPUT_LIMIT = 64 * 1024;
+  ConfiguredPrintPeer = class ConfiguredPrintPeer extends BasePeer {
+    options;
+    form = "headless";
+    hubOwned = true;
+    deliveryOnly = true;
+    permissionModeState = "unmanaged";
+    child;
+    command;
+    stopped = false;
+    constructor(id, options) {
+      super(id);
+      this.options = options;
+    }
+    get pendingOwnedProcess() {
+      return this.child !== undefined;
+    }
+    async start() {
+      if (this.child)
+        throw new Error("print child cleanup is unconfirmed; stop the peer and retry");
+      if (!sandboxAvailable())
+        throw new Error("configured print requires the hub read-only sandbox on this host");
+      const config = this.options.declaration;
+      const selected = isAbsolute11(config.command) ? config.command : Bun.which(config.command);
+      if (!selected)
+        throw new Error("configured print command is unavailable");
+      const path = realPath(selected);
+      const identity = executableIdentity(path);
+      this.command = { path, identity };
+      this.stopped = false;
+      const version = await this.run(config.versionArgs, "");
+      if (this.stopped || version.code !== 0 || version.timedOut || version.truncated || version.stdout.trim() !== config.versionPin || executableIdentity(path) !== identity) {
+        this.command = undefined;
+        throw new Error("configured print version probe did not match versionPin");
+      }
+      this.setState("idle");
+    }
+    async deliver(envs, deliveryId) {
+      const receipt = (state, reason) => {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state, ...reason ? { reason } : {} });
+      };
+      if (this.state !== "idle" || this.child || !envs.length || this.options.privateTurn(envs) || envs.some((env) => env.private || env.kind === "review" || env.kind === "task" || env.kind === "invocation")) {
+        receipt("failed_safe", "configured print accepts public advisory messages only");
+        return;
+      }
+      const prompt = renderDigest(envs, true);
+      if (!this.options.publicText(prompt)) {
+        receipt("failed_safe", "print prompt withheld by policy");
+        return;
+      }
+      const reply = { to: replyAudience(envs), inReplyTo: replyParent(envs) };
+      const config = this.options.declaration;
+      const args = config.stdin ? config.args : config.args.map((arg) => arg.replace("{prompt}", () => prompt));
+      this.setState("busy");
+      try {
+        receipt("accepted");
+        const result = await this.run(args, config.stdin ? prompt : "");
+        if (this.stopped || this.options.privateTurn(envs)) {
+          receipt("needs_review", "print delivery stopped or became private");
+          return;
+        }
+        if (result.code !== 0 || result.timedOut) {
+          const cause = result.timedOut ? "Configured print timed out" : "Configured print exited unsuccessfully";
+          const tail = result.stderr && this.options.publicText(result.stderr) ? sanitize(result.stderr.slice(-STDERR_DISPLAY_LIMIT)) : "";
+          this.finalAnswer(tail ? `${cause}
+${tail}` : cause, reply, false);
+          receipt("needs_review", cause);
+          return;
+        }
+        const output = result.stdout + (result.truncated ? `
+[print output truncated]` : "");
+        if (output && this.options.publicText(output))
+          this.finalAnswer(output, reply);
+        else if (output) {
+          receipt("needs_review", "print answer withheld by policy");
+          return;
+        }
+        receipt("completed");
+      } catch (error) {
+        receipt(error instanceof PrintChildCleanupError ? "needs_review" : "failed_safe", "configured print failed to run");
+      } finally {
+        if (!this.child)
+          this.setState(this.stopped ? "offline" : "idle");
+      }
+    }
+    onWatchdog() {
+      this.touch();
+    }
+    async stop() {
+      this.stopped = true;
+      const child = this.child;
+      if (child) {
+        await child.stop();
+        await child.done.catch((error) => {
+          if (error instanceof PrintChildCleanupError)
+            throw error;
+        });
+        if (this.child === child)
+          this.child = undefined;
+      }
+      this.setState("offline");
+    }
+    async run(args, input) {
+      const command = this.command;
+      if (!sandboxAvailable() || !command || this.stopped || executableIdentity(command.path) !== command.identity)
+        throw new Error("configured print command or sandbox is no longer current");
+      const { cwd, deny, stateDir } = this.options;
+      const policy = profile(cwd, false, [command.path], deny(), [cwd]) + `
+(deny file-read* (subpath ${sbplString(stateDir)}))
+(deny file-write*)
+(allow file-write* (literal "/dev/null"))`;
+      const chunks = [];
+      let timedOut = false, truncated = false;
+      const child = this.child = new OwnedPrintChild({
+        peer: this.id,
+        command: [SANDBOX],
+        args: ["-p", policy, command.path, ...args],
+        cwd,
+        input,
+        envMode: "replace",
+        env: { PATH: "/usr/bin:/bin", HOME: "/var/empty", LANG: "C", TERM: "dumb" },
+        maxOutputBytes: OUTPUT_LIMIT,
+        captureStderrTail: true,
+        onOutput: (chunk) => chunks.push(chunk),
+        onLimit: () => {
+          truncated = true;
+        }
+      });
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.stop().catch(() => {});
+      }, this.options.declaration.timeoutS * 1000);
+      timer.unref();
+      try {
+        const code = await child.done;
+        this.child = undefined;
+        const stderr = child.stderrAfterSettlement();
+        return { code, timedOut, truncated, stdout: Buffer.concat(chunks).toString("utf8"), stderr: stderr.status === "complete" ? stderr.text : "" };
+      } catch (error) {
+        if (!(error instanceof PrintChildCleanupError))
+          this.child = undefined;
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  };
+});
+
 // src/adapters/configured-acp.ts
 import { basename as basename8 } from "path";
 import { types as types7 } from "util";
@@ -24029,6 +24221,62 @@ function freeze(value) {
   }
   return value;
 }
+function configuredPrintDefinition(kind, input, at) {
+  if (Object.keys(input).some((key) => !["transport", "command", "args", "stdin", "versionArgs", "versionPin", "timeoutS", "displayName", "roles"].includes(key)))
+    return fail(at, "unknown or privileged print field");
+  const command = text4(input.command?.value, `${at}.command`);
+  const args = input.args ? list3(input.args.value, `${at}.args`, 128) : [];
+  const stdin = input.stdin?.value;
+  const placeholders = args.reduce((count, arg) => count + arg.split("{prompt}").length - 1, 0);
+  if (input.stdin && stdin !== true || (stdin === true ? placeholders !== 0 : placeholders !== 1))
+    return fail(at, "choose stdin: true or exactly one {prompt} placeholder");
+  const versionArgs = list3(input.versionArgs?.value, `${at}.versionArgs`, 128);
+  if (!versionArgs.length || versionArgs.some((arg) => arg.includes("{prompt}")))
+    return fail(`${at}.versionArgs`, "requires fixed version probe arguments");
+  const versionPin = text4(input.versionPin?.value, `${at}.versionPin`, 256).trim();
+  const timeoutS = input.timeoutS?.value;
+  if (!Number.isInteger(timeoutS) || timeoutS < 1 || timeoutS > 300)
+    return fail(`${at}.timeoutS`, "must be an integer from 1 to 300");
+  const displayName = text4(input.displayName?.value, `${at}.displayName`, 256);
+  const roles = list3(input.roles?.value, `${at}.roles`, 2);
+  const advisory = roles.filter((role) => role === "reviewer" || role === "advisor");
+  if (!roles.length || advisory.length !== roles.length || new Set(roles).size !== roles.length)
+    return fail(`${at}.roles`, "only unique reviewer and advisor roles are supported");
+  const declaration = freeze({ transport: "print", command, args, ...stdin === true ? { stdin } : {}, versionArgs, versionPin, timeoutS, displayName, roles: advisory });
+  return freeze({
+    api: 1,
+    kind,
+    family: kind,
+    displayName,
+    roles: advisory,
+    transport: "hub-native",
+    optional: true,
+    defaultOnRoster: false,
+    trust: { onPrem: false, hubSandboxed: true },
+    identity: { mcp: "none" },
+    start: {
+      daemonPort: "configured-print",
+      forms: ["headless"],
+      defaultForm: "headless",
+      conductorStartable: false,
+      hubSwitches: [],
+      ownedFlags: [],
+      preflight: (request) => request.form && request.form !== "headless" ? "configured print supports headless only" : undefined,
+      create: (context) => {
+        if (!("configuredPrint" in context.daemon))
+          throw new Error("configured print transport options required");
+        return new ConfiguredPrintPeer(context.instance, { ...context.daemon.configuredPrint, declaration });
+      }
+    },
+    permission: { unmanaged: "configured print has no native approval channel; read-only sandbox applies" },
+    session: { idField: "sessionId", currentId: () => {
+      return;
+    }, recoveryRefusal: () => "configured print has no retained session; stop it before recovery and start it again afterwards" },
+    turnEnd: "adapter",
+    cli: { command: kind, launchConfigKeys: [`adapters.${kind}.command`, `adapters.${kind}.args`], startWords: () => [kind] },
+    display: { palette: { fg: "white", bg: "black" } }
+  });
+}
 function configuredAcpDefinitions(raw, builtinKinds) {
   if (raw === undefined)
     return Object.freeze([]);
@@ -24041,10 +24289,12 @@ function configuredAcpDefinitions(raw, builtinKinds) {
     if (!/^[a-z][a-z0-9-]{0,31}$/.test(kind) || reserved.has(kind))
       return fail(at, "kind is invalid, reserved or collides with a builtin");
     const input = fields(descriptor.value, at);
+    if (input.transport?.value === "print")
+      return configuredPrintDefinition(kind, input, at);
     if (Object.keys(input).some((key) => !["transport", "command", "args", "displayName", "roles", "identity", "permission", "readOnly"].includes(key)))
       return fail(at, "unknown or privileged field");
     if (input.transport?.value !== "acp")
-      return fail(`${at}.transport`, "must be acp");
+      return fail(`${at}.transport`, "must be acp or print");
     const command = text4(input.command?.value, `${at}.command`), args = input.args ? list3(input.args.value, `${at}.args`, 128) : [];
     if ([command, ...args].some((arg) => /^--(?:leader|attach|connect|remote)(?:-|=|$)/.test(arg)))
       return fail(`${at}.args`, "attach/leader selectors are unsupported; command must run foreground owned ACP stdio");
@@ -24146,6 +24396,7 @@ var fail = (field, reason) => {
 }, CONFIGURED_ACP_RESERVED_COMMANDS, MODES, ROLES;
 var init_configured_acp = __esm(() => {
   init_acp();
+  init_configured_print();
   CONFIGURED_ACP_RESERVED_COMMANDS = Object.freeze(["help", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "recovery-run", "upgrade", "restart", "recovery", "models", "say", "queue", "watch", "tail", "budget", "backlog", "release", "board", "sdlc", "task", "review", "remember", "ask", "route", "pause", "resume", "stop", "permission", "roster", "settings", "permit", "pet", "status", "logs", "export", "bench", "memory", "goal", "research", "report", "facts", "check-path", "turns", "undo", "kill", "reset", "role", "doctor"]);
   MODES = ["ask", "ask-when-needed", "never-ask"];
   ROLES = ["planner", "implementer", "verifier", "reviewer"];
@@ -31554,7 +31805,7 @@ init_registry();
 // src/hub/config-trust.ts
 init_child_process();
 init_git();
-import { lstatSync as lstatSync23, statSync as statSync7 } from "fs";
+import { lstatSync as lstatSync23, statSync as statSync8 } from "fs";
 import { dirname as dirname17, join as join36 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
@@ -31596,7 +31847,7 @@ function configTracked(cwd, name) {
     return;
   let opened;
   try {
-    opened = statSync7(join36(cwd, ".agenthub", name));
+    opened = statSync8(join36(cwd, ".agenthub", name));
   } catch {}
   return r.stdout.split("\x00").filter(Boolean).some((row) => {
     const path = row.slice(row.indexOf("\t") + 1);
@@ -31605,7 +31856,7 @@ function configTracked(cwd, name) {
     if (!opened)
       return path === `.agenthub/${name}`;
     try {
-      const s = statSync7(join36(cwd, path));
+      const s = statSync8(join36(cwd, path));
       return !!opened && s.dev === opened.dev && s.ino === opened.ino;
     } catch {
       return false;
@@ -32372,7 +32623,7 @@ import { types as types10 } from "util";
 init_project();
 init_registry();
 init_permission_mode();
-import { dirname as dirname18, isAbsolute as isAbsolute11, sep as sep4 } from "path";
+import { dirname as dirname18, isAbsolute as isAbsolute12, sep as sep4 } from "path";
 init_model_token();
 init_model_token();
 var JCODE_FIELDS = ["jcode_home", "jcode_mcp_allow", "provider", "model", "provider_profile"];
@@ -32415,7 +32666,7 @@ function mcpAllowNames(value, field) {
 }
 function jcodeInstanceFields(entry, path) {
   const home = entry.jcode_home?.value;
-  if (typeof home !== "string" || !isAbsolute11(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
+  if (typeof home !== "string" || !isAbsolute12(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
     return fail4(`${path}.jcode_home`, "is required: a nonempty control-free absolute path of at most 4096 UTF-8 bytes, other than the base Jcode's home");
   const out = { jcode_home: home };
   for (const key of ["provider", "model", "provider_profile"]) {

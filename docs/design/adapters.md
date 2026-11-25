@@ -369,6 +369,13 @@ boundary, never prompts or credentials. A future native turn id is not invented;
 
 ## Compatibility and external modules
 
+Configured print peers (#1515) use the machine-local adapter catalog and a
+whole-output version pin. Each public advisory delivery runs one child through
+the owned print runner inside the read-only hub sandbox. The host caps stdout,
+reports failure with a screened stderr tail, and denies task ownership and
+verdict authority even when the declaration lists the `reviewer` role. A print
+declaration has no MCP channel, session resume, quota reader or context reader.
+
 Native CLI compatibility is centralized in `compat.ts`. Each gated operation asks that policy for a verified, in-contract, person-trusted, or refused result; person trust for one exact version does not skip a separate isolation or runtime proof. This lets upstream versions change without turning an untested protocol assumption into support ([#691](https://github.com/STAIxBWLB/agent-hub/issues/691)).
 
 External adapter modules are an explicit, person-owned, machine-local opt-in. The daemon verifies and pins the captured bundle at startup, then admits only the bounded headless ACP instance contract through host-managed launch and current-owner checks. Module code runs in the daemon trust domain; pinning is integrity evidence, not a sandbox. Modules cannot supply native reviewer engines, proof ports, permission callbacks, provider selectors, or arbitrary recovery authority. This ceiling limits what imported code can claim and prevents live reload from replacing the executable catalog ([#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).

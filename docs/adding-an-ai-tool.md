@@ -101,13 +101,28 @@ Defines quota and context window consumption readers:
 
 ---
 
-## 4. Config-Only Generic ACP Adapters (#451 A3)
+## 4. Config-Only Adapters (#451 A3, #1515)
 
-Declare `adapters.<kind>` only in a Git-confirmed untracked `.agenthub/config.local.json`. The declaration is wholly machine-local authority and cannot override builtin kinds or select executable modules. Its `transport` is `acp`; it names a command, optional argv, display name and default roles, with optional native identity, permission-mode mappings and read-only mode. Adapter defaults cannot appoint the conductor. A project captures its catalog at startup, so declaration changes require restart.
+Declare `adapters.<kind>` only in a Git-confirmed untracked `.agenthub/config.local.json`. The declaration is wholly machine-local authority and cannot override builtin kinds or select executable modules. For `transport: "acp"`, it names a command, optional argv, display name and default roles, with optional native identity, permission-mode mappings and read-only mode. Adapter defaults cannot appoint the conductor. A project captures its catalog at startup, so declaration changes require restart.
 
 Configured kinds are headless and off roster by default. Before a start can succeed, the native initialize name/version must match the configured pin and the spawned process group must be positively owned. Resume also requires an exact session/load echo. Missing native permission mappings mean unmanaged policy; missing usage/context sources remain exempt/unknown. Titles do not auto-approve tools, and read-only mode requires both native acknowledgement and host mutation fences.
 
 Grok declarations require explicit `--no-leader`, since native defaults can inherit ambient `[cli] use_leader`. Grok 1.0.62 remains unsupported: its isolated probe lacked initialize identity and refused session creation. The [T0 receipt](verification/2026-10-21-grok-config-acp-t0.md) records the remaining evidence. The full A3 schema and proof boundary are in the [spec amendment](specs/2026-09-19-agent-hub-design.md#amendment-config-only-acp-adapters-a3-451-486).
+
+For `transport: "print"`, declare `command`, `args`, `displayName`, `roles`,
+`versionArgs`, `versionPin` and `timeoutS` (1 to 300 seconds). Supply one
+`{prompt}` placeholder in `args` or set `stdin: true` with no placeholder.
+The version probe must exit successfully and match the entire trimmed pin.
+The hub starts a new read-only sandboxed process group per public message.
+The sandbox is required on the host and does not grant network access or
+expose the person's credentials. Output is a bounded advisory answer.
+A timeout or nonzero exit reports the failure with a screened stderr tail.
+Permission is unmanaged. Quota and context are unknown.
+
+The `reviewer` and `advisor` labels both permit requests for advisory opinions.
+A print peer never owns a task or joins the reviewer pool. A tool-capable
+reviewer or the person files the verdict. Start by kind with no instance,
+resume or native launch overrides. AC5 remains a person-run receipt.
 
 ---
 
