@@ -6,10 +6,10 @@ test("#1405 a refused probe command names the typed subcommand, its own usage an
   expect(() => parseGuidanceProbeSubcommand(["probe", "receipts"])).toThrow();
   const text = guidanceProbeUsage(["probe", "receipts"]);
   expect(text).toContain("ahub guidance probe receipts has a missing or malformed argument");
-  expect(text).toContain("usage: ahub guidance probe receipts --id HASH [--json].");
+  expect(text).toContain("usage: ahub guidance probe receipts --id <hash> [--json].");
   expect(text).toContain("the 64-character probe id that ahub guidance probe register printed");
   expect(text).not.toContain("start --id");
-  expect(guidanceProbeUsage(["probe", "register"])).toBe("ahub guidance probe register has a missing or malformed argument; usage: ahub guidance probe register --file JSON [--json].");
+  expect(guidanceProbeUsage(["probe", "register"])).toBe("ahub guidance probe register has a missing or malformed argument; usage: ahub guidance probe register --file <json> [--json].");
 });
 
 test("#1405 an unknown probe subcommand lists all five, and every usage printed is one ahub help shows", () => {
@@ -19,6 +19,6 @@ test("#1405 an unknown probe subcommand lists all five, and every usage printed 
     for (const form of Object.values(GUIDANCE_PROBE_USAGE)) expect(text).toContain(`ahub guidance probe ${form}`);
   }
   const help = helpEntries().map(entry => entry.usage).find(usage => usage.startsWith("ahub guidance probe "))!;
-  expect(help).toBe("ahub guidance probe register --file JSON [--json] | start --id HASH --revision N [--variant G1-HASH] [--json] | show --id HASH [--json] | receipts --id HASH [--json] | cancel --id HASH --revision N [--json]");
+  expect(help).toBe("ahub guidance probe register --file <json> [--json] | start --id <hash> --revision <n> [--variant <variant-id>] [--json] | show --id <hash> [--json] | receipts --id <hash> [--json] | cancel --id <hash> --revision <n> [--json]");
   for (const op of Object.keys(GUIDANCE_PROBE_USAGE)) expect(help).toContain(guidanceProbeUsage(["probe", op]).split("usage: ahub guidance probe ")[1]!.split(".")[0]!);
 });

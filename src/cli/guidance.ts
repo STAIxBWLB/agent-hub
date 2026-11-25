@@ -3,7 +3,7 @@ import { GUIDANCE_HASH_HEX_LENGTH, GUIDANCE_CURSOR_MAX_BYTES, parseGuidanceWrite
 import { guidanceLines, guidanceReceiptLines } from "../ui/guidance-view.ts";
 import { terminalText } from "./console-state.ts";
 
-export const GUIDANCE_USAGE = "usage: ahub guidance create --file FILE [--json] | list --task N --task-created MS [--cursor TOKEN] [--json] | show --task N --task-created MS --id HASH [--json] | withdraw --task N --task-created MS --revision R --id HASH [--json]";
+export const GUIDANCE_USAGE = "usage: ahub guidance create --file <file> [--json] | list --task <n> --task-created <ms> [--cursor <token>] [--json] | show --task <n> --task-created <ms> --id <hash> [--json] | withdraw --task <n> --task-created <ms> --revision <r> --id <hash> [--json]";
 type Create = { op: "create"; json: boolean; file: string };
 type List = { op: "list"; json: boolean; taskId: number; taskCreated: number; cursor?: string };
 type Show = { op: "show"; json: boolean; taskId: number; taskCreated: number; id: string };
