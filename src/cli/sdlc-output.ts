@@ -129,74 +129,82 @@ function receiptLine(receipt: any): string {
     receipt?.pr ? `PR #${receipt.pr}` : undefined, receipt?.head ? `head ${short(receipt.head)}` : undefined].filter(Boolean);
   return parts.length ? parts.join(", ") : "no issue or PR recorded";
 }
-function taskBlock(row: any, columns: number | undefined, detail: boolean, readback = true): Line[] {
-  const id = `#${row.id}`;
-  const out: Line[] = para(`${id}  ${row.title ?? ""}`, columns, undefined, "", 6)
-    .map((line, i) => i === 0 ? [s(id, "taskRef"), s(line[0]!.text.slice(id.length), "strong")] : line);
-  out.push(...pair("lifecycle", `stage ${row.stage ?? "unknown"}, mode ${row.mode ?? "unknown"}, ready ${yes(row.ready)}, actor ${row.actor ?? "unknown"}`, columns, 11, readyTone(row.ready), "  "));
-  out.push(...pair("next", row.next ?? "unknown", columns, 11, undefined, "  "));
-  out.push(...pair("receipt", receiptLine(row.receipt), columns, 11, undefined, "  "));
-  out.push(...bullets("blockers", list(row.blockers), columns, "attention", "  "));
+function taskBlock(out: LayoutReport, row: any, detail: boolean, readback = true): void {
+  out.section(`Task #${row.id}`);
+  out.kv([["title", row.title ?? ""], ["stage", row.stage ?? "unknown"], ["mode", row.mode ?? "unknown"], ["ready", yes(row.ready)], ["actor", row.actor ?? "unknown"], ["next", row.next ?? "unknown"], ["receipt", receiptLine(row.receipt)]]);
+  for (const item of list(row.blockers)) out.bullet("warn", `blocker: ${terminalText(item)}`);
   if (readback && row.readback) {
     const view = row.readback as ReadbackView;
-    out.push(...pair("read-back", readbackSummary(view), columns, 11, view.state === "stale" || view.state === "unavailable" ? "attention" : undefined, "  "));
+    out.kv([["read-back", readbackSummary(view)]]);
+    if (view.state === "stale" || view.state === "unavailable") out.bullet("warn", `read-back is ${view.state}`);
   }
-  if (!detail) return out;
-  if (row.spec) out.push(...pair("spec", `issue #${row.spec.issue}, ${row.spec.state}`, columns, 11, undefined, "  "));
-  if (row.playbook) out.push(...pair("playbook", row.playbook, columns, 11, undefined, "  "));
-  if (row.definition?.name || row.definition?.id) out.push(...pair("stage", row.definition.name ?? row.definition.id, columns, 11, undefined, "  "));
-  out.push(...bullets("entry", list(row.entry), columns, undefined, "  "), ...bullets("exit", list(row.exit), columns, undefined, "  "));
+  if (!detail) return;
+  const rows: (readonly [string, unknown])[] = [];
+  if (row.spec) rows.push(["spec", `issue #${row.spec.issue}, ${row.spec.state}`]);
+  if (row.playbook) rows.push(["playbook", row.playbook]);
+  if (row.definition?.name || row.definition?.id) rows.push(["stage", row.definition.name ?? row.definition.id]);
+  if (list(row.entry).length) rows.push(["entry", list(row.entry).join("; ")]);
+  if (list(row.exit).length) rows.push(["exit", list(row.exit).join("; ")]);
   const f = row.findings;
-  if (f) out.push(...pair("findings", `${plural(f.important ?? 0, "important")} (${f.openImportant ?? 0} open), ${plural(f.nit ?? 0, "nit")} (${f.openNit ?? 0} open), ${f.fixed ?? 0} fixed, ${f.falsePositive ?? 0} false positive, ${f.accepted ?? 0} accepted${f.needsValidation ? `, ${f.needsValidation} needs validation (not blocking)` : ""}${f.preExisting ? `, ${f.preExisting} pre-existing (not blocking)` : ""}`, columns, 11, f.openImportant ? "attention" : undefined, "  "));
+  if (f) rows.push(["findings", `${plural(f.important ?? 0, "important")} (${f.openImportant ?? 0} open), ${plural(f.nit ?? 0, "nit")} (${f.openNit ?? 0} open), ${f.fixed ?? 0} fixed, ${f.falsePositive ?? 0} false positive, ${f.accepted ?? 0} accepted${f.needsValidation ? `, ${f.needsValidation} needs validation (not blocking)` : ""}${f.preExisting ? `, ${f.preExisting} pre-existing (not blocking)` : ""}`]);
   const p = row.planConformance;
   if (p) {
-    out.push(...pair("plan files", `${p.state}${p.accepted ? ", departure accepted" : ""}, ${list(p.outside).length} outside the plan, ${list(p.untouched).length} planned and untouched`, columns, 11, p.state === "departure" && !p.accepted ? "attention" : undefined, "  "));
-    out.push(...bullets("outside the plan", list(p.outside), columns, "attention", "    "), ...bullets("untouched", list(p.untouched), columns, "muted", "    "));
+    rows.push(["plan files", `${p.state}${p.accepted ? ", departure accepted" : ""}, ${list(p.outside).length} outside the plan, ${list(p.untouched).length} planned and untouched`]);
+    if (list(p.outside).length) rows.push(["outside the plan", list(p.outside).join(", ")]);
+    if (list(p.untouched).length) rows.push(["untouched", list(p.untouched).join(", ")]);
   }
-  const t = row.testIntegrity;
-  if (t) {
-    out.push(...pair("tests", `${t.applicability === "bug" ? "bug fix" : t.applicability === "not_bug" ? "not a bug fix" : "bug status unknown"}, red-first ${String(t.redFirst).replace("_", " ")}, files ${t.fileState}`, columns, 11, undefined, "  "));
-    out.push(...bullets("modified tests", list(t.modifiedTests), columns, undefined, "    "), ...bullets("test blockers", list(t.blockers), columns, "attention", "    "));
+  const tests = row.testIntegrity;
+  if (tests) {
+    rows.push(["tests", `${tests.applicability === "bug" ? "bug fix" : tests.applicability === "not_bug" ? "not a bug fix" : "bug status unknown"}, red-first ${String(tests.redFirst).replace("_", " ")}, files ${tests.fileState}`]);
+    if (list(tests.modifiedTests).length) rows.push(["modified tests", list(tests.modifiedTests).join(", ")]);
+    if (list(tests.blockers).length) rows.push(["test blockers", list(tests.blockers).join("; ")]);
   }
   const sp = row.securityPass;
   if (sp) {
     const shown = sp.state === "required" ? `required (${sp.matched} sensitive path${sp.matched === 1 ? "" : "s"} changed), none recorded at this head`
       : sp.state === "recorded" ? `recorded at this head (${sp.recorded?.covered ?? 0} covered, ${sp.recorded?.notCovered ?? 0} not covered)`
       : sp.state === "unknown" ? "unknown (PR file inventory incomplete or unreadable)" : "not required";
-    out.push(...pair("security pass", `${shown}${list(sp.companions).length ? `; companions ${list(sp.companions).join(", ")}` : ""}`, columns, 11, sp.state === "required" || sp.state === "unknown" ? "attention" : undefined, "  "));
+    rows.push(["security pass", `${shown}${list(sp.companions).length ? `; companions ${list(sp.companions).join(", ")}` : ""}`]);
   }
   const e = row.evalGate;
   if (e) {
     const shown = e.state === "not_configured" ? "eval check not configured (suite choice pending the person)" : e.state === "coverage_unknown" ? "PR file coverage unknown" : `${e.check} ${String(e.state)}${e.passRate !== undefined ? `, pass rate ${e.passRate}` : ""}${e.suite !== undefined ? `, suite ${e.suite}` : ""}`;
-    out.push(...pair("eval gate", `configuration PR, ${shown}`, columns, 11, e.state === "passed" && !list(e.gaps).length ? undefined : "attention", "  "));
-    out.push(...bullets("eval gaps", [...list(e.gaps), ...list(e.notes)], columns, "attention", "    "));
+    rows.push(["eval gate", `configuration PR, ${shown}`]);
+    const gaps = [...list(e.gaps), ...list(e.notes)];
+    if (gaps.length) rows.push(["eval gaps", gaps.join("; ")]);
   }
   const c = row.criteria;
   if (c) {
-    out.push(...pair("criteria", `${c.ready ? "all met" : "not all met"}${c.id ? `, checklist ${c.id}` : ""}${c.note ? `, ${c.note}` : ""}`, columns, 11, readyTone(c.ready), "  "));
-    out.push(...bullets("unmet", list(c.blockers), columns, "attention", "    "));
+    rows.push(["criteria", `${c.ready ? "all met" : "not all met"}${c.id ? `, checklist ${c.id}` : ""}${c.note ? `, ${c.note}` : ""}`]);
+    if (list(c.blockers).length) rows.push(["unmet", list(c.blockers).join("; ")]);
   }
-  return out;
+  out.kv(rows);
+  // the attention tones the older layout colored become a marker line, so they survive without color
+  if (f?.openImportant) out.bullet("warn", `${plural(f.openImportant, "open important finding")}`);
+  if (p?.state === "departure" && !p.accepted) out.bullet("warn", "plan departure not accepted");
+  if (sp?.state === "required" || sp?.state === "unknown") out.bullet("warn", `security pass ${sp.state}`);
+  if (e && !(e.state === "passed" && !list(e.gaps).length)) out.bullet("warn", "eval gate not passed");
+  if (c && !c.ready) out.bullet("warn", "criteria not all met");
 }
-function lifecycleView(reply: any, columns: number | undefined, detail: boolean): Line[] {
+function lifecycleView(reply: any, columns: number | undefined, detail: boolean, ascii: boolean): Span[][] {
   const rows = list(reply?.rows);
-  const out: Line[] = [...heading(`SDLC lifecycle, mode ${reply?.mode ?? "unknown"}`, columns)];
-  if (reply?.securityScan && typeof reply.securityScan === "object") {
-    out.push(...pair("security scan", Object.entries(reply.securityScan).map(([source, value]) => `${source}: ${value === null ? "unknown" : value}`).join(", "), columns, 14));
-  }
-  if (!rows.length) return [...out, [s("no task has lifecycle state yet", "muted")]];
+  const mode = `mode ${reply?.mode ?? "unknown"}`, out = new LayoutReport(columns, ascii);
+  if (columns === undefined || textWidth(` ahub SDLC lifecycle  ${mode}`) <= columns) out.header("ahub", "SDLC lifecycle", mode);
+  else out.header("ahub", "SDLC lifecycle").note(mode);
+  if (reply?.securityScan && typeof reply.securityScan === "object") out.section("Security scan").kv([["security scan", Object.entries(reply.securityScan).map(([source, value]) => `${source}: ${value === null ? "unknown" : value}`).join(", ")]]);
+  if (!rows.length) return out.note("no task has lifecycle state yet").lines();
   if (!detail || rows.length > 1) {
-    out.push(...grid(["ID", "STAGE", "READY", "ACTOR", "PR"], rows.map(row => [s(`#${row.id}`, "taskRef"), s(row.stage ?? "unknown"), s(yes(row.ready), readyTone(row.ready)), s(row.actor ?? "-"), s(row.receipt?.pr ? `#${row.receipt.pr}` : "-")]), columns));
+    out.section("Tasks", String(rows.length)).append(grid(["ID", "STAGE", "READY", "ACTOR", "PR"], rows.map(row => [s(`#${row.id}`, "taskRef"), s(row.stage ?? "unknown"), s(yes(row.ready), readyTone(row.ready)), s(row.actor ?? "-"), s(row.receipt?.pr ? `#${row.receipt.pr}` : "-")]), columns));
   }
   // #1658: the read-back line belongs to one task's view; a list of rows has no single issue body to read it against.
-  for (const row of rows) out.push(blank, ...taskBlock(row, columns, detail, detail || rows.length === 1));
-  if (reply?.truncated) out.push(blank, ...para("showing the first 100 tasks; name a task to read one", columns, "muted"));
-  return out;
+  for (const row of rows) taskBlock(out, row, detail, detail || rows.length === 1);
+  if (reply?.truncated) out.bullet("warn", "showing the first 100 tasks; name a task to read one");
+  return out.lines();
 }
 /** `ahub sdlc status [task]`: one row per task, then each task's next step and blockers. */
-export const renderSdlcStatus = (reply: unknown, columns?: number, _now = Date.now()): Span[][] => lifecycleView(reply, columns, false);
+export const renderSdlcStatus = (reply: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] => lifecycleView(reply, columns, false, ascii);
 /** `ahub sdlc explain <task>`: the same task with every gate the hub read. */
-export const renderSdlcExplain = (reply: unknown, columns?: number, _now = Date.now()): Span[][] => lifecycleView(reply, columns, true);
+export const renderSdlcExplain = (reply: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] => lifecycleView(reply, columns, true, ascii);
 
 // ---- sdlc queue / release -----------------------------------------------------------------------------------------
 
@@ -262,6 +270,8 @@ export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.n
   out.section("Source").kv([["version", r.version ?? (r.releasePolicy ? "undetermined" : "unknown")], ["head", short(r.head)], ["tag", r.tag ? `${r.tag} at ${short(r.tagCommit)}` : "none"],
     ["commits", `${plural(list(r.commits).length, "commit")} since the last tag`], ...(list(r.mergedPrs).length ? [["merged PRs", list(r.mergedPrs).map((p: any) => `#${p.pr}`).join(", ")] as const] : [])]);
   out.section("Readiness").kv([["source ready", yes(r.sourceReady)], ["native", String(r.native ?? "unverified")], ["release ready", yes(r.ready)]]);
+  if (r.ready !== true) out.bullet("warn", "release is not ready");
+  if (String(r.native ?? "unverified") === "unverified") out.bullet("warn", "native verification is unverified");
   const docs = r.documents;
   out.section("Documents");
   if (r.releasePolicy?.docsSource === "none") out.kv([["documents", r.releasePolicy.authorization === "matched" ? "none (explicit exemption recorded)" : "none (configured exemption; no matching authorization)"]]);

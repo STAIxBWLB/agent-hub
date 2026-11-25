@@ -274,9 +274,14 @@ export class Report {
       const value = (line: string): Span => text ? { text: line, role: "value" } : { text: "(unset)", role: "hint" };
       const lead = " ".repeat(indent);
       // a terminal too narrow to leave 10 cells beside the label stacks the value under its key, like a key wider than 28
-      if (keys[index]! > 28 || this.columns !== undefined && indent + pad + 2 + 10 > this.columns) {
+      // stacked when fewer than 10 cells remain beside the label, or when the value's longest word does not fit there
+      const longest = Math.max(0, ...text.split(/\s+/).map(word => cellWidth(word)));
+      const narrow = keys[index]! <= 28 && this.columns !== undefined && (indent + pad + 2 + 10 > this.columns || longest > this.columns - indent - pad - 2 && longest <= this.columns - indent);
+      if (keys[index]! > 28 || narrow) {
+        // a terminal too narrow for the label column keeps the value at the key's own indent, so a long word is not broken by the hang
+        const hang = narrow ? 0 : 2;
         this.push([{ text: `${lead}${label}`, role: "key" }]);
-        for (const line of text ? this.fit(text, (this.columns ?? 0) - indent - 2) : [""]) this.push([{ text: `${lead}  ` }, value(line)]);
+        for (const line of text ? this.fit(text, (this.columns ?? 0) - indent - hang) : [""]) this.push([{ text: `${lead}${" ".repeat(hang)}` }, value(line)]);
         continue;
       }
       const gap = " ".repeat(pad - keys[index]! + 2), room = (this.columns ?? 0) - indent - pad - 2;

@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub sdlc status` and `explain` print on the shared Report layout (hub task 1137, Refs #1654): a header with the mode, a task table, one section per task with its blockers and gate findings as marker lines, and `--ascii` markers. `sdlc release` also prints a warning line when a release is not ready or native verification is unverified. `--json` is unchanged and every pinned phrase stays.
+
 - `ahub sdlc queue`, `audit show`, `release`, `metrics` and `costs` print on the shared Report layout (hub task 1135, Refs #1654): a header, one section per topic, markers for blockers and units, and `--ascii` markers. A repository name too long for the header wraps on its own line, and a narrow terminal stacks a `kv` value under its key. `--json` is unchanged and every pinned phrase stays.
 
 - `ahub sdlc authorize-release` and `ahub sdlc merge` print on the shared Report layout (hub task 1116, Refs #1654): a header, `Authorization`, `Decision`, `Refused` and `Result` sections, one `✗` line per refused gate, and `--ascii` markers (now accepted as a presentation flag by both commands), plus a `✗` or `⚠` line when a merge did not happen. `--json` is unchanged and every pinned phrase stays.
