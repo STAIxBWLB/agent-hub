@@ -62,9 +62,10 @@ export function parseSpecReadbackReport(input: unknown): SpecReadbackReport {
 
 /**
  * #1658 T4: where a task's read-back stands against the issue's current body. `current` without lists is a request
- * whose reader has not reported yet; the lists exist only once a report does.
+ * whose reader has not reported yet; the lists exist only once a report does, and `private` is the stub a task shows
+ * once the board holds it private, because a report's terms and decisions are the spec's text.
  */
-type ReadbackState = "none" | "current" | "stale" | "unavailable";
+type ReadbackState = "none" | "current" | "stale" | "unavailable" | "private";
 export interface ReadbackView {
   state: ReadbackState;
   undefined?: { term: string; where: string }[];
@@ -75,6 +76,7 @@ export interface ReadbackView {
 /** The short state text shared by `ahub sdlc status`/`explain` and the line `accept` prints. */
 export function readbackSummary(view: ReadbackView): string {
   if (view.state === "none") return "none";
+  if (view.state === "private") return "private (the report is withheld with the task's text)";
   if (view.state === "unavailable") return "unavailable (the issue's edit time could not be read)";
   if (view.state === "stale") return "stale (the body changed after the last one)";
   if (view.missing_refs === undefined) return "current (requested; the reader has not reported yet)";

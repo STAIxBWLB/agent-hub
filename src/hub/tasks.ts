@@ -8415,6 +8415,9 @@ export class Tasks {
     if (!edit) return { state: "unavailable" };
     const latest = this.d.board.readbackLatest(task.id, task.created);
     if (!latest) return { state: "none" };
+    // #1658: a private task shows a stub, as specReadbackShow does. Its spec is task text, so the report's terms,
+    // decisions and refs are withheld; nothing starts a read-back for a task the board already held private.
+    if (this.isPii(task)) return { state: "private" };
     if (latest.lastEditedAt !== edit.lastEditedAt) return { state: "stale" };
     if (!latest.report) return { state: "current" };
     return { state: "current", ...(latest.report.undefined ? { undefined: latest.report.undefined } : {}), ...(latest.report.open_decisions ? { open_decisions: latest.report.open_decisions } : {}), missing_refs: latest.missingRefs ?? [] };

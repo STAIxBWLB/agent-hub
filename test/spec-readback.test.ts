@@ -222,6 +222,10 @@ test("status reads none, then unavailable, current and stale against the issue b
     await f.tasks.specReadbackReport(started.reader!, { ...report, task: f.task.id, undefined: [{ term: "receipt", where: "Storage" }] });
     expect(f.tasks.readbackView(f.task, EDIT)).toMatchObject({ state: "current", undefined: [{ term: "receipt", where: "Storage" }], missing_refs: [] });
     expect(f.tasks.readbackView(f.task, { lastEditedAt: "2026-11-24T09:00:00Z" })).toEqual({ state: "stale" });
+    // A task that turns private afterwards shows a stub: the report's terms, decisions and refs are the spec's text.
+    f.board.update(f.task.id, "user", "private upgrade", { signals: ["pii"] });
+    expect(f.tasks.readbackView(f.board.get(f.task.id)!, EDIT)).toEqual({ state: "private" });
+    expect(readbackSummary({ state: "private" })).toContain("withheld");
   } finally { f.close(); }
 });
 
