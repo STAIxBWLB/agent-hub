@@ -60,7 +60,7 @@ import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-a
 import { MERGE_READBACK_INTERVAL_MS } from "./sdlc-merge.ts";
 import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunnerState, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
-import { readbackLine } from "./spec-readback.ts";
+import { readbackAcceptField } from "./spec-readback.ts";
 import { isDenied, sbplString } from "../local/deny.ts";
 import { hostShellPath } from "./host-executable.ts";
 import { supersededDeliveryReason, deliveryTaskContext } from "./delivery-superseded.ts";
@@ -90,7 +90,7 @@ import { VERSION_REFUSAL, configuredCommands, describe, isCompatId } from "../ad
 import { agentVersionsAsync, type AgentVersionRow } from "../cli/agents.ts";
 import { driftedAgents, noticeDrift, type DriftedAgent } from "./agent-drift.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
-import { loadSdlc, readSpecEdit, sdlcGh, type SdlcConfig } from "./sdlc.ts";
+import { loadSdlc, readSpecEdit, sdlcGh, type SdlcConfig, type SdlcGh } from "./sdlc.ts";
 import { claudePeer as defaultChannelPeer, claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
 import { peerRosterConfig, rosterAllows, staleInstanceKey, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
@@ -929,6 +929,8 @@ export interface DaemonOptions {
   boundedTools?: {
     specAvailable?: typeof specAvailable;
     fetchSpec?: typeof fetchSpec;
+    /** Host-only seam for the issue edit-time reads a read-back grant and `ahub sdlc accept` make. */
+    specEdit?: SdlcGh;
     runner?: (options: RunnerOptions) => Pick<ContainerRunner, "available" | "start" | "result" | "consumeOutput" | "cancel" | "sweep" | "stopAll" | "markStale"> & Partial<Pick<ContainerRunner, "unknownReceipts" | "maintenanceUnavailable" | "compactTask">>;
   };
 }
@@ -6184,9 +6186,15 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (op === "hub_task_spec") {
       // #1658 T4: the person's ruling is one binding per read-back request, so the bound reader may state the spec back
-      // without the standing spec_read capability, and only while its own request holds no report.
-      const carried = (task: Task | undefined) => !!task && tasks.specReadbackReader(task.id, task.created, by);
-      if (!carried(board.get(Number(a.id)))) need("spec_read", "read assigned specifications");
+      // without the standing spec_read capability, and only while its own request holds no report on the body it was filed for.
+      const asked = board.get(Number(a.id)), specEditGh = opts.boundedTools?.specEdit;
+      let grant = asked ? tasks.specReadbackGrant(asked.id, asked.created, by) : undefined;
+      // #1658: a carried read fetches the request's own issue, so a receipt issue the task's text does not name is still read,
+      // and a body that moved or another repository's issue ends the grant here.
+      if (grant && (grant.repo.toLowerCase() !== memoryRepo.toLowerCase()
+        || !await tasks.specReadbackFresh(grant, specEditGh ?? ((args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound))))) grant = undefined;
+      const carried = (task: Task | undefined) => !!task && !!tasks.specReadbackGrant(task.id, task.created, by);
+      if (!grant) need("spec_read", "read assigned specifications");
       const authorized = () => {
         const task = board.get(a.id);
         if (!task || task.state === "backlog" || task.owner !== by && task.reviewer !== by && !carried(task) || tasks.isPii(task) || turns.get(by)?.private || contextPii(by)) throw new PreEffectToolRefusal("spec unavailable");
@@ -6194,7 +6202,7 @@ export async function startDaemon(opts: DaemonOptions) {
       };
       const task = authorized(), generation = connectionGeneration(by), updated = task.updated, revision = task.history.length;
       const deadline = Date.now() + 25_000; // retain a response margin inside the control client's 30-second cap
-      const issues = specRefs(task, memoryRepo);
+      const issues = grant && !may(by, "spec_read") ? [grant.issue] : specRefs(task, memoryRepo);
       if (!issues.length) throw new PreEffectToolRefusal("no assigned spec references");
       await ensureSpec();
       authorized();
@@ -13418,7 +13426,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const repo = msg.repo ?? task?.sdlc?.repo;
           if (!task || typeof repo !== "string") return void reply({ ok: false, error: task ? "spec acceptance needs --repo owner/repository (the task's receipt names none)" : "invalid lifecycle task id" });
           const linked = `${task.sdlc?.repo ?? ""}#${task.sdlc?.issue ?? ""}`;
-          void readSpecEdit(repo, msg.issue, (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound)).then(edit => {
+          void readSpecEdit(repo, msg.issue, opts.boundedTools?.specEdit ?? ((args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound))).then(edit => {
             if (!edit) return reply({ ok: false, error: "issue edit time unavailable; nothing was recorded" });
             // The readback is for the receipt read before it; a relink meanwhile makes it someone else's evidence.
             const now = board.get(msg.id)?.sdlc;
@@ -13428,7 +13436,7 @@ export async function startDaemon(opts: DaemonOptions) {
               const accepted = board.get(msg.id)!;
               const view = tasks.readbackView({ ...accepted, sdlc: { ...(accepted.sdlc ?? { stage: "spec" as const }), repo, issue: msg.issue } }, edit);
               const next = tasks.acceptSpec(USER, msg.id, { repo, issue: msg.issue, edit });
-              reply({ ok: true, acceptance: next.sdlc?.acceptance, readback: readbackLine(view, msg.id) });
+              reply({ ok: true, acceptance: next.sdlc?.acceptance, ...readbackAcceptField(view, msg.id) });
             } catch (error) { reply({ ok: false, error: (error as Error).message }); }
           }, () => reply({ ok: false, error: "issue edit time unavailable; nothing was recorded" }));
           return;

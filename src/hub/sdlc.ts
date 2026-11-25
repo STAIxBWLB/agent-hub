@@ -428,6 +428,11 @@ export function specState(receipt: SdlcReceipt | undefined, edit: SpecEdit | und
   if (!edit) return "unknown";
   return edit.lastEditedAt === accepted.lastEditedAt ? "current" : "changed";
 }
+/** #1658: the body a status list compares a read-back against, because a list makes no issue read of its own. */
+export function acceptedSpecEdit(receipt: SdlcReceipt | undefined): SpecEdit | undefined {
+  const accepted = receipt?.acceptance;
+  return accepted ? { lastEditedAt: accepted.lastEditedAt, updatedAt: accepted.updatedAt } : undefined;
+}
 export const SPEC_STATE_TEXT: Record<Exclude<SpecState, "current">, string> = {
   missing: "spec acceptance missing: the person runs ahub sdlc accept <task> --issue <n>",
   changed: "spec changed after acceptance: the person re-accepts with ahub sdlc accept <task> --issue <n>",

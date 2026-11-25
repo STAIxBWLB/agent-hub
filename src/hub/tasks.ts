@@ -136,8 +136,8 @@ import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, taskWait, TASK_WAIT_MAX_MS, TASK_WAIT_REASON_MAX, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
-import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type ReadbackMergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState, localSupersedingTask, storedSpecAcceptance, carriedSpecAcceptance } from "./sdlc.ts";
-import { missingReadbackRefs, parseSpecReadbackReport, type ReadbackView } from "./spec-readback.ts";
+import { acceptedSpecEdit, planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type ReadbackMergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState, localSupersedingTask, storedSpecAcceptance, carriedSpecAcceptance } from "./sdlc.ts";
+import { missingReadbackRefs, parseSpecReadbackReport, type ReadbackView, type SpecReadbackReport } from "./spec-readback.ts";
 
 /** #1176: refusals for an agent that reaches a person-run card by a path other than the pull gate. */
 const PERSON_RUN_SPLIT = "a person-run card is the person's to split: its children would be unmarked cards an agent could take (the person's own split marks every child person-run)";
@@ -8059,6 +8059,13 @@ export class Tasks {
       throw new PreEffectToolRefusal(`${problem.field}: ${problem.rule}; ${next}`);
     }
   }
+  /** #1658: an over-limit or malformed report is refused before any effect, naming the field and its limit as a survey is. */
+  private readbackToolInput(input: unknown): SpecReadbackReport {
+    try { return parseSpecReadbackReport(input); } catch (error) {
+      const problem = surveyInputProblem(error) ?? { field: "report", rule: "must be the documented closed object" };
+      throw new PreEffectToolRefusal(`${problem.field}: ${problem.rule}; fix that field and resend hub_readback_report`);
+    }
+  }
   private surveyStarting = false;
   private surveyAdmit(by: PeerId, check: () => void): void {
     check();
@@ -8375,7 +8382,7 @@ export class Tasks {
   async specReadbackReport(by: PeerId, input: unknown, fence?: () => string | undefined): Promise<{ task: number; readback: number; missing_refs: string[] }> {
     const check = this.requestCheck(by, fence);
     this.readbackAdmit(by, check);
-    const report = parseSpecReadbackReport(input);
+    const report = this.readbackToolInput(input);
     const task = this.d.board.get(report.task);
     if (!task) throw new PreEffectToolRefusal("read-back report names no task; send hub_readback_report the task id the request named");
     // refusal:by-design human-authority: a private task's read-back stays with its own readers; a person decides that task's privacy on the board.
@@ -8412,9 +8419,10 @@ export class Tasks {
     if ((this.d.sdlc?.config().mode ?? "off") === "off") return undefined;
     const repo = task.sdlc?.repo, issue = task.sdlc?.issue;
     if (!repo || issue === undefined) return { state: "none" };
-    if (!edit) return { state: "unavailable" };
+    // A task with no request has a state without any issue read; a list row reads no issue, so only a request it holds can be unavailable.
     const latest = this.d.board.readbackLatest(task.id, task.created);
     if (!latest) return { state: "none" };
+    if (!edit) return { state: "unavailable" };
     // #1658: a private task shows a stub, as specReadbackShow does. Its spec is task text, so the report's terms,
     // decisions and refs are withheld; nothing starts a read-back for a task the board already held private.
     if (this.isPii(task)) return { state: "private" };
@@ -8423,10 +8431,23 @@ export class Tasks {
     return { state: "current", ...(latest.report.undefined ? { undefined: latest.report.undefined } : {}), ...(latest.report.open_decisions ? { open_decisions: latest.report.open_decisions } : {}), missing_refs: latest.missingRefs ?? [] };
   }
 
-  /** #1658 T4: the one per-request grant `hub_task_spec` reads: the bound reader of a request that holds no report yet. */
-  specReadbackReader(taskId: number, created: number, by: PeerId): boolean {
+  /**
+   * #1658 T4: the per-request grant `hub_task_spec` reads on. It holds only while the lifecycle is on, the reader still
+   * holds the reviewer role the request was filed to, and the request is the newest one for this incarnation with no
+   * report yet. Body freshness is checked by `specReadbackFresh`, which reads the issue.
+   */
+  specReadbackGrant(taskId: number, created: number, by: PeerId): { repo: string; issue: number; lastEditedAt: string | null } | undefined {
+    if ((this.d.sdlc?.config().mode ?? "off") === "off") return undefined;
+    if (!this.d.bus.isRostered(by) || !this.d.roles?.[by]?.includes("reviewer")) return undefined;
     const latest = this.d.board.readbackLatest(taskId, created);
-    return !!latest && latest.reader === by && latest.report === undefined;
+    if (!latest || latest.reader !== by || latest.report !== undefined) return undefined;
+    return { repo: latest.repo, issue: latest.issue, lastEditedAt: latest.lastEditedAt };
+  }
+
+  /** #1658: a grant is live only on the body it was filed for; a body that moved, or an unreadable time, ends it. */
+  async specReadbackFresh(grant: { repo: string; issue: number; lastEditedAt: string | null }, run?: SdlcGh): Promise<boolean> {
+    const edit = await readSpecEdit(grant.repo, grant.issue, run);
+    return !!edit && edit.lastEditedAt === grant.lastEditedAt;
   }
 
   private auditCarry(head: string, source: AuditSource): CarryLookup {
@@ -9051,7 +9072,10 @@ export class Tasks {
     valid();
     // #1658: the read-back reads the issue before acceptance, so the edit time comes from the receipt's issue, not only the accepted one.
     const spec = task.sdlc?.repo && task.sdlc.issue !== undefined ? { repo: task.sdlc.repo, issue: task.sdlc.issue } : undefined;
-    const edit = spec && !this.isPii(task) && refresh && config.mode !== "off" ? await readSpecEdit(spec.repo, spec.issue, read) : undefined;
+    // #1658: a list row (`refresh` off) makes no issue read, so it compares against the body the person accepted instead of reporting every row unavailable.
+    const edit = spec && !this.isPii(task) && config.mode !== "off"
+      ? refresh ? await readSpecEdit(spec.repo, spec.issue, read) : acceptedSpecEdit(task.sdlc)
+      : undefined;
     const integrity = config.mode !== "off" ? publicTestIntegrity(task.sdlc && evidence && !this.isPii(task) ? await readTestIntegrity(task.sdlc, evidence, read) : this.unknownTestIntegrity(this.isPii(task)), this.publicMetadataText) : undefined;
     const evalResult = task.sdlc && !this.isPii(task) ? await readEvalFor(config, evidence, task.sdlc.repo, read) : undefined;
     const current = valid();

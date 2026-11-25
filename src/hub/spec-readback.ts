@@ -5,6 +5,14 @@ import { surveyArray, surveyInputAt, surveyObject, surveyPath, surveyText } from
 const TEXT_BYTES = 1024;
 const MAX_ITEMS = 16;
 const MAX_REFS = 64;
+const PATH_BYTES = 512;
+/**
+ * #1658: the size bounds a report is judged by. Every field at its own limit is about 100 KB of text; JSON escaping can
+ * double that, so the report bound covers the doubled worst case and the stored row's bound covers the report plus its
+ * missing-ref list (64 paths at 512 bytes each). A report inside every field limit therefore never fails at storage.
+ */
+const READBACK_REPORT_BYTES = 320 * 1024;
+export const READBACK_STORE_BYTES = 384 * 1024;
 
 interface ReadbackDetails {
   undefined?: { term: string; where: string }[];
@@ -49,15 +57,21 @@ export function parseSpecReadbackReport(input: unknown): SpecReadbackReport {
   }
   if (Object.hasOwn(fields, "refs")) {
     details.refs = at("refs", `allows up to ${MAX_REFS} paths`, () => surveyArray(fields.refs, MAX_REFS))
-      .map((value, index) => at(`refs[${index}]`, "requires a repository-relative path within 512 UTF-8 bytes", () => surveyPath(value)));
+      .map((value, index) => at(`refs[${index}]`, `requires a repository-relative path or directory within ${PATH_BYTES} UTF-8 bytes`, () =>
+        // A directory names the paths under it, so `/` ends the identity rather than making it invalid.
+        surveyPath(typeof value === "string" && value.endsWith("/") ? value.slice(0, -1) : value)));
   }
+  const whole = (report: SpecReadbackReport): SpecReadbackReport => at("report", `must stay within ${READBACK_REPORT_BYTES} JSON bytes in total`, () => {
+    if (Buffer.byteLength(JSON.stringify(report)) > READBACK_REPORT_BYTES) throw new Error("invalid bounded survey data");
+    return report;
+  });
   if (Object.hasOwn(fields, "cannot_paraphrase")) {
     at("cannot_paraphrase", "use a section in place of proposes and existing", () => {
       if (Object.hasOwn(fields, "proposes") || Object.hasOwn(fields, "existing")) throw new Error("mixed read-back report forms");
     });
-    return { task, cannot_paraphrase: readText(fields.cannot_paraphrase, "cannot_paraphrase"), ...details };
+    return whole({ task, cannot_paraphrase: readText(fields.cannot_paraphrase, "cannot_paraphrase"), ...details });
   }
-  return { task, proposes: readText(fields.proposes, "proposes"), existing: readText(fields.existing, "existing"), ...details };
+  return whole({ task, proposes: readText(fields.proposes, "proposes"), existing: readText(fields.existing, "existing"), ...details });
 }
 
 /**
@@ -85,10 +99,18 @@ export function readbackSummary(view: ReadbackView): string {
 }
 
 /** The one line `ahub sdlc accept` prints before it records the person's acceptance; every state proceeds. */
-export function readbackLine(view: ReadbackView | undefined, task: number | string): string {
-  if (!view || view.state === "none") return `spec read-back: none (start one with ahub sdlc readback start ${task})`;
+function readbackLine(view: ReadbackView, task: number | string): string {
+  if (view.state === "none") return `spec read-back: none (start one with ahub sdlc readback start ${task})`;
   const next = view.state === "stale" ? `; start another with ahub sdlc readback start ${task}` : "";
   return `spec read-back: ${readbackSummary(view)}${next}`;
+}
+
+/**
+ * #1658 AC7: the acceptance reply's `readback` field. `readbackView` is undefined exactly when the lifecycle is off, and
+ * then there is no state to print, so an off project's `ahub sdlc accept` output stays what it was.
+ */
+export function readbackAcceptField(view: ReadbackView | undefined, task: number | string): { readback?: string } {
+  return view === undefined ? {} : { readback: readbackLine(view, task) };
 }
 
 const READBACK_GIT = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat", "-c", "credential.helper=", "-c", "core.askpass="];
@@ -96,7 +118,8 @@ const readbackGit = (cwd: string, args: string[]) => hubGitSync(["-C", cwd, ...R
 
 /**
  * #1658 T4: the paths the issue names that are absent from the default branch head. Git only, no worktree read and no
- * fetch, so a hit is a commit a merged change would land on. `undefined` is unknown, never "all present".
+ * fetch, so a hit is a commit a merged change would land on. A path stands for the file or the directory of that name,
+ * because `ls-tree -r` lists files alone. `undefined` is unknown, never "all present".
  */
 export function missingReadbackRefs(cwd: string, paths: readonly string[]): string[] | undefined {
   if (!paths.length) return [];
@@ -105,7 +128,8 @@ export function missingReadbackRefs(cwd: string, paths: readonly string[]): stri
     if (!from) return undefined;
     const tree = readbackGit(cwd, ["ls-tree", "-r", "-z", "--name-only", from]);
     if (tree.status !== 0 || typeof tree.stdout !== "string") return undefined;
-    const known = new Set(tree.stdout.split("\0").filter(Boolean));
-    return paths.filter(path => !known.has(path));
+    const files = tree.stdout.split("\0").filter(Boolean), known = new Set(files), dirs = new Set<string>();
+    for (const file of files) for (let slash = file.indexOf("/"); slash !== -1; slash = file.indexOf("/", slash + 1)) dirs.add(file.slice(0, slash));
+    return paths.filter(path => !known.has(path) && !dirs.has(path));
   } catch { return undefined; }
 }

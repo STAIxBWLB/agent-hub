@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG, type DaemonOptions } from "../src/hub/daemon.ts";
 import { Board, type Task } from "../src/hub/board.ts";
+import { DEFAULT_ROLES } from "../src/hub/hub-tools.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -21,19 +22,21 @@ class Peer extends BasePeer {
   async stop() { this.setState("offline"); }
   async deliver(envelopes: Envelope[]) { this.received.push(...envelopes); }
 }
-async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNullable<DaemonOptions["boundedTools"]>["fetchSpec"]; available?: boolean; availability?: (signal?: AbortSignal) => Promise<RunnerState>; stopRunner?: () => Promise<void>; staleDeliver?: boolean } = {}) {
+async function fixture(extra: { caps?: Record<string, string[]>; fetch?: NonNullable<DaemonOptions["boundedTools"]>["fetchSpec"]; specEdit?: NonNullable<DaemonOptions["boundedTools"]>["specEdit"]; roles?: Record<string, string[]>; sdlc?: string; available?: boolean; availability?: (signal?: AbortSignal) => Promise<RunnerState>; stopRunner?: () => Promise<void>; staleDeliver?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-capability-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   for (const args of [["init", "-q"], ["remote", "add", "origin", "https://github.com/owner/project.git"]]) {
     const r = hubGitSync(["-C", root, ...args], { encoding: "utf8" }); if (r.status) throw new Error("fixture git failed");
   }
+  if (extra.sdlc !== undefined) { mkdirSync(join(root, ".agenthub"), { recursive: true }); writeFileSync(join(root, ".agenthub", "sdlc.toml"), extra.sdlc); }
   const stateDir = join(root, "state"), records = new Map<string, RunReceipt>(), completions = new Map<string, (r: RunReceipt) => void>();
   let runnerOptions!: RunnerOptions, fetches = 0, cancelled = 0, consumed = 0, probes = 0;
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, native: false, enabled: false }, snapshots: { enabled: false, keep: 1 },
       experiments: extra.staleDeliver ? { stale_notices: "deliver" } : undefined,
-      local: { ...DEFAULT_CONFIG.local, deny: [...DEFAULT_CONFIG.local.deny, "private/"] }, capabilities: extra.caps ?? {} },
+      local: { ...DEFAULT_CONFIG.local, deny: [...DEFAULT_CONFIG.local.deny, "private/"] }, capabilities: extra.caps ?? {}, ...(extra.roles ? { roles: extra.roles } : {}) },
     boundedTools: {
       specAvailable: async () => { probes++; return { available: true }; },
+      ...(extra.specEdit ? { specEdit: extra.specEdit } : {}),
       fetchSpec: extra.fetch ?? (async (repo, n, opts) => { fetches++; const body = "complete spec\nlast line"; if (!await opts.screen(`safe title\n${body}`)) throw new Error("spec withheld by privacy policy"); return { number: n, title: "safe title", body, state: "open", updated_at: "2026-10-17", html_url: `https://github.com/${repo}/issues/${n}` }; }),
       runner: options => {
         runnerOptions = options;
@@ -235,6 +238,41 @@ test("imported GitHub task reads its canonical assigned issue without textual re
   expect(JSON.parse(reply.text).specs[0].body).toBe("All acceptance details");
 });
 
+
+test("a carried spec read fetches exactly the receipt issue the read-back is bound to (#1658)", async () => {
+  const requested: { repo: string; issue: number }[] = [];
+  let lastEditedAt = "2026-11-23T00:36:36Z";
+  const f = await fixture({
+    caps: { kimi: [] }, roles: { ...DEFAULT_ROLES, kimi: ["reviewer"] }, sdlc: 'mode = "advise"\n',
+    specEdit: async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 777, lastEditedAt, updatedAt: "2026-11-23T00:36:36Z" } } } }) }),
+    fetch: async (repo, issue) => {
+      requested.push({ repo, issue });
+      return { number: issue, title: "read-back spec", body: "the contract", state: "open", updated_at: "now", html_url: `https://github.com/${repo}/issues/${issue}` };
+    },
+  });
+  const task = f.task({ title: "Carry the spec", detail: "no issue is named in this text", refs: {}, reviewer: "pi",
+    sdlc: { stage: "spec", repo: "owner/project", issue: 777 } });
+  expect((await f.call("kimi", "hub_task_spec", { id: task.id })).error).toContain("spec_read");
+  f.board.readbackCreate({ task: task.id, taskCreated: task.created, repo: "owner/project", issue: 777, lastEditedAt, updatedAt: lastEditedAt, reader: "kimi", by: "user", at: 5 });
+  const reply = await f.call("kimi", "hub_task_spec", { id: task.id });
+  expect(reply.ok === true, String(reply.error ?? "")).toBe(true);
+  expect(requested).toEqual([{ repo: "owner/project", issue: 777 }]);
+  // A body that moved after the request ends the grant, so the same call is refused again.
+  lastEditedAt = "2026-11-24T09:00:00Z";
+  expect((await f.call("kimi", "hub_task_spec", { id: task.id })).error).toContain("spec_read");
+  expect(requested).toHaveLength(1);
+});
+
+for (const [mode, prints] of [["", false], ['mode = "advise"\n', true]] as const) test(`accept ${prints ? "prints" : "prints no"} read-back line with the lifecycle ${prints ? "on" : "off"} (#1658 AC7)`, async () => {
+  const f = await fixture({ sdlc: mode,
+    specEdit: async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 418, lastEditedAt: "2026-11-23T00:36:36Z", updatedAt: "2026-11-23T00:36:36Z" } } } }) }) });
+  const task = f.task(), client = await ControlClient.connect(f.stateDir, { role: "console" }); cleanups.push(() => client.close());
+  const reply = await client.request({ t: "sdlc", op: "accept", id: task.id, issue: 418, repo: "owner/project" });
+  expect(reply.ok === true, String(reply.error ?? "")).toBe(true);
+  expect(reply.acceptance.issue).toBe(418);
+  if (prints) expect(reply.readback).toBe(`spec read-back: none (start one with ahub sdlc readback start ${task.id})`);
+  else expect(reply).not.toHaveProperty("readback");
+});
 
 test("person inspection keeps owner output until the owner reads its result (#418 rework)", async () => {
   const f = await fixture(), task = f.task();

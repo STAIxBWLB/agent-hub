@@ -9,8 +9,9 @@ import { TASK_TOOL_NAMES, profileTaskTools } from "../src/hub/hub-tools.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
-import { missingReadbackRefs, parseSpecReadbackReport, readbackLine, readbackSummary } from "../src/hub/spec-readback.ts";
+import { missingReadbackRefs, parseSpecReadbackReport, readbackAcceptField, readbackSummary } from "../src/hub/spec-readback.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
 const report = { task: 42, proposes: "Publish the summary.", existing: "A reviewer reads the spec." };
 
@@ -82,16 +83,44 @@ test("stores the report once and refuses a changed report or a path outside the 
   } finally { f.close(); }
 });
 
+test("stores a report at every field limit, so the store bound covers the parser's", () => {
+  const f = fixture();
+  try {
+    const text = "é".repeat(512); // 1,024 UTF-8 bytes
+    const terms = Array.from({ length: 16 }, () => ({ term: text, where: text }));
+    const decisions = Array.from({ length: 16 }, () => ({ decision: text, where: text }));
+    const refs = Array.from({ length: 64 }, (_, index) => `d${String(index).padStart(2, "0")}/`.padEnd(508, "b") + ".ts"); // 511 bytes each
+    const maximal = { task: f.task.id, proposes: text, existing: text, undefined: terms, open_decisions: decisions, refs };
+    expect(parseSpecReadbackReport(maximal)).toEqual(maximal);
+    const id = f.board.readbackCreate(f.request);
+    expect(f.board.readbackReport(id, maximal, []).report).toEqual(maximal);
+  } finally { f.close(); }
+});
+
 test("names every read-back state in one line, so accept and status read the same way", () => {
-  expect(readbackLine(undefined, 7)).toContain("none");
-  expect(readbackLine({ state: "unavailable" }, 7)).toContain("unavailable");
-  expect(readbackLine({ state: "stale" }, 7)).toContain("ahub sdlc readback start 7");
+  expect(readbackAcceptField({ state: "none" }, 7).readback).toContain("none");
+  expect(readbackAcceptField({ state: "unavailable" }, 7).readback).toContain("unavailable");
+  expect(readbackAcceptField({ state: "stale" }, 7).readback).toContain("ahub sdlc readback start 7");
   expect(readbackSummary({ state: "current" })).toContain("requested");
   const current = { state: "current" as const, undefined: [{ term: "receipt", where: "Storage" }], open_decisions: [{ decision: "Who writes?", where: "Design" }], missing_refs: ["src/gone.ts"] };
   expect(readbackSummary(current)).toContain("1 undefined term");
   expect(readbackSummary(current)).toContain("1 open decision");
   expect(readbackSummary(current)).toContain("1 missing ref");
   expect(readbackSummary({ state: "current", missing_refs: [] })).toContain("0 missing refs");
+});
+
+test("the accept reply carries a read-back line only when the lifecycle reads a state", async () => {
+  expect(readbackAcceptField(undefined, 7)).toEqual({});
+  expect(readbackAcceptField({ state: "none" }, 7)).toEqual({ readback: "spec read-back: none (start one with ahub sdlc readback start 7)" });
+  const off = await readbackFixture({ mode: "off" });
+  try { expect(off.tasks.readbackView(off.task, EDIT)).toBeUndefined(); } finally { off.close(); }
+});
+
+test("a directory ref stands for the paths under it, and a trailing slash is not invalid", () => {
+  expect(parseSpecReadbackReport({ ...report, refs: ["src/hub/"] })).toEqual({ ...report, refs: ["src/hub"] });
+  expect(missingReadbackRefs(process.cwd(), ["src/hub"])).toEqual([]);
+  expect(missingReadbackRefs(process.cwd(), ["src/hub/no-such-readback-directory"])).toEqual(["src/hub/no-such-readback-directory"]);
+  expect(() => parseSpecReadbackReport({ ...report, refs: ["src//hub"] })).toThrow();
 });
 
 test("counts a path the issue names that is absent from the default branch head", () => {
@@ -133,7 +162,7 @@ async function readbackFixture(options: { proposer?: string; mode?: "advise" | "
   const tasks = new Tasks(deps);
   const proposed = board.propose(options.proposer ?? "user", { title: "Spec read-back fixture", class: "implement" });
   const task = board.update(proposed.id, "user", "accepted", { owner: "claude", state: "in_progress", sdlc: { stage: "spec", repo: "fixture/readback", issue: 1658 } });
-  return { tasks, board, bus, notices, task, close };
+  return { tasks, board, bus, notices, task, roles, config, close };
 }
 
 test("a start files one request to a reviewer-role peer that is not the proposer, and a repeat returns that request", async () => {
@@ -202,13 +231,54 @@ test("only the bound reader reports, once; the ref check counts missing paths an
   const f = await readbackFixture();
   try {
     const started = await f.tasks.specReadbackStart("user", f.task.id), reader = started.reader!;
-    expect(f.tasks.specReadbackReader(f.task.id, f.task.created, reader)).toBe(true);
+    expect(f.tasks.specReadbackGrant(f.task.id, f.task.created, reader)).toEqual({ repo: "fixture/readback", issue: 1658, lastEditedAt: EDIT.lastEditedAt });
     await expect(f.tasks.specReadbackReport("claude", { ...report, task: f.task.id })).rejects.toThrow(/no spec read-back request/);
     const written = await f.tasks.specReadbackReport(reader, { ...report, task: f.task.id, refs: ["src/hub/tasks.ts", "src/hub/no-such-readback-file.ts"] });
     expect(written).toMatchObject({ task: f.task.id, readback: started.readback, missing_refs: ["src/hub/no-such-readback-file.ts"] });
-    expect(f.tasks.specReadbackReader(f.task.id, f.task.created, reader)).toBe(false);
+    expect(f.tasks.specReadbackGrant(f.task.id, f.task.created, reader)).toBeUndefined();
     expect(await f.tasks.specReadbackReport(reader, { ...report, task: f.task.id, refs: ["src/hub/tasks.ts", "src/hub/no-such-readback-file.ts"] })).toMatchObject({ readback: started.readback });
     await expect(f.tasks.specReadbackReport(reader, { ...report, task: f.task.id, proposes: "Something else." })).rejects.toThrow();
+  } finally { f.close(); }
+});
+
+test("an over-limit report is refused to the tool caller with the field, its limit and the next step", async () => {
+  const f = await readbackFixture();
+  try {
+    const started = await f.tasks.specReadbackStart("user", f.task.id);
+    const failure = await f.tasks.specReadbackReport(started.reader!, { ...report, task: f.task.id, proposes: "é".repeat(513) }).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(PreEffectToolRefusal);
+    expect((failure as Error).message).toBe("proposes: requires nonempty text within 1024 UTF-8 bytes; fix that field and resend hub_readback_report");
+  } finally { f.close(); }
+});
+
+test("the read-back grant ends with the lifecycle, the reader's reviewer role and the report", async () => {
+  const f = await readbackFixture();
+  try {
+    const started = await f.tasks.specReadbackStart("user", f.task.id), reader = started.reader!;
+    expect(f.tasks.specReadbackGrant(f.task.id, f.task.created, reader)).toBeDefined();
+    expect(f.tasks.specReadbackGrant(f.task.id, f.task.created, "claude")).toBeUndefined();
+    delete f.roles[reader];
+    expect(f.tasks.specReadbackGrant(f.task.id, f.task.created, reader)).toBeUndefined();
+    f.roles[reader] = ["implementer"];
+    expect(f.tasks.specReadbackGrant(f.task.id, f.task.created, reader)).toBeUndefined();
+    f.roles[reader] = ["reviewer"];
+    expect(f.tasks.specReadbackGrant(f.task.id, f.task.created, reader)).toBeDefined();
+    f.config.mode = "off";
+    expect(f.tasks.specReadbackGrant(f.task.id, f.task.created, reader)).toBeUndefined();
+    f.config.mode = "advise";
+    expect(f.tasks.specReadbackGrant(f.task.id, f.task.created, reader)).toBeDefined();
+  } finally { f.close(); }
+});
+
+test("a grant lives only on the body it was filed for, and an unreadable edit time ends it", async () => {
+  const f = await readbackFixture();
+  try {
+    await f.tasks.specReadbackStart("user", f.task.id);
+    const grant = { repo: "fixture/readback", issue: 1658, lastEditedAt: EDIT.lastEditedAt };
+    const answer = (lastEditedAt: string | null) => async () => ({ code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 1658, lastEditedAt, updatedAt: EDIT.updatedAt } } } }) });
+    expect(await f.tasks.specReadbackFresh(grant, answer(EDIT.lastEditedAt))).toBe(true);
+    expect(await f.tasks.specReadbackFresh(grant, answer("2026-11-24T09:00:00Z"))).toBe(false);
+    expect(await f.tasks.specReadbackFresh(grant, async () => ({ code: 1, stdout: "" }))).toBe(false);
   } finally { f.close(); }
 });
 
@@ -216,9 +286,11 @@ test("status reads none, then unavailable, current and stale against the issue b
   const f = await readbackFixture();
   try {
     expect(f.tasks.readbackView(f.task, EDIT)).toEqual({ state: "none" });
-    expect(f.tasks.readbackView(f.task, undefined)).toEqual({ state: "unavailable" });
+    expect(f.tasks.readbackView(f.task, undefined)).toEqual({ state: "none" });
     const started = await f.tasks.specReadbackStart("user", f.task.id);
     expect(f.tasks.readbackView(f.task, EDIT)).toEqual({ state: "current" });
+    // A row read without an issue read reports unavailable only once it holds a request to compare.
+    expect(f.tasks.readbackView(f.task, undefined)).toEqual({ state: "unavailable" });
     await f.tasks.specReadbackReport(started.reader!, { ...report, task: f.task.id, undefined: [{ term: "receipt", where: "Storage" }] });
     expect(f.tasks.readbackView(f.task, EDIT)).toMatchObject({ state: "current", undefined: [{ term: "receipt", where: "Storage" }], missing_refs: [] });
     expect(f.tasks.readbackView(f.task, { lastEditedAt: "2026-11-24T09:00:00Z" })).toEqual({ state: "stale" });
@@ -226,6 +298,19 @@ test("status reads none, then unavailable, current and stale against the issue b
     f.board.update(f.task.id, "user", "private upgrade", { signals: ["pii"] });
     expect(f.tasks.readbackView(f.board.get(f.task.id)!, EDIT)).toEqual({ state: "private" });
     expect(readbackSummary({ state: "private" })).toContain("withheld");
+  } finally { f.close(); }
+});
+
+test("a status list makes no issue read, so a row compares against the accepted body instead of reporting unavailable", async () => {
+  const f = await readbackFixture();
+  try {
+    expect((await f.tasks.lifecycleStatus(f.task.id, false)).readback).toEqual({ state: "none" });
+    await f.tasks.specReadbackStart("user", f.task.id);
+    expect((await f.tasks.lifecycleStatus(f.task.id, false)).readback).toEqual({ state: "unavailable" });
+    f.tasks.acceptSpec("user", f.task.id, { repo: "fixture/readback", issue: 1658, edit: EDIT });
+    expect((await f.tasks.lifecycleStatus(f.task.id, false)).readback).toEqual({ state: "current" });
+    f.tasks.acceptSpec("user", f.task.id, { repo: "fixture/readback", issue: 1658, edit: { lastEditedAt: "2026-11-24T09:00:00Z", updatedAt: EDIT.updatedAt } });
+    expect((await f.tasks.lifecycleStatus(f.task.id, false)).readback).toEqual({ state: "stale" });
   } finally { f.close(); }
 });
 

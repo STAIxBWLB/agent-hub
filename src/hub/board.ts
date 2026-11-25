@@ -37,7 +37,7 @@ export type { SpecAck, SpecRef, SpecTaskReport } from "./specs-task.ts";
 import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
 import { parseSurveyFindings, parseSurveyVetDecisions, surveyArray, surveyObject, surveyPath, surveyText, surveyFindingId, surveyPass, type SurveyFinding, type SurveyVetDecision, SURVEY_FOCUS, SURVEY_LIMITS, type SurveyFocus } from "./advisor-survey.ts";
 import { parseConsideredEntry, type ConsideredEntry } from "./considered-findings.ts";
-import { parseSpecReadbackReport, type SpecReadbackReport } from "./spec-readback.ts";
+import { parseSpecReadbackReport, READBACK_STORE_BYTES, type SpecReadbackReport } from "./spec-readback.ts";
 
 export interface StoredSurvey { id: number; task: number; taskCreated: number; repo: string; ref: string; focus?: SurveyFocus; by: string; at: number; withheld?: true }
 export interface StoredSurveyFinding { finding: SurveyFinding; foundBy: string; foundAt: number; decision?: SurveyVetDecision; decisionBy?: string; decisionAt?: number }
@@ -61,9 +61,8 @@ function surveyCreateInput(input: unknown): Omit<StoredSurvey, "id"> {
   return { task: surveyInteger(row.task), taskCreated: surveyInteger(row.taskCreated, 0), repo: surveyText(row.repo, 1024), ref: row.ref,
     ...(row.focus === undefined ? {} : { focus: (typeof row.focus === "string" && (SURVEY_FOCUS as readonly string[]).includes(row.focus) ? row.focus as SurveyFocus : surveyInputFailure()) }), by: surveyText(row.by, 128), at: surveyInteger(row.at, 0), ...(row.withheld === true ? { withheld: true } : {}) };
 }
-/** #1658: a read-back row is the request plus, once sent, the reader's bounded report; never a verdict or a score. */
-const READBACK_STORE_BYTES = 64 * 1024;
 const readbackStamp = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 40 && !Number.isNaN(Date.parse(value));
+/** #1658: a read-back row is the request plus, once sent, the reader's bounded report, inside the bound the parser accepts; never a verdict or a score. */
 function readbackInput(input: unknown): Omit<StoredReadback, "id"> {
   const row = surveyObject(input, ["task", "taskCreated", "repo", "issue", "lastEditedAt", "updatedAt", "reader", "by", "at", "report", "missingRefs"]);
   if (!readbackStamp(row.updatedAt) || row.lastEditedAt !== null && !readbackStamp(row.lastEditedAt)
