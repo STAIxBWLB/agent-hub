@@ -474,6 +474,9 @@ export class AssignmentSupersededError extends Error {
 export const normPath = (p: string) => p.replace(/^(\.\/)+/, "").replace(/\/{2,}/g, "/").replace(/\/+$/, "") || ".";
 
 /** Same path, or one is a directory of the other; the project root (`.`) holds everything. */
+/** #1647: how many overlapping paths a parallel-sibling refusal names, so the text stays one line. */
+const PARALLEL_PATHS_NAMED = 5;
+
 export const samePlace = (a: string, b: string) => {
   const [x, y] = [normPath(a), normPath(b)];
   return x === "." || y === "." || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
@@ -3936,7 +3939,7 @@ export class Tasks {
   /** #1647: the optional reason a task was split off. Absent stays legal; anything outside the closed set is refused before any effect, naming the allowed values. */
   private proposalReason(value: unknown): TaskReason | undefined {
     if (value === undefined || value === null || value === "") return undefined;
-    if (typeof value !== "string" || !(TASK_REASONS as readonly string[]).includes(value)) throw new PreEffectToolRefusal(`reason must be one of ${TASK_REASONS.join(", ")}; omit it when no reason applies`);
+    if (typeof value !== "string" || !(TASK_REASONS as readonly string[]).includes(value)) throw new PreEffectToolRefusal(`reason must be one of ${TASK_REASONS.join(", ")}; omit it when no reason applies, then call hub_task_propose again`);
     return value as TaskReason;
   }
 
@@ -3954,7 +3957,7 @@ export class Tasks {
       if (other.reason !== "parallel" || isClosedTaskState(other.state) || other.history[0]?.by !== by || this.isPii(other)) continue;
       if ([...(other.deps ?? [])].sort((a, b) => a - b).join(",") !== key || this.repositories.scope(other.refs).key !== scope.key) continue;
       const shared = mine.filter(path => (other.refs.paths ?? []).some(theirs => samePlace(path, theirs)));
-      if (shared.length) throw new PreEffectToolRefusal(`parallel siblings must touch disjoint paths: "${title}" and task #${other.id} both touch ${shared.slice(0, 5).join(", ")}; give each unit its own paths, or drop reason parallel and keep the work as one task`);
+      if (shared.length) throw new PreEffectToolRefusal(`parallel siblings must touch disjoint paths: "${title}" and task #${other.id} both touch ${shared.slice(0, PARALLEL_PATHS_NAMED).join(", ")}; call hub_task_propose again with disjoint refs.paths, or without reason parallel, or keep the work as one task you own`);
     }
   }
 
