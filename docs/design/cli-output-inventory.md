@@ -296,8 +296,8 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/sdlc-output.ts:renderSdlcRelease | CLI | - | blank, grid, heading, moment, pair | 71 |
 | src/cli/sdlc-output.ts:renderSdlcMetrics | CLI | - | blank, grid, heading, moment, pair | 80 |
 | src/cli/sdlc-output.ts:renderSdlcCosts | CLI | - | blank, grid, heading, wrap | 37 |
-| src/cli/sdlc-output.ts:renderAuthorization | CLI | - | blank, heading, moment, pair | 44 |
-| src/cli/sdlc-output.ts:renderSdlcMerge | CLI | - | blank, heading, pair | 30 |
+| src/cli/sdlc-output.ts:renderAuthorization | CLI | Direct | LayoutReport, moment | 46 |
+| src/cli/sdlc-output.ts:renderSdlcMerge | CLI | Direct | LayoutReport | 36 |
 | src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |
 | src/cli/source-output.ts:renderSourceAdd | CLI | - | heading, pair | 49 |
 | src/cli/source-output.ts:renderSourceList | CLI | - | blank, grid, heading, moment, pair | 62 |
