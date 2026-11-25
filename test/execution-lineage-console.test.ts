@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import plugin, { createProvider } from "../src/ui/plugin.ts";
-import { DASHBOARD_VIEWS } from "../src/hub/ui.ts";
+import { DASHBOARD_VIEWS, renderDashboard } from "../src/hub/ui.ts";
 import type { Lifecycle, ProjectRecord } from "../src/hub/manager.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { renderExecutionLineage, validateLineageReply } from "../src/cli/lineage.ts";
@@ -69,6 +72,10 @@ describe("acon lineage provider port (#1220 T3)", () => {
   test("lineage reading executes nothing and adds no dashboard panel or action", async () => {
     const { provider, actions } = fixture();
     expect(plugin.manifest.panels.map((panel) => panel.id)).toEqual([...DASHBOARD_VIEWS, "guidance"]);
+    expect(plugin.manifest.capabilities).toMatchObject({ reads: ["lineage"] });
+    const tabs = [...renderDashboard().markup.matchAll(/data-view-target="([^"]+)"/g)].map((match) => match[1]);
+    expect(tabs.length).toBeGreaterThan(0);
+    expect(tabs).not.toContain("lineage");
     expect((plugin.manifest.capabilities?.actions ?? []).some((name) => name.startsWith("lineage"))).toBe(false);
     for (const query of [{ taskId: 7 }, { attemptId: attempt.id }, { root: task, task: { id: 7, created: 100 }, nodes: 5, edges: 2, bytes: 4096, cursor: "opaque_cursor" }]) {
       expect((await provider.snapshot({ after: 0, panel: "lineage", projectId: "p1", instanceId: "i1", ...query })).ok).toBe(true);
@@ -122,4 +129,52 @@ describe("acon lineage provider port (#1220 T3)", () => {
       expect(refused).not.toHaveProperty("lines");
     }
   });
+});
+
+test("acon 0.2.0 loads the lineage read declaration and renders its route refusal (#1632)", async () => {
+  const contract = import.meta.resolve("@staix/agent-console/contract");
+  const { version } = JSON.parse(readFileSync(new URL("../package.json", contract), "utf8"));
+  expect(version).toBe("0.2.0");
+  const { loadPlugins } = await import(new URL("./plugins.ts", contract).href);
+  const { startServer } = await import(new URL("./server.ts", contract).href);
+  const home = mkdtempSync(join(tmpdir(), "ahub-lineage-acon-"));
+  dirs.push(home);
+  const module = fileURLToPath(new URL("../src/ui/plugin.ts", import.meta.url));
+  const sha256 = createHash("sha256").update(readFileSync(module)).digest("hex");
+  const plugins = await loadPlugins({ dir: home, entries: [{ tool: "ahub", file: module, module, sha256, status: "verified" }] }, { home, log: () => {} });
+  expect(plugins[0]?.status).toBe("ready");
+  expect(plugins[0]?.manifest.capabilities).toMatchObject({ reads: ["lineage"] });
+  const acon = startServer({ home, plugins, pluginsDir: home, version, log: () => {} });
+  try {
+    const headers = { "Content-Type": "application/json", Origin: acon.origin };
+    const login = await fetch(acon.origin + "/session", { method: "POST", headers,
+      body: JSON.stringify({ ticket: new URL(acon.issue()).hash.slice(1) }) });
+    expect(login.status).toBe(200);
+    const cookie = login.headers.get("Set-Cookie")?.split(";")[0];
+    expect(cookie).toBeDefined();
+    await login.json();
+    const refusal = await fetch(acon.origin + "/p/ahub/snapshot", { method: "POST",
+      headers: { ...headers, Cookie: cookie! }, body: JSON.stringify({ panel: "lineage", projectId: "p1", instanceId: "i1", taskId: 7 }) });
+    const data = await refusal.json();
+    expect(refusal.status).toBe(400);
+    expect(data).toEqual({ ok: false, error: "unknown panel" });
+
+    // Exercise the pinned shell's actual failure renderer with the route response.
+    const shell = await (await fetch(acon.origin + "/shell.js")).text();
+    const from = shell.indexOf("async function pollPanel()");
+    const end = shell.indexOf("// ---------- actions and confirm", from);
+    expect(from).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(from);
+    const parts: string[] = [];
+    const banner = { hidden: true, replaceChildren: (...nodes: string[]) => parts.push(...nodes) };
+    const panel = { instance: {}, banner, gen: 0, cursor: 0, next: 0 };
+    await runInNewContext(shell.slice(from, end) + "\npollPanel()", {
+      state: { route: { area: "tool", tool: "ahub", panel: "lineage" }, panels: new Map([["ahub", panel]]) },
+      document: { visibilityState: "visible" }, toolById: () => ({ title: "agent-hub" }),
+      adaptivePollMs: () => 1000, post: async () => ({ status: refusal.status, data }),
+      icon: () => "", h: (_tag: string, node: { text: string }) => node.text, hashFor: () => "#system",
+    });
+    expect(banner.hidden).toBe(false);
+    expect(parts.join("")).toBe("agent-hub could not refresh. Details in System");
+  } finally { await acon.stop(); }
 });

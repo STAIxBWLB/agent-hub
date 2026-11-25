@@ -30,6 +30,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Gate the CLI output inventory: `scripts/check.sh` runs `bun scripts/cli-output-inventory.ts --check` with the once-only steps, so a help or renderer change that ages the dated snapshot fails the gate instead of surfacing at review. The step runs once per gate on each operating system, never once per shard. Refs #1654, hub task 1112.
 
+- Advertise the execution-lineage snapshot as a non-navigation acon read. Agent-console 0.3.x support is pending. Refs #1632, hub task 1123.
+
 ## 0.46.1
 
 - Resolve `@staix/agent-mem` 0.38.0 in `bun.lock` so the repository's tests and CI run on the version a fresh install resolves; the declared range `>=0.33.0 <1.0.0` is unchanged. The recovery package refuses a ranged `@staix/cli-output` pin with the output message again when agent-mem declares it. Refs #1664, hub task 1084.
