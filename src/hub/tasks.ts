@@ -8340,7 +8340,10 @@ export class Tasks {
     check();
     if (!edit) throw new PreEffectToolRefusal(`the issue's edit time could not be read; check gh authentication and retry ahub sdlc readback start ${task.id}`);
     const current = this.need(task.id, false, true);
-    if (current.created !== task.created || current.history.length !== task.history.length) throw new PreEffectToolRefusal(`task #${task.id} changed during the read-back read; retry ahub sdlc readback start ${task.id}`);
+    // #1658: the start reads the issue between the two reads of the task, so the refusal names which race it saw: a
+    // recreated incarnation (a row per incarnation) or a task that gained a history entry while the body was read.
+    if (current.created !== task.created) throw new PreEffectToolRefusal(`task #${task.id} was recreated while its spec issue was read, and a read-back belongs to one incarnation; retry ahub sdlc readback start ${task.id}`);
+    if (current.history.length !== task.history.length) throw new PreEffectToolRefusal(`task #${task.id} gained a history entry while its spec issue was read, so the read-back would be filed against a changed task; retry ahub sdlc readback start ${task.id}`);
     const known = this.d.board.readbackOfTask(current.id, current.created, issue, edit.lastEditedAt);
     if (known) return { task: current.id, repo, issue, state: known.report ? "reported" : "requested", readback: known.id, reader: known.reader };
     const proposer = current.history.find(entry => entry.event === "proposed" && entry.by !== HUB)?.by ?? current.owner ?? undefined;
@@ -8360,10 +8363,13 @@ export class Tasks {
       refusal ??= tried.refusals?.find(row => row.role === "reviewer" && row.peer === peer)?.reason;
     }
     if (!reader) {
-      const reason = refusal
-        ?? (readers.length ? "no eligible reader"
+      // Each answer names what is missing and the one command that changes it: an attached, available reviewer-role peer
+      // that is not the proposer and not a review-only instance.
+      const attach = `attach an available reviewer-role peer and retry ahub sdlc readback start ${current.id}`;
+      const reason = refusal ? `no eligible reader (${refusal}); ${attach}`
+        : readers.length ? `no eligible reader; ${attach}`
           : holders.length ? `every attached reviewer-role peer is a review-only instance, which reads no spec; attach an ordinary reviewer-role peer and retry ahub sdlc readback start ${current.id}`
-            : `no reviewer-role peer is attached and free to read; roster a reviewer-role peer and retry ahub sdlc readback start ${current.id}`);
+            : `no reviewer-role peer is attached and free to read; roster a reviewer-role peer and retry ahub sdlc readback start ${current.id}`;
       return { task: current.id, repo, issue, state: "unavailable", reason };
     }
     check();

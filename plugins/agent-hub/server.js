@@ -17338,11 +17338,42 @@ var init_considered_findings = __esm(() => {
   init_review_findings();
 });
 
+// src/hub/specs-config.ts
+var DEFAULT_SPECS_CONFIG;
+var init_specs_config = __esm(() => {
+  DEFAULT_SPECS_CONFIG = Object.freeze({
+    enabled: true,
+    review: "report",
+    roots: [],
+    stamps_file: ""
+  });
+});
+
+// src/hub/specs.ts
+var MAX_FRONTMATTER_BYTES, MAX_STAMPS_FILE_BYTES, MAX_COMMITTED_SPEC_BYTES, MAX_GIT_OUTPUT_BYTES, MAX_PARSED_BLOB_CACHE_BYTES, MAX_BLOB_BATCH_BYTES, LIST_KEYS, TYPES, STATUS, committedCandidates;
+var init_specs = __esm(() => {
+  init_git();
+  init_project();
+  init_specs_config();
+  init_specs_config();
+  MAX_FRONTMATTER_BYTES = 8 * 1024;
+  MAX_STAMPS_FILE_BYTES = 4 * 1024 * 1024;
+  MAX_COMMITTED_SPEC_BYTES = 4 * 1024 * 1024;
+  MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024;
+  MAX_PARSED_BLOB_CACHE_BYTES = 16 * 1024 * 1024;
+  MAX_BLOB_BATCH_BYTES = 8 * 1024 * 1024;
+  LIST_KEYS = new Set(["depends-on", "references", "implements", "covers", "tags", "paths"]);
+  TYPES = new Set(["goal", "architecture", "module", "submodule"]);
+  STATUS = new Set(["draft", "active", "deprecated"]);
+  committedCandidates = new Map;
+});
+
 // src/hub/spec-readback.ts
 var READBACK_REPORT_BYTES, READBACK_STORE_BYTES;
 var init_spec_readback = __esm(() => {
   init_child_process();
   init_git();
+  init_specs();
   init_advisor_survey();
   READBACK_REPORT_BYTES = 320 * 1024;
   READBACK_STORE_BYTES = READBACK_REPORT_BYTES + 128 * 1024;
@@ -17714,11 +17745,11 @@ var init_stage_fallback = __esm(() => {
 });
 
 // src/models/route/config.ts
-var TYPES;
+var TYPES2;
 var init_config2 = __esm(() => {
   init_adec();
   init_stage_fallback();
-  TYPES = new Set(["stage", "plan_execute", "advisor", "escalation", "decision"]);
+  TYPES2 = new Set(["stage", "plan_execute", "advisor", "escalation", "decision"]);
 });
 
 // src/hub/routing.ts
@@ -32296,16 +32327,7 @@ init_git();
 // src/hub/tasks.ts
 init_tool_refusal();
 init_review_brief();
-
-// src/hub/specs-config.ts
-var DEFAULT_SPECS_CONFIG = Object.freeze({
-  enabled: true,
-  review: "report",
-  roots: [],
-  stamps_file: ""
-});
-
-// src/hub/tasks.ts
+init_specs_config();
 init_registry();
 init_registry();
 // src/hub/task-sweep.ts

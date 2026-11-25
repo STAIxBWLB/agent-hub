@@ -220,6 +220,39 @@ test("a review-only instance is never asked to read, because its port publishes 
   } finally { only.close(); }
 });
 
+test("a rostered reader that routing refuses answers with that reason and the next step", async () => {
+  const f = await readbackFixture({ reviewers: [] });
+  try {
+    // A roster entry with no attached session is routing's `not-attached` refusal, which on its own says nothing to do.
+    f.roles.pi = ["reviewer"];
+    const result = await f.tasks.specReadbackStart("user", f.task.id);
+    expect(result.state).toBe("unavailable");
+    expect(result.reason).toBe(`no eligible reader (not attached); attach an available reviewer-role peer and retry ahub sdlc readback start ${f.task.id}`);
+    expect(f.board.readbackLatest(f.task.id, f.task.created)).toBeUndefined();
+  } finally { f.close(); }
+});
+
+test("a second read for the same task, issue and body is refused instead of overwriting the row that stands", () => {
+  const f = fixture();
+  try {
+    const id = f.board.readbackCreate(f.request);
+    // An issue comment moves `updatedAt` while `lastEditedAt` stands: the same key, a different read.
+    expect(() => f.board.readbackCreate({ ...f.request, updatedAt: "2026-11-24T09:00:00Z" })).toThrow(`read-back ${id} already holds this task, issue and body for a different read; run ahub sdlc readback show ${f.task.id} for the request that stands`);
+    expect(f.board.readback(id)).toMatchObject({ id, updatedAt: f.request.updatedAt, reader: f.request.reader });
+  } finally { f.close(); }
+});
+
+test("a task that moves while its issue is read is refused by the race it saw, each naming the retry", async () => {
+  const f = await readbackFixture();
+  try {
+    // The issue read is the await between the two task reads, so a history entry added there is the race the start sees.
+    const started = f.tasks.specReadbackStart("user", f.task.id, undefined);
+    f.board.update(f.task.id, "user", "note", {});
+    await expect(started).rejects.toThrow(new RegExp(`task #${f.task.id} gained a history entry while its spec issue was read.*retry ahub sdlc readback start ${f.task.id}`));
+    expect(f.board.readbackLatest(f.task.id, f.task.created)).toBeUndefined();
+  } finally { f.close(); }
+});
+
 test("a show is for the person, the conductor that started it, the task's own holders and the reader", async () => {
   const f = await readbackFixture();
   try {

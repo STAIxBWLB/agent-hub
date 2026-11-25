@@ -1,5 +1,6 @@
 import { childEnv } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
+import { GIT_SAFE_OPTIONS } from "./specs.ts";
 import { surveyArray, surveyInputAt, surveyObject, surveyPath, surveyText } from "./advisor-survey.ts";
 
 const TEXT_BYTES = 1024;
@@ -114,8 +115,7 @@ export function readbackAcceptField(view: ReadbackView | undefined, task: number
   return view === undefined ? {} : { readback: readbackLine(view, task) };
 }
 
-const READBACK_GIT = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat", "-c", "credential.helper=", "-c", "core.askpass="];
-const readbackGit = (cwd: string, args: string[]) => hubGitSync(["-C", cwd, ...READBACK_GIT, ...args], { encoding: "utf8", env: childEnv(process.env), maxBuffer: 8 * 1024 * 1024, timeout: 5000 });
+const readbackGit = (cwd: string, args: string[]) => hubGitSync(["-C", cwd, ...GIT_SAFE_OPTIONS, ...args], { encoding: "utf8", env: childEnv(process.env), maxBuffer: 8 * 1024 * 1024, timeout: 5000 });
 
 /**
  * #1658 T4: the paths the issue names that are absent from the default branch head. Git only, no worktree read and no

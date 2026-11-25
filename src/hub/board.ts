@@ -52,6 +52,7 @@ export interface StoredRejectedFinding { id: number; entry: ConsideredEntry; rec
 export interface StoredReadback { id: number; task: number; taskCreated: number; repo: string; issue: number; lastEditedAt: string | null; updatedAt: string; reader: string; by: string; at: number; report?: SpecReadbackReport; missingRefs?: string[] }
 const SURVEY_STORE_LIMIT = 1000, SURVEY_STORE_BYTES = 64 * 1024;
 const surveyStorageFailure = (): never => { throw new Error("survey storage invalid; stop the hub and restore a trusted hub.db backup before retrying"); };
+const readbackStorageFailure = (): never => { throw new Error("spec read-back storage invalid; stop the hub and restore a trusted hub.db backup before retrying"); };
 const surveyInputFailure = (): never => { throw new Error("invalid survey storage input or changed binding"); };
 const surveyInteger = (value: unknown, min = 1): number => typeof value === "number" && Number.isSafeInteger(value) && value >= min ? value : surveyInputFailure();
 const surveyHash = (body: string) => createHash("sha256").update(body).digest("hex");
@@ -1478,7 +1479,9 @@ export class Board {
       const known = this.readbackOfTask(row.task, row.taskCreated, row.issue, row.lastEditedAt);
       if (known) {
         const identity = (value: Omit<StoredReadback, "id">) => JSON.stringify([value.task, value.taskCreated, value.repo, value.issue, value.lastEditedAt, value.updatedAt, value.reader, value.by]);
-        if (identity(known) !== identity(row)) return surveyInputFailure();
+        // A start that raced another start, or an issue comment that moved `updatedAt` under the same `lastEditedAt`, finds
+        // the earlier row here. It is never overwritten: the row stands and the caller reads it.
+        if (identity(known) !== identity(row)) throw new Error(`read-back ${known.id} already holds this task, issue and body for a different read; run ahub sdlc readback show ${row.task} for the request that stands`);
         return known.id;
       }
       const body = JSON.stringify(row);
@@ -1675,6 +1678,22 @@ export class Board {
 
   hasSurveyState(): boolean {
     return !!(this.db.query("SELECT EXISTS(SELECT 1 FROM advisor_surveys UNION ALL SELECT 1 FROM advisor_survey_findings UNION ALL SELECT 1 FROM considered_findings) AS present").get() as { present: number }).present;
+  }
+  hasSpecReadbacksState(): boolean {
+    return !!(this.db.query("SELECT EXISTS(SELECT 1 FROM spec_readbacks) AS present").get() as { present: number }).present;
+  }
+  /** Stream validated read-back rows into recovery proof; output never carries issue text or a report body. */
+  specReadbackIntegrity(): { readbacks: number; digest: string } {
+    try { return this.db.transaction(() => {
+      const digest = createHash("sha256"); let readbacks = 0;
+      for (const key of this.db.query("SELECT id FROM spec_readbacks ORDER BY id").iterate() as Iterable<{ id: number }>) {
+        const row = this.readback(key.id); if (!row) return readbackStorageFailure();
+        digest.update(JSON.stringify({ readback: row })); readbacks++;
+      }
+      const count = this.db.query("SELECT COUNT(*) AS count FROM spec_readbacks").get() as { count: number };
+      if (count.count !== readbacks) return readbackStorageFailure();
+      return { readbacks, digest: digest.digest("hex") };
+    })(); } catch { return readbackStorageFailure(); }
   }
   /** Stream bounded validated private rows into recovery proof; output never includes finding or ledger text. */
   surveyIntegrity(): { surveys: number; findings: number; considered: number; digest: string } {
