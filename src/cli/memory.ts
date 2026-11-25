@@ -158,6 +158,9 @@ async function memoryReviewCommand(args: string[], cwd: string, person: boolean)
       action: string; enabled?: boolean; cancelled?: number; error?: string;
       review?: { every?: string; max_notes?: number; projects?: string[]; max_tokens_run?: number; max_tokens_week?: number };
       schedule?: { state: string; next: number; last?: number; task?: number; error?: string; zone?: string };
+      /** #1329 part 2: the counted spend of the last card (`run`) and of this week's reviews, present while a card is open. */
+      spend?: { run: number; week: number };
+      task?: number;
     };
     const review = data.review ?? {}, lines = [`memory review: ${data.enabled ? "on" : "off"}`];
     if (data.cancelled !== undefined) lines.push(`cancelled the open review task #${data.cancelled}`);
@@ -170,7 +173,9 @@ async function memoryReviewCommand(args: string[], cwd: string, person: boolean)
     lines.push(schedule
       ? `schedule: ${schedule.state}, next ${scheduleWhen(schedule, schedule.next)}${schedule.task !== undefined ? `, last task #${schedule.task}` : ""}${schedule.error ? `, last error: ${schedule.error}` : ""}`
       : "schedule: not running here (the switch is off, or this project is not one it selects)");
-    lines.push("spend: unknown (the hub counts no tokens for a review turn yet, so the caps are declared and the stop that enforces them lands with #1329 part 2)");
+    // #1329 part 2: the spend is the hub's own counted tokens, so an open card reports it; with no card there is nothing spent.
+    lines.push(data.spend ? `spend: ${data.spend.run} of ${review.max_tokens_run ?? "unset"} this run, ${data.spend.week} of ${review.max_tokens_week ?? "unset"} this week (task #${data.task})`
+      : `spend: nothing counted for an open review card (${review.max_tokens_run ?? "unset"} per run, ${review.max_tokens_week ?? "unset"} per week)`);
     return lines.join("\n");
   } finally { hub.close(); }
 }

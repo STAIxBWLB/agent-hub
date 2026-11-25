@@ -95,6 +95,7 @@ import { matchesPolicy, matchesPolicyLexically, policyRealPath, insideRoot } fro
 import { isDenied } from "../local/deny.ts";
 import { foldSegment, isHubWritePath } from "./permission-mode.ts";
 import { correctionInput, resolveVisibleMemory } from "./memory-candidates.ts";
+import { memoryReviewCandidate, memoryReviewTask } from "./memory-review.ts";
 import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { createMemorySyncPolicy } from "./memory-sync-policy.ts";
@@ -7688,6 +7689,20 @@ export class Tasks {
   /** Whether a scheduled run may write now: the same holds as every host writer (stopping or recovering, held by the daemon, a storage error). */
   schedulesHeld(): boolean { return !!this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || !!this.d.bus.storageError; }
 
+  /**
+   * #1329 part 2 (AC3): the memory-review card a call runs under. A card scopes its owner's turn on that card and nothing
+   * else: the reviewer reviews it rather than running it, and the owner's work on another task keeps every tool. The turn's
+   * own attribution names the card (`Tasks.ownerTurnTasks` excludes a `review` card), so the caller passes that task id
+   * instead of the peer's identity. The card is the hub's own (schedule marker in its detail), so a peer cannot widen its
+   * scope by writing one, and a closed or not-yet-started card scopes nothing.
+   */
+  reviewCardFor(by: PeerId, taskId: number | undefined): Task | undefined {
+    if (by === HUB || by === USER || taskId === undefined) return undefined;
+    const card = this.d.board.get(taskId);
+    if (!card || card.owner !== by || !memoryReviewTask(card)) return undefined;
+    return card.state === "in_progress" || card.state === "changes_requested" ? card : undefined;
+  }
+
   private schedulesRunning = false;
   /** 1 while a schedules pass is running (its PII screen and triage are awaited), so a recovery commit waits for it like it waits for `checksPending` and `autoPullsPending`: a run mid-admission would write after the commit's digest. */
   schedulesPending = (): number => (this.schedulesRunning ? 1 : 0);
@@ -11518,7 +11533,7 @@ export class Tasks {
    * #802: what `remember` answered and whether it stored anything, so a caller never decides that from the wording. `saved` is a note in shared memory, `candidate` one held for a person's
    * review (stored, not yet evidence), `not_saved` a note nothing took. A refusal still throws and never reaches here.
    */
-  async rememberOutcome(by: PeerId, input: RememberInput): Promise<{ message: string; outcome: "saved" | "candidate" | "not_saved" }> {
+  async rememberOutcome(by: PeerId, input: RememberInput, review?: Task): Promise<{ message: string; outcome: "saved" | "candidate" | "not_saved" }> {
     const requestCheck = this.requestCheck(by);
     const text = composeRememberText(input);
     const task = input.task !== undefined ? this.d.board.get(Number(input.task)) : undefined;
@@ -11540,6 +11555,15 @@ export class Tasks {
     if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: shared memory excludes private data");
     requestCheck();
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
+    // #1329 part 2 (AC4): a memory review proposes and never writes. The caller passes the card only for a call in the
+    // owner's turn on that card, so a note filed on any other task is an ordinary note; one filed in the review's turn is a
+    // candidate attributed to the card and to the peer that wrote it.
+    if (review) {
+      if (!this.d.candidates || !this.d.store) return { message: "memory review proposals need the candidate sidecar, which is unavailable; nothing was saved", outcome: "not_saved" };
+      const proposal = memoryReviewCandidate({ text, ...(title ? { title } : {}), noteKind: kind }, review.id, by);
+      const id = this.d.candidates.put({ project: this.d.store.project, ...proposal.input }, "public", proposal.origin);
+      return { message: `candidate:${id}; a memory review proposes only, and a person accepts it with amem review; task #${review.id} changed no note`, outcome: "candidate" };
+    }
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
     if (native && "refused" in native) throw new PreEffectToolRefusal(`${native.refused}; save it with horizon "short" or correct the machine/repository privacy policy, then retry`);
     if (task && this.d.memory) this.markMemoryReference(task, by);

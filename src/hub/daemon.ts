@@ -121,7 +121,7 @@ import { MODEL_COOLDOWN_FAILURES_SETTING, MODEL_COOLDOWN_SETTING, MODEL_COOLDOWN
 import { ACP_TOOL_CEILING_SETTING, ACP_ACTIVITY_BATCH_SETTING, JCODE_STEER_TIMEOUT_SETTING, adapterOperationalReaders, type AdapterTimingConfig } from "./operational-settings.ts";
 import { BUS_ACCEPTED_SETTLE_MS_SETTING, BUS_DIGEST_MAX_SETTING, BUS_MAX_ATTEMPTS_SETTING, BUS_NOTES_KEPT_SETTING, BUS_PULL_BUDGET_BYTES_SETTING, BUS_TERMINAL_HISTORY_LIMIT_SETTING, busOperationalReaders, RECOVERY_CONTROL_TIMEOUT_SETTING, RECOVERY_RECONNECT_WAIT_SETTING, RECOVERY_SHUTDOWN_WAIT_SETTING, RECOVERY_TERMINAL_IDLE_WAIT_SETTING, RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING } from "./operational-settings.ts";
 import { foldersConfig, scheduleKeyOf, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
-import { MEMORY_REVIEW_DEFAULTS, MEMORY_REVIEW_SCHEDULE_ID, memoryReviewConfig, memoryReviewEntry, type MemoryReviewConfig } from "./memory-review.ts";
+import { MEMORY_REVIEW_DEFAULTS, MEMORY_REVIEW_SCHEDULE_ID, memoryReviewConfig, memoryReviewCountLine, memoryReviewEntry, memoryReviewScope, memoryReviewTask, reviewBudgetNote, reviewBudgetStop, reviewCheckpointRequest, type MemoryReviewConfig, type ReviewSpend } from "./memory-review.ts";
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import { QuestionStore, QUESTION_SURFACES, questionView } from "./questions.ts";
 import { RunTracker, outcomeOf, settleVerdict, type Run } from "./completions.ts";
@@ -4319,6 +4319,54 @@ export async function startDaemon(opts: DaemonOptions) {
   // #683 U2: events.jsonl folded into hub.db, a bounded pass at a time, so `usage` never rescans the log.
   const usageRollup = new UsageRollup(join(opts.stateDir, "hub.db"), join(opts.stateDir, "events.jsonl"));
   startupCleanup.push(() => usageRollup.close());
+  // #1329 part 2 (AC5, report): one memory-review card's counted spend and per-hub-run counts. The spend is read from the
+  // hub's own roll-up, so it is what the hub counted, never an estimate; the counts are what this daemon observed on the
+  // card's turns (memory entries read, proposals filed) and are written to the board as counts only when the card is done.
+  const reviewCounts = new Map<number, { notes: number; corrections: number; remembered: number }>();
+  const REVIEW_WEEK_MS = 7 * 86_400_000;
+  const reviewCount = (task: number, field: "notes" | "corrections" | "remembered", by = 1): void => {
+    const row = reviewCounts.get(task) ?? { notes: 0, corrections: 0, remembered: 0 };
+    row[field] += by; reviewCounts.set(task, row);
+  };
+  const reviewCountedTokens = (ids: readonly number[]): number => {
+    if (!ids.length) return 0;
+    pollUsageRollup();
+    const wanted = new Set(ids.map(String));
+    return usageRollup.query({ by: "task" }).rows.filter(row => wanted.has(row.key)).reduce((sum, row) => sum + (row.counted.value ?? 0), 0);
+  };
+  const reviewSpend = (card: Task): ReviewSpend => {
+    const week = board.list().filter(task => memoryReviewTask(task) && task.created >= Date.now() - REVIEW_WEEK_MS).map(task => task.id);
+    return { run: reviewCountedTokens([card.id]), week: reviewCountedTokens(week) };
+  };
+  const reviewCountLine = (card: Task): string => memoryReviewCountLine({ ...(reviewCounts.get(card.id) ?? { notes: 0, corrections: 0, remembered: 0 }), tokens: reviewCountedTokens([card.id]) });
+  /**
+   * #1329 AC3: the review card the caller's current turn is bound to. The turn's own attribution names it: the card is
+   * delivered to its owner, `Tasks.ownerTurnTasks` excludes a `review` card, and a call made outside that turn - the
+   * reviewer's, or the owner's work on another task - is not in the review's scope.
+   */
+  const reviewTurnCard = (by: PeerId): Task | undefined => tasks.reviewCardFor(by, turns.get(by)?.attribution.task);
+  /**
+   * The stop itself: a counted spend at either cap asks the owner for one checkpoint and then escalates the card with reason
+   * `budget`, through the ordinary escalation path, so the board records who moved it and why. Each card stops once: the stop
+   * is read from the card's own history, so it survives a daemon restart and a second turn cannot escalate it again.
+   */
+  const reviewBudgetAfterTurn = async (peer: PeerId, taskIds: readonly number[]): Promise<void> => {
+    const caps = config.memory.review;
+    if (caps?.enabled !== true || !taskIds.length) return;
+    // Only the run's own owner: a reviewer's turn that names the card spends the reviewer's tokens, not the review's.
+    const cards = [...new Set(taskIds)].map(id => board.get(id)).filter((task): task is Task => !!task && task.owner === peer && memoryReviewTask(task) && !isClosedTaskState(task.state));
+    if (!cards.length) return;
+    for (const card of cards) {
+      if (card.history.some(entry => entry.event === "escalated" && entry.reason === "budget")) continue;
+      const spend = reviewSpend(card), stop = reviewBudgetStop(spend, caps);
+      if (!stop) continue;
+      if (card.owner) bus.publish(newEnvelope(HUB, reviewCheckpointRequest(card.id, stop), { to: [card.owner], kind: "task", priority: "important", refs: { task: String(card.id) } }));
+      try { await tasks.escalate(HUB, card.id, reviewBudgetNote(card.id, stop, spend), "budget"); }
+      catch (error) { if (!(error instanceof AssignmentUndeliveredError)) notify(`memory review task #${card.id} reached its ${stop.cap} token cap but could not be escalated; inspect it with ahub task show`); return; }
+    }
+  };
+  /** One advisory line for the stop that runs after a turn; it never fails the turn. */
+  const reviewBudgetFailure = (error: Error): void => { log(`memory review budget: ${error.message.slice(0, 120)}`); };
   // #1513 AC2: one window view feeds the `budget` reply, the dashboard snapshot and therefore `ahub budget` and the
   // console, so the three cannot disagree. The burn series is hourly and an answer is kept for a minute per reading:
   // the page polls every second and must not query the roll-up that often.
@@ -6123,6 +6171,13 @@ export async function startDaemon(opts: DaemonOptions) {
       if (by !== USER && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("bounded task tools unavailable during a PII turn");
     }
     if (op === "hub_specs" && (piiTurn || turns.get(by)?.private || contextPii(by))) throw new PreEffectToolRefusal("spec inspection unavailable during a private turn");
+    // #1329 part 2 (AC3): while a turn is bound to a memory-review card its owner holds, the card's tool scope is enforced
+    // here, on every call, before anything is written. The scope is a name rule in `memory-review.ts`; this only decides
+    // whether this call runs in the review's turn, and an ordinary turn resolves no card at all.
+    if (by !== USER) {
+      const reviewCard = reviewTurnCard(by), refused = reviewCard && memoryReviewScope(op);
+      if (reviewCard && refused) throw new PreEffectToolRefusal(`task #${reviewCard.id}: ${refused}; read the card with ahub task show ${reviewCard.id}, and run that work in a turn outside this review`);
+    }
     if (MEMORY_READ_TOOLS.has(op)) validateMemoryRead(op, a);
     if (op === "hub_memory_correct") correctionInput(a);
     if (op === "hub_task_propose" && by !== USER && (piiTurn || turns.get(by)?.private)) {
@@ -6187,9 +6242,19 @@ export async function startDaemon(opts: DaemonOptions) {
       const code = symbolStarts.length ? await memoryCode(symbolStarts, valid).catch(() => unavailableMemoryCodeOverlay()) : undefined;
       if (!valid()) throw new PreEffectToolRefusal("memory read unavailable");
       checkMemory();
-      return memoryRead(memoryStore, memoryProject, screenMemory, op, a, staleness(), code ? currentMemoryCode(code) : undefined);
+      const read = memoryRead(memoryStore, memoryProject, screenMemory, op, a, staleness(), code ? currentMemoryCode(code) : undefined);
+      // #1329: a review's done report counts the notes it checked, so a successful read on its card is counted here.
+      const card = op === "hub_memory_show" ? (Array.isArray(a.ids) ? reviewTurnCard(by) : undefined) : undefined;
+      if (card) reviewCount(card.id, "notes", (a.ids as unknown[]).length);
+      return read;
     }
-    if (op === "hub_memory_correct") { need("memory_correct", "propose memory corrections"); return tasks.correct(by, a); }
+    if (op === "hub_memory_correct") {
+      need("memory_correct", "propose memory corrections");
+      const candidate = await tasks.correct(by, a);
+      const card = reviewTurnCard(by);
+      if (card) reviewCount(card.id, "corrections");
+      return candidate;
+    }
     if (op === "hub_remember") need("remember", "save notes to shared memory");
     if (CAPABILITY_TOOLS.has(op)) {
       // #445 C1: both calls carry a peer's words (a description, a name), so neither runs in a PII turn or for a peer holding PII, and neither reaches memory.
@@ -6524,6 +6589,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const doneLine = by === USER ? tasks.resultLine(t, by) : line(t);
         const result = tasks.isChecking(t.id) ? `${doneLine}; its check is queued or running, and the result comes as a task message` : doneLine;
         const specReport = by === USER ? "" : tasks.specReportText(t, by);
+        // #1329 (report): a memory review's completion carries counts only, on the board and in the answer that reaches its
+        // reviewer; no note text, no reviewed line. Counts this hub run did not observe read as unknown, never as zero.
+        if (by !== USER && memoryReviewTask(t) && !tasks.isPii(t)) {
+          const counts = reviewCountLine(t);
+          board.update(t.id, HUB, "review counts", {}, counts);
+          return [result, counts, specReport, extra].filter(Boolean).join("\n");
+        }
         return [result, specReport, extra].filter(Boolean).join("\n");
       }
       case "hub_sdlc_record":
@@ -6540,7 +6612,10 @@ export async function startDaemon(opts: DaemonOptions) {
           : line(reviewed);
       }
       case "hub_remember": {
-        const { message: saved, outcome } = await tasks.rememberOutcome(by, a);
+        const reviewCard = reviewTurnCard(by);
+        const { message: saved, outcome } = await tasks.rememberOutcome(by, a, reviewCard);
+        // #1329 AC4: on a review card a note is a proposal, and the done report counts it by kind.
+        if (reviewCard && outcome === "candidate") reviewCount(reviewCard.id, "remembered");
         // #1279: a saved note that names another entry cites it. `tasks.remember` already refused a PII task, a private path and a secret, so only a note it saved gets here.
         // #802: the structured outcome decides, never the reply wording. Only `not_saved` skips the citation: a candidate note held for a person's review was cited under the old wording test too, and stays so.
         if (!piiTurn && !reviewTurn && typeof a.text === "string" && a.text && outcome !== "not_saved") {
@@ -6698,7 +6773,12 @@ export async function startDaemon(opts: DaemonOptions) {
         const action = a.action;
         if (action === "status") {
           const view = reviewView();
-          return JSON.stringify({ action: "status", enabled: config.memory.review?.enabled === true, review: config.memory.review ?? MEMORY_REVIEW_DEFAULTS, ...(view ? { schedule: view } : {}) });
+          // #1329 AC5: the spend is the hub's own counted tokens for the last card and, when one is open, for this week.
+          const open = tasks.openScheduled().get(MEMORY_REVIEW_SCHEDULE_ID);
+          const card = open === undefined ? undefined : board.get(open);
+          const spend = card ? reviewSpend(card) : undefined;
+          return JSON.stringify({ action: "status", enabled: config.memory.review?.enabled === true, review: config.memory.review ?? MEMORY_REVIEW_DEFAULTS,
+            ...(spend ? { spend, ...(card ? { task: card.id } : {}) } : {}), ...(view ? { schedule: view } : {}) });
         }
         if (action !== "on" && action !== "off") throw new PreEffectToolRefusal("memory review takes on, off or status; ahub memory review status shows the switch");
         const def = settingDef("memory.review.enabled");
@@ -8472,6 +8552,12 @@ export async function startDaemon(opts: DaemonOptions) {
         const nativeFactsTurn = nativeHookLaunches.current(e.peer) !== undefined && bus.peers.get(e.peer)?.pullOnly === true;
         const edits = turnEditsFor(e.peer, open, files); // Discard the tally even when a native completion is unconfirmed.
         if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}), ...noteObservedModel(e.peer, observedTurnModel(e.peer)), ...edits });
+        // #1329 AC5: the review's counted spend is checked after the turn that spent it. Only a card among this turn's tasks
+        // reaches the stop, so an ordinary turn costs one lookup of the two live board states.
+        if (open.tokens) {
+          const reviewIds = [...new Set([...open.writeTasks.map(binding => binding.id), ...(open.attribution.task !== undefined ? [open.attribution.task] : [])])];
+          void reviewBudgetAfterTurn(e.peer, reviewIds).catch(reviewBudgetFailure);
+        }
         if (!nativeFactsTurn && definitionOf(e.peer)?.turnEnd !== "native-hook") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());
