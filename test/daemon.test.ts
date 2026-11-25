@@ -144,6 +144,12 @@ async function hub(extra: { kimiHome?: string; unattended?: boolean; memoryUrl?:
   return { stateDir, daemon, console_, events, pushes };
 }
 
+// #1260: the helper's 200 ms seam is for the cases that assert expiry. A case that reads an approval across a
+// dashboard round trip needs the product's own floor instead (approvals.timeout_s 30-3600, default 120): the
+// request-to-second-snapshot window measured 42 ms here, and a loaded macOS shard whose run took 1.0 s against
+// 0.36 s on a quiet one outlived the seam, so the request expired and the next snapshot had nothing to read.
+const PENDING_APPROVAL_MS = 30_000;
+
 async function dashboardClient(console_: ControlClient, settings = false) {
   const opened = await console_.request({ t: "ui", ...(settings ? { settings: true } : {}) });
   expect(opened.ok).toBe(true);
@@ -1216,7 +1222,7 @@ test("dashboard is lazy, console-only, closes with daemon and keeps the control 
 });
 
 test("dashboard snapshots, allow/deny approvals, task actions, pauses and restricted actions work end to end", async () => {
-  const { console_, pushes, events, stateDir } = await hub();
+  const { console_, pushes, events, stateDir } = await hub({ permissionTimeoutMs: PENDING_APPROVAL_MS });
   const ui = await dashboardClient(console_);
   const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
   cleanup.push(() => claude.close());
@@ -1268,7 +1274,9 @@ test("dashboard hides local permission contents, refuses allow and can deny", as
   cleanup.push(model.stop);
   process.env.OMNIROUTE_API_KEY = "k";
   cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
-  const { console_, pushes } = await hub({ modelUrl: model.url });
+  // #1260: this case reads the approval again from a second session, so the request has to outlive two
+  // snapshot round trips.
+  const { console_, pushes } = await hub({ modelUrl: model.url, permissionTimeoutMs: PENDING_APPROVAL_MS });
   const ui = await dashboardClient(console_);
   await console_.request({ t: "start", peer: "local", args: { model: "vllm/test" } });
   await console_.request({ t: "send", to: ["local"], body: "write a file" });
