@@ -510,7 +510,9 @@ export function assign(
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     const deny = (code: RoutingRefusalCode, reason: string): string => { refusals.set(`${role}:${peer}`, { peer, role, code, reason }); return reason; };
     if (isRemotePeerId(peer)) return deny("policy", "remote peers cannot hold local roles");
-    const ceiling = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.allowedRoles;
+    const definition = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances);
+    if (definition?.start.daemonPort === "configured-print") return deny("policy", "print peers return advisory answers and cannot own tasks or submit verdicts");
+    const ceiling = definition?.routing?.allowedRoles;
     const requiredRole = role === "reviewer" ? "reviewer" : ownerRoleOfClass(task.class);
     if (ceiling && !ceiling.includes(requiredRole)) return deny("policy", "adapter role ceiling excludes this assignment");
     const unavailable = role === "reviewer" ? (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.reviewer?.unavailable : undefined;

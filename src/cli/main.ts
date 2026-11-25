@@ -223,7 +223,7 @@ function localDeclarations(): { scope: Pick<InstanceRoleConfig, "instances" | "c
   catch (error) { return { scope: { catalog: createProjectAdapterCatalog() }, error: startupDiagnostic(error) }; }
 }
 const projectCatalog = peerConfig.catalog;
-const configuredCommand = !definitionOf(given) && (projectCatalog.definitionOf(given)?.permission.genericAcp !== undefined || peerConfig.declaredExternalInstances?.some(row => row.kind === given) === true);
+const configuredCommand = !definitionOf(given) && (projectCatalog.definitionOf(given)?.permission.genericAcp !== undefined || projectCatalog.definitionOf(given)?.start.daemonPort === "configured-print" || peerConfig.declaredExternalInstances?.some(row => row.kind === given) === true);
 const unboundCaller = detectCliIdentity(process.env);
 const markerNeedsDeclaration = unboundCaller.role === "invalid" && unboundCaller.reason === "AGENTHUB_PEER_ID conflicts with native agent marker"
   && process.env.AGENTHUB_PEER_ID !== undefined && !definitionOf(process.env.AGENTHUB_PEER_ID);
@@ -397,11 +397,11 @@ function missingTaskText(text: string): string | undefined {
   try { const value: unknown = JSON.parse(text); return typeof value === "string" && /^no task #\d+$/.test(value) ? value : undefined; } catch { return undefined; }
 }
 /** A hub tool answers JSON text. Text that does not parse is printed as it came: a renderer never sees it, so it cannot read as an empty report. */
-function showToolText(render: (data: any, columns?: number, now?: number) => Span[][], text: string, present: ReturnType<typeof outputOptions>): void {
+function showToolText(render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][], text: string, present: ReturnType<typeof outputOptions>): void {
   let data: unknown;
   try { data = JSON.parse(text); } catch { return console.log(text); }
   if (present.json) return console.log(text);
-  printOutput(render(data, present.columns, Date.now()), present.color);
+  printOutput(render(data, present.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), present.color);
 }
 const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release", "audit", "configure", "survey"];
 function sdlcOperands(): string[] { return SDLC_READ.includes(args[0] ?? "") ? outputArguments() : args; }
@@ -1110,7 +1110,9 @@ const commands: Record<string, () => Promise<void> | void> = {
   help: () => {
     const color = resolveColor(undefined, streamEnv(!!process.stdout.isTTY), "ahub") === true;
     const topic = asksHelp(args[0]) ? undefined : args[0];
-    const text = topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.permission.genericAcp !== undefined
+    const text = topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.start.daemonPort === "configured-print"
+      ? `ahub ${topic} [--mode headless] [--print-command | --dry-run]\nConfigured print runs one sandboxed process per public advisory request. Declare it in untracked .agenthub/config.local.json, restart the hub, then enable roster.${topic}.`
+      : topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.permission.genericAcp !== undefined
       ? configuredAcpHelp(topic) : renderHelp(process.stdout.columns ?? 80, color, topic, undefined, asciiMarkers(process.env, args.includes("--ascii")));
     if (!text) fail(`unknown command "${topic}"; run ahub help`);
     console.log(text);
@@ -1765,7 +1767,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const split = splitPresentation(args, { edges: true }), operands = split.operands;
     const [sub, id, revision, value, ...reason] = operands;
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
-    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
+    const shown = (render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
     if (sub === "list" && outputArguments().length === 1) {
       // #399: a table by default; --json prints the hub's listing unchanged, and a refusal is printed as it came.
       const options = outputOptions(), raw = await taskOp("hub_backlog_list", {});
@@ -1780,24 +1782,24 @@ const commands: Record<string, () => Promise<void> | void> = {
       // #1177: `--reserved <peer>` / `--unreserve` edit the reservation atomically with the return (fields.reserved); with neither, the arguments are what they always were.
       const returned = parseBacklogReturn(operands.slice(3));
       if (!returned.ok) return fail(returned.error);
-      return shown((data, columns, now) => renderBacklogResult("return-untouched", data, columns, now))(taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: returned.value.reason, ...(returned.value.fields ? { fields: returned.value.fields } : {}) }));
+      return shown((data, columns, now, ascii) => renderBacklogResult("return-untouched", data, columns, now, ascii))(taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: returned.value.reason, ...(returned.value.fields ? { fields: returned.value.fields } : {}) }));
     }
     if (sub === "add" && args.length >= 3) return console.log(await taskOp("hub_task_propose", { class: id, title: args.slice(2).join(" "), backlog: true }));
     if (!/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog list|add <class> <title...>|pull|return <id>|plan|pin <id> <revision> <value> <reason...>|undo <id> <revision>");
     if (["pull", "return"].includes(sub ?? "") && operands.length === 2) return console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
     if (!/^\d+$/.test(revision ?? "")) fail("planning revision is required");
-    if (sub === "pull-ready" && operands.length >= 4) return shown((data, columns, now) => renderBacklogResult("pull-ready", data, columns, now))(taskOp("hub_backlog_pull", { id: Number(id), revision: Number(revision), reason: operands.slice(3).join(" ") }));
+    if (sub === "pull-ready" && operands.length >= 4) return shown((data, columns, now, ascii) => renderBacklogResult("pull-ready", data, columns, now, ascii))(taskOp("hub_backlog_pull", { id: Number(id), revision: Number(revision), reason: operands.slice(3).join(" ") }));
     if (sub === "split" && value && reason.length) {
       let parts: unknown;try { parts=JSON.parse(value); } catch { return fail("split parts must be JSON"); }
-      return shown((data, columns, now) => renderBacklogResult("split", data, columns, now))(taskOp("hub_backlog_split", { id: Number(id), revision: Number(revision), parts, reason: reason.join(" ") }));
+      return shown((data, columns, now, ascii) => renderBacklogResult("split", data, columns, now, ascii))(taskOp("hub_backlog_split", { id: Number(id), revision: Number(revision), parts, reason: reason.join(" ") }));
     }
-    if (sub === "undo" && operands.length === 3) return shown((data, columns, now) => renderBacklogResult("undo", data, columns, now))(taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
+    if (sub === "undo" && operands.length === 3) return shown((data, columns, now, ascii) => renderBacklogResult("undo", data, columns, now, ascii))(taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
     if (!["plan", "pin", "person"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
     let fields: unknown;
     try { fields = sub === "pin" ? { pinned: value === "true" ? true : value === "false" ? false : undefined } : sub === "person" ? { needsPerson: value === "true" ? true : value === "false" ? false : undefined } : JSON.parse(value); }
     catch { return fail("planning fields must be JSON"); }
     if ((sub === "pin" || sub === "person") && value !== "true" && value !== "false") fail(`${sub} must be true or false`);
-    return shown((data, columns, now) => renderBacklogResult(sub === "person" ? "plan" : sub as "plan" | "pin", data, columns, now))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
+    return shown((data, columns, now, ascii) => renderBacklogResult(sub === "person" ? "plan" : sub as "plan" | "pin", data, columns, now, ascii))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
   },
 
   roadmap: async () => {
@@ -1818,7 +1820,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const split = splitPresentation(args, { edges: true }), operands = split.operands;
     const [sub, name, revision, value] = operands;
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
-    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
+    const shown = (render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
     if (sub === "list" && operands.length === 1) return shown(renderReleaseList)(taskOp("hub_release_list", {}));
     if (sub === "show" && name && operands.length === 2) return shown(renderReleaseShow)(taskOp("release_show", { name }));
     if (sub === "new" && name && revision && operands.length === 4 && /^\d+$/.test(value ?? "")) return shown(renderReleaseNew)(taskOp("release_new", { name, goal: revision, order: Number(value) }));
@@ -1895,7 +1897,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "list" && rest.length === 0) {
       const rows = registry.list();
       if (options.json) return console.log(JSON.stringify(rows, null, 2));
-      return printOutput(renderSourceList(rows, options.columns, Date.now()), options.color);
+      return printOutput(renderSourceList(rows, options.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), options.color);
     }
     if (sub !== "add" || rest.length !== 1 || !rest[0]) return fail(SOURCE_USAGE);
     const target = rest[0], config = projectConfig();
@@ -1934,7 +1936,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!meta) return fail(`the record for ${added.id} cannot be read after it was registered; inspect ${join(stateDir, "sources")}`);
     const result = { id: added.id, created: added.created, upgraded: added.upgraded, kind: meta.kind, origin: meta.origin, sha256: meta.sha256, bytes: meta.bytes, private: meta.private, text: added.text, reasons: verdict.reasons };
     if (options.json) return console.log(JSON.stringify(result, null, 2));
-    printOutput(renderSourceAdd(result, options.columns), options.color);
+    printOutput(renderSourceAdd(result, options.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), options.color);
   },
 
   schedule: async () => {
@@ -1944,10 +1946,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
     const [sub, id, ...extra] = split.operands;
     const usage = "usage: ahub schedule list | run <id> | pause <id> | resume <id> [--json] [--color=auto|always|never]";
-    if (sub === "list" && id === undefined) return showToolText(data => renderScheduleList(data, present.columns, Date.now()), await taskOp("schedule_list", {}), present);
+    if (sub === "list" && id === undefined) return showToolText((data, _c, now, ascii) => renderScheduleList(data, present.columns, now, ascii), await taskOp("schedule_list", {}), present);
     if (!["run", "pause", "resume"].includes(sub ?? "") || !id || extra.length) return fail(usage);
-    if (sub === "run") return showToolText(data => renderScheduleRun(data, present.columns), await taskOp("schedule_run", { id }, false, undefined, 90_000), present);
-    return showToolText(data => renderScheduleChange(sub as "pause" | "resume", data, present.columns, Date.now()), await taskOp(sub === "pause" ? "schedule_pause" : "schedule_resume", { id }), present);
+    if (sub === "run") return showToolText((data, _c, now, ascii) => renderScheduleRun(data, present.columns, now, ascii), await taskOp("schedule_run", { id }, false, undefined, 90_000), present);
+    return showToolText((data, _c, now, ascii) => renderScheduleChange(sub as "pause" | "resume", data, present.columns, now, ascii), await taskOp(sub === "pause" ? "schedule_pause" : "schedule_resume", { id }), present);
   },
 
   study: async () => {
@@ -1959,27 +1961,27 @@ const commands: Record<string, () => Promise<void> | void> = {
     const parsed = parseStudyArgs(split.operands);
     if ("usage" in parsed) return fail(parsed.usage);
 
-    if (parsed.op === "evidence") return showToolText(data => renderStudyEvidence(data, present.columns), await taskOp("hub_evidence_read", { id: parsed.id, ...(parsed.revision === undefined ? {} : { revision: parsed.revision }) }), present);
-    if (parsed.op === "evidence_inventory") return showToolText(data => renderStudyEvidence(data, present.columns), await taskOp("study_evidence", { taskId: parsed.taskId }), present);
+    if (parsed.op === "evidence") return showToolText((data, _c, now, ascii) => renderStudyEvidence(data, present.columns, now, ascii), await taskOp("hub_evidence_read", { id: parsed.id, ...(parsed.revision === undefined ? {} : { revision: parsed.revision }) }), present);
+    if (parsed.op === "evidence_inventory") return showToolText((data, _c, now, ascii) => renderStudyEvidence(data, present.columns, now, ascii), await taskOp("study_evidence", { taskId: parsed.taskId }), present);
     if (parsed.op === "check") {
       const manifest = parseSynthesisManifest(contract(parsed.file, "manifest"));
       if (manifest.taskId !== parsed.taskId) return fail("synthesis manifest names another task; refresh its task binding and retry");
       const text = await taskOp("study_check", { taskId: parsed.taskId, manifest });
-      showToolText(data => renderSynthesisReadiness(data, present.columns), text, present);
+      showToolText((data, _c, now, ascii) => renderSynthesisReadiness(data, present.columns, now, ascii), text, present);
       if (JSON.parse(text).status !== "ready") process.exitCode = 1;
       return;
     }
     if (parsed.op === "experiments") {
       // A read of the records Tasks keeps (hub_experiment_show): it runs no command and reads no file, and the hub blanks a private record itself.
       const args = parsed.attempt ? { attemptId: parsed.attempt, ...(parsed.eventsAfter === undefined ? {} : { eventAfter: parsed.eventsAfter }) } : parsed.plan ? { planHash: parsed.plan, baselineAttemptId: parsed.baseline, variantAttemptId: parsed.variant } : { campaignId: parsed.campaign, ...(parsed.after === undefined ? {} : { after: parsed.after }) };
-      return showToolText(data => renderExperiments(data, present.columns), await taskOp("hub_experiment_show", args), present);
+      return showToolText((data, _c, now, ascii) => renderExperiments(data, present.columns, now, ascii), await taskOp("hub_experiment_show", args), present);
     }
-    if (parsed.op === "show") return showToolText(data => parsed.id ? renderStudyShow(data, present.columns) : renderStudyList(data, present.columns), await taskOp("hub_study_show", parsed.id ? { id: parsed.id } : parsed.after ? { after: parsed.after } : {}), present);
+    if (parsed.op === "show") return showToolText((data, _c, now, ascii) => parsed.id ? renderStudyShow(data, present.columns, now, ascii) : renderStudyList(data, present.columns, now, ascii), await taskOp("hub_study_show", parsed.id ? { id: parsed.id } : parsed.after ? { after: parsed.after } : {}), present);
     const request = parsed.op === "draft" ? { parentTaskId: parsed.parentTaskId, contract: contract(parsed.file) }
       : parsed.op === "revise" ? { id: parsed.id, revision: parsed.revision, contract: contract(parsed.file) }
       : parsed.op === "approve_protocol" ? { hash: parsed.hash }
       : parsed.op === "approve" ? { id: parsed.id, revision: parsed.revision } : { id: parsed.id, revision: parsed.revision, reason: parsed.reason };
-    return showToolText(data => renderStudyReceipt(parsed.op, data, present.columns), await taskOp(`study_${parsed.op}`, request, false, undefined, parsed.op === "approve" ? 90_000 : undefined), present);
+    return showToolText((data, _c, now, ascii) => renderStudyReceipt(parsed.op, data, present.columns, now, ascii), await taskOp(`study_${parsed.op}`, request, false, undefined, parsed.op === "approve" ? 90_000 : undefined), present);
   },
 
   capabilities: async () => {
@@ -1987,7 +1989,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const split = splitPresentation(args);
     const present = outputOptions(split.flags);
     if (split.operands.length) return fail("usage: ahub capabilities [--json] [--color=auto|always|never]");
-    return showToolText(data => renderCapabilities(data, present.columns), await taskOp("capabilities_list", {}), present);
+    return showToolText((data, _c, now, ascii) => renderCapabilities(data, present.columns, now, ascii), await taskOp("capabilities_list", {}), present);
   },
   learn: async () => {
     // #514b: the person's verdict on a recurring-criterion candidate (#514a). Person only, end to end: `learn` is a `console` command for an agent shell (classifyPeerCommand has no entry for it, so the
@@ -2001,11 +2003,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       const all = rest.includes("--all"), accepted = rest.includes("--accepted");
       // #1642 T2: `--accepted` is the outcome view of the lines already accepted, so --all (the decided candidates) has nothing to add there.
       if (all && accepted) return fail("usage: ahub learn list [--all] [--accepted] (pass one of them)");
-      return showToolText(data => renderLearnList(data, present.columns, all, accepted), await taskOp("learn_list", { ...(all ? { all: true } : {}), ...(accepted ? { accepted: true } : {}) }), present);
+      return showToolText((data, _c, _now, ascii) => renderLearnList(data, present.columns, all, accepted, ascii), await taskOp("learn_list", { ...(all ? { all: true } : {}), ...(accepted ? { accepted: true } : {}) }), present);
     }
     const [id, ...extra] = rest;
     if ((sub !== "accept" && sub !== "reject") || !id || extra.length || !/^[1-9]\d*$/.test(id)) return fail(usage);
-    return showToolText(data => renderLearnChange(sub, data, present.columns), await taskOp(sub === "accept" ? "learn_accept" : "learn_reject", { id: Number(id) }), present);
+    return showToolText((data, _c, now, ascii) => renderLearnChange(sub, data, present.columns, now, ascii), await taskOp(sub === "accept" ? "learn_accept" : "learn_reject", { id: Number(id) }), present);
   },
 
   intake: async () => {
@@ -2022,10 +2024,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [sub, id] = words;
     if ((sub === "approve" || sub === "discard") && words.length === 2 && !sources.length) {
       if (!/^[1-9]\d*$/.test(id!)) return fail(usage);
-      return showToolText(data => renderIntakeChange(sub, data, present.columns), await taskOp(sub === "approve" ? "intake_approve" : "intake_discard", { id: Number(id) }), present);
+      return showToolText((data, _c, now, ascii) => renderIntakeChange(sub, data, present.columns, now, ascii), await taskOp(sub === "approve" ? "intake_approve" : "intake_discard", { id: Number(id) }), present);
     }
     if (words.length !== 1 || !words[0]!.trim()) return fail(usage);
-    return showToolText(data => renderIntake(data, present.columns), await taskOp("intake", { text: words[0], ...(sources.length ? { sources } : {}) }, false, undefined, 90_000), present);
+    return showToolText((data, _c, now, ascii) => renderIntake(data, present.columns, now, ascii), await taskOp("intake", { text: words[0], ...(sources.length ? { sources } : {}) }, false, undefined, 90_000), present);
   },
 
   deliverables: async () => {
@@ -2060,7 +2062,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (args[0] === "--handoffs" || args.includes("--handoffs")) {
       // #604: what this project handed to other projects and the last state each reported (read-only).
       const options = outputOptions();
-      return showToolText(data => renderHandoffs(data, options.columns), await taskOp("hub_task_handoffs", {}), options);
+      return showToolText((data, _c, now, ascii) => renderHandoffs(data, options.columns, now, ascii), await taskOp("hub_task_handoffs", {}), options);
     }
     const options = outputOptions();
     const { one, rest } = takeFlags(args, ["--release", "--release-id"], []);
@@ -2366,7 +2368,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   task: async () => {
     const presentation = splitPresentation(args, { valueFlags: ["--reason", "--superseded-by", "--revision"], edges: true });
-    const shownTask = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, outputOptions(presentation.flags));
+    const shownTask = (render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, outputOptions(presentation.flags));
     // task show and task cancel read their presentation options before the request goes out (a refusal after a cancel would invite a retry of work already done)
     if (["show", "cancel"].includes(args[0] ?? "")) outputOptions(presentation.flags);
     const [sub, ...rest] = ["show", "cancel"].includes(args[0] ?? "") ? presentation.operands : args;
@@ -2442,9 +2444,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       const parsed = parseHandoffArgs(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail", "--duplicate-ok", "--key"], edges: true }).operands);
       if ("usage" in parsed) return fail(parsed.usage);
       // #734: the person's list (age and reachability of each target) and sync (ask the targets now); both read the same rows `ahub board --handoffs` shows.
-      if ("view" in parsed) return showToolText(data => renderHandoffs(data, present.columns), await taskOp(parsed.view === "sync" ? "hub_task_handoff_sync" : "hub_task_handoffs", {}), present);
+      if ("view" in parsed) return showToolText((data, _c, now, ascii) => renderHandoffs(data, present.columns, now, ascii), await taskOp(parsed.view === "sync" ? "hub_task_handoff_sync" : "hub_task_handoffs", {}), present);
       const text = await taskOp("hub_task_handoff", { ...parsed });
-      return showToolText(data => renderHandoffReceipt(data, present.columns), text, present);
+      return showToolText((data, _c, now, ascii) => renderHandoffReceipt(data, present.columns, now, ascii), text, present);
     }
     if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | unassign <id> | cancel <id> --reason <text> | escalate <id> | handoff --project <root|id> <title...>");
     // `--class` is the explicit form. A first word that is a class name is still taken as the class (the documented
@@ -3149,15 +3151,15 @@ const commands: Record<string, () => Promise<void> | void> = {
     const reply = await hub.request({ t: "worktrees" }, 20_000);
     hub.close();
     if (!reply.ok) return fail(String(reply.error ?? "the worktree shelf is unavailable"));
-    if (!sub) return options.json ? console.log(JSON.stringify({ live: reply.live, settled: reply.settled, complete: reply.complete }, null, 2)) : printOutput(renderWorktrees(reply, options.columns, Date.now()), options.color);
+    if (!sub) return options.json ? console.log(JSON.stringify({ live: reply.live, settled: reply.settled, complete: reply.complete }, null, 2)) : printOutput(renderWorktrees(reply, options.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), options.color);
     // tidy: read-only git in this process to decide what is safe; the daemon only said which rows are settled.
     const git: TidyGit = realTidyGit((argv, dir) => { const run = hubGitSync(argv, { cwd: dir, encoding: "utf8", timeout: 20_000, maxBuffer: 4 * 1024 * 1024, env: hubGitEnv(process.env, { repositoryIsolation: true }) }); return run.error ? undefined : { status: run.status, stdout: String(run.stdout ?? "") }; });
     const plan = planTidy(rowsFromReply(reply.settled ?? [], cwd, git), cwd, git);
-    if (at < 0) return options.json ? console.log(JSON.stringify({ entries: plan.entries, removable: plan.removable, fingerprint: plan.fingerprint }, null, 2)) : printOutput(renderTidyPreview(plan, options.columns), options.color);
+    if (at < 0) return options.json ? console.log(JSON.stringify({ entries: plan.entries, removable: plan.removable, fingerprint: plan.fingerprint }, null, 2)) : printOutput(renderTidyPreview(plan, options.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), options.color);
     const result = confirmTidy(plan, fingerprint!, cwd, git);
     if (!result.ok) return fail(result.error);
     if (options.json) return console.log(JSON.stringify({ outcomes: result.outcomes }, null, 2));
-    printOutput(renderTidyResult(result.outcomes, options.columns), options.color);
+    printOutput(renderTidyResult(result.outcomes, options.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), options.color);
   },
   usage: async () => {
     const options = outputOptions();

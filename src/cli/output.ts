@@ -265,15 +265,10 @@ function contextText(p: any, now: number): string {
   if (!c) return "unknown";
   return `${c.used === null || c.used === undefined ? "unknown" : `${Math.round(c.used * 100)}%`}${c.freshness === "stale" ? " stale" : ""}${typeof c.measuredAt === "number" ? ` ${relative(c.measuredAt, now)}` : ""}${c.source ? ` ${c.source}` : ""}`;
 }
-/** The header line does not wrap: when its context does not fit the terminal, the context moves to a wrapped hint line under a short header. */
-function fitHeader(report: LayoutReport, columns: number | undefined, name: string, context: string): LayoutReport {
-  if (columns === undefined || width(` ahub ${name}  ${context}`) <= columns) return report.header("ahub", name, context);
-  return report.header("ahub", name).note(context);
-}
 export function renderStatus(data: StatusOutput, columns?: number, now = Date.now(), full = false, ascii = false): Span[][] {
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
   // #1654 T3: the shared header, then a section mark per group. Every detail line below keeps its text, so a search for one still finds it.
-  const out: Span[][] = fitHeader(new LayoutReport(columns, ascii), columns, "Status", [`agent-hub${data.version ? ` ${data.version}` : ""}`, `pid ${data.pid ?? "unknown"}`, `127.0.0.1:${data.controlPort ?? "unknown"}`].filter(Boolean).join("  ")).lines();
+  const out: Span[][] = new LayoutReport(columns, ascii).titled("ahub", "Status", [`agent-hub${data.version ? ` ${data.version}` : ""}`, `pid ${data.pid ?? "unknown"}`, `127.0.0.1:${data.controlPort ?? "unknown"}`].filter(Boolean).join("  ")).lines();
   const mark = (name: string, count?: string) => { out.push(...(out.length && out.at(-1)!.length ? [[]] : []), ...new LayoutReport(columns, ascii).section(name, count).lines()); };
   const hubStart = out.length; // the Hub section opens here only if a row below lands in it
   if (data.cwd) out.push(...detail("project", data.cwd, columns));
@@ -495,7 +490,7 @@ export function statusAttention(data: StatusOutput, now = Date.now()): Attention
  */
 export function renderStatusDefault(data: StatusOutput, columns?: number, now = Date.now(), ascii = false): Span[][] {
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
-  const report = fitHeader(new LayoutReport(columns, ascii), columns, "Status", [data.version, data.pid !== undefined ? `pid ${data.pid}` : undefined, data.controlPort !== undefined ? `127.0.0.1:${data.controlPort}` : undefined].filter(Boolean).join("  "));
+  const report = new LayoutReport(columns, ascii).titled("ahub", "Status", [data.version, data.pid !== undefined ? `pid ${data.pid}` : undefined, data.controlPort !== undefined ? `127.0.0.1:${data.controlPort}` : undefined].filter(Boolean).join("  "));
   const attention = statusAttention(data, now);
   report.section("Attention", attention.length ? plural(attention.length, "item") : undefined);
   if (!attention.length) report.bullet("ok", "nothing needs attention");

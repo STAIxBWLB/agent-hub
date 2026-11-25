@@ -27,6 +27,9 @@ export interface OwnedPrintChildOptions {
   onError?: (error: Error) => void;
   /** Bounded plain-text frames, for model-free metadata commands as well as NDJSON. */
   onLine?: (line: string) => void;
+  /** Raw stdout prefix, kept separate from line and NDJSON observers. */
+  onOutput?: (chunk: Uint8Array) => void;
+  captureStderrTail?: true;
   onFrame?: (event: unknown) => void;
   onActivity?: () => void;
   onLimit?: () => void;
@@ -51,8 +54,8 @@ export class OwnedPrintChild {
   private settled = false;
   /** Only the current owned child's complete bounded stream after confirmed group settlement is usable. */
   stderrAfterSettlement(): OwnedStderrReceipt {
-    if (!this.options.captureStderr || !this.settled || !this.stderrEnded || this.stderrUnknown || this.options.current?.() === false) return { status: "unknown" };
-    try { return { status: "complete", text: new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(this.stderrChunks)) }; }
+    if (!(this.options.captureStderr || this.options.captureStderrTail) || !this.settled || !this.stderrEnded || this.stderrUnknown || this.options.current?.() === false) return { status: "unknown" };
+    try { return { status: "complete", text: new TextDecoder("utf-8", { fatal: !this.options.captureStderrTail }).decode(Buffer.concat(this.stderrChunks)) }; }
     catch { return { status: "unknown" }; }
   }
 
@@ -62,7 +65,7 @@ export class OwnedPrintChild {
     const child = this.process = spawn(command, [...prefix, ...options.args], {
       cwd: options.cwd, detached: true,
       env: applyTurnAttribution(peerChildEnv(options.peer, options.envMode === "replace" ? options.env : { ...process.env, ...options.env }), options.attribution),
-      stdio: ["pipe", "pipe", options.captureStderr ? "pipe" : "ignore"],
+      stdio: ["pipe", "pipe", options.captureStderr || options.captureStderrTail ? "pipe" : "ignore"],
     });
     // ponytail: 256 KiB per NDJSON frame and 4 MiB stdout by default; raise only with native receipts.
     const frameLimit = options.maxFrameBytes ?? 256 * 1024, outputLimit = options.maxOutputBytes ?? 4 * 1024 * 1024;
@@ -70,9 +73,16 @@ export class OwnedPrintChild {
     let inputFailed = false;
     const current = () => !this.limited && options.current?.() !== false;
     const limit = () => { if (!this.limited) { this.limited = true; options.onLimit?.(); } };
-    if (options.captureStderr) {
+    if (options.captureStderr || options.captureStderrTail) {
       child.stderr!.on("data", (chunk: Buffer) => {
         if (this.stderrUnknown) return;
+        if (options.captureStderrTail) {
+          if (options.current?.() === false) { this.stderrUnknown = true; this.stderrChunks = []; return; }
+          const limit = 64 * 1024;
+          const tail = Buffer.concat([...this.stderrChunks, chunk.subarray(-limit)]);
+          this.stderrChunks = [Buffer.from(tail.subarray(-limit))];
+          return;
+        }
         this.stderrBytes += chunk.length;
         if (options.current?.() === false || this.stderrBytes > 64 * 1024) { this.stderrUnknown = true; this.stderrChunks = []; return; }
         this.stderrChunks.push(Buffer.from(chunk));
@@ -95,6 +105,14 @@ export class OwnedPrintChild {
       });
       child.stdout!.on("data", (chunk: Buffer) => {
         if (!current()) return;
+        if (options.onOutput) {
+          const remaining = outputLimit - outputBytes;
+          try { if (remaining > 0) options.onOutput(chunk.subarray(0, remaining)); } catch { /* Preserve owned teardown. */ }
+          outputBytes += chunk.length;
+          if (outputBytes > outputLimit) limit();
+          options.onActivity?.();
+          return;
+        }
         outputBytes += chunk.length;
         if (outputBytes > outputLimit) return limit();
         buffer += chunk.toString("utf8");
@@ -109,9 +127,13 @@ export class OwnedPrintChild {
         if (Buffer.byteLength(buffer) > frameLimit) return limit();
         options.onActivity?.();
       });
+      const streamsClosed = options.onOutput ? new Promise<void>(resolveClose => child.once("close", () => resolveClose())) : undefined;
       child.once("exit", code => {
         options.onLeaderExit?.();
-        void this.stop().then(() => { this.settled = true; resolve(code); }, error => reject(new PrintChildCleanupError((error as Error).message)));
+        void this.stop().then(async () => {
+          await streamsClosed;
+          this.settled = true; resolve(code);
+        }, error => reject(new PrintChildCleanupError((error as Error).message)));
       });
     });
   }

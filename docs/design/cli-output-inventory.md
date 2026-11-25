@@ -209,36 +209,36 @@ Interpolated and daemon-supplied strings require runtime fixtures. They are coun
 | --- | --- | --- | ---: |
 | recovery | src/cli/main.ts:1035 | stdout | 29 |
 | recovery | src/cli/main.ts:1068 | stdout | 60 |
-| projects | src/cli/main.ts:1160 | stdout | 45 |
-| ui | src/cli/main.ts:1176 | stdout | 57 |
-| ui | src/cli/main.ts:1191 | stderr | 112 |
-| ui | src/cli/main.ts:1196 | stdout | 76 |
-| init | src/cli/main.ts:1317 | stderr | 115 |
-| models | src/cli/main.ts:1584 | stdout | 11 |
-| say | src/cli/main.ts:1608 | stdout | 46 |
-| roadmap | src/cli/main.ts:1812 | stdout | 46 |
-| deliverables | src/cli/main.ts:2049 | stdout | 70 |
-| sdlc | src/cli/main.ts:2154 | stdout | 29 |
-| ask | src/cli/main.ts:2499 | stdout | 9 |
-| ask | src/cli/main.ts:2502 | stdout | 54 |
-| roster | src/cli/main.ts:2619 | stdout | 19 |
-| roster | src/cli/main.ts:2626 | stdout | 19 |
-| autonomy | src/cli/main.ts:2677 | stdout | 75 |
-| settings | src/cli/main.ts:2770 | stdout | 39 |
-| settings | src/cli/main.ts:2783 | stdout | 33 |
-| settings | src/cli/main.ts:2814 | stdout | 33 |
-| answer | src/cli/main.ts:2859 | stdout | 17 |
-| bench | src/cli/main.ts:3000 | stdout | 107 |
-| usage | src/cli/main.ts:3184 | stderr | 121 |
-| undo | src/cli/main.ts:3320 | stdout | 103 |
-| undo | src/cli/main.ts:3325 | stdout | 53 |
-| kill | src/cli/main.ts:3342 | stdout | 18 |
-| kill | src/cli/main.ts:3346 | stdout | 11 |
-| reset | src/cli/main.ts:3360 | stdout | 36 |
-| reset | src/cli/main.ts:3384 | stdout | 56 |
-| reset | src/cli/main.ts:3390 | stdout | 39 |
-| reset | src/cli/main.ts:3393 | stdout | 11 |
-| reset | src/cli/main.ts:3428 | stdout | 96 |
+| projects | src/cli/main.ts:1162 | stdout | 45 |
+| ui | src/cli/main.ts:1178 | stdout | 57 |
+| ui | src/cli/main.ts:1193 | stderr | 112 |
+| ui | src/cli/main.ts:1198 | stdout | 76 |
+| init | src/cli/main.ts:1319 | stderr | 115 |
+| models | src/cli/main.ts:1586 | stdout | 11 |
+| say | src/cli/main.ts:1610 | stdout | 46 |
+| roadmap | src/cli/main.ts:1814 | stdout | 46 |
+| deliverables | src/cli/main.ts:2051 | stdout | 70 |
+| sdlc | src/cli/main.ts:2156 | stdout | 29 |
+| ask | src/cli/main.ts:2501 | stdout | 9 |
+| ask | src/cli/main.ts:2504 | stdout | 54 |
+| roster | src/cli/main.ts:2621 | stdout | 19 |
+| roster | src/cli/main.ts:2628 | stdout | 19 |
+| autonomy | src/cli/main.ts:2679 | stdout | 75 |
+| settings | src/cli/main.ts:2772 | stdout | 39 |
+| settings | src/cli/main.ts:2785 | stdout | 33 |
+| settings | src/cli/main.ts:2816 | stdout | 33 |
+| answer | src/cli/main.ts:2861 | stdout | 17 |
+| bench | src/cli/main.ts:3002 | stdout | 107 |
+| usage | src/cli/main.ts:3186 | stderr | 121 |
+| undo | src/cli/main.ts:3322 | stdout | 103 |
+| undo | src/cli/main.ts:3327 | stdout | 53 |
+| kill | src/cli/main.ts:3344 | stdout | 18 |
+| kill | src/cli/main.ts:3348 | stdout | 11 |
+| reset | src/cli/main.ts:3362 | stdout | 36 |
+| reset | src/cli/main.ts:3386 | stdout | 56 |
+| reset | src/cli/main.ts:3392 | stdout | 39 |
+| reset | src/cli/main.ts:3395 | stdout | 11 |
+| reset | src/cli/main.ts:3430 | stdout | 96 |
 
 ## Renderer candidates
 
@@ -249,19 +249,19 @@ The separate report-by-task fixture measures 79 cells.
 | File and renderer | Text source | Report | Direct layout references | Fixture width or scope |
 | --- | --- | --- | --- | --- |
 | src/cli/autonomy.ts:renderAutonomyStatus | CLI | - | Inline / indirect | 77 |
-| src/cli/capabilities-output.ts:renderCapabilities | CLI | - | blank, grid, heading, pair | 116 |
+| src/cli/capabilities-output.ts:renderCapabilities | CLI | Direct | Report, grid | 77 |
 | src/cli/console-state.ts:renderConsole | CLI | - | paint | Full-screen console |
 | src/cli/console-state.ts:renderConsoleLines | CLI | - | table, wrap | Full-screen console |
-| src/cli/handoff-output.ts:renderHandoffReceipt | CLI | - | blank, heading, pair | 139 |
-| src/cli/handoff-output.ts:renderHandoffs | CLI | - | grid, heading | 110 |
+| src/cli/handoff-output.ts:renderHandoffReceipt | CLI | Direct | Report | 77 |
+| src/cli/handoff-output.ts:renderHandoffs | CLI | Direct | Report, grid | 110 |
 | src/cli/help.ts:renderCommandHelp | CLI | Direct | LayoutReport, wrap | 80 |
 | src/cli/help.ts:renderHelp | CLI | - | paint | 79 |
 | src/cli/help.ts:renderOverview | CLI | Direct | LayoutReport, blank, paint, wrap | 79 |
-| src/cli/intake-output.ts:renderIntake | CLI | - | blank, grid, heading, pair | 79 |
-| src/cli/intake-output.ts:renderIntakeChange | CLI | - | grid, heading | 48 |
-| src/cli/learn-output.ts:renderLearnList | CLI | - | blank, grid, heading | 53 |
-| src/cli/learn-output.ts:renderLearnAccepted | CLI | - | blank, grid, heading | Unmeasured |
-| src/cli/learn-output.ts:renderLearnChange | CLI | - | blank, heading, pair | 66 |
+| src/cli/intake-output.ts:renderIntake | CLI | Direct | Report, grid | 76 |
+| src/cli/intake-output.ts:renderIntakeChange | CLI | Direct | Report, grid | 54 |
+| src/cli/learn-output.ts:renderLearnList | CLI | Direct | Report, grid | 55 |
+| src/cli/learn-output.ts:renderLearnAccepted | CLI | Direct | Report, grid | Unmeasured |
+| src/cli/learn-output.ts:renderLearnChange | CLI | Direct | Report | 70 |
 | src/cli/output.ts:renderRuntimeModels | CLI | - | Inline / indirect | 0 |
 | src/cli/output.ts:renderRoster | CLI | - | Inline / indirect | 0 |
 | src/cli/output.ts:renderRoles | CLI | - | Inline / indirect | 75 |
@@ -286,34 +286,34 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/output.ts:renderTotal | CLI | - | table | 78 |
 | src/cli/pet.ts:renderPet | CLI | - | Inline / indirect | 21 |
 | src/cli/roadmap.ts:renderRoadmap | CLI | - | wrap | 23 |
-| src/cli/schedule-output.ts:renderScheduleList | CLI | - | blank, grid, heading, moment, pair | 82 |
-| src/cli/schedule-output.ts:renderScheduleRun | CLI | - | heading, pair | 27 |
-| src/cli/schedule-output.ts:renderScheduleChange | CLI | - | heading, pair | 17 |
-| src/cli/sdlc-output.ts:renderSdlcConfiguration | CLI | - | heading, pair | 68 |
-| src/cli/sdlc-output.ts:renderSdlcSurvey | CLI | - | heading, pair | 23 |
-| src/cli/sdlc-output.ts:renderSdlcQueue | CLI | - | grid | 36 |
+| src/cli/schedule-output.ts:renderScheduleList | CLI | Direct | Report, grid, moment | 82 |
+| src/cli/schedule-output.ts:renderScheduleRun | CLI | Direct | Report | 33 |
+| src/cli/schedule-output.ts:renderScheduleChange | CLI | Direct | Report | 23 |
+| src/cli/sdlc-output.ts:renderSdlcConfiguration | CLI | Direct | LayoutReport | 70 |
+| src/cli/sdlc-output.ts:renderSdlcSurvey | CLI | Direct | LayoutReport | 29 |
+| src/cli/sdlc-output.ts:renderSdlcQueue | CLI | Direct | LayoutReport, grid | 36 |
 | src/cli/sdlc-output.ts:renderSdlcAudit | CLI | Direct | LayoutReport | 50 |
-| src/cli/sdlc-output.ts:renderSdlcRelease | CLI | - | grid, moment | 74 |
+| src/cli/sdlc-output.ts:renderSdlcRelease | CLI | Direct | LayoutReport, grid, moment | 74 |
 | src/cli/sdlc-output.ts:renderSdlcMetrics | CLI | Direct | LayoutReport, grid, moment | 80 |
 | src/cli/sdlc-output.ts:renderSdlcCosts | CLI | Direct | LayoutReport, grid | 39 |
 | src/cli/sdlc-output.ts:renderAuthorization | CLI | Direct | LayoutReport, moment | 46 |
-| src/cli/sdlc-output.ts:renderSdlcMerge | CLI | - | Inline / indirect | 36 |
+| src/cli/sdlc-output.ts:renderSdlcMerge | CLI | Direct | LayoutReport | 36 |
 | src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |
-| src/cli/source-output.ts:renderSourceAdd | CLI | - | heading, pair | 49 |
-| src/cli/source-output.ts:renderSourceList | CLI | - | blank, grid, heading, moment, pair | 62 |
-| src/cli/study-output.ts:renderStudyList | CLI | - | blank, grid, heading | 114 |
-| src/cli/study-output.ts:renderStudyShow | CLI | - | blank, grid, heading, pair | 31 |
-| src/cli/study-output.ts:renderStudyReceipt | CLI | - | blank, grid, heading, pair | 71 |
-| src/cli/study-output.ts:renderExperiments | CLI | - | blank, grid, heading, pair | 78 |
-| src/cli/study-output.ts:renderStudyEvidence | CLI | - | heading, pair | 77 |
-| src/cli/study-output.ts:renderSynthesisReadiness | CLI | - | heading, pair | 101 |
+| src/cli/source-output.ts:renderSourceAdd | CLI | Direct | Report | 51 |
+| src/cli/source-output.ts:renderSourceList | CLI | Direct | Report, grid, moment | 62 |
+| src/cli/study-output.ts:renderStudyList | CLI | Direct | Report, grid | 114 |
+| src/cli/study-output.ts:renderStudyShow | CLI | Direct | Report, grid | 37 |
+| src/cli/study-output.ts:renderStudyReceipt | CLI | Direct | Report, grid | 73 |
+| src/cli/study-output.ts:renderExperiments | CLI | Direct | Report, grid, pair, wrap | 76 |
+| src/cli/study-output.ts:renderStudyEvidence | CLI | Direct | Report | 73 |
+| src/cli/study-output.ts:renderSynthesisReadiness | CLI | Direct | Report | 78 |
 | src/cli/tail-render.ts:renderTailEvent | CLI | - | Inline / indirect | 17 |
-| src/cli/task-output.ts:renderTaskShow | CLI | - | Inline / indirect | 52 |
-| src/cli/task-output.ts:renderTaskCancel | CLI | - | heading, pair | 52 |
-| src/cli/task-output.ts:renderBacklogResult | CLI | - | blank, grid, heading, pair | 52 |
-| src/cli/task-output.ts:renderGroom | CLI | - | blank, grid, heading, pair | 50 |
-| src/cli/task-output.ts:renderReleaseList | CLI | - | blank | 41 |
-| src/cli/task-output.ts:renderReleaseShow | CLI | - | Inline / indirect | 41 |
+| src/cli/task-output.ts:renderTaskShow | CLI | Direct | Report | 60 |
+| src/cli/task-output.ts:renderTaskCancel | CLI | Direct | Report | 60 |
+| src/cli/task-output.ts:renderBacklogResult | CLI | Direct | Report, grid | 60 |
+| src/cli/task-output.ts:renderGroom | CLI | Direct | Report, grid | 50 |
+| src/cli/task-output.ts:renderReleaseList | CLI | Direct | Report | 41 |
+| src/cli/task-output.ts:renderReleaseShow | CLI | Direct | Report | 41 |
 | src/cli/upgrade-output.ts:renderUpgradePlan | CLI | - | Inline / indirect | 55 |
 | src/cli/upgrade-output.ts:renderStoppedPlan | CLI | - | Inline / indirect | 56 |
 | src/cli/upgrade-output.ts:renderStoppedResults | CLI | - | Inline / indirect | 60 |
@@ -328,9 +328,9 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/upgrade-presentation.ts:renderSummary | CLI | - | Inline / indirect | 75 |
 | src/cli/upgrade-restore-state.ts:renderRestoreTransitionTable | CLI | - | table | 320 |
 | src/cli/watch.ts:renderActivity | CLI | - | paint, wrap | 31 |
-| src/cli/worktrees-output.ts:renderWorktrees | CLI | - | blank, grid, heading, moment | 32 |
-| src/cli/worktrees-output.ts:renderTidyPreview | CLI | - | blank, grid, heading, pair | 41 |
-| src/cli/worktrees-output.ts:renderTidyResult | CLI | - | grid, heading | 30 |
+| src/cli/worktrees-output.ts:renderWorktrees | CLI | Direct | Report, grid, moment | 34 |
+| src/cli/worktrees-output.ts:renderTidyPreview | CLI | Direct | Report, grid | 47 |
+| src/cli/worktrees-output.ts:renderTidyResult | CLI | Direct | Report, grid | 30 |
 | src/hub/bench.ts:formatRuns | Hub | - | Inline / indirect | 77 |
 | src/hub/bench.ts:formatReport | Hub | - | Inline / indirect | 99 |
 | src/hub/bench.ts:formatCompare | Hub | - | Inline / indirect | 99 |

@@ -1,36 +1,37 @@
 // Human output for `ahub study draft|revise|approve|approve-protocol|close|show`. Pure: the hub's parsed JSON in, spans out, no I/O. `--json` is the caller's branch and prints the same text.
 // A campaign is named by ids, revisions, states and counts. The hub already stubs private campaigns, tasks and sources; this file never asks for a question, scope, path or excerpt.
-import { blank, grid, heading, pair, s } from "./sdlc-output.ts";
-import type { Span, Tone } from "./console-state.ts";
+import { grid, s } from "./sdlc-output.ts";
+import { Report, terminalText, wrap, type Span, type Tone } from "./console-state.ts";
 
 const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : 0;
 const STATUS_TONE: Record<string, Tone | undefined> = { approved: undefined, draft: "attention", superseded: "muted", closed: "muted" };
 
 /** `ahub study show` with no id: one page of campaigns of this project, with the command that continues it when the hub says there is more. */
-export function renderStudyList(page: unknown, columns?: number): Span[][] {
+export function renderStudyList(page: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const campaigns = list((page as any)?.campaigns), next = typeof (page as any)?.next === "string" ? (page as any).next as string : undefined;
   if (!campaigns.length) return [[s("no research campaigns in this project; a planner or you draft one with `ahub study draft <parent> <contract.json>`", "muted")]];
-  const out: Span[][] = [...heading(`Research campaigns (${campaigns.length}${next ? ", more follow" : ""})`, columns)];
-  out.push(...grid(["ID", "REV", "STATUS", "PARENT", "UNITS"], campaigns.map((row: any) => [
+  const out = new Report(columns, ascii).titled("ahub", `Research campaigns (${campaigns.length}${next ? ", more follow" : ""})`);
+  out.section("Campaigns", String(campaigns.length)).append(grid(["ID", "REV", "STATUS", "PARENT", "UNITS"], campaigns.map((row: any) => [
     s(row.id, "issueRef"), s(`r${count(row.revision)}`), s(row.status, STATUS_TONE[row.status]), s(`#${count(row.parentTaskId)}`, "taskRef"), s(count(row.unitCount)),
   ]), columns));
-  if (next) out.push(blank, [s(`more campaigns: ahub study show --after ${next}`, "muted")]);
-  return out;
+  if (next) out.note(`more campaigns: ahub study show --after ${next}`);
+  return out.lines();
 }
 
 const SUPPORT_TONE: Record<string, Tone | undefined> = { enforceable: undefined, supported: undefined, advisory: "muted", unavailable: "attention", unsupported: "attention", unknown: "attention" };
 
 /** `ahub study show <id>`: the coverage and stop projection the hub computed. Held work is said first, with every reason. */
-export function renderStudyShow(projection: unknown, columns?: number): Span[][] {
+export function renderStudyShow(projection: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const p = projection as any, units = list(p?.units), rounds = list(p?.discoveryRounds), reasons = list(p?.reasons);
-  const out: Span[][] = [...heading(`Research campaign ${p?.id ?? "?"}, revision ${count(p?.revision)}${p?.held ? ", dispatch HELD" : ""}`, columns)];
-  for (const reason of reasons) out.push(...pair("held", reason, columns, 8, "attention"));
-  if (p?.sharedPeerLedger) out.push(...pair("budget", "one run ledger is shared by the peers", columns, 8, "muted"));
-  if (rounds.length) out.push(...pair("rounds", rounds.map((round: any) => `${count(round.round)}: ${round.complete ? "discovery complete" : "discovery open"}`).join(", "), columns, 8));
-  out.push(blank);
-  if (!units.length) return [...out, [s("no units", "muted")]];
-  out.push(...grid(["UNIT", "ROUND", "TASK", "STATE", "PURPOSE", "HANDOFF", "SOURCES"], units.map((unit: any) => {
+  const out = new Report(columns, ascii).titled("ahub", `Research campaign ${p?.id ?? "?"}, revision ${count(p?.revision)}${p?.held ? ", dispatch HELD" : ""}`);
+  for (const reason of reasons) out.bullet("warn", `held: ${terminalText(reason)}`);
+  const facts: [string, unknown][] = [];
+  if (p?.sharedPeerLedger) facts.push(["budget", "one run ledger is shared by the peers"]);
+  if (rounds.length) facts.push(["rounds", rounds.map((round: any) => `${count(round.round)}: ${round.complete ? "discovery complete" : "discovery open"}`).join(", ")]);
+  if (facts.length) out.section("Campaign").kv(facts);
+  if (!units.length) return out.note("no units").lines();
+  out.section("Units", String(units.length)).append(grid(["UNIT", "ROUND", "TASK", "STATE", "PURPOSE", "HANDOFF", "SOURCES"], units.map((unit: any) => {
     const handoff = unit.handoff ?? {};
     const evidence = handoff.insufficientEvidence ? "insufficient evidence" : handoff.complete ? "complete" : handoff.present ? "incomplete" : "none";
     const covered = list(unit.sourceIds).length;
@@ -42,32 +43,30 @@ export function renderStudyShow(projection: unknown, columns?: number): Span[][]
   // `unavailable` or `advisory`. A campaign that names no budget has nothing to say (its `tokens` row reads `unavailable` whatever the ledger is), so the hub's `budgetNamed` decides, not the values.
   const budgeted = units.flatMap((unit: any) => Object.entries(unit.budget ?? {}).filter(([, value]: [string, any]) => value && typeof value === "object").map(([name, value]: [string, any]) => ({ unit: unit.unitId, name, value })));
   if (budgeted.length && p?.budgetNamed === true) {
-    out.push(blank, ...heading("Budget", columns));
-    out.push(...grid(["UNIT", "RESOURCE", "SUPPORT", "USED", "LIMIT"], budgeted.map(({ unit, name, value }) => [
+    out.section("Budget", String(budgeted.length)).append(grid(["UNIT", "RESOURCE", "SUPPORT", "USED", "LIMIT"], budgeted.map(({ unit, name, value }) => [
       s(unit, "issueRef"), s(name), s(value.support, SUPPORT_TONE[value.support]), s(value.used === null || value.used === undefined ? "-" : value.used), s(value.limit === null || value.limit === undefined ? "-" : value.limit),
     ]), columns));
   }
-  return out;
+  return out.lines();
 }
 
 const VERB: Record<string, string> = { draft: "drafted", revise: "drafted as the next revision", approve: "approved", close: "closed" };
 
 /** The receipt of a draft, revision, approval or close. */
-export function renderStudyReceipt(op: string, receipt: unknown, columns?: number): Span[][] {
+export function renderStudyReceipt(op: string, receipt: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const r = receipt as any, units = list(r?.units);
   if (op === "approve_protocol") {
     const hash = (value: unknown) => typeof value === "string" && value.length === 64 && /^[a-f0-9]{64}$/.test(value) ? value : "unknown";
     const by = typeof r?.approvedBy === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(r.approvedBy) ? r.approvedBy : "unknown";
     const at = typeof r?.approvedAt === "number" && Number.isFinite(r.approvedAt) && r.approvedAt >= 0 && r.approvedAt <= 8_640_000_000_000_000
       ? new Date(r.approvedAt).toISOString().slice(0, 19).replace("T", " ") + " UTC" : "unknown";
-    return [...heading("Research protocol approval", columns), ...pair("protocol hash", hash(r?.protocolHash), columns, 16),
-      ...pair("evaluator hash", hash(r?.evaluatorHash), columns, 16), ...pair("approved by", by, columns, 16), ...pair("approved at", at, columns, 16)];
+    return new Report(columns, ascii).titled("ahub", "Research protocol approval").section("Approval").kv([["protocol hash", hash(r?.protocolHash)], ["evaluator hash", hash(r?.evaluatorHash)], ["approved by", by], ["approved at", at]]).lines();
   }
-  const out: Span[][] = [...heading(`Research campaign ${r?.id ?? "?"} revision ${count(r?.revision)} ${VERB[op] ?? op}`, columns)];
-  out.push(...pair("status", r?.status, columns, 8, STATUS_TONE[r?.status]), ...pair("parent", `#${count(r?.parentTaskId)}`, columns, 8, "taskRef"), ...pair("units", count(r?.unitCount), columns, 8));
-  if (units.length) out.push(blank, ...grid(["UNIT", "TASK", "ROUND"], units.map((unit: any) => [s(unit.unitId, "issueRef"), s(`#${count(unit.taskId)}`, "taskRef"), s(count(unit.round))]), columns));
-  if (op === "draft" || op === "revise") out.push(blank, [s(`nothing is dispatched until you approve: ahub study approve ${r?.id} ${count(r?.revision)}`, "muted")]);
-  return out;
+  const out = new Report(columns, ascii).titled("ahub", `Research campaign ${r?.id ?? "?"} revision ${count(r?.revision)} ${VERB[op] ?? op}`);
+  out.section("Campaign").kv([["status", terminalText(r?.status ?? "")], ["parent", `#${count(r?.parentTaskId)}`], ["units", count(r?.unitCount)]]);
+  if (units.length) out.section("Units", String(units.length)).append(grid(["UNIT", "TASK", "ROUND"], units.map((unit: any) => [s(unit.unitId, "issueRef"), s(`#${count(unit.taskId)}`, "taskRef"), s(count(unit.round))]), columns));
+  if (op === "draft" || op === "revise") out.note(`nothing is dispatched until you approve: ahub study approve ${r?.id} ${count(r?.revision)}`);
+  return out.lines();
 }
 
 const ATTEMPT_TONE: Record<string, Tone | undefined> = { succeeded: undefined, running: undefined, declared: "muted", failed: "attention", cancelled: "attention", unknown: "attention" };
@@ -86,24 +85,28 @@ const sourced = (cell: any): [string, string] => {
  * no command and asks for no protocol text. Every row says whether it is approved, post-hoc or predeclared and that a repeat is not an independent reproduction; every value says where it
  * came from; failed, cancelled and unknown attempts are in the counts. A private record arrives from the hub already as ids, counts and states.
  */
-export function renderExperiments(view: unknown, columns?: number): Span[][] {
+export function renderExperiments(view: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const v = view as any, attempts = list(v?.attempts), counts = v?.counts ?? {}, statuses = counts.statuses ?? {};
-  const out: Span[][] = [...heading(`Experiment attempts (${attempts.length} of ${count(counts.all)} in this campaign${v?.nextCursor !== undefined ? ", more follow" : ""})`, columns)];
+  const out = new Report(columns, ascii).titled("ahub", `Experiment attempts (${attempts.length} of ${count(counts.all)} in this campaign${v?.nextCursor !== undefined ? ", more follow" : ""})`);
   const order = ["declared", "running", "succeeded", "failed", "cancelled", "unknown"];
-  out.push(...pair("all", order.map(name => `${name} ${count(statuses[name])}`).join(", "), columns, 8, "muted"));
+  out.section("Counts").kv([["all", order.map(name => `${name} ${count(statuses[name])}`).join(", ")]]);
   if (v?.comparison) {
     const c = v.comparison, compat = c.projection?.compatibility;
-    out.push(blank, ...heading("Comparison", columns));
-    if (c.projection === "[pii]") out.push(...pair("plan", `${String(c.planHash).slice(0, 12)}: withheld (a private source or record)`, columns, 8, "attention"));
+    out.section("Comparison");
+    const rows: [string, unknown][] = [];
+    if (c.projection === "[pii]") rows.push(["plan", `${String(c.planHash).slice(0, 12)}: withheld (a private source or record)`]);
     else {
-      out.push(...pair("plan", String(c.planHash).slice(0, 12), columns, 8));
-      out.push(...pair("compatible", compat?.compatible ? "yes, under this plan" : `no: ${compat?.field ?? "unknown"} differs (${compat?.side ?? "pair"}); shown, not ranked together`, columns, 8, compat?.compatible ? undefined : "attention"));
+      rows.push(["plan", String(c.planHash).slice(0, 12)]);
+      rows.push(["compatible", compat?.compatible ? "yes, under this plan" : `no: ${compat?.field ?? "unknown"} differs (${compat?.side ?? "pair"}); shown, not ranked together`]);
     }
-    out.push(...pair("approved", c.approved ? "both protocols bound to a person's approval" : "not both approved", columns, 8, c.approved ? undefined : "attention"));
-    out.push(...pair("pair", `${c.baselineAttemptId} (baseline) and ${c.variantAttemptId} (variant)`, columns, 8, "muted"));
+    rows.push(["approved", c.approved ? "both protocols bound to a person's approval" : "not both approved"], ["pair", `${c.baselineAttemptId} (baseline) and ${c.variantAttemptId} (variant)`]);
+    out.kv(rows);
+    if (c.projection === "[pii]") out.bullet("warn", "comparison withheld");
+    else if (!compat?.compatible) out.bullet("warn", "not compatible: shown, not ranked together");
+    if (!c.approved) out.bullet("warn", "not both approved");
   }
-  if (!attempts.length) return [...out, blank, [s("no attempts recorded", "muted")]];
-  out.push(blank, ...grid(["ATTEMPT", "TASK", "PHASE", "STATUS", "APPROVAL", "POST-HOC", "NOTE"], attempts.map((row: any) => [
+  if (!attempts.length) return out.note("no attempts recorded").lines();
+  out.section("Attempts", String(attempts.length)).append(grid(["ATTEMPT", "TASK", "PHASE", "STATUS", "APPROVAL", "POST-HOC", "NOTE"], attempts.map((row: any) => [
     s(row.id, "issueRef"), s(`#${count(row.taskId)}`, "taskRef"), s(row.phase), s(row.status, ATTEMPT_TONE[row.status]), s(row.approval, row.approval === "approved" ? undefined : "attention"), s(row.postHoc, row.postHoc === "post-hoc" ? "attention" : "muted"),
     s([row.private ? "private, details withheld" : "", row.retryOf ? `retry of ${row.retryOf}` : "", row.reproducesAttemptId ? `repeat of ${row.reproducesAttemptId}, not independent` : "", row.eventsComplete === false ? "events continue" : ""].filter(Boolean).join("; ") || "-", "muted"),
   ]), columns));
@@ -118,36 +121,33 @@ export function renderExperiments(view: unknown, columns?: number): Span[][] {
     const [sealed, sealedFrom] = sourced(declared?.sealed);
     if (!runners.length) lines.push(["sealed", sealed, `${sealedFrom}; isolation unverified`]);
     if (!lines.length) continue;
-    out.push(blank, ...heading(`Evidence of ${row.id}`, columns), ...grid(["FIELD", "VALUE", "SOURCE"], lines.map(([field, value, from]) => [s(field), s(value), s(from, PROVENANCE_TONE[from] ?? (from.startsWith("declared") ? "muted" : undefined))]), columns));
+    out.section(`Evidence of ${row.id}`, String(lines.length)).append(grid(["FIELD", "VALUE", "SOURCE"], lines.map(([field, value, from]) => [s(field), s(value), s(from, PROVENANCE_TONE[from] ?? (from.startsWith("declared") ? "muted" : undefined))]), columns));
   }
-  out.push(blank, [s(`declared values are an agent's own words; only host-observed, runner-attested or person-attested rows are evidence, and none of them proves the science. A repeat is never an independent reproduction.`, "muted")]);
-  if (v?.nextCursor !== undefined) out.push([s(`more attempts: ahub study experiments --campaign <id> --after ${v.nextCursor}`, "muted")]);
-  for (const row of attempts) if (row.eventsComplete === false && row.nextEventCursor !== undefined) out.push([s(`more events of ${row.id}: ahub study experiments --attempt ${row.id} --events-after ${row.nextEventCursor}; the values above come from the events shown so far`, "attention")]);
-  return out;
+  // A flush-left paragraph, as before: the fixture tests filter it out by its first words, because it names the stronger sources it warns about.
+  out.append(wrap(`declared values are an agent's own words; only host-observed, runner-attested or person-attested rows are evidence, and none of them proves the science. A repeat is never an independent reproduction.`, columns ?? Infinity, 0).map(line => [s(line, "muted")]));
+  if (v?.nextCursor !== undefined) out.note(`more attempts: ahub study experiments --campaign <id> --after ${v.nextCursor}`);
+  for (const row of attempts) if (row.eventsComplete === false && row.nextEventCursor !== undefined) { out.bullet("warn", `more events of ${row.id}: ahub study experiments --attempt ${row.id} --events-after ${row.nextEventCursor}`); out.note("the values above come from the events shown so far", "value"); }
+  return out.lines();
 }
 
 
 /** Screened passage or declared manifest-authoring metadata, never an entailment/quality claim. */
-export function renderStudyEvidence(value: unknown, columns?: number): Span[][] {
+export function renderStudyEvidence(value: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
   const v = value as any;
-  if (v?.status !== "resolved" && v?.status !== "available") return [[s(`Evidence ${v?.status ?? "unavailable"}; use a visible research task and current public evidence`, "attention")]];
-  const out: Span[][] = [...heading(v.status === "resolved" ? `Evidence ${v.id} r${v.revision}` : `Declared evidence inventory, task ${v.taskId}`, columns)];
+  if (v?.status !== "resolved" && v?.status !== "available") return new Report(columns, ascii).header("ahub", "Evidence").bullet("warn", `Evidence ${v?.status ?? "unavailable"}; use a visible research task and current public evidence`).lines();
+  const out = new Report(columns, ascii).titled("ahub", v.status === "resolved" ? `Evidence ${v.id} r${v.revision}` : `Declared evidence inventory, task ${v.taskId}`);
   if (v.status === "resolved") {
-    out.push(...pair("status", "resolved provenance only; no entailment or source-quality certification", columns, 12));
-    out.push(...pair("source", v.link?.sourceId, columns, 12));
-    out.push(...pair("scalars", `${v.locator?.start}..${v.locator?.end}`, columns, 12));
-    out.push(...pair("passage", v.excerpt, columns, 12));
+    out.section("Evidence").kv([["status", "resolved provenance only; no entailment or source-quality certification"], ["source", v.link?.sourceId], ["scalars", `${v.locator?.start}..${v.locator?.end}`], ["passage", v.excerpt]]);
   } else {
-    out.push(...pair("incarnation", v.taskCreated, columns, 12));
-    for (const artifact of list(v.deliverables)) out.push(...pair("artifact", `${artifact.id} ${artifact.format} ${artifact.sha256}`, columns, 12));
+    out.section("Inventory").kv([["incarnation", v.taskCreated], ...list(v.deliverables).map((artifact: any): [string, unknown] => ["artifact", `${artifact.id} ${artifact.format} ${artifact.sha256}`])]);
     for (const claim of list(v.claims)) {
-      out.push(...pair("claim", `${claim.claimId} @ ${claim.claimRevision}`, columns, 12));
-      out.push(...pair("inventory", claim.complete && claim.inventory ? `r${claim.inventory.revision} ${claim.inventory.sha256}` : "unknown/incomplete: obtain complete inventory before checking", columns, 12));
-      for (const link of list(claim.evidence)) out.push(...pair("link", `${link.id} r${link.revision} ${link.status}`, columns, 12));
+      out.section(`Claim ${terminalText(claim.claimId)}`).kv([["claim", `${claim.claimId} @ ${claim.claimRevision}`],
+        ["inventory", claim.complete && claim.inventory ? `r${claim.inventory.revision} ${claim.inventory.sha256}` : "unknown/incomplete: obtain complete inventory before checking"],
+        ...list(claim.evidence).map((link: any): [string, unknown] => ["link", `${link.id} r${link.revision} ${link.status}`])]);
     }
-    out.push([s("Declared bindings only. Select citation mappings in a synthesis manifest; invoke ahub study check explicitly.", "muted")]);
+    out.note("Declared bindings only. Select citation mappings in a synthesis manifest; invoke ahub study check explicitly.");
   }
-  return out;
+  return out.lines();
 }
 
 const SYNTHESIS_NEXT: Record<string, string> = {
@@ -161,21 +161,18 @@ const SYNTHESIS_NEXT: Record<string, string> = {
   read_complete_inventory: "obtain a complete readable inventory; split oversized tasks or repair stored evidence before retrying",
   complete_manifest_claims: "include every current declared task claim in the manifest",
 };
-export function renderSynthesisReadiness(value: unknown, columns?: number): Span[][] {
-  const v = value as any, out: Span[][] = [...heading(`Synthesis ${v?.status ?? "unavailable"}`, columns)];
-  if (v?.status === "private") return [...out, [s("Readiness withheld by current task/source/artifact privacy; no research content is disclosed.", "attention")]];
+export function renderSynthesisReadiness(value: unknown, columns?: number, _now = Date.now(), ascii = false): Span[][] {
+  const v = value as any;
+  const out = new Report(columns, ascii).titled("ahub", `Synthesis ${v?.status ?? "unavailable"}`);
+  if (v?.status === "private") return out.bullet("warn", "Readiness withheld by current task/source/artifact privacy; no research content is disclosed.").lines();
   if (!v?.scope) {
     const reason = v?.cause === "source_input_limit" ? "Source input exceeds this bounded check; split the synthesis into smaller tasks."
       : "Inputs or policy changed/unavailable; refresh current public bindings and run ahub study check again.";
-    return [...out, [s(reason, "attention")]];
+    return out.bullet("warn", reason).lines();
   }
-  out.push(...pair("scope", "structural/provenance only; not truth, entailment or source-quality verification", columns, 12));
-  for (const key of ["manifestSha256", "binding", "claimCoverage", "deliverable", "bibliography"]) out.push(...pair(key, v[key], columns, 12));
-  out.push(...pair("citations", `${v.citations?.state} (cited ${v.citations?.cited ?? "unknown"}, missing ${v.citations?.missing ?? "unknown"})`, columns, 12));
-  for (const claim of list(v.claims)) {
-    out.push(...heading(claim.claimId, columns));
-    for (const key of ["claim", "inventory", "citationKey", "evidenceLink", "locator", "provenance", "judgment", "personVerdict", "contradictionHistory", "contradiction"]) out.push(...pair(key, claim[key], columns, 14));
-  }
-  for (const next of list(v.next)) out.push(...pair("next", SYNTHESIS_NEXT[next] ?? "inspect the current manifest bindings", columns, 12, "attention"));
-  return out;
+  out.section("Readiness").kv([["scope", "structural/provenance only; not truth, entailment or source-quality verification"], ...["manifestSha256", "binding", "claimCoverage", "deliverable", "bibliography"].map((key): [string, unknown] => [key, v[key]]),
+    ["citations", `${v.citations?.state} (cited ${v.citations?.cited ?? "unknown"}, missing ${v.citations?.missing ?? "unknown"})`]]);
+  for (const claim of list(v.claims)) out.section(`Claim ${terminalText(claim.claimId)}`).kv(["claim", "inventory", "citationKey", "evidenceLink", "locator", "provenance", "judgment", "personVerdict", "contradictionHistory", "contradiction"].map((key): [string, unknown] => [key, claim[key]]));
+  for (const next of list(v.next)) out.bullet("warn", `next: ${SYNTHESIS_NEXT[next] ?? "inspect the current manifest bindings"}`);
+  return out.lines();
 }
