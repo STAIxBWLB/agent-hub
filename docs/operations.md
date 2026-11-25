@@ -972,10 +972,18 @@ themes. The Office scene keeps its own rules until R5.
 ### Dashboard app shell and keys (#469 R2)
 
 From 1024px up, a sticky top bar holds the project context, the connection status (a coloured dot and its text, green when live
-and red when disconnected or closed), the attention badge, the theme switch and a shortcuts button; the eight views sit in a
+and red when disconnected or closed), the attention badge, the theme switch and a shortcuts button; the nine views sit in a
 left sidebar with an icon and a label, and the approval count still rides on Agents. Below 1024px the same nav is one row of
 tabs that scrolls sideways inside itself, so the page never scrolls sideways. The view names, their order, the
-`agent-hub-view` cookie and every id are unchanged; Roadmap is the eighth view, added by R5 (#1483).
+`agent-hub-view` cookie and every id are unchanged; Roadmap is the eighth view, added by R5 (#1483), and Overview the ninth (#1514, key 9).
+
+Overview shows five widgets over the board's public history: throughput (tasks proposed and done per week, last 8 weeks),
+pulse (board events per day, last 84 days), peer health (each owner's first-pass approval rate over 30 days), peer
+workload (open tasks per owner by state) and recent trouble (the 20 latest failed checks, `changes_requested` verdicts
+and open stalls). A figure the board cannot derive reads `unknown`, never 0 (turn errors are not on the board, so they
+are always `unknown`). A private task is counted in `withheld` only and adds no title, owner or time to any widget. The
+first-pass rate comes from the same `taskSample` as `ahub sdlc metrics`, so the two agree on one board. The figures are
+built only while the Overview view is open, and reused until the board revision, the UTC day or the open stalls change.
 
 Keys: `1` to `8` switch to Board, Office, Stream, Agents, Message, Memory, Settings and Roadmap, `?` opens the key list, and `Esc` closes
 the key list or the task detail (both are native dialogs). View keys are ignored while you type in an input, a textarea or a
@@ -1121,10 +1129,10 @@ the directory 0700, the file 0600, replaced atomically) naming the installed mod
 up to date` or why it was not registered. acon reads the file at its next start and marks the
 plugin stale when the module changed after setup, so run `ahub setup` again after each upgrade.
 
-- **Panels.** The plugin's panels are the dashboard's eight views, and the panel is the `ahub ui`
+- **Panels.** The plugin's panels are the dashboard's nine views, and the panel is the `ahub ui`
   page itself, following acon's theme. It reaches project hubs only through the manager's own
   listing and forwarding (`ahub ui --all`): registered project and instance ids, the manager's
-  closed action list and the eight view names. There is no new protocol. An answer, a result
+  closed action list and the nine view names. There is no new protocol. An answer, a result
   receipt or a review comment sent from acon goes through a manager port of its own (`answer`,
   `receipt`, `consoleControl`) that needs acon's verified person `meta`.
 - **Inbox.** acon's inbox lists each running project's pending approvals (Allow once / Deny,

@@ -10300,6 +10300,14 @@ export async function startDaemon(opts: DaemonOptions) {
       if (tasks.milestoneShow(USER, cardId).order !== index) tasks.milestoneOrder(USER, cardId, index);
   }
   /** The dashboard's roadmap payload: the same public projection `ahub roadmap show` renders, plus who may act. */
+  // #1514: the Overview figures are reused until the board, the UTC day or the open stalls change, so a quiet board costs nothing per poll.
+  let overviewMemo: { key: string; view: ReturnType<typeof overviewModel> } | undefined;
+  function overviewSnapshot() {
+    const now = Date.now();
+    const key = JSON.stringify([board.statusRevision(), Math.floor(now / 86_400_000), tasks.stalled().map(stall => [stall.task, stall.cause.kind])]);
+    if (overviewMemo?.key !== key) overviewMemo = { key, view: overviewModel(tasks.overviewInput(now)) };
+    return overviewMemo.view;
+  }
   function roadmapSnapshot(session?: DashboardSession) {
     try { return { milestones: tasks.milestoneList(USER), person: session?.liveTest !== true }; }
     catch { return { unavailable: true, person: false }; }
@@ -10420,7 +10428,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // never another view's 1 s poll. The board's Milestone filter reads the same rows here, and its placement is the
       // explicit task link only (the projection above also places a task through the issue it came from).
       // #1514: the Overview figures are computed only for the view that shows them, so no other view's 1 s poll pays for them.
-      ...(input?.view === "overview" ? { overview: overviewModel(tasks.overviewInput(Date.now())) } : {}),
+      ...(input?.view === "overview" ? { overview: overviewSnapshot() } : {}),
       ...(input?.view === "roadmap" ? { roadmap: { ...roadmapSnapshot(session), drift: roadmapDrift } } : {}),
       milestones: board.milestones().map(row => ({ id: row.id, title: row.title, horizon: row.horizon, state: row.state, order: row.order })),
       milestoneOfTask: Object.fromEntries(board.milestoneLinks().filter(link => link.kind === "task").map(link => [link.ref, link.milestone] as const)),
