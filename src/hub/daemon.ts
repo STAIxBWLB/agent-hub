@@ -221,7 +221,8 @@ import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, SCREEN_MAX_BYTES, SCREEN_TIMEOUT_MS, screenPii, type InferenceConfig, type PiiVerdict } from "./inference.ts";
 import { taskEvidencePrivacy, type TaskEvidencePrivacy, ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
-import { withChecklistLine } from "./learning.ts";
+import { withChecklistLine, withoutChecklistLine } from "./learning.ts";
+import { FOLLOWUP_DEFAULTS } from "./learn-followup.ts";
 import { autonomyConsentStateDir, createAutonomyConsent, type AutonomyConsentValues } from "./autonomy-consent.ts";
 import { insideRoot } from "./path-policy.ts";
 import { autonomyPreset, autonomyEnvironment, planAutonomy, autonomyRemovalKeys, autonomyStatus, type AutonomyEnvironment, type AutonomyPeer } from "./autonomy.ts";
@@ -6645,8 +6646,14 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify((await tasks.discardIntake(by, a.id)).map(task => tasks.publicView(task)));
       // #514b: the person's verdict on a recurring-criterion candidate. Person only (Tasks refuses any other `by`, and the generic gate above already refuses every non-person caller, the configured
       // conductor included: none of these is in CONDUCTOR_TASK_OPS). Accept writes ONE key, derived from the card's key line, through the settings writer.
-      case "learn_list":
-        return JSON.stringify(tasks.learnCandidates(by, { all: a.all === true }));
+      // #1642 T2: `--accepted` reads what each followed line did, against the checklist this project uses now. A config that does not load reads no checklist: refused, never an empty one.
+      case "learn_list": {
+        if (a.accepted !== true) return JSON.stringify(tasks.learnCandidates(by, { all: a.all === true }));
+        const stored = storedConfig();
+        if (!stored) throw new PreEffectToolRefusal("the config files do not load; no checklist was read. Fix .agenthub/config.json or config.local.json in your editor, then run ahub learn list --accepted again");
+        const current = resolveProfile(stored.profile, stored.profile_overrides).review_checklist ?? [];
+        return JSON.stringify({ view: "accepted", minReviewed: FOLLOWUP_DEFAULTS.minReviewed, ...tasks.learnFollowed(by, current) });
+      }
       // #445 C1: the person's view of every peer's capabilities, shared or not. Person only (not in CONDUCTOR_TASK_OPS); it shows what a peer offers, never calls it.
       case "capabilities_list": {
         const share = readShare(config.invocation?.share), peers: unknown[] = [];
@@ -6667,8 +6674,17 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!stored) throw new PreEffectToolRefusal("the config files do not load; fix them in your editor first: nothing was written");
         const active = profileName(stored.profile);
         if (plan.profile !== active) throw new PreEffectToolRefusal(`this card is for the ${plan.profile} profile and the project's profile is ${active}: nothing was written; reject the card, or switch profile first`);
-        // review_checklist replaces as a unit: extend the checklist the profile uses now (the person's, else the shipped one), never start from one line.
+        // review_checklist replaces as a unit: extend, or for a removal card shorten, the checklist the profile uses now (the person's, else the shipped one), never start from one line.
         const current = resolveProfile(stored.profile, stored.profile_overrides).review_checklist ?? [];
+        if ("marker" in plan) {
+          // #1642 T3: exactly the one line the card's criterion names, and only while it is the checklist's own generated line.
+          const removed = withoutChecklistLine(current, plan.marker);
+          if ("refused" in removed) throw new PreEffectToolRefusal(`${removed.refused}. ahub learn list --all shows the removal cards and their windows`);
+          const written = await settingsSet(LEARN_CHECKLIST.key, removed.list, "terminal", undefined, undefined, `ahub learn accept #${plan.id}: remove the checklist line`, LEARN_CHECKLIST);
+          if (written.ok !== true) throw new PreEffectToolRefusal(`${written.error ?? "the checklist could not be written"}; the removal card stays open: fix what the error names, then run ahub learn accept on it again`);
+          const closed = await tasks.learnClose(by, a.id, "accepted");
+          return JSON.stringify({ card: tasks.publicView(closed), accepted: { kind: "removal", profile: plan.profile, class: plan.class, criterion: plan.criterion, removed: true, lines: removed.list.length, file: ".agenthub/config.local.json", applies: "after a restart (profile contracts are bound at startup)", undo: "ahub settings undo" } });
+        }
         const next = withChecklistLine(current, plan.line);
         if ("refused" in next) throw new PreEffectToolRefusal(next.refused);
         const already = next.list.length === current.length;
@@ -6676,8 +6692,10 @@ export async function startDaemon(opts: DaemonOptions) {
           const written = await settingsSet(LEARN_CHECKLIST.key, next.list, "terminal", undefined, undefined, `ahub learn accept #${plan.id}`, LEARN_CHECKLIST);
           if (written.ok !== true) throw new PreEffectToolRefusal(String(written.error ?? "the checklist could not be written") + "; the candidate stays open");
         }
-        const closed = await tasks.learnClose(by, a.id, "accepted");
-        return JSON.stringify({ card: tasks.publicView(closed), accepted: { profile: plan.profile, class: plan.class, criterion: plan.criterion, line: plan.line, tasks: plan.tasks, lines: next.list.length, alreadyPresent: already, file: ".agenthub/config.local.json", applies: "after a restart (profile contracts are bound at startup)", undo: already ? undefined : "ahub settings undo" } });
+        // #1642 T1: the before rate rides the closed card's own note, so the outcome view compares against what was true at acceptance.
+        const before = tasks.learnBeforeRate(by, a.id);
+        const closed = await tasks.learnClose(by, a.id, "accepted", before);
+        return JSON.stringify({ card: tasks.publicView(closed), accepted: { kind: "addition", profile: plan.profile, class: plan.class, criterion: plan.criterion, line: plan.line, tasks: plan.tasks, before, lines: next.list.length, alreadyPresent: already, file: ".agenthub/config.local.json", applies: "after a restart (profile contracts are bound at startup)", undo: already ? undefined : "ahub settings undo" } });
       }
       case "review_brief": {
         const task = board.get(Number(a.id));

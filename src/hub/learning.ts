@@ -64,8 +64,15 @@ const line = (text: string) => text.replace(/[^\x20-\x7e]/g, " ").replace(/\s+/g
  * says; nothing here reads or writes any config file.
  */
 export function overridesDiff(group: Pick<CriterionGroup, "profile" | "class" | "criterion" | "tasks">): { profile_overrides: { review_checklist: string[] } } {
-  return { profile_overrides: { review_checklist: [line(`${group.criterion}: confirm this first; it was unmet on ${group.tasks.length} ${group.class} tasks`)] } };
+  return { profile_overrides: { review_checklist: [line(checklistLineOf(group.criterion, group.tasks.length, group.class))] } };
 }
+
+/**
+ * #1642 T3: the fixed opening of the one line `ahub learn accept` writes, which is how a followed line is found again in the person's checklist. The count in the
+ * line moves as reviews recur, so the line is identified by this prefix and never by its full text.
+ */
+export const checklistLineMarker = (criterion: string): string => `${criterion}: confirm this first; it was unmet on `;
+const checklistLineOf = (criterion: string, tasks: number, cls: string): string => `${checklistLineMarker(criterion)}${tasks} ${cls} tasks`;
 
 /** A stable dedupe key: one card per (profile, class, criterion) however many reviews recur. */
 export const criterionKey = (group: Pick<CriterionGroup, "profile" | "class" | "criterion">) => `Criterion candidate key: ${group.profile}:${group.class}:${group.criterion}`;
@@ -114,4 +121,59 @@ export function withChecklistLine(current: readonly string[], line: string): { l
   if (current.includes(line)) return { list: [...current] };
   if (current.length + 1 > CHECKLIST_MAX_LINES) return { refused: `the checklist already has ${current.length} lines and the profile allows ${CHECKLIST_MAX_LINES}; remove one in .agenthub/config.local.json first` };
   return { list: [...current, line] };
+}
+
+/**
+ * The checklist to store after accepting a removal card: the person's CURRENT checklist with the one generated line whose prefix is `marker` gone. Exactly one line must
+ * match: none means the person edited or removed it by hand and nothing is guessed, two mean the card cannot name which one it means. Refused, never trimmed.
+ */
+export function withoutChecklistLine(current: readonly string[], marker: string): { list: string[]; removed: string } | { refused: string } {
+  const hits = current.filter(entry => entry.startsWith(marker));
+  if (!hits.length) return { refused: `no checklist line starts with ${JSON.stringify(marker)}: it was removed or edited by hand, so nothing was removed; reject the card to close it` };
+  if (hits.length > 1) return { refused: `${hits.length} checklist lines start with ${JSON.stringify(marker)}: remove the one you mean in .agenthub/config.local.json, then reject this card` };
+  return { list: current.filter(entry => entry !== hits[0]), removed: hits[0]! };
+}
+
+/** What a removal card states, as the caller measured it: the counts on both sides of the acceptance and the window the follow-up runs from. */
+interface RemovalSubject {
+  profile: string;
+  class: string;
+  criterion: string;
+  acceptedAt: number;
+  windowStart: number;
+  before: { reviewed: number; unmet: number };
+  since: { reviewed: number; unmet: number };
+  status: string;
+}
+
+/** A stable dedupe key: one removal card per line per follow-up window, so a rejection (which resets the window) can be followed by a new card later. */
+export const removalKey = (subject: Pick<RemovalSubject, "profile" | "class" | "criterion" | "windowStart">): string =>
+  `Checklist removal key: ${subject.profile}:${subject.class}:${subject.criterion}:${subject.windowStart}`;
+
+/** The backlog card's title and detail: ids and counts only, no review text, no task title, no path. */
+export function removalCard(subject: RemovalSubject, windowDays: number): { title: string; detail: string } {
+  return {
+    title: `Review checklist removal for ${subject.profile}/${subject.class} criterion ${subject.criterion}`,
+    detail: [
+      removalKey(subject),
+      line(`Criterion ${subject.criterion} on ${subject.profile}/${subject.class} was accepted into the checklist on ${new Date(subject.acceptedAt).toISOString()}. Since then ${subject.since.reviewed} task(s) of that profile and class were reviewed and ${subject.since.unmet} named it unmet, against ${subject.before.reviewed} reviewed and ${subject.before.unmet} unmet in the ${windowDays} days before the acceptance (status ${subject.status}).`),
+      "This is a candidate for a person to review. Nothing was removed: ahub learn accept on this card removes that one line from .agenthub/config.local.json (this machine only) through the settings writer, and ahub settings undo puts the previous file back. ahub learn reject on this card closes it and starts the follow-up window again. A checklist line can matter for reasons the unmet count does not show, so nothing is removed on its own.",
+    ].join("\n"),
+  };
+}
+
+/**
+ * A removal card the hub filed, read the same way as a candidate card: ONLY the key line first, the three parts re-checked against the loaders' shapes, and the title
+ * matched to the key line. The line to remove is rebuilt from the criterion by the caller, never taken from the card.
+ */
+type RemovalCard = { profile: string; class: string; criterion: string; windowStart: number } | { refused: string };
+export function parseRemovalCard(task: Pick<Task, "class" | "detail" | "history" | "title">): RemovalCard {
+  if (task.class !== "plan" || task.history[0]?.by !== "hub") return { refused: "not a card the hub filed" };
+  const first = task.detail.split("\n", 1)[0] ?? "";
+  const match = /^Checklist removal key: ([^:\s]+):([^:\s]+):([^:\s]+):(\d{1,16})$/.exec(first);
+  if (!match) return { refused: "not a checklist removal card (no removal key line first)" };
+  const [, profile, cls, criterion, start] = match as unknown as [string, string, string, string, string];
+  if (!PROFILE.test(profile) || !CLASS.test(cls) || !CRITERION.test(criterion) || !Number.isSafeInteger(Number(start))) return { refused: "the key line names a profile, class, criterion or window the hub would not accept" };
+  if (task.title !== `Review checklist removal for ${profile}/${cls} criterion ${criterion}`) return { refused: "the card's title does not match its key line" };
+  return { profile, class: cls, criterion, windowStart: Number(start) };
 }

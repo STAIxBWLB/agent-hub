@@ -19,6 +19,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Remove the Qwen dual-output compat-receipt timing flake: the fixture now consumes submits from a poll as well as `fs.watch`, and the proof deadline is a hang guard instead of a 4 s wall-clock bound, so a loaded runner no longer fails at the `first-held` checkpoint. Refs #1669, hub task 1089.
 - Refuse task proposals whose detail exceeds 8000 characters and show how to retry with a spec issue reference. Refs #1648, hub task 1086.
 
+- Follow an accepted review-checklist line and propose its removal when it stops helping: an accept records the line's profile, class and criterion, the time and its 30-day unmet rate as a fixed suffix on the card's own note, `ahub learn list --accepted` reports each followed line as `insufficient`, `helping`, `no-change` or `worse` beside the checklist size, and a line with 5 reviewed tasks in its window and no improvement gets one removal card that removes only that line through the settings writer (`ahub settings undo` restores it), while rejecting it closes the card and restarts the window. A hand-written or edited line is `untracked` and never removed, PII tasks and evidence-only verdicts never count, and at the 16-line cap a new candidate's card names the weakest followed line. Refs #1642, hub task 1108.
+
 ## 0.46.1
 
 - Resolve `@staix/agent-mem` 0.38.0 in `bun.lock` so the repository's tests and CI run on the version a fresh install resolves; the declared range `>=0.33.0 <1.0.0` is unchanged. The recovery package refuses a ranged `@staix/cli-output` pin with the output message again when agent-mem declares it. Refs #1664, hub task 1084.

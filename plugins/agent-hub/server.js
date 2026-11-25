@@ -32193,6 +32193,9 @@ init_workflow();
 // src/hub/learning.ts
 var LEARNING_DEFAULTS = { windowMs: 30 * 24 * 3600000, threshold: 3, maxGroups: 64 };
 
+// src/hub/learn-followup.ts
+var FOLLOWUP_DEFAULTS = { windowMs: LEARNING_DEFAULTS.windowMs, minReviewed: 5 };
+
 // src/hub/tasks.ts
 init_deliverables();
 

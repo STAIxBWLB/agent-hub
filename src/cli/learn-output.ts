@@ -6,8 +6,9 @@ import type { Span } from "./console-state.ts";
 const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
 const dash = (value: unknown) => value === undefined || value === null || value === "" ? "-" : String(value);
 
-/** `ahub learn list [--all]`: one row per candidate, and what each command would do. */
-export function renderLearnList(result: unknown, columns?: number, all = false): Span[][] {
+/** `ahub learn list [--all]`: one row per candidate, and what each command would do. `--accepted` (#1642 T2) shows the followed lines instead. */
+export function renderLearnList(result: unknown, columns?: number, all = false, accepted = false): Span[][] {
+  if (accepted || (result as any)?.view === "accepted") return renderLearnAccepted(result, columns);
   const rows = list(result);
   const open = rows.filter(row => row.status === "open").length;
   const out: Span[][] = [...heading(all ? `Review checklist candidates: ${open} open, ${rows.length - open} decided` : `Review checklist candidates: ${open} open`, columns)];
@@ -22,6 +23,23 @@ export function renderLearnList(result: unknown, columns?: number, all = false):
   return out;
 }
 
+/** `ahub learn list --accepted` (#1642 T2): what each accepted line did, its sample size, and the checklist's own size. */
+function renderLearnAccepted(result: unknown, columns?: number): Span[][] {
+  const r = (result ?? {}) as any, rows = list(r.followed), size = (r.checklist ?? {}) as any;
+  const shown = `${dash(size.lines)}/${dash(size.max)} lines, ${dash(size.characters)} characters`;
+  const out: Span[][] = [...heading(`Followed checklist lines: ${rows.length} (checklist ${shown})`, columns)];
+  if (!rows.length) {
+    out.push(blank, [s("no accepted line is followed: ahub learn accept on a candidate starts one", "muted")]);
+    return out;
+  }
+  out.push(...grid(["STATUS", "PROFILE/CLASS", "CRITERION", "SINCE", "BEFORE", "REMOVAL"], rows.map((row: any) => [
+    s(dash(row.status), row.status === "worse" || row.status === "no-change" ? "attention" : "muted"), s(`${dash(row.profile)}/${dash(row.class)}`), s(dash(row.criterion)),
+    s(`${dash(row.since?.unmet)}/${dash(row.since?.reviewed)}`), s(`${dash(row.before?.unmet)}/${dash(row.before?.reviewed)}`), s(row.removal ? `#${row.removal.id}` : "-", row.removal ? "taskRef" : "muted"),
+  ]), columns));
+  out.push(blank, [s(`insufficient until ${dash(r.minReviewed)} reviewed tasks since acceptance; a no-change or worse line with that many asks for one removal card. ${dash(r.untracked)} checklist line(s) were not added by ahub learn accept (untracked, never followed).`, "muted")]);
+  return out;
+}
+
 /** `ahub learn accept|reject <id>`: what was decided, and for accept exactly what was written and where. */
 export function renderLearnChange(op: "accept" | "reject", result: unknown, columns?: number): Span[][] {
   const r = (result ?? {}) as any;
@@ -30,8 +48,17 @@ export function renderLearnChange(op: "accept" | "reject", result: unknown, colu
   if (op === "reject") return [...out, ...pair("written", "nothing", columns, 8, "muted")];
   const a = r.accepted ?? {};
   if (a.alreadyAccepted) return [...heading(`Candidate #${dash(card?.id)} was already accepted`, columns), ...pair("profile", `${dash(a.profile)}/${dash(a.class)}`, columns, 8), ...pair("criterion", a.criterion, columns, 8), ...pair("written", "nothing: it was accepted before (ahub settings undo still puts back that write if it is the latest)", columns, 8, "muted")];
+  if (a.kind === "removal") {
+    // #1642 T3: a removal card takes one line out; the undo restores the file the settings writer kept.
+    out.push(...pair("profile", `${dash(a.profile)}/${dash(a.class)}`, columns, 8), ...pair("criterion", a.criterion, columns, 8), ...pair("removed", "1 checklist line", columns, 8),
+      ...pair("file", `${dash(a.file)} (this machine only; the shared config is untouched)`, columns, 8), ...pair("now", `${dash(a.lines)} lines in the checklist`, columns, 8),
+      ...pair("applies", dash(a.applies), columns, 8, "attention"));
+    if (a.undo) out.push(blank, [s(`put it back with ${a.undo}`, "muted")]);
+    return out;
+  }
   out.push(...pair("profile", `${dash(a.profile)}/${dash(a.class)}`, columns, 8), ...pair("criterion", a.criterion, columns, 8), ...pair("line", a.line, columns, 8),
     ...pair("file", `${dash(a.file)} (this machine only; the shared config is untouched)`, columns, 8), ...pair("now", a.alreadyPresent ? `the checklist already had this line: nothing was written` : `${dash(a.lines)} lines in the checklist`, columns, 8),
+    ...pair("before", `${dash(a.before?.unmet)}/${dash(a.before?.reviewed)} tasks named it unmet in the window before acceptance`, columns, 8),
     ...pair("applies", dash(a.applies), columns, 8, "attention"));
   if (a.undo) out.push(blank, [s(`put it back with ${a.undo}`, "muted")]);
   return out;
