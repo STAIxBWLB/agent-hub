@@ -2,6 +2,7 @@
 export interface DriftTask {
   id: number; state: string; issue: string | null | undefined; issueState: "open" | "closed" | "unknown";
   feature: boolean; specIssue: boolean | undefined; mergedAt: number | null | undefined;
+  /** Unchanged specs without a recorded owner acknowledgement at the merged head. */
   unchangedSpecs: readonly string[] | undefined;
 }
 export interface DriftMilestone {
