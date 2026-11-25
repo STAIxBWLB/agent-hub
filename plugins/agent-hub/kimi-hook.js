@@ -5122,6 +5122,7 @@ var init_acp = __esm(() => {
   };
   AcpPeer = class AcpPeer extends BasePeer {
     opts;
+    activityKinds;
     deliveryOnly = true;
     hubOwned = true;
     form = "headless";
@@ -5246,9 +5247,10 @@ var init_acp = __esm(() => {
         wait.abort();
       this.permissionWaits.clear();
     }
-    constructor(id, opts) {
+    constructor(id, opts, activityKinds = opts.activityKinds) {
       super(id, opts.watchdogMs);
       this.opts = opts;
+      this.activityKinds = activityKinds;
       this.modelPolicy = opts.modelPolicy ? Object.freeze({ ...opts.modelPolicy, admission: Object.freeze({ ...opts.modelPolicy.admission }) }) : undefined;
       if (opts.modelSetterTimeoutMs !== undefined && (!Number.isSafeInteger(opts.modelSetterTimeoutMs) || opts.modelSetterTimeoutMs <= 0 || opts.modelSetterTimeoutMs > HANDSHAKE_MS))
         throw new Error("ACP model acknowledgement deadline must fit the handshake bound");
@@ -5945,8 +5947,8 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
         if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text")
           this.chunks.push(u.content.text);
         else if ((u?.sessionUpdate === "tool_call" || u?.sessionUpdate === "tool_call_update") && typeof u.toolCallId === "string") {
-          if (this.opts.activityKinds && typeof this.sessionId === "string" && msg.params?.sessionId === this.sessionId && u.sessionUpdate === "tool_call" && u.status !== "completed" && u.status !== "failed")
-            this.onActivity?.(nativeActivity(this.opts.activityKinds, u.kind));
+          if (this.activityKinds && typeof this.sessionId === "string" && msg.params?.sessionId === this.sessionId && u.sessionUpdate === "tool_call" && u.status !== "completed" && u.status !== "failed")
+            this.onActivity?.(nativeActivity(this.activityKinds, u.kind));
           if (u.sessionUpdate === "tool_call")
             this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId);
           if (u.rawInput !== undefined)
@@ -7446,7 +7448,7 @@ var init_jcode = __esm(() => {
     preserveRoot = false;
     stopPromise;
     tuiServed = false;
-    constructor(jcode) {
+    constructor(jcode, activityKinds) {
       if (!isAbsolute4(jcode.home))
         throw new Error("jcode_home must be an absolute native data path");
       const peer = jcode.peer ?? "jcode";
@@ -7454,7 +7456,7 @@ var init_jcode = __esm(() => {
       const root = mkdtempSync3(join9(tmpdir3(), "ahub-jcode-")), socket = join9(root, "j.sock");
       const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile, jcode.provider, peer);
       const launchId = crypto.randomUUID();
-      super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], preamble: jcodePreamble(jcode.preamble), requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
+      super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], preamble: jcodePreamble(jcode.preamble), requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } }, activityKinds);
       this.jcode = jcode;
       this.root = root;
       this.socket = socket;
@@ -21511,7 +21513,7 @@ function createKimi(ctx) {
   if (ctx.permission === "read-only")
     throw new Error("Kimi has no verified read-only permission mapping");
   const { AcpPeer } = (init_acp(), __toCommonJS(exports_acp));
-  return new AcpPeer(ctx.instance, { ...ctx.daemon.acp, activityKinds: ACP_ACTIVITY });
+  return new AcpPeer(ctx.instance, ctx.daemon.acp, ACP_ACTIVITY);
 }
 function createJcode(ctx) {
   if (!("jcode" in ctx.daemon))
@@ -21519,7 +21521,7 @@ function createJcode(ctx) {
   if (ctx.permission === "read-only")
     throw new Error("Jcode has no verified read-only permission mapping");
   const { JcodePeer } = (init_jcode(), __toCommonJS(exports_jcode));
-  return new JcodePeer({ ...ctx.daemon.jcode, activityKinds: ACP_ACTIVITY });
+  return new JcodePeer(ctx.daemon.jcode, ACP_ACTIVITY);
 }
 function createQwenDual(ctx) {
   if (!("qwenDual" in ctx.daemon))
