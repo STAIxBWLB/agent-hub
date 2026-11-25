@@ -587,7 +587,7 @@ function startupDiagnostic(error: unknown): string {
 }
 
 /** A stderr warning that does not end the command (standard v1, Messages). */
-const warn = warnLine;
+function warn(message: string, next?: string): void { warnLine(message, next); }
 /**
  * CLI output standard v1, Messages: `ahub: <what failed>: <why>` on stderr; with a terminal on stderr it leads with the fail marker, and a piped line
  * keeps the plain `ahub: ` form so a script or agent matching it still works. `next` is a complete, copyable command printed on a second line (ASCII
