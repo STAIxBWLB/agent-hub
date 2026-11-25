@@ -203,6 +203,26 @@ test("sdlc merge refuses an invalid --color before any request, and --json is re
   expect(f.requests.filter(r => r.t === "sdlc")).toHaveLength(1);
 });
 
+// #1654 T3: `--ascii` is a presentation flag of both reports, so it passes the usage check, never reaches the hub, and swaps the glyphs.
+test("sdlc merge and authorize-release accept --ascii: ASCII markers, no unicode glyphs, the request is unchanged", async () => {
+  const f = fixture(); (f as any).serve({ reply: mergeViews.refused.view });
+  const merge = await f.run(["sdlc", "merge", "7", "--dry-run", "--ascii", "--color=never"]);
+  expect(merge.stderr).not.toContain("usage");
+  expect(merge.stdout).toMatch(/^\s+x +.*auto_merge is off/m);
+  expect(merge.stdout).not.toMatch(/[✓✗⚠▸]/);
+  expect(merge.stdout).toContain("> Decision");
+  expect(f.requests.filter(r => r.t === "sdlc").map(r => JSON.stringify({ ...r, rid: 0 }))).toEqual([JSON.stringify({ t: "sdlc", op: "merge", id: 7, dryRun: true, rid: 0 })]);
+  const notMerged = fixture(); (notMerged as any).serve({ reply: mergeViews["not merged"].view });
+  const outcome = await notMerged.run(["sdlc", "merge", "7", "--ascii", "--color=never"]);
+  expect(outcome.stdout).toMatch(/^\s+x +not merged, gh exit 1/m);
+  const auth = fixture(); auth.serve(commands.find(c => c.name === "authorize-release")!);
+  const release = await auth.run(["sdlc", "authorize-release", "0.18.0", "--ascii", "--color=never"]);
+  expect(release.stderr).not.toContain("usage");
+  expect(release.code, release.stderr).toBe(0);
+  expect(release.stdout).toContain("> Authorization");
+  expect(release.stdout).not.toMatch(/[✓✗⚠▸]/);
+});
+
 test("the other sdlc subcommands keep their argv: --json is not stripped from them", async () => {
   const f = fixture(); f.serve(commands[0]);
   const refused = await f.run(["sdlc", "record", "7", "{}", "--json"]);

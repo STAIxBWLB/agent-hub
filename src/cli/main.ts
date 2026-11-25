@@ -370,7 +370,7 @@ function outputOptions(source: readonly string[] = args) {
  * presentation flag loses it: the documented cost of accepting the flag after the reason.
  */
 function splitPresentation(argv: readonly string[], opts: { valueFlags?: readonly string[]; edges?: boolean } = {}): { operands: string[]; flags: string[] } {
-  const isFlag = (arg: string) => arg === "--json" || arg === "--full" || arg.startsWith("--color=");
+  const isFlag = (arg: string) => arg === "--json" || arg === "--full" || arg === "--ascii" || arg.startsWith("--color=");
   const operands: string[] = [], flags: string[] = [], value = new Set(opts.valueFlags ?? []);
   let lead = true;
   const middle: string[] = [];
@@ -389,7 +389,7 @@ function splitPresentation(argv: readonly string[], opts: { valueFlags?: readonl
 }
 /** Remove only presentation flags from read-only command positional arguments. */
 function outputArguments(): string[] {
-  return args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color="));
+  return args.filter(arg => arg !== "--json" && arg !== "--full" && arg !== "--ascii" && !arg.startsWith("--color="));
 }
 /** `sdlc` operands: the read subcommands that print for a person (#814) drop `--json`, `--full` and `--color=`; every other subcommand keeps its argv exactly. */
 /** The daemon answers a missing task id with a JSON string (`"no task #N"`), a found task with an object: the sentence for a missing one, otherwise undefined. */
@@ -2094,7 +2094,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   sdlc: async () => {
     const args = sdlcOperands(), present = SDLC_READ.includes(args[0] ?? "") ? outputOptions() : undefined;
     /** The human form (#814). Each site keeps its own `if (present.json) console.log(JSON.stringify(...))`, so the JSON branch stays visible to the guard test. */
-    const human = (render: (data: any, columns?: number, now?: number) => Span[][], data: unknown) => printOutput(render(data, present!.columns, Date.now()), present!.color);
+    const human = (render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][], data: unknown) => printOutput(render(data, present!.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), present!.color);
     const sub = args[0], id = args[1] === undefined ? undefined : Number(args[1]);
     if (sub === "configure") {
       const parsed = takeFlags(args.slice(1), ["--mode", "--required-checks"], []);
@@ -2295,7 +2295,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (!reply.ok) fail(reply.error);
         const view = { task: reply.task, mode: reply.mode, ran: reply.ran, decision: reply.decision, ...(reply.argv ? { argv: reply.argv } : {}), ...(reply.refused ? { refused: reply.refused } : {}), ...(reply.result ? { result: reply.result } : {}) };
         if (display.json) console.log(JSON.stringify(view, null, 2));
-        else printOutput(renderSdlcMerge(view, display.columns, Date.now()), display.color);
+        else printOutput(renderSdlcMerge(view, display.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), display.color);
         if (reply.decision === "refused" || reply.ran && reply.result?.state !== "merged") process.exitCode = 1;
       } finally { hub.close(); }
       return;
