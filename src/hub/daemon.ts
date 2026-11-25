@@ -1,3 +1,5 @@
+import { PeerActivityTracker } from "./peer-activity.ts";
+import { codexActivityServers } from "../adapters/definitions/native-activity.ts";
 import { QuotaEventFilter } from "./quota-events.ts";
 import { piFailureText } from "./pi-failure.ts";
 import { nativeReviewerQuota } from "../adapters/definitions/native-quota.ts";
@@ -1900,6 +1902,12 @@ export async function startDaemon(opts: DaemonOptions) {
   const presenceOnlyDelivery = (envs: readonly Envelope[]): boolean => envs.length === 0 || envs.every(env => env.from === HUB && env.kind === "presence");
   let remotePending = (_room: string): readonly string[] => [];
   let remoteQueueChanged = () => {};
+  const activities = new PeerActivityTracker();
+  const activityPrivate = (peer: PeerId) => contextPii(peer) || reviewObserverHeld(peer)
+    || board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state)
+      && task.signals.some(signal => signal === "pii" || signal === "pii_path"))
+    || bus.lastDeliveredTo(peer).some(env => env.private || isReviewObserverExcluded(env)
+      || (env.refs?.task ? board.get(Number(env.refs.task))?.signals.some(signal => signal === "pii" || signal === "pii_path") : false));
   const bus: Bus = new Bus({ rostered: membershipAllowed, ...busReaders, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
     beforeReviewInputHandoff: (peer, envs) => {
       const owner = bus.peers.get(peer);
@@ -1923,6 +1931,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return sender === USER ? false : !bus.peers.has(sender) || !!turns.get(sender)?.private || contextPii(sender);
     },
     doing: (peer, kind, text) => observeDoing(peer, kind, text),
+    activity: (peer, kind) => activities.observe(peer, kind, () => activityPrivate(peer)),
     reviewObserverScope: peer => readReviewObserverScope ? readReviewObserverScope(peer) : "review-scope-unavailable",
     reviewObserverInputExcluded: (peer, envs) => reviewInputHeld(peer, envs) || reviewObserverInput(peer),
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
@@ -7914,7 +7923,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (crashLostIds.size) { try { for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review" && crashLostIds.has(row.id)) inFlight++; } catch { inFlight = crashLostIds.size; } }
     return openCrashNotices(crashNotices, { attached, inFlight });
   };
-  const status = (includeAttentionItems = false, includeAttentionInput = false, includeDoing = false, includeIncomingLabels = false) => {
+  const status = (includeAttentionItems = false, includeAttentionInput = false, includeDoing = false, includeIncomingLabels = false, includeActivity = false) => {
     const taskNeeds = board.statusTasks();
     const ownerIsolation = ownerIsolationProjection();
     const taskStalls = tasks.stalled({ ownerIsolation });
@@ -8018,6 +8027,11 @@ export async function startDaemon(opts: DaemonOptions) {
     };
     // #878: live readers only (the status reply, the dashboard); writeStatus never asks, so status.json never holds it.
     if (includeDoing) for (const [id, doing] of Object.entries(doingRows(peerIds, includeIncomingLabels))) Object.assign(view.peers[id]!, { doing });
+    if (includeActivity) for (const id of peerIds) {
+      if (bus.stateOf(id) !== "busy") continue;
+      const activity = activities.view(id, () => activityPrivate(id));
+      if (activity) Object.assign(view.peers[id]!, { activity });
+    }
     const peerNeeds: Record<string, NonNullable<NeedsInput["peers"]>[string]> = Object.fromEntries(Object.entries(view.peers).map(([peer, row]) => [peer, { state: row.state, attached: row.attached, needsReview: row.needsReview, heldBy: row.heldBy }]));
     // Lazy legacy peer lists need not contain a persisted owner that is now offline.
     for (const task of taskNeeds) if (task.owner && task.owner !== USER && task.owner !== HUB && !Object.hasOwn(peerNeeds, task.owner)) {
@@ -9356,6 +9370,7 @@ export async function startDaemon(opts: DaemonOptions) {
       actionBudgets.revoke(peer);
       startCurrent?.();
       const codex: CodexPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["codex-appserver"]({
+        activityServers: codexActivityServers(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), executionCwd),
         getModelOverride: () => modelSelection(peer),
         onNativeModelApplied: model => { if (!stopping && bus.peers.get(peer) === codex && isNativeModelToken(model)) {
           try { modelLatches.observeNative(peer, codex, model); } catch { modelLatches.forget(peer); }
@@ -13732,7 +13747,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: false, error: "unknown room operation" });
       }
       case "status": {
-        const current = status(c.role === "console", false, true, c.role === "console" || (c.role === "tools" || c.role === "peer") && c.peer === conductorPeer(config.roles));
+        const current = status(c.role === "console", false, true, c.role === "console" || (c.role === "tools" || c.role === "peer") && c.peer === conductorPeer(config.roles), c.role === "console");
         if ((c.role === "console" || c.role === "tools") && msg.specs === true) {
           const summary = projectSpecs.status();
           if (summary) {

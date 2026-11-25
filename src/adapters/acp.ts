@@ -1,3 +1,4 @@
+import { nativeActivity, type ActivityTable } from "./definitions/native-activity.ts";
 import { activityText, updateActivity, type Activity, type ActivityKind } from "../hub/activity.ts";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -172,6 +173,7 @@ export interface AcpOptions {
   onToolCeiling?: (info: { ceilingMs: number }) => void;
   /** Transient person-only stream; no native update escapes through another observer. */
   onActivity?: (item: Activity) => void;
+  activityKinds?: ActivityTable;
   isPrivateTurn?: () => boolean;
   log?: (line: string) => void;
 }
@@ -360,6 +362,7 @@ export class AcpPeer extends BasePeer {
   constructor(
     id: PeerId,
     private readonly opts: AcpOptions,
+    private readonly activityKinds = opts.activityKinds,
   ) {
     super(id, opts.watchdogMs);
     this.modelPolicy = opts.modelPolicy ? Object.freeze({ ...opts.modelPolicy, admission: Object.freeze({ ...opts.modelPolicy.admission }) }) : undefined;
@@ -957,6 +960,8 @@ export class AcpPeer extends BasePeer {
       // console would be asked to approve a bare tool name. Keep what the call said it would run (issue #31).
       // Kimi 2.1.1 sends no rawInput before the answer either: the argument JSON streams as content text (issue #72).
       else if ((u?.sessionUpdate === "tool_call" || u?.sessionUpdate === "tool_call_update") && typeof u.toolCallId === "string") {
+        if (this.activityKinds && typeof this.sessionId === "string" && msg.params?.sessionId === this.sessionId && u.sessionUpdate === "tool_call" && u.status !== "completed" && u.status !== "failed")
+          this.onActivity?.(nativeActivity(this.activityKinds, u.kind));
         // A new call starts clean, so a reused id can never show the arguments or identity of the call before it.
         if (u.sessionUpdate === "tool_call") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId));
         if (u.rawInput !== undefined) this.toolInputs.set(u.toolCallId, u.rawInput);

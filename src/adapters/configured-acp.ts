@@ -1,3 +1,4 @@
+import { ACP_ACTIVITY } from "./definitions/native-activity.ts";
 import { basename } from "node:path";
 import { types } from "node:util";
 import { AcpPeer } from "./acp.ts";
@@ -148,6 +149,7 @@ export function configuredAcpDefinitions(raw: unknown, builtinKinds: readonly st
           if (!identity) throw new Error(`${kind}: native identity is unverified; configure the observed name/version pin before starting`);
           return new AcpPeer(context.instance, { ...context.daemon.acp, kind, cmd: [...argv], qwen025: false,
             expectedAgent: identity, requireLoadSessionEcho: true, requireOwnedGroup: true,
+            activityKinds: ACP_ACTIVITY,
             permissionMode: context.permission === "read-only" ? "ask" : context.permission,
             nativePolicy: { ...nativePolicy, lockedReadOnly: context.permission === "read-only" }, mcpServers: context.mcpServers });
         },

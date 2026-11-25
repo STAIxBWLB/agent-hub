@@ -1,3 +1,4 @@
+import type { ActivityKind } from "./peer-activity.ts";
 import { isDeliveryFailureCause, type DeliveryFailureCause } from "./delivery-failure.ts";
 import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { remoteEnvelope, appendNote, DIGEST, frame, HUB, USER, isInvocationKind, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
@@ -93,6 +94,7 @@ export interface BusOptions {
   onImportantQueued?: (peer: PeerId, counts: { queued: number; important: number }) => void;
   /** Optional (#878): an attached adapter observed its session title or current plan item. Never published, journaled or tapped. */
   doing?: (peer: PeerId, kind: DoingKind, text?: unknown) => void;
+  activity?: (peer: PeerId, kind: ActivityKind | undefined) => void;
 }
 
 /** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
@@ -321,7 +323,15 @@ export class Bus {
     this.peers.set(peer.id, peer);
     if (!this.queues.has(peer.id)) this.queues.set(peer.id, []);
     peer.onDelivery = (receipt) => { if (this.peers.get(peer.id) === peer) this.deliveryReceipt(peer.id, receipt); };
-    peer.onDoing = (kind, text) => { if (kind === "reset") this.clearReviewProvenance(peer.id); if (!this.closed && this.peers.get(peer.id) === peer) this.opts.doing?.(peer.id, kind, text); };
+    peer.onActivity = kind => {
+      if (!this.closed && this.peers.get(peer.id) === peer && (kind === undefined || peer.state === "busy"))
+        this.opts.activity?.(peer.id, kind);
+    };
+    peer.onDoing = (kind, text) => {
+      if (kind === "reset") { this.clearReviewProvenance(peer.id); peer.onActivity?.(undefined); }
+      if (!this.closed && this.peers.get(peer.id) === peer) this.opts.doing?.(peer.id, kind, text);
+    };
+    this.opts.activity?.(peer.id, undefined);
     this.opts.doing?.(peer.id, "reset"); // a new adapter never shows what the one it replaces was doing
     // A final still traverses the current onMessage observer exactly once. This one-shot
     // marker is host-local, never a caller-supplied envelope or wire field.
@@ -458,6 +468,7 @@ export class Bus {
       if (peer.state === "offline" && this.journal) {
         for (const [id, owner] of [...this.activeDeliveries]) if (owner === peer.id) this.uncertain(peer.id, id, "peer disconnected before delivery settlement", "peer offline");
       }
+      if (peer.state !== "busy") this.opts.activity?.(peer.id, undefined);
       this.emit({ t: "state", peer: peer.id, state: this.stateOf(peer.id) });
       void this.drain(peer.id);
     };
@@ -1681,7 +1692,7 @@ export class Bus {
   }
 
   /** A confirmed new native session invalidates only this session's current-input cache; durable named-parent rows remain. */
-  resetLastDelivery(peer: PeerId): void { this.lastDelivery.delete(peer); this.lastPulled.delete(peer); }
+  resetLastDelivery(peer: PeerId): void { this.lastDelivery.delete(peer); this.lastPulled.delete(peer); this.opts.activity?.(peer, undefined); }
 
   /**
    * Take back an envelope that has not been delivered yet (a request that has expired). True when it was removed from a

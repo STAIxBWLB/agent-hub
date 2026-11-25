@@ -2123,6 +2123,7 @@ class BasePeer {
   onFailed;
   onDelivery;
   onDoing;
+  onActivity;
   _state = "offline";
   timer;
   nextWatchdogMs;
@@ -4854,6 +4855,68 @@ var init_kimi_review = __esm(() => {
   };
 });
 
+// src/adapters/definitions/native-activity.ts
+function nativeActivity(table, kind, fallback = "unknown") {
+  return typeof kind === "string" && Object.hasOwn(table, kind) ? table[kind] : fallback;
+}
+function codexItemActivity(kind, server, servers) {
+  if (typeof kind !== "string" || CODEX_NON_TOOLS.has(kind))
+    return;
+  if (kind === "mcpToolCall" && typeof server === "string")
+    return servers.get(server) ?? "network";
+  return nativeActivity(CODEX_ACTIVITY, kind);
+}
+var CODEX_ACTIVITY, CODEX_NON_TOOLS, ACP_ACTIVITY, LOCAL_ACTIVITY, CONFIG_BYTES;
+var init_native_activity = __esm(() => {
+  CODEX_ACTIVITY = Object.freeze({
+    commandExecution: "shell",
+    fileChange: "files",
+    mcpToolCall: "network",
+    dynamicToolCall: "unknown",
+    collabAgentToolCall: "agents",
+    webSearch: "network",
+    imageView: "files",
+    imageGeneration: "model"
+  });
+  CODEX_NON_TOOLS = new Set([
+    "userMessage",
+    "agentMessage",
+    "plan",
+    "reasoning",
+    "contextCompaction",
+    "enteredReviewMode",
+    "exitedReviewMode"
+  ]);
+  ACP_ACTIVITY = Object.freeze({
+    read: "files",
+    edit: "files",
+    delete: "files",
+    move: "files",
+    search: "files",
+    execute: "shell",
+    think: "model",
+    fetch: "network",
+    switch_mode: "agents",
+    other: "unknown"
+  });
+  LOCAL_ACTIVITY = Object.freeze({
+    read: "files",
+    write: "files",
+    edit: "files",
+    doc_read: "files",
+    bash: "shell",
+    git: "shell",
+    web_fetch: "network",
+    hub_send: "hub",
+    hub_invoke: "agents",
+    hub_remember: "memory",
+    hub_memory_search: "memory",
+    hub_memory_show: "memory",
+    hub_memory_graph: "memory"
+  });
+  CONFIG_BYTES = 64 * 1024;
+});
+
 // src/adapters/definitions/native-context.ts
 function claudeContext(value, sessionId, measuredAt) {
   const c = object4(value);
@@ -5390,6 +5453,7 @@ function jsonObject(text) {
 }
 var ACTION_BUDGET_OPTION = "agent-hub:action-budget", HANDSHAKE_MS = 30000, EARLY_COMMANDS_MAX = 8, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, ACTIVITY_BATCH_MS = 50, managedLaunches, RpcTimeoutError, AcpPeer;
 var init_acp = __esm(() => {
+  init_native_activity();
   init_envelope();
   init_kimi_native();
   init_qwen_native();
@@ -5407,6 +5471,7 @@ var init_acp = __esm(() => {
   };
   AcpPeer = class AcpPeer extends BasePeer {
     opts;
+    activityKinds;
     deliveryOnly = true;
     hubOwned = true;
     form = "headless";
@@ -5531,9 +5596,10 @@ var init_acp = __esm(() => {
         wait.abort();
       this.permissionWaits.clear();
     }
-    constructor(id, opts) {
+    constructor(id, opts, activityKinds = opts.activityKinds) {
       super(id, opts.watchdogMs);
       this.opts = opts;
+      this.activityKinds = activityKinds;
       this.modelPolicy = opts.modelPolicy ? Object.freeze({ ...opts.modelPolicy, admission: Object.freeze({ ...opts.modelPolicy.admission }) }) : undefined;
       if (opts.modelSetterTimeoutMs !== undefined && (!Number.isSafeInteger(opts.modelSetterTimeoutMs) || opts.modelSetterTimeoutMs <= 0 || opts.modelSetterTimeoutMs > HANDSHAKE_MS))
         throw new Error("ACP model acknowledgement deadline must fit the handshake bound");
@@ -6230,6 +6296,8 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
         if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text")
           this.chunks.push(u.content.text);
         else if ((u?.sessionUpdate === "tool_call" || u?.sessionUpdate === "tool_call_update") && typeof u.toolCallId === "string") {
+          if (this.activityKinds && typeof this.sessionId === "string" && msg.params?.sessionId === this.sessionId && u.sessionUpdate === "tool_call" && u.status !== "completed" && u.status !== "failed")
+            this.onActivity?.(nativeActivity(this.activityKinds, u.kind));
           if (u.sessionUpdate === "tool_call")
             this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId);
           if (u.rawInput !== undefined)
@@ -6403,6 +6471,7 @@ var PAUSED_USAGE_POLL_MS = 60000, UNIDENTIFIED_CANCELLATION_NOTICE = "Codex canc
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }, TRACKED, CodexPeer;
 var init_codex_appserver = __esm(() => {
+  init_native_activity();
   init_native_quota();
   init_model_token();
   init_envelope();
@@ -7448,6 +7517,7 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
         return;
       }
       if (method === "turn/started") {
+        this.onActivity?.(undefined);
         this.reroutedModel = undefined;
         link.rejectedModelSelection = undefined;
         for (const start of link.modelStarts.values())
@@ -7462,6 +7532,12 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
         this.setState("busy");
         if (params.turn?.id)
           this.opts.onTurn?.(params.turn.id);
+      } else if (method === "item/started") {
+        if (typeof params.turnId !== "string" || !this.activeTurns.has(params.turnId))
+          return;
+        const kind = this.opts.activityServers && codexItemActivity(params.item?.type, params.item?.server, this.opts.activityServers);
+        if (kind !== undefined)
+          this.onActivity?.(kind);
       } else if (method === "item/agentMessage/delta") {
         if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn())
           return;
@@ -7485,6 +7561,8 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
         if (item.phase !== "commentary" && text.trim())
           this.lastAnswer = text.trim();
       } else if (method === "turn/completed") {
+        if (typeof nativeId === "string" && this.activeTurns.has(nativeId))
+          this.onActivity?.(undefined);
         const nativeTurn = params.turn?.id;
         this.abortActionWaits(link, typeof nativeTurn === "string" ? nativeTurn : undefined);
         if (!this.activeTurns.size || typeof nativeTurn === "string" && !this.activeTurns.has(nativeTurn) && ![...this.activeTurns].some((id) => id.startsWith("unknown:")))
@@ -7719,7 +7797,7 @@ var init_jcode = __esm(() => {
     preserveRoot = false;
     stopPromise;
     tuiServed = false;
-    constructor(jcode) {
+    constructor(jcode, activityKinds) {
       if (!isAbsolute4(jcode.home))
         throw new Error("jcode_home must be an absolute native data path");
       const peer = jcode.peer ?? "jcode";
@@ -7727,7 +7805,7 @@ var init_jcode = __esm(() => {
       const root = mkdtempSync3(join9(tmpdir3(), "ahub-jcode-")), socket = join9(root, "j.sock");
       const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile, jcode.provider, peer);
       const launchId = crypto.randomUUID();
-      super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], preamble: jcodePreamble(jcode.preamble), requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
+      super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], preamble: jcodePreamble(jcode.preamble), requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } }, activityKinds);
       this.jcode = jcode;
       this.root = root;
       this.socket = socket;
@@ -19949,6 +20027,7 @@ var HISTORY_CHARS = 1e5, TURN_CHARS = 120000, SIDE_EFFECTS2, ExecutionBudgetStop
 ].filter(Boolean).join(`
 `), probeSchemas = () => TOOL_SCHEMAS.filter((tool) => ["read", "write", "edit"].includes(tool.function.name)), LocalPeer;
 var init_local_worker = __esm(() => {
+  init_native_activity();
   init_model_token();
   init_memory_policy();
   init_decision();
@@ -20355,6 +20434,8 @@ var init_local_worker = __esm(() => {
           for (const call of res.message.tool_calls) {
             const alive = this.probeConfinement ? undefined : setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), 30000);
             const name = call.function.name;
+            if (!this.probeConfinement)
+              this.onActivity?.(nativeActivity(LOCAL_ACTIVITY, name, TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name) ? "hub" : "unknown"));
             try {
               await this.requireBudget(envs, "tool_calls");
               if (turnSignal.aborted)
@@ -21456,7 +21537,7 @@ function createKimi(ctx) {
   if (ctx.permission === "read-only")
     throw new Error("Kimi has no verified read-only permission mapping");
   const { AcpPeer } = (init_acp(), __toCommonJS(exports_acp));
-  return new AcpPeer(ctx.instance, ctx.daemon.acp);
+  return new AcpPeer(ctx.instance, ctx.daemon.acp, ACP_ACTIVITY);
 }
 function createJcode(ctx) {
   if (!("jcode" in ctx.daemon))
@@ -21464,7 +21545,7 @@ function createJcode(ctx) {
   if (ctx.permission === "read-only")
     throw new Error("Jcode has no verified read-only permission mapping");
   const { JcodePeer } = (init_jcode(), __toCommonJS(exports_jcode));
-  return new JcodePeer(ctx.daemon.jcode);
+  return new JcodePeer(ctx.daemon.jcode, ACP_ACTIVITY);
 }
 function createQwenDual(ctx) {
   if (!("qwenDual" in ctx.daemon))
@@ -21529,6 +21610,7 @@ function createClaudeImplementer(ctx) {
 }
 var DAEMON_PORTS;
 var init_native_factories = __esm(() => {
+  init_native_activity();
   DAEMON_PORTS = {
     "codex-appserver": (options) => ({ codex: options }),
     acp: (options) => ({ acp: options }),
@@ -24372,6 +24454,7 @@ function configuredAcpDefinitions(raw, builtinKinds) {
             expectedAgent: identity,
             requireLoadSessionEcho: true,
             requireOwnedGroup: true,
+            activityKinds: ACP_ACTIVITY,
             permissionMode: context.permission === "read-only" ? "ask" : context.permission,
             nativePolicy: { ...nativePolicy, lockedReadOnly: context.permission === "read-only" },
             mcpServers: context.mcpServers
@@ -24395,6 +24478,7 @@ var fail = (field, reason) => {
   throw new Error(`${field}: ${reason}`);
 }, CONFIGURED_ACP_RESERVED_COMMANDS, MODES, ROLES;
 var init_configured_acp = __esm(() => {
+  init_native_activity();
   init_acp();
   init_configured_print();
   CONFIGURED_ACP_RESERVED_COMMANDS = Object.freeze(["help", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "recovery-run", "upgrade", "restart", "recovery", "models", "say", "queue", "watch", "tail", "budget", "backlog", "release", "board", "sdlc", "task", "review", "remember", "ask", "route", "pause", "resume", "stop", "permission", "roster", "settings", "permit", "pet", "status", "logs", "export", "bench", "memory", "goal", "research", "report", "facts", "check-path", "turns", "undo", "kill", "reset", "role", "doctor"]);

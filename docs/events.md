@@ -209,3 +209,12 @@ native turn ids; observations without one still contribute progress dimensions b
 or the eight-turn spinning threshold.
 
 Quota rows record the first reading, material changes and a 15-minute heartbeat; pending last readings are flushed before a long silence or clean shutdown. `ahub report` counts recorded quota rows and hard rows, not provider polls. JSON retains `quota.readings` and `quota.hard`.
+
+## Derived peer activity
+
+Live console status may include a busy peer's current activity kind and start
+time. The hub derives the kind from a closed native-tool category, without using
+command text, file paths, URLs or tool arguments. Private and PII turns omit the
+field. The value lives only in daemon memory for the current turn and is cleared
+on turn end, reset or adapter replacement. Activity is never written to the
+database, event journal, log, snapshot, envelope, memory capture or prompt.

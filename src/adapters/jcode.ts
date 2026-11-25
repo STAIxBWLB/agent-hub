@@ -1,3 +1,4 @@
+import type { ActivityTable } from "./definitions/native-activity.ts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { assessVersion, COMPAT, type CompatVerdict } from "./compat.ts";
 import { createConnection } from "node:net";
@@ -226,7 +227,7 @@ export class JcodePeer extends AcpPeer {
   /** #1085: a ready TUI launch was served for this owned launch, so the person is on the way to its TUI. */
   private tuiServed = false;
 
-  constructor(private readonly jcode: JcodeOptions) {
+  constructor(private readonly jcode: JcodeOptions, activityKinds?: ActivityTable) {
     if (!isAbsolute(jcode.home)) throw new Error("jcode_home must be an absolute native data path");
     const peer = jcode.peer ?? "jcode";
     jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
@@ -236,7 +237,7 @@ export class JcodePeer extends AcpPeer {
     const launchId = crypto.randomUUID();
     // The ACP child gets peerChildEnv(this.id): the instance id, so its hub tools act as this peer and never as the base Jcode. The launch id
     // goes with it: the daemon admits a hub-tools hello for this peer only when it carries the id of this peer's current owned launch (#368).
-    super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], preamble: jcodePreamble(jcode.preamble), requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
+    super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], preamble: jcodePreamble(jcode.preamble), requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } }, activityKinds);
     this.root = root; this.socket = socket; this.launchId = launchId;
   }
 

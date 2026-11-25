@@ -1,3 +1,4 @@
+import { ACP_ACTIVITY } from "./native-activity.ts";
 import type { CreateContext, DaemonEngine, DaemonPorts } from "../registry-types.ts";
 import type { PeerAdapter } from "../../hub/peers.ts";
 
@@ -14,14 +15,14 @@ export function createKimi(ctx: CreateContext): PeerAdapter {
   if (!("acp" in ctx.daemon)) throw new Error("Kimi requires its ACP transport options");
   if (ctx.permission === "read-only") throw new Error("Kimi has no verified read-only permission mapping");
   const { AcpPeer } = require("../acp.ts") as typeof import("../acp.ts");
-  return new AcpPeer(ctx.instance, ctx.daemon.acp);
+  return new AcpPeer(ctx.instance, ctx.daemon.acp, ACP_ACTIVITY);
 }
 
 export function createJcode(ctx: CreateContext): PeerAdapter {
   if (!("jcode" in ctx.daemon)) throw new Error("Jcode requires its Jcode transport options");
   if (ctx.permission === "read-only") throw new Error("Jcode has no verified read-only permission mapping");
   const { JcodePeer } = require("../jcode.ts") as typeof import("../jcode.ts");
-  return new JcodePeer(ctx.daemon.jcode);
+  return new JcodePeer(ctx.daemon.jcode, ACP_ACTIVITY);
 }
 
 export function createQwenDual(ctx: CreateContext): PeerAdapter {
