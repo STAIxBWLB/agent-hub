@@ -35,18 +35,18 @@ export interface OverviewInput {
   now: number;
 }
 
-export interface OverviewWeek { start: number; proposed: number; done: number }
-export interface OverviewDay { start: number; events: number }
-export interface OverviewPeerHealth {
+interface OverviewWeek { start: number; proposed: number; done: number }
+interface OverviewDay { start: number; events: number }
+interface OverviewPeerHealth {
   peer: string;
   /** First-pass approvals over the window: `n` known tasks, `unknown` tasks with no verdict yet, `rate` null when none is known. */
   firstPass: { n: number; unknown: number; rate: number | null };
   /** Turns ended in error is not on the board (it lives in the event log), so it is unknown here, never 0. */
   turnErrors: null;
 }
-export interface OverviewWorkload { peer: string; states: Record<string, number>; open: number }
-export interface OverviewTrouble { task: number; title: string; kind: "check failed" | "changes_requested" | "stall"; at: number | null }
-export interface OverviewView {
+interface OverviewWorkload { peer: string; states: Record<string, number>; open: number }
+interface OverviewTrouble { task: number; title: string; kind: "check failed" | "changes_requested" | "stall"; at: number | null }
+interface OverviewView {
   throughput: OverviewWeek[];
   pulse: OverviewDay[];
   health: OverviewPeerHealth[];
