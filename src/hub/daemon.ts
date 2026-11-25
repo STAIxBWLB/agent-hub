@@ -4320,7 +4320,6 @@ export async function startDaemon(opts: DaemonOptions) {
   // hub's own roll-up, so it is what the hub counted, never an estimate; the counts are what this daemon observed on the
   // card's turns (memory entries read, proposals filed) and are written to the board as counts only when the card is done.
   const reviewCounts = new Map<number, { notes: number; corrections: number; remembered: number }>();
-  const reviewStopped = new Set<number>();
   const REVIEW_WEEK_MS = 7 * 86_400_000;
   const reviewCount = (task: number, field: "notes" | "corrections" | "remembered", by = 1): void => {
     const row = reviewCounts.get(task) ?? { notes: 0, corrections: 0, remembered: 0 };
@@ -4339,24 +4338,19 @@ export async function startDaemon(opts: DaemonOptions) {
   const reviewCountLine = (card: Task): string => memoryReviewCountLine({ ...(reviewCounts.get(card.id) ?? { notes: 0, corrections: 0, remembered: 0 }), tokens: reviewCountedTokens([card.id]) });
   /**
    * The stop itself: a counted spend at either cap asks the owner for one checkpoint and then escalates the card with reason
-   * `budget`, through the ordinary escalation path, so the board records who moved it and why. Each card stops once.
+   * `budget`, through the ordinary escalation path, so the board records who moved it and why. Each card stops once: the stop
+   * is read from the card's own history, so it survives a daemon restart and a second turn cannot escalate it again.
    */
-  const reviewBudgetAfterTurn = async (peer: PeerId, taskIds: readonly number[], tokens: number): Promise<void> => {
+  const reviewBudgetAfterTurn = async (peer: PeerId, taskIds: readonly number[]): Promise<void> => {
     const caps = config.memory.review;
     if (caps?.enabled !== true || !taskIds.length) return;
-    const cards = [...new Set(taskIds)].map(id => board.get(id)).filter((task): task is Task => !!task && memoryReviewTask(task) && !isClosedTaskState(task.state));
+    // Only the run's own owner: a reviewer's turn that names the card spends the reviewer's tokens, not the review's.
+    const cards = [...new Set(taskIds)].map(id => board.get(id)).filter((task): task is Task => !!task && task.owner === peer && memoryReviewTask(task) && !isClosedTaskState(task.state));
     if (!cards.length) return;
-    // A person's execution budget covering the card is the same meter, with its own limit; the review's caps are beside it.
-    // A refusal there records nothing, so it is reported rather than dropped: the review's own cap still governs the stop.
-    if (tokens > 0) try {
-      const refused = executionBudget.admitTasks(cards.map(card => card.id), peer, "tokens", tokens).find(decision => !decision.allowed);
-      if (refused) log(`review budget admission refused (${refused.reason ?? "exhausted"}) on ${refused.scope}: ${refused.used} of ${refused.limit ?? "no limit"}`);
-    } catch (error) { log(`review budget admission: ${(error as Error).message.slice(0, 120)}`); }
     for (const card of cards) {
-      if (reviewStopped.has(card.id)) continue;
+      if (card.history.some(entry => entry.event === "escalated" && entry.reason === "budget")) continue;
       const spend = reviewSpend(card), stop = reviewBudgetStop(spend, caps);
       if (!stop) continue;
-      reviewStopped.add(card.id);
       if (card.owner) bus.publish(newEnvelope(HUB, reviewCheckpointRequest(card.id, stop), { to: [card.owner], kind: "task", priority: "important", refs: { task: String(card.id) } }));
       try { await tasks.escalate(HUB, card.id, reviewBudgetNote(card.id, stop, spend), "budget"); }
       catch (error) { if (!(error instanceof AssignmentUndeliveredError)) notify(`memory review task #${card.id} reached its ${stop.cap} token cap but could not be escalated; inspect it with ahub task show`); return; }
@@ -8549,11 +8543,11 @@ export async function startDaemon(opts: DaemonOptions) {
         const nativeFactsTurn = nativeHookLaunches.current(e.peer) !== undefined && bus.peers.get(e.peer)?.pullOnly === true;
         const edits = turnEditsFor(e.peer, open, files); // Discard the tally even when a native completion is unconfirmed.
         if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}), ...noteObservedModel(e.peer, observedTurnModel(e.peer)), ...edits });
-        // #1329 AC5: the review's counted spend is admitted after the turn that spent it. Only a card among this turn's tasks
+        // #1329 AC5: the review's counted spend is checked after the turn that spent it. Only a card among this turn's tasks
         // reaches the stop, so an ordinary turn costs one lookup of the two live board states.
         if (open.tokens) {
           const reviewIds = [...new Set([...open.writeTasks.map(binding => binding.id), ...(open.attribution.task !== undefined ? [open.attribution.task] : [])])];
-          void reviewBudgetAfterTurn(e.peer, reviewIds, open.tokens).catch(reviewBudgetFailure);
+          void reviewBudgetAfterTurn(e.peer, reviewIds).catch(reviewBudgetFailure);
         }
         if (!nativeFactsTurn && definitionOf(e.peer)?.turnEnd !== "native-hook") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));

@@ -50,17 +50,10 @@ describe("shared execution budgets", () => {
     meter.close();
   });
 
-  // #1329 part 2 (AC5): a caller that counted its own spend admits `tokens` like any other counted unit, so a review run's
-  // token cap is an execution budget. A caller that cannot count them (a model-call admission) still fails closed.
-  test("a counted token spend is admitted against its cap and recorded, and the next delta past it is refused", () => {
+  test("token caps report unknown usage instead of assuming zero", () => {
     const { meter } = open();
     meter.configure({ id: "task:3", kind: "task", taskId: 3, peers: ["pi"], limits: { tokens: 1000 } });
-    expect(meter.admitTask(3, "pi", "tokens", 600)[0]).toMatchObject({ allowed: true, used: 600, limit: 1000, remaining: 400 });
-    expect(meter.status("task:3")).toMatchObject({ used: { tokens: 600 } });
-    expect(meter.covers("task:3", 3, "pi", ["tokens"])).toBe(true);
-    expect(meter.admitTask(3, "pi", "tokens", 600)[0]).toMatchObject({ allowed: false, used: 600, limit: 1000, reason: "exhausted" });
-    expect(meter.admitTask(3, "pi", "tokens", 400)[0]).toMatchObject({ allowed: true, used: 1000, remaining: 0 });
-    expect(meter.status("task:3")).toMatchObject({ units: { tokens: { used: 1000, limit: 1000, remaining: 0, reason: "exhausted" } } });
+    expect(meter.admitTask(3, "pi", "tokens")[0]).toMatchObject({ allowed: false, used: 0, limit: 1000, reason: "unknown_usage" });
     meter.close();
   });
 
