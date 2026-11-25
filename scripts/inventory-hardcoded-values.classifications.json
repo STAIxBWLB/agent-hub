@@ -1054,6 +1054,7 @@
   "src/hub/board.ts:perTask:inline:perTask=0#0": "operational",
   "src/hub/board.ts:readbackOfTask:inline:edit.length > 40=40#0": "contract",
   "src/hub/board.ts:readbackStamp:inline:value.length <= 40=40#0": "contract",
+  "src/hub/board.ts:readbacks:inline:readbacks=0#0": "operational",
   "src/hub/board.ts:ref:inline:row.id.length > 160=160#0": "contract",
   "src/hub/board.ts:ref:inline:row.path.length > 1000=1000#0": "contract",
   "src/hub/board.ts:ref:inline:row.reason.length > 1000=1000#0": "contract",
