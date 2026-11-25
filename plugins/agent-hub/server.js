@@ -14713,7 +14713,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.4"
     },
     dependencies: {
-      "@staix/agent-mem": ">=0.33.0 <1.0.0",
+      "@staix/agent-mem": ">=0.39.0 <1.0.0",
       "@staix/cli-output": "0.1.3"
     },
     devDependencies: {
@@ -15596,73 +15596,10 @@ var init_capture = __esm(() => {
   SPOOL_MAX_BYTES = 256 * 1024;
 });
 
-// node_modules/@staix/cli-output/src/index.ts
-function terminalText(value, options = {}) {
-  const text = String(value ?? "").replace(/\r\n?/g, `
-`).replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "").replace(/\x1b[P_X^][\s\S]*?(?:\x1b\\|$)/g, "").replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*(?:[@-~]|(?=\n|$))/g, "").replace(/\x1b[^\n]?/g, "");
-  return options.singleLine ? text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ") : text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
-}
-function paint(spans, color, styles = {}) {
-  return spans.map((span) => {
-    const text = terminalText(span.text);
-    const role = span.role && Object.hasOwn(ROLE_SGR, span.role) ? ROLE_SGR[span.role] : undefined;
-    const custom = span.style && Object.hasOwn(styles, span.style) ? styles[span.style] : undefined;
-    if (custom && !/^\x1b\[[0-9;]+m$/.test(custom))
-      throw new Error(`invalid SGR for style ${span.style}`);
-    const sgr = role !== undefined ? role : custom;
-    return color && sgr && text ? sgr + text + SGR_RESET : text;
-  }).join("");
-}
-var SGR_RESET = "\x1B[0m", ROLE_SGR, MARKERS, EXIT;
-var init_src = __esm(() => {
-  ROLE_SGR = Object.freeze({
-    header: "\x1B[1;34m",
-    section: "\x1B[1;35m",
-    key: "\x1B[34m",
-    value: "",
-    success: "\x1B[1;32m",
-    warning: "\x1B[1;33m",
-    error: "\x1B[1;31m",
-    hint: "\x1B[90m",
-    accent: "\x1B[36m"
-  });
-  MARKERS = Object.freeze({
-    ok: { glyph: "\u2713", ascii: "ok", role: "success" },
-    fail: { glyph: "\u2717", ascii: "x", role: "error" },
-    warn: { glyph: "\u26A0", ascii: "!", role: "warning" },
-    absent: { glyph: "-", ascii: "-", role: "hint" },
-    unknown: { glyph: "?", ascii: "?", role: "hint" },
-    pending: { glyph: "~", ascii: "~", role: "hint" },
-    active: { glyph: "*", ascii: "*", role: "success" },
-    next: { glyph: "\u2192", ascii: "->", role: "accent" }
-  });
-  EXIT = Object.freeze({ ok: 0, fail: 1, usage: 2, tempfail: 75 });
-});
-
-// node_modules/@staix/agent-mem/src/memory/style.ts
-function style(color, ascii = true) {
-  return {
-    color,
-    ascii,
-    ok: (text) => paint([{ role: "success", text }], color),
-    attention: (text) => paint([{ role: "warning", text }], color),
-    error: (text) => paint([{ role: "error", text }], color),
-    dim: (text) => paint([{ role: "hint", text }], color),
-    bold: (text) => paint([{ role: "value", text }], color)
-  };
-}
-var PLAIN, CLI_MEMORY_RENDER;
-var init_style = __esm(() => {
-  init_src();
-  PLAIN = style(false);
-  CLI_MEMORY_RENDER = Symbol("cli-memory-render");
-});
-
 // node_modules/@staix/agent-mem/src/memory/prune.ts
 var init_prune = __esm(() => {
   init_generation();
   init_store();
-  init_style();
 });
 
 // node_modules/@staix/agent-mem/src/memory/public-prune-witness.ts
@@ -15737,7 +15674,6 @@ var init_migrate = __esm(() => {
   init_platform();
   init_generation();
   init_curated_cache_state();
-  init_style();
 });
 
 // node_modules/@staix/agent-mem/src/memory/reader-lease.ts
@@ -15751,8 +15687,21 @@ var init_reader_lease = __esm(() => {
   open = new Map;
 });
 
+// node_modules/@staix/agent-mem/src/hook-resources.ts
+var init_hook_resources = () => {};
+
+// node_modules/@staix/agent-mem/src/memory/metrics.ts
+var METRICS_MAX_BYTES, HOOK_BYTES, SEARCH_BYTES, PHASE_BYTES;
+var init_metrics = __esm(() => {
+  init_hook_resources();
+  METRICS_MAX_BYTES = 128 * 1024;
+  HOOK_BYTES = 74 * 1024;
+  SEARCH_BYTES = 30 * 1024;
+  PHASE_BYTES = 6 * 1024;
+});
+
 // node_modules/@staix/agent-mem/src/memory/store.ts
-var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP, curatedDepth, curatedPending;
+var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP, curatedDepth, curatedPending, curatedRecovery;
 var init_store = __esm(() => {
   init_recap_scratch();
   init_brief_curated();
@@ -15780,12 +15729,14 @@ var init_store = __esm(() => {
   init_bridge();
   init_migrate();
   init_reader_lease();
+  init_metrics();
   DEFAULT_TTL_MS = 14 * 24 * 3600000;
   UNSETTLED_MS = 180 * 24 * 3600000;
   DEFAULT_LEASE_MS = 4 * 3600000;
   MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
   curatedDepth = new Map;
   curatedPending = new Map;
+  curatedRecovery = new Map;
 });
 
 // node_modules/@staix/agent-mem/src/memory/catalog.ts
@@ -15799,19 +15750,6 @@ var init_catalog = __esm(() => {
   init_sync_placement_guard();
 });
 
-// node_modules/@staix/agent-mem/src/hook-resources.ts
-var init_hook_resources = () => {};
-
-// node_modules/@staix/agent-mem/src/memory/metrics.ts
-var METRICS_MAX_BYTES, HOOK_BYTES, SEARCH_BYTES, PHASE_BYTES;
-var init_metrics = __esm(() => {
-  init_hook_resources();
-  METRICS_MAX_BYTES = 128 * 1024;
-  HOOK_BYTES = 74 * 1024;
-  SEARCH_BYTES = 30 * 1024;
-  PHASE_BYTES = 6 * 1024;
-});
-
 // node_modules/@staix/agent-mem/src/memory/capacity.ts
 var init_capacity = __esm(() => {
   init_home();
@@ -15820,8 +15758,74 @@ var init_capacity = __esm(() => {
   init_catalog();
   init_lifecycle();
   init_capture();
-  init_style();
+});
+
+// node_modules/@staix/cli-output/src/index.ts
+function terminalText(value, options = {}) {
+  const text = String(value ?? "").replace(/\r\n?/g, `
+`).replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "").replace(/\x1b[P_X^][\s\S]*?(?:\x1b\\|$)/g, "").replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*(?:[@-~]|(?=\n|$))/g, "").replace(/\x1b[^\n]?/g, "");
+  return options.singleLine ? text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ") : text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+}
+function paint(spans, color, styles = {}) {
+  return spans.map((span) => {
+    const text = terminalText(span.text);
+    const role = span.role && Object.hasOwn(ROLE_SGR, span.role) ? ROLE_SGR[span.role] : undefined;
+    const custom = span.style && Object.hasOwn(styles, span.style) ? styles[span.style] : undefined;
+    if (custom && !/^\x1b\[[0-9;]+m$/.test(custom))
+      throw new Error(`invalid SGR for style ${span.style}`);
+    const sgr = role !== undefined ? role : custom;
+    return color && sgr && text ? sgr + text + SGR_RESET : text;
+  }).join("");
+}
+var SGR_RESET = "\x1B[0m", ROLE_SGR, MARKERS, EXIT;
+var init_src = __esm(() => {
+  ROLE_SGR = Object.freeze({
+    header: "\x1B[1;34m",
+    section: "\x1B[1;35m",
+    key: "\x1B[34m",
+    value: "",
+    success: "\x1B[1;32m",
+    warning: "\x1B[1;33m",
+    error: "\x1B[1;31m",
+    hint: "\x1B[90m",
+    accent: "\x1B[36m"
+  });
+  MARKERS = Object.freeze({
+    ok: { glyph: "\u2713", ascii: "ok", role: "success" },
+    fail: { glyph: "\u2717", ascii: "x", role: "error" },
+    warn: { glyph: "\u26A0", ascii: "!", role: "warning" },
+    absent: { glyph: "-", ascii: "-", role: "hint" },
+    unknown: { glyph: "?", ascii: "?", role: "hint" },
+    pending: { glyph: "~", ascii: "~", role: "hint" },
+    active: { glyph: "*", ascii: "*", role: "success" },
+    next: { glyph: "\u2192", ascii: "->", role: "accent" }
+  });
+  EXIT = Object.freeze({ ok: 0, fail: 1, usage: 2, tempfail: 75 });
+});
+
+// node_modules/@staix/agent-mem/src/memory/style.ts
+function style(color, ascii = true) {
+  return {
+    color,
+    ascii,
+    ok: (text) => paint([{ role: "success", text }], color),
+    attention: (text) => paint([{ role: "warning", text }], color),
+    error: (text) => paint([{ role: "error", text }], color),
+    dim: (text) => paint([{ role: "hint", text }], color),
+    bold: (text) => paint([{ role: "value", text }], color)
+  };
+}
+var PLAIN, CLI_MEMORY_RENDER;
+var init_style = __esm(() => {
   init_src();
+  PLAIN = style(false);
+  CLI_MEMORY_RENDER = Symbol("cli-memory-render");
+});
+
+// node_modules/@staix/agent-mem/src/memory/capacity-text.ts
+var init_capacity_text = __esm(() => {
+  init_src();
+  init_style();
 });
 
 // node_modules/@staix/agent-mem/src/memory/usage.ts
@@ -15834,6 +15838,10 @@ var init_gc = __esm(() => {
   init_capture();
   init_catalog();
   init_lifecycle();
+});
+
+// node_modules/@staix/agent-mem/src/memory/gc-text.ts
+var init_gc_text = __esm(() => {
   init_src();
   init_style();
 });
@@ -15862,6 +15870,7 @@ var init_work_lists = __esm(() => {
   init_screen();
   init_private_spans();
   init_shard();
+  init_metrics();
   init_machine();
   init_brief_work();
   init_config();
@@ -15973,7 +15982,7 @@ var init_generation_sync = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-screen.ts
-var SYNC_SCREEN_MAX_BYTES, GENERATED;
+var SYNC_SCREEN_MAX_BYTES, GENERATED, deterministicScreens;
 var init_sync_screen = __esm(() => {
   init_ops_contract();
   init_store();
@@ -15982,6 +15991,7 @@ var init_sync_screen = __esm(() => {
   init_policy();
   SYNC_SCREEN_MAX_BYTES = 8 * 1024 * 1024;
   GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "promotedFrom", "supersedes", "expires", "tier", "scope", "kind", "source"]);
+  deterministicScreens = new WeakMap;
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-binding.ts
@@ -16025,7 +16035,6 @@ var init_sync_progress = __esm(() => {
   init_sync_placement_refusal_category();
   init_platform();
 });
-
 // node_modules/@staix/agent-mem/src/memory/report-text.ts
 var init_report_text = __esm(() => {
   init_src();
@@ -16051,6 +16060,7 @@ var init_forget_nearby = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/commands.ts
 var AMEM_NAMES, memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`, MEMORY_USAGE, goalUsage = (name = AMEM_NAMES.goal) => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`, GOAL_USAGE;
 var init_commands = __esm(() => {
+  init_sync_placement_bound();
   init_cli_attribution();
   init_store();
   init_sync();
@@ -16063,6 +16073,16 @@ var init_commands = __esm(() => {
   AMEM_NAMES = { memory: "amem", goal: "amem goal" };
   MEMORY_USAGE = memoryUsage();
   GOAL_USAGE = goalUsage();
+});
+
+// node_modules/@staix/agent-mem/src/memory/migrate-text.ts
+var init_migrate_text = __esm(() => {
+  init_style();
+});
+
+// node_modules/@staix/agent-mem/src/memory/prune-text.ts
+var init_prune_text = __esm(() => {
+  init_style();
 });
 
 // node_modules/@staix/agent-mem/src/memory/shard-migration.ts
@@ -16082,8 +16102,12 @@ var init_shard_migration = __esm(() => {
   init_store();
   init_curated_cache_state();
   init_migrate();
-  init_style();
   USER2 = Symbol("shared-user-shard");
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-migration-text.ts
+var init_shard_migration_text = __esm(() => {
+  init_style();
 });
 
 // node_modules/@staix/agent-mem/src/mcp.ts
@@ -16985,8 +17009,19 @@ var init_setup_owned = __esm(() => {
   qwenHookControls = new Set(["enabled", "disabled", "notifications"]);
 });
 
+// node_modules/@staix/agent-mem/src/setup-writer-roots.ts
+var SETUP_TARGETS, MAX2, JOURNAL_MAX;
+var init_setup_writer_roots = __esm(() => {
+  init_platform();
+  init_setup_owned();
+  init_setup_toml();
+  SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy"];
+  MAX2 = SETUP_CONFIG_BYTES;
+  JOURNAL_MAX = 12 * MAX2;
+});
+
 // node_modules/@staix/agent-mem/src/setup.ts
-var SETUP_TARGETS, SETUP_ALL_TARGETS, MAX2, JOURNAL_MAX, PACKAGE_JSON_MAX;
+var SETUP_ALL_TARGETS, PACKAGE_JSON_MAX;
 var init_setup = __esm(() => {
   init_skills_install();
   init_src();
@@ -16999,15 +17034,13 @@ var init_setup = __esm(() => {
   init_setup_paths();
   init_setup_jcode();
   init_hook_contract();
+  init_setup_writer_roots();
   init_sync_placement_effective_writers();
   init_sync_placement_guard();
   init_home();
   init_style();
   init_platform();
-  SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy"];
   SETUP_ALL_TARGETS = SETUP_TARGETS.filter((target) => target !== "agy");
-  MAX2 = SETUP_CONFIG_BYTES;
-  JOURNAL_MAX = 12 * MAX2;
   PACKAGE_JSON_MAX = 64 * 1024;
 });
 
@@ -17015,13 +17048,14 @@ var init_setup = __esm(() => {
 var init_sync_placement_writer_context = __esm(() => {
   init_platform();
   init_generation();
-  init_setup();
+  init_setup_writer_roots();
   init_sync_placement_guard();
   init_sync_placement_writers();
   init_sync_placement_effective_writers();
   init_sync_placement_prerequisites();
   init_formats();
   init_sync_placement_writer_revision_format();
+  init_sync_placement_refusal_category();
 });
 
 // node_modules/@staix/agent-mem/src/index.ts
@@ -17029,8 +17063,13 @@ var init_src2 = __esm(() => {
   init_platform();
   init_cli_attribution();
   init_search_fts();
+  init_capacity_text();
+  init_gc_text();
   init_platform();
   init_candidates();
+  init_migrate_text();
+  init_prune_text();
+  init_shard_migration_text();
   init_config();
   init_curated_brief_cache();
   init_sync_screen();
