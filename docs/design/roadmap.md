@@ -296,6 +296,10 @@ triaged again and an import mark only prevents a duplicate, so neither changes t
 
 `hub_roadmap_check` and `ahub roadmap check` report the eight rules in #1482. Issue state is fresh bounded GitHub metadata, never inferred from a task verdict. At most 100 issue reads share a 20-second deadline; unreadable or unvisited evidence remains unknown. A merged issue is reported open only after 24 hours, so GitHub's closing lag does not become a false finding. A public `feat:` or `feat(...)` task with no recorded spec issue is a feature finding. Missing issue identity is a separate finding. The result has at most 100 findings and says `truncated` when more exist.
 
+Rule 5 reports covering specs left unchanged without a recorded owner
+acknowledgement in the complete report for the merged head. Missing or
+unusable report evidence keeps the rule unknown for that task.
+
 `roadmap.github_mirror` defaults to false and `roadmap.github_write` to `off`; both are machine-local. The only other write value is `conductor`. `ahub roadmap sync` reads complete bounded all-state GitHub milestone and issue metadata, without issue bodies, and previews fixed `gh api` argument arrays. `--apply --confirm <fingerprint>` re-reads and rechecks the exact plan. The person may apply; the current rostered unique conductor may apply only with `github_write: "conductor"`. The operational audit and current caller, task, configuration, privacy and recovery fences remain in force. Incomplete pages, conflicting identity or withheld milestone membership refuse a plan. GitHub writes never delete a milestone, and a write whose effect cannot be confirmed is reported as uncertain rather than a safe retry.
 
 The current full issue inventory has a ceiling of 1000 rows including pull requests. At or above that ceiling it fails closed, so mirror sync is unavailable and drift rule 7 stays unknown. A future scoped read of each bound milestone's members and desired issues removes this ceiling.

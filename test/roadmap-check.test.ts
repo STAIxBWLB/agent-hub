@@ -109,3 +109,41 @@ test("an unrelated task write during an issue read does not invalidate roadmap e
     expect(result.findings.some(row => row.rule === 1)).toBe(false);
   } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("roadmap rule 5 excludes a recorded spec acknowledgement at the merged head", async () => {
+  const { Board } = await import("../src/hub/board.ts");
+  const { Bus } = await import("../src/hub/bus.ts");
+  const { Tasks } = await import("../src/hub/tasks.ts");
+  const { loadRouting } = await import("../src/hub/routing.ts");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { createHash } = await import("node:crypto");
+  const root = mkdtempSync(join(tmpdir(), "roadmap-spec-ack-"));
+  const board = new Board(join(root, "hub.db")), bus = new Bus({ batchMs: 0 });
+  const tasks = new Tasks({ cwd: root, board, bus, project: "fixture", routing: () => loadRouting(root), notify: () => {} });
+  try {
+    const milestone = board.newMilestone({ title: "Public", outcome: "Outcome" }, "user");
+    const head = "a".repeat(40), at = Date.now();
+    const binding = createHash("sha256").update(JSON.stringify(["", "", head])).digest("hex");
+    const spec = { id: "sample", path: "docs/design/sample.md", title: "Sample" };
+    const addMerged = (reason?: string) => {
+      const task = board.propose("user", { title: "fixture task", class: "implement" });
+      board.update(task.id, "codex", "accepted", { state: "in_progress", owner: "codex", refs: { commit: head } });
+      board.update(task.id, "codex", "done", { state: "approved", sdlc: { stage: "review",
+        mergeReadback: { repo: "example/repo", pr: task.id, head, at, state: "merged",
+          cost: { mergedAt: at, ciRuns: 1, ciReruns: 0, reviews: 0 } } } }, "fixture complete", {
+        specRefBinding: binding, specReport: { head, complete: true, errors: 0, changed: [],
+          unchanged: [{ ...spec, ...(reason === undefined ? {} : { reason }) }] },
+      });
+      board.linkMilestone(milestone.id, "task", String(task.id), "user", board.milestone(milestone.id)!.revision);
+      return task.id;
+    };
+    const reason = "The public contract is unchanged.";
+    const acknowledged = addMerged(reason);
+    const unacknowledged = addMerged();
+    const result = await tasks.roadmapCheck("user");
+    expect(result.findings.filter(row => row.rule === 5).map(row => row.items)).toEqual([[ `task:${unacknowledged}`, "spec:sample" ]]);
+    expect(board.get(acknowledged)?.history.findLast(row => row.event === "done")?.specReport?.unchanged).toEqual([{ ...spec, reason }]);
+  } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
+});

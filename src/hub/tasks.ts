@@ -3886,7 +3886,8 @@ export class Tasks {
         const merge = task.sdlc?.merge?.state === "merged" ? task.sdlc.merge : task.sdlc?.mergeReadback;
         const mergedAt = merge?.state === "merged" ? merge.cost?.mergedAt ?? undefined : task.sdlc?.pr && task.state === "approved" ? undefined : null;
         const report = merge?.state === "merged" ? this.currentSpecReport(task) : undefined;
-        const unchangedSpecs = mergedAt === null ? [] : report?.complete && report.errors === 0 && !report.truncated && report.head === merge?.head ? report.unchanged.map(row => row.id) : undefined;
+        const unchangedSpecs = mergedAt === null ? [] : report?.complete && report.errors === 0 && !report.truncated && report.head === merge?.head
+          ? report.unchanged.filter(row => !row.reason?.trim()).map(row => row.id) : undefined;
         return { id: task.id, state: task.state, issue, issueState, feature: /^feat(?:\([^)]*\))?:/i.test(task.title), specIssue: !!task.sdlc?.issue, mergedAt, unchangedSpecs };
       });
       const children = view.children.map(id => views.find(row => row.id === id));
