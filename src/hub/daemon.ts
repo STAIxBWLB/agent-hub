@@ -6680,7 +6680,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if ("marker" in plan) {
           // #1642 T3: exactly the one line the card's criterion names, and only while it is the checklist's own generated line.
           const removed = withoutChecklistLine(current, plan.marker);
-          if ("refused" in removed) throw new PreEffectToolRefusal(`${removed.refused}. ahub learn list --all shows the removal cards and their windows`);
+          if ("refused" in removed) throw new PreEffectToolRefusal(`${removed.refused}. ahub learn reject ${plan.id} closes this card; ahub learn list --all shows the removal cards and their windows`);
           const written = await settingsSet(LEARN_CHECKLIST.key, removed.list, "terminal", undefined, undefined, `ahub learn accept #${plan.id}: remove the checklist line`, LEARN_CHECKLIST);
           if (written.ok !== true) throw new PreEffectToolRefusal(`${written.error ?? "the checklist could not be written"}; the removal card stays open: fix what the error names, then run ahub learn accept on it again`);
           const closed = await tasks.learnClose(by, a.id, "accepted");
