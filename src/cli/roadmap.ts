@@ -1,7 +1,7 @@
 import { milestoneId, milestoneRevision, milestoneLinkRef, parseMilestoneInput, parseMilestonePatch, githubRepo, type MilestoneLinkKind } from "../hub/roadmap.ts";
 import { terminalText, wrap } from "./console-state.ts";
 
-const optionalFields = "[--horizon now|next|later] [--order <n>] [--target YYYY-MM-DD|none] [--parent <id>|none]";
+const optionalFields = "[--horizon now|next|later] [--order <n>] [--target <date>|none] [--parent <id>|none]";
 export const ROADMAP_FORMS = {
   list: "[list] [--json]", show: "show <id> [--json]",
   new: `new --title <text> --outcome <text> ${optionalFields}`,

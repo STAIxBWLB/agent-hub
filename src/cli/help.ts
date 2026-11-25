@@ -8,11 +8,11 @@ export interface HelpEntry { section: string; usage: string; description: string
 
 /** #1405: one source for the probe usage, read by `ahub help` and by the refusal of a malformed probe command. */
 export const GUIDANCE_PROBE_USAGE = {
-  register: "register --file JSON [--json]",
-  start: "start --id HASH --revision N [--variant G1-HASH] [--json]",
-  show: "show --id HASH [--json]",
-  receipts: "receipts --id HASH [--json]",
-  cancel: "cancel --id HASH --revision N [--json]",
+  register: "register --file <json> [--json]",
+  start: "start --id <hash> --revision <n> [--variant <variant-id>] [--json]",
+  show: "show --id <hash> [--json]",
+  receipts: "receipts --id <hash> [--json]",
+  cancel: "cancel --id <hash> --revision <n> [--json]",
 } as const;
 /** What to print when `ahub guidance probe ...` did not parse: the typed subcommand's own usage, or all five for an unknown one. */
 export function guidanceProbeUsage(args: readonly string[]): string {
@@ -60,7 +60,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub sdlc release-guard-hook <remote-name> <remote-url>", "internal pre-push readback; validates version tags and forwards exact stdin on success"],
     ["ahub sdlc accept <task> --issue <n> [--repo owner/repo]", "accept the task's spec issue at its current body; build entry needs it in enforce (person only)"],
     ["ahub sdlc accept-departure <task> <head> <reason...>", "accept current plan departures on that exact PR head (person only)"],
-    ["ahub sdlc plan-review <task> <revision> <reason...> [--review full|delta|none --reviewers N] [--ci full|focused|reuse]", "record planner review, scope and host-read issue metadata"],
+    ["ahub sdlc plan-review <task> <revision> <reason...> [--review full|delta|none --reviewers <n>] [--ci full|focused|reuse]", "record planner review, scope and host-read issue metadata"],
     ["ahub sdlc train report|configure|cut <release-id> [revision] [json]", "plan a release and freeze its approved scope after resource/quota admission"],
     ["ahub sdlc release-assign <task> <revision> <release-id|none> <reason...>", "assign approved/in-flight work without changing execution"],
     ["ahub sdlc costs [owner/repo] [--json] [--color=auto|always|never]", "read bounded planner cost metrics for linked merged PRs"],
@@ -115,7 +115,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub title <peer> <text...>", "person only: replace a Pi or local-worker session title; native-title peers rename in their own UI"],
     ["ahub queue list [--peer <id>] [--all] [--json] [--full] [--color=auto|always|never]", "inspect durable deliveries; open to any agent as public queue metadata, held bodies stay with the person or conductor; rows a resolution already settled (a retried parent, a discarded or completed row) are hidden and counted on stderr, --all shows them"],
     ["ahub queue show <delivery-id> [--json] [--color=auto|always|never]", "person or configured conductor: inspect one delivery and revision; agent output uses the public view"],
-    ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text> [--revision N] [--json] [--color=auto|always|never]", "person or configured conductor: resolve a queued or needs_review delivery; --revision binds the displayed row instead of a fresh show; a queued delivery can be discarded while its peer is busy, and a refusal names its cause"],
+    ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text> [--revision <n>] [--json] [--color=auto|always|never]", "person or configured conductor: resolve a queued or needs_review delivery; --revision binds the displayed row instead of a fresh show; a queued delivery can be discarded while its peer is busy, and a refusal names its cause"],
     ["ahub queue discard --peer <id> --reason <text> [--state queued|needs_review|failed] [--yes] [--json]", "person or configured conductor: without --yes count one peer's deliveries; with --yes discard them all with the reason, one recorded discard each. With no --state it takes the peer's queued and unsettled failed deliveries (a failed row a resolution already settled is left alone); --state names exactly one kind, needs_review only that way; other peers' queues are untouched"],
   ]],
   ["Tasks and review", [
@@ -156,10 +156,10 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub deliverables [--task <id>] [--approved] [--check] [--json] [--color=auto|always|never]", "what each task delivered and a reviewer approved, by id, hash and size (a path only where the PII screen allows); --check measures the files now and marks one changed since review; an agent sees only the tasks hub_task_show shows it"],
     ["ahub task show <id> [--json] [--full] [--color=auto|always|never] | escalate <id>", "full task with history (the person sees PII text, an agent the public view) / hand it to the next peer in escalate_to (person or configured conductor)"],
     ["ahub task role <id> <role|none>", "the person, or an agent on a task it owns: change bounded catalog guidance on an open task; routing and authority are unchanged"],
-    ["ahub task assign <id> <peer> [--role owner|reviewer|planner] [--revision N]", "name the owner (default), reviewer or person-only planner; a task that still waits reserves its owner; a peer that cannot take it is refused with the reason; --revision refuses stale console actions"],
-    ["ahub task unassign <id> [--role owner|reviewer] [--revision N]", "person or configured conductor: remove the owner/reservation or reviewer without routing a replacement or stopping native work; preserves the actual actor"],
+    ["ahub task assign <id> <peer> [--role owner|reviewer|planner] [--revision <n>]", "name the owner (default), reviewer or person-only planner; a task that still waits reserves its owner; a peer that cannot take it is refused with the reason; --revision refuses stale console actions"],
+    ["ahub task unassign <id> [--role owner|reviewer] [--revision <n>]", "person or configured conductor: remove the owner/reservation or reviewer without routing a replacement or stopping native work; preserves the actual actor"],
     ["ahub task claim <id> <slot> <supported|unsupported|unclear> [--model <label>] [--model-said <supported|unsupported|unclear>] [--manifest <manifest.json> --disposition <resolved|qualified>]", "person only: record your verdict on one declared plan claim (by its 1-based slot, never its text), with optional model agreement metadata; paired manifest/disposition fields bind an adjudicated or explicitly qualified research conclusion to the exact synthesis manifest; a later verdict for the slot replaces the earlier one"],
-    ["ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N] [--json] [--color=auto|always|never]", "the person, or an agent on its own task as hub_task_cancel allows: close obsolete work with a reason; retain its history without stopping native work or releasing dependents; eligibility follows the task-board policy"],
+    ["ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision <n>] [--json] [--color=auto|always|never]", "the person, or an agent on its own task as hub_task_cancel allows: close obsolete work with a reason; retain its history without stopping native work or releasing dependents; eligibility follows the task-board policy"],
     ["ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned [--created <time>]", "your later verdict on an approved task, kept in the research records (research must be on); an agent labels only a task it owns, and its record names it; --created is the person's"],
     ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]... [--head <sha>] [--findings <json>] [--security-pass <json>]", "give a review verdict on a task; the person can do the same in ahub console: Tasks, select the task, r, then a (approve) or c (request changes, with a note)"],
     ["ahub review brief <id>", "print the review brief of a task's commit: reviewable and excluded files, rules, coverage to account for"],
@@ -177,13 +177,13 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ]],
   ["History and reports", [
     [`ahub guidance probe ${Object.values(GUIDANCE_PROBE_USAGE).join(" | ")}`, "person or configured conductor only: bounded T1 declaration and fake-only probe lifecycle; receipts reads the sealed receipts, the outcome denominator and the comparability reasons, read-only; production execution is unavailable"],
-    ["ahub guidance create --file JSON [--json]", "record a bounded immutable advisory proposal through current task authority; no activation or probe"],
-    ["ahub guidance list --task N --task-created MS [--cursor TOKEN] [--json]", "bounded guidance metadata pages; withdrawn history and withheld fields remain explicit"],
-    ["ahub guidance show --task N --task-created MS --id HASH [--json]", "screened editable-section diff selected by existing variant id, never a displayed experiment label"],
-    ["ahub guidance withdraw --task N --task-created MS --revision R --id HASH [--json]", "one-way withdrawal using current task flow; retained history never becomes active guidance"],
-    ["ahub lineage show (--task N | --attempt ra-id | --root JSON [--task-scope N --task-created MS]) [--cursor TOKEN] [--nodes N --edges N --bytes N] [--json]", "bounded execution metadata and explicit evidence strengths; unavailable stays unknown, with no probes or replay"],
-    ["ahub lineage link --task N --task-created MS --revision N --ref JSON [--from JSON] [--json]", "register a declared metadata link through the task's current authority and revision; no producer attestation"],
-    ["ahub turns [peer] [--limit N] [--json] [--color=auto|always|never]", "recent turns and the files each changed (a git work tree only)"],
+    ["ahub guidance create --file <json> [--json]", "record a bounded immutable advisory proposal through current task authority; no activation or probe"],
+    ["ahub guidance list --task <n> --task-created <ms> [--cursor <token>] [--json]", "bounded guidance metadata pages; withdrawn history and withheld fields remain explicit"],
+    ["ahub guidance show --task <n> --task-created <ms> --id <hash> [--json]", "screened editable-section diff selected by existing variant id, never a displayed experiment label"],
+    ["ahub guidance withdraw --task <n> --task-created <ms> --revision <r> --id <hash> [--json]", "one-way withdrawal using current task flow; retained history never becomes active guidance"],
+    ["ahub lineage show (--task <n> | --attempt <ra-id> | --root <json> [--task-scope <n> --task-created <ms>]) [--cursor <token>] [--nodes <n> --edges <n> --bytes <n>] [--json]", "bounded execution metadata and explicit evidence strengths; unavailable stays unknown, with no probes or replay"],
+    ["ahub lineage link --task <n> --task-created <ms> --revision <n> --ref <json> [--from <json>] [--json]", "register a declared metadata link through the task's current authority and revision; no producer attestation"],
+    ["ahub turns [peer] [--limit <n>] [--json] [--color=auto|always|never]", "recent turns and the files each changed (a git work tree only)"],
     ["ahub undo <turn> [--yes] [--context]", "put back the files a turn changed; refuses files changed since. Without --yes it only lists them; --context also drops a Codex turn from its conversation"],
     ["ahub report [--since 7d|<iso>] [--by task] [--json] [--color=auto|always|never]", "turns, tokens, messages, overlaps and task events per period"],
     ["ahub report --dogfood [--since 7d|<iso>] [--json]", "read-only scorecard: flow, quality, cost, delivery, performance and adoption; missing evidence is unknown"],
@@ -195,18 +195,18 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub research addons [--since 30d] [--all] [--json]", "approved tasks with each add-on (claude-mem, ponytail, ripwire, ...) on against off, with intervals; association, not cause"],
     ["ahub research export [--format jsonl|csv | --dataset <dir>] [--since 30d] [--all]", "the research records for outside analysis: ids, counts and tokens, never text; --dataset writes per-project tasks.jsonl, manifest.json and quality.json (family names only, with each field's unknown count, quota gaps and token attribution share) to a directory in your home outside every project"],
     ["ahub research backfill", "build this project's research records once from events.jsonl (person or configured conductor)"],
-    ["ahub bench run <suite.json> --arm <label> [--repeat N] [--tasks a,b] [--addon <name>=on|off]... [--memory off|claude-mem|native|both]", "run a benchmark suite against the peers attached here, in a project kept for benchmarks (it resets the work tree; person or configured conductor); --addon and --memory declare the arm's add-on and memory state and refuse a setup that differs"],
+    ["ahub bench run <suite.json> --arm <label> [--repeat <n>] [--tasks a,b] [--addon <name>=on|off]... [--memory off|claude-mem|native|both]", "run a benchmark suite against the peers attached here, in a project kept for benchmarks (it resets the work tree; person or configured conductor); --addon and --memory declare the arm's add-on and memory state and refuse a setup that differs"],
     ["ahub bench list|status [--json]", "benchmark runs on this machine / the one running now"],
     ["ahub bench report <run> [--json]", "pass rate, first pass, rework, tokens and wall time per task and overall"],
     ["ahub bench compare <run|arm>... [--suite <name>] [--mixed] [--json]", "compare arms of one suite with 95% bootstrap intervals; inconclusive below 5 counted attempts per arm"],
     ["ahub bench export [--format jsonl|csv]", "benchmark records for outside analysis: ids, outcomes and counts, never suite text"],
     ["ahub check-path <file> [--peer <id>]", "other owners' open tasks that claim or changed a file"],
-    ["ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] [--json]", "the hub's own memory for this project: decisions, contracts, fails and findings, short- and long-term (docs/memory.md)"],
+    ["ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit <n>] [--json]", "the hub's own memory for this project: decisions, contracts, fails and findings, short- and long-term (docs/memory.md)"],
     ["ahub memory search <words> [--ungrouped] | show <id> | graph <id|node> [--hops 1|2] [--history | --as-of <iso>] [--json]", "find entries, read one with its provenance, or list its graph neighbourhood; search groups visible hits by task unless --ungrouped; superseded and expired entries are hidden unless a person asks for --history or --as-of"],
     ["ahub memory promote|demote|forget <id> | supersede <old> <new> | rebuild", "change memory: move an entry between tiers, forget it, mark it superseded, or rebuild the index from the logs; an agent shell's change is recorded as that agent"],
     ["ahub memory sync [--remote <private git url>] | machine [--label <name>]", "sync hub memory with your other machines through a private git remote, or show or name this machine"],
-    ["ahub memory import claude-mem [--db <path>] [--limit N] [--restart] | dedupe [--apply] | suggestions | confirm|reject <id>", "copy the hub's notes from claude-mem into hub memory; review the model's suggested edges (confirm and reject are a person's)"],
-    ["ahub memory decay [--days N] [--json]", "list long-term entries older than N days (default 90) that no open goal links; review only, nothing is changed"],
+    ["ahub memory import claude-mem [--db <path>] [--limit <n>] [--restart] | dedupe [--apply] | suggestions | confirm|reject <id>", "copy the hub's notes from claude-mem into hub memory; review the model's suggested edges (confirm and reject are a person's)"],
+    ["ahub memory decay [--days <n>] [--json]", "list long-term entries older than N days (default 90) that no open goal links; review only, nothing is changed"],
     ["ahub memory declined [--json]", "list declined physical outbound row ids and safe rule labels; never shows row text; reports incomplete scans explicitly"],
     ["ahub memory profile-check [--json]", "read-only check of the running hubs' memory bindings against their memory profiles; exits 1 when one is not ready"],
     ["ahub goal [list] [--all] | show <id> [--json]", "long-term tasks: state, which machine holds each and until when, linked board tasks"],
@@ -440,7 +440,44 @@ export function flagDescription(command: string, flag: string): string | undefin
   return FLAG_DESCRIPTIONS[`${command} ${flag}`] ?? FLAG_DESCRIPTIONS[flag];
 }
 
-const DESCRIPTION = 34;
+/**
+ * #1654 T2: a usage line broken only between its bracket groups. A word is an atom, and so is a whole `[...]`, `(...)` or `<...>` group however many spaces it holds; atoms fill a line greedily.
+ * A group wider than a whole line is the one case that falls back to the plain word wrap, so nothing is ever dropped. `hang` is the continuation indent, as in `wrap`.
+ */
+function wrapUsage(usage: string, width: number, hang = 4): string[] {
+  const atoms: string[] = [];
+  let depth = 0, current = "";
+  for (const char of usage.trim()) {
+    if (char === "[" || char === "(" || char === "<") depth++;
+    else if ((char === "]" || char === ")" || char === ">") && depth) depth--;
+    if (/\s/.test(char) && !depth) { if (current) atoms.push(current); current = ""; continue; }
+    current += char;
+  }
+  if (current) atoms.push(current);
+  const lines: string[] = [];
+  let line = "";
+  const room = (indent: number) => width - indent;
+  for (const atom of atoms) {
+    const indent = lines.length ? hang : 0;
+    if (!line) { line = atom; continue; }
+    if (Bun.stringWidth(line + " " + atom) <= room(indent)) { line += " " + atom; continue; }
+    lines.push(line); line = atom;
+  }
+  if (line) lines.push(line);
+  // a group wider than the width cannot be kept whole: the plain word wrap breaks it inside the room it has, and every part gets the same indent
+  return lines.flatMap((text, index) => {
+    const indent = index ? hang : 0;
+    return (Bun.stringWidth(text) <= room(indent) ? [text] : wrap(text, room(indent), 2)).map(part => " ".repeat(indent) + part);
+  });
+}
+
+/** The words that name a form inside `ahub <command>`: `status` for `ahub sdlc status [task] | explain <task>`. Empty when the form has none (a bare command, or one that starts with an argument). */
+function formLabel(usage: string): string {
+  const rest = usage.replace(COMMAND, "").trim().split(/\s+/);
+  const words: string[] = [];
+  for (const word of rest) { if (!/^[a-z][a-z0-9-]*$/.test(word)) break; words.push(word); }
+  return words.join(" ");
+}
 /**
  * `ahub help <command>` in the standard's shape (#1504): the usage forms, a short description, each flag on one line, examples, then the long text unchanged
  * (every usage form with its whole description) so nothing a form or flag says is lost. Lines are wrapped within `width`.
@@ -452,7 +489,7 @@ function renderCommandHelp(width: number, ascii: boolean, command: string, model
   report.section("Usage");
   for (const entry of entries) {
     const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
-    const text = wrap(entry.usage, width - 2, 4);
+    const text = wrapUsage(entry.usage, width - 2, 4);
     report.append(text.map((line, index): Span[] => index === 0 ? [{ text: "  " }, { text: prefix, role: "accent" }, { text: line.slice(prefix.length) }] : [{ text: "  " + line }]));
   }
   const row = helpOverviewRows(model).find(item => item.name.split("|").includes(command));
@@ -481,16 +518,13 @@ function renderCommandHelp(width: number, ascii: boolean, command: string, model
     report.section("Examples");
     for (const example of examples) report.append(wrap(example, width - 2, 4).map((line, index): Span[] => [{ text: index === 0 ? "  " : "  " }, { text: line, role: index === 0 ? "accent" : "value" }]));
   }
+  // #1654 T2: Details says what each form does and no longer repeats the usage (the Usage section above has every form whole) or the group name. A form is named by its leading words.
   report.section("Details");
-  let section = "";
   for (const entry of entries) {
-    if (entry.section !== section) { section = entry.section; report.append([[{ text: `  ${entry.section}`, tone: "strong" }]]); }
-    const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
-    const usage = wrap(entry.usage, width - 4, 0);
-    const description = wrap(entry.description, width - DESCRIPTION, 0);
-    const first: Span[] = [{ text: "  " }, { text: prefix, tone: "info" }, { text: usage[0]!.slice(prefix.length) }];
-    if (usage.length === 1 && 2 + Bun.stringWidth(usage[0]!) + 2 <= DESCRIPTION) first.push({ text: " ".repeat(DESCRIPTION - 2 - Bun.stringWidth(usage[0]!)) + description.shift() });
-    report.append([first, ...usage.slice(1).map((text): Span[] => [{ text: `    ${text}` }]), ...description.map((text): Span[] => [{ text: " ".repeat(DESCRIPTION) + text }])]);
+    const label = formLabel(entry.usage);
+    if (entries.length > 1 && label) report.append([[{ text: `  ${label}`, tone: "strong" }]]);
+    const indent = entries.length > 1 && label ? 4 : 2;
+    report.append(wrap(entry.description, width - indent, 0).map((text): Span[] => [{ text: " ".repeat(indent) + text }]));
   }
   return report.lines();
 }

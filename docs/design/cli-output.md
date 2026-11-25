@@ -133,7 +133,7 @@ Glyphs are semantic; each pairs with one role. Code uses named constants, never 
   - `ahub` lays it out as `▸ Usage` (every form), `▸ Description` (the overview summary), `▸ Flags (N)` (one line per flag: the flag with its value shape as the usage writes it, then what it is for), `▸ Examples` (one or two complete commands, only for a command that takes arguments) and `▸ Details`, which is the long text, every form with its whole description, unchanged, so nothing a form or flag says is lost. A section with nothing to show is omitted.
   - A flag's line says what the flag is for, in one short line (at most 46 cells beside its label, so it fits 80 columns; `--json` and `--color` keep the longer text this standard defines). The words sit in `FLAG_DESCRIPTIONS` in `src/cli/help.ts`, next to the usage text, keyed by the flag or by `<command> <flag>` where one command uses a flag for something else (`--all`); a flag a definition outside that file adds falls back to the forms that take it. `test/help.test.ts` fails a flag of any command with no description, a line over the width, or a table entry that names no flag. A flag's meaning that only the long text states stays in `Details`. Every example is checked against the dispatch table and the command's own usage by `test/help.test.ts`, so it cannot name a command, subcommand or flag that does not exist.
   - A native agent's overview summary is the third element of its `cli.usage` entry in its adapter definition, never a table in the help module.
-- Usage lines use `<required>`, `[optional]`, `a|b` and `...`.
+- Usage lines use `<required>`, `[optional]`, `a|b` and `...`. A placeholder is `<lowercase>`, never a bare uppercase word (`<n>`, `<hash>`, `<ms>`, `<json>`, `<token>`). A line breaks only between bracket groups, and a group that fits on a line stays whole; a group wider than the line is the one case broken inside it. Details names each form by its leading words and says what it does; it does not repeat the usage that the Usage section already prints whole.
 
 ## Progress (guidance)
 
@@ -176,8 +176,8 @@ the dated snapshot as help and renderers change.
   The overview lists `backlog` and `check-path` once each. The global
   `--project` and `--live-test` forms account for the two help-only words.
   Detailed help includes examples for `version`, `kill`, `down` and `tail`.
-  Repeated usage in Details, uppercase operands and wrapping inside bracket
-  groups remain on the T2 checklist.
+  Details no longer repeats the usage, operands are lowercase `<placeholders>`
+  and a usage line breaks only between bracket groups (hub task 1114).
 - The roadmap usage error for `ahub roadmap new ... --json` names all four
   read operations that accept JSON (`list`, `show`, `check` and `export`).
   JSON support and exit status are unchanged.

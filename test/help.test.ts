@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ADAPTERS, assertNativeCapabilityScope } from "../src/adapters/registry.ts";
-import { EXAMPLES, FLAG_DESCRIPTIONS, FLAG_LINE, HELP, INTERNAL_COMMANDS, flagDescription, helpCommands, helpFlags, helpOverviewRows, listsSubcommand, renderHelp } from "../src/cli/help.ts";
+import { EXAMPLES, FLAG_DESCRIPTIONS, FLAG_LINE, HELP, INTERNAL_COMMANDS, flagDescription, helpCommands, helpEntries, helpFlags, helpOverviewRows, listsSubcommand, renderHelp } from "../src/cli/help.ts";
 import { ROLE_SGR } from "../src/cli/output-standard.ts";
 import { initialConsoleState, paint, PALETTE, renderConsole, wrap } from "../src/cli/console-state.ts";
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
@@ -35,7 +35,7 @@ await import(${JSON.stringify(CLI)});
 
 describe("ahub help (#212)", () => {
   test("#437 help lists task cancellation, an agent's own task only (#933), and its complete syntax", () => {
-    const usage = "ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N] [--json] [--color=auto|always|never]";
+    const usage = "ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision <n>] [--json] [--color=auto|always|never]";
     const entry = HELP.find(entry => entry.usage === usage);
     expect(entry?.section).toBe("Tasks and review");
     expect(entry?.description).toContain("an agent on its own task as hub_task_cancel allows");
@@ -165,6 +165,42 @@ describe("ahub help (#212)", () => {
       }
     }
     expect(renderHelp(80, false, "nosuchcommand")).toBe("");
+  });
+
+  test("#1654 T2: an operand is a lowercase placeholder in angle brackets, never a bare uppercase word", () => {
+    for (const entry of HELP) {
+      const bare = entry.usage.replace(/<[^>]*>/g, "").match(/(?<![\w-])[A-Z][A-Z0-9-]*(?![\w])/g) ?? [];
+      expect(bare.filter(word => word !== "ISO"), entry.usage).toEqual([]);
+    }
+    expect(helpEntries().find(entry => entry.usage.startsWith("ahub lineage show"))!.usage).toContain("--task <n> | --attempt <ra-id>");
+  });
+
+  test("#1654 T2: a usage line breaks only between bracket groups, and nothing is lost", () => {
+    for (const command of ["init", "sdlc", "task", "lineage", "study"]) for (const width of [80, 100]) {
+      const text = renderHelp(width, false, command);
+      const usage = text.slice(text.indexOf("▸ Usage"), text.indexOf("▸ Description") > 0 ? text.indexOf("▸ Description") : text.indexOf("▸ Flags")).split("\n").filter(line => line.trim() && !line.startsWith("▸"));
+      for (const line of usage) {
+        expect(Bun.stringWidth(line), `${command}: ${line}`).toBeLessThanOrEqual(width);
+        // every line holds whole groups: brackets balance on each line, so no `[--agents` / `<a,b,...>]` split (a group wider than the line, as in lineage and study, is the one case broken inside)
+        if (["init", "sdlc", "task"].includes(command)) for (const [open, close] of [["[", "]"], ["<", ">"], ["(", ")"]] as const) expect(line.split(open).length, `${command}: ${line}`).toBe(line.split(close).length);
+      }
+      // the lines of one form, joined, are the whole usage
+      const joined = usage.map(line => line.trim()).join(" ");
+      for (const entry of HELP.filter(entry => helpCommands(entry).includes(command))) expect(joined, `${command}: ${entry.usage}`).toContain(entry.usage.replace(/\s+/g, " "));
+    }
+  });
+
+  test("#1654 T2: Details says what a form does and does not repeat the usage", () => {
+    for (const command of new Set(HELP.flatMap(helpCommands))) {
+      const text = renderHelp(100, false, command);
+      const details = text.slice(text.indexOf("▸ Details"));
+      for (const entry of HELP.filter(entry => helpCommands(entry).includes(command))) {
+        if (entry.usage.length < 40) continue;   // a short usage can occur inside prose by chance
+        expect(details.replace(/\s+/g, " "), `${command}: ${entry.usage}`).not.toContain(entry.usage.replace(/\s+/g, " "));
+      }
+    }
+    const sdlc = renderHelp(80, false, "sdlc");
+    expect(sdlc.slice(sdlc.indexOf("▸ Details"))).toContain("\n  survey show\n    read findings");
   });
 
   test("#1504: a flag after a `|` in a form is attributed to the form the entry's first piece named (task handoff --list | --sync | --project ...)", () => {
