@@ -391,7 +391,9 @@ describe("remaining one-shot outputs", () => {
   test("projects show word counts and turns retain every filename", () => {
     const projects = text(renderProjects(phaseFixture.projects, undefined, now));
     expect(projects).toContain("6 approved, 1 in_progress"); expect(projects).toContain(phaseFixture.projects[0]!.root); expect(projects).toContain(phaseFixture.projects[0]!.id);
-    const turns = text(renderTurns(phaseFixture.turns, undefined, now));
+    const turnLines = renderTurns(phaseFixture.turns, undefined, now);
+    expect(text(turnLines).split("\n")[0]).toBe(" ahub Turns"); expect(text(turnLines)).toContain("▸ Turns (1)");
+    const turns = text(afterSection(turnLines));
     for (const file of phaseFixture.turns[0]!.changed) expect(turns).toContain(file);
     expect(turns).toContain("8 files"); expect(turns).toContain("completed"); expect(turns).toContain("1m ago"); expect(turns).not.toContain("...");
     expect(turns.split("\n")).toHaveLength(2);
@@ -435,10 +437,11 @@ describe("remaining one-shot outputs", () => {
     }
   });
   test("new identifier columns preserve full project and turn tokens at80", () => {
-    for (const rendered of [renderProjects(phaseFixture.projects, 80, now), renderTurns(phaseFixture.turns, 80, now)]) {
+    for (const whole of [renderProjects(phaseFixture.projects, 80, now), renderTurns(phaseFixture.turns, 80, now)]) {
+      const rendered = afterSection(whole);
       const expected = rendered[0]![0]!.text.trim() === "PROJECT" ? phaseFixture.projects[0]!.id : phaseFixture.turns[0]!.id;
       expect(rendered.some(line => line[0]?.text.trim() === expected)).toBe(true);
-      for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+      for (const line of text(whole).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
     }
   });
   test("structured views keep public stubs and labels with relative times", () => {
@@ -509,6 +512,8 @@ export const ordinaryFilePathFixture = [
   "docs/specs/2026-09-19-agent-hub-design.md", "scripts/check.sh",
 ];
 
+/** #1654 T3: a list view is ` ahub <Name>`, a blank line and a `▸` section before its table; the table checks below read what follows the section line, unchanged. */
+const afterSection = (rendered: Span[][]): Span[][] => rendered.slice(rendered.findIndex(line => line[0]?.text.startsWith("▸")) + 1);
 function tableFieldGroups(rendered: Span[][], field: string, ids: string[]): { width: number; groups: Map<string, string[]> } {
   const headerAt = rendered.findIndex(line => line.some(cell => cell.text.trim() === field));
   expect(headerAt).toBeGreaterThanOrEqual(0);
@@ -681,7 +686,7 @@ test("turns: time and state cells wrap only when the listing gets shorter for it
   expect(tableFieldGroups(plainRendered, "STARTED", [plain[0]!.id]).groups.get(plain[0]!.id)!.filter(Boolean)).toHaveLength(1);
   // One where it does: the time cell wraps and the row is exactly as tall as its files cell (the wrap rides along).
   const heavy = [{ id: "pi#heavy00000.1", peer: "pi", started: now - 6_000_000, ended: null, start_tree: "a", end_tree: null, changed: ordinaryFilePathFixture }];
-  const heavyRendered = renderTurns(heavy, 100, now);
+  const heavyRendered = afterSection(renderTurns(heavy, 100, now));
   expect(tableFieldGroups(heavyRendered, "STARTED", [heavy[0]!.id]).groups.get(heavy[0]!.id)!.filter(Boolean)).toHaveLength(2);
   expect(heavyRendered.length).toBe(1 + tableFieldGroups(heavyRendered, "FILES", [heavy[0]!.id]).groups.get(heavy[0]!.id)!.length);
 });
@@ -690,7 +695,7 @@ test("turns: the time and state cells stay whole at 80 columns when the wrap wou
   // The round-5 example: one turn with three files, five with none or one. Nine lines with the cells whole;
   // the FILES floor (removed in round 5) made it 14 with every time cell wrapped.
   const turns = [6, 5, 4, 3, 2, 1].map((n) => ({ id: `codex#mgk3x9ab.${n}`, peer: "codex", started: now - 3_600_000 * (n + 1) * (n === 6 ? 1 / 3 : 1), ended: now, start_tree: "a", end_tree: "b", changed: n === 6 ? ["src/cli/output.ts", "src/cli/main.ts", "test/output.test.ts"] : n === 5 ? ["README.md"] : [] }));
-  const rendered = renderTurns(turns, 80, now);
+  const rendered = afterSection(renderTurns(turns, 80, now));
   expect(rendered.length).toBe(9);
   const ids = turns.map((t) => t.id);
   for (const id of ids) {
@@ -699,7 +704,7 @@ test("turns: the time and state cells stay whole at 80 columns when the wrap wou
   }
   // One long file in an otherwise file-free listing: the cells stay whole too (a wrap would tax every row).
   const long = [1, 2].map((n) => ({ id: `pi#long00000.${n}`, peer: "pi", started: now - 3_600_000 * n, ended: now, start_tree: "a", end_tree: "b", changed: n === 1 ? ["docs/verification/2026-10-10-cli-output-phase2.md"] : [] }));
-  const longRendered = renderTurns(long, 80, now);
+  const longRendered = afterSection(renderTurns(long, 80, now));
   expect(longRendered.length).toBe(5);
   const longIds = long.map((t) => t.id);
   for (const id of longIds) {
