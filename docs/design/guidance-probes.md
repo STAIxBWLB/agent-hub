@@ -1165,3 +1165,12 @@ T4 (this part) adds: `ProbeReceiptExport`, `parseGuidanceProbeReceiptExport`, `P
 the control op, feature, authority label, CLI subcommand and help line; the manager read port, the plugin's `probe` read and the panel section; the shared text; and
 the tests above. It does not add a runner, a config key, a write, a prune verb or a model call. The authorized live trial, and with it AC7's real-isolation and
 real-delivery evidence, is a separate decision and stays open.
+
+
+## Conductor-selected live worker pilot
+
+The #1226 AC7 pilot uses the existing registration, start, cancellation and receipt operations. The daemon enables only the exact registered content ID in its startup environment variable `AGENTHUB_LIVE_GUIDANCE_PROBE_ID`. It defaults to no live runner. A start for that ID requires the current configured conductor's authenticated native session and the ordinary task, policy and G1 admission fences. Console, worker and import paths cannot start the live runner.
+
+The live declaration contains one baseline worker and one candidate worker. The initial pilot admits only the canonical empty Git tree and no external file inputs. Writes are refused by the pilot host. Each execution has ceilings of 8 model calls, 8,000 reserved tokens and 60,000 ms, within the declaration's shared budget. The host validates confinement before sending a request. It pins the confirmed campus endpoint and requests `qwen27b/qwen3.8-27b` there without a local combo, client fallback or redirect. The gateway's upstream fallback policy remains unknown. A missing or different response model makes the execution incomparable. It is never retried.
+
+The ledger binds live mode at reservation and seals it into the receipt digest. Historical and fixture records cannot become live records. A crash or missing observation remains unknown. Recovery to a daemon without `guidance_probe_live` is refused when live records exist. Model-free checks cover wiring. The separately authorized live run and its AC7 receipt are pending.

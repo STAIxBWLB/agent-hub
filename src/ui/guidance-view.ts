@@ -49,7 +49,7 @@ const known = (value: number | null): string => value === null ? "unknown" : Str
 /**
  * T4 (#1226): the producer's probe status, one text for the plugin panel and the CLI. It states what the host observed and nothing more: a fixture run says
  * `fixture`, a missing measurement says `unknown` and never zero, and every state that is not a success stays visible, so a failed, cancelled or unavailable
- * arm cannot disappear from the denominator. A live trial is never claimed here: no production runner exists, and evidence is at most `fixture`.
+ * arm cannot disappear from the denominator. Only a host-sealed live record is rendered as a live attempt.
  */
 export function guidanceProbeStatusLines(exported: ProbeReceiptExport): string[] {
   const status = exported.status, counts = exported.counts;
@@ -60,7 +60,9 @@ export function guidanceProbeStatusLines(exported: ProbeReceiptExport): string[]
     `Attempts: ${status.counters.workerAttempts} worker, ${status.counters.editorAttempts} editor; model calls ${status.counters.modelCalls}; tool calls ${status.counters.toolCalls}.`,
     `Token usage: ${status.counters.usageUnknown || status.counters.modelCalls === 0 ? "unknown" : status.counters.tokensObservedKnown}.`,
     `Cancel requested: ${status.cancelRequested ? "yes" : "no"}.`,
-    "Fixture evidence only: no live model or worker trial, sampling control, provider behaviour or model quality is claimed."];
+    exported.slots.some(slot => slot.receipt?.mode === "live")
+      ? "Live attempt evidence. Upstream fallback policy and sampling control remain unknown."
+      : "Fixture evidence only: no live model or worker trial, sampling control, provider behaviour or model quality is claimed."];
   for (const slot of exported.slots) {
     const receipt = slot.receipt;
     lines.push(`Slot ${plain(slot.slotId)}: ${slot.stage}/${slot.role}/${slot.arm}; session ${slot.state}; retained output ${slot.retention}.`);

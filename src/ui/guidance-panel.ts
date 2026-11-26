@@ -20,7 +20,7 @@ export default (host) => {
   const probeLabel = node('label'); probeLabel.append(node('span', 'Probe ID (64 hex)'), probeId);
   const probeButton = node('button', 'Read probe status'); probeButton.type = 'submit';
   probeForm.append(probeLabel, probeButton);
-  const probeNote = node('p', 'Probe status is fixture evidence only: it reads the sealed receipts and the outcome denominator and claims no live model or worker trial.');
+  const probeNote = node('p', 'Probe status reads sealed receipts and the outcome denominator. A run with fixture evidence only claims no live model or worker trial.');
   const probeOutput = node('pre', undefined, 'ahub-guidance-output');
   probeOutput.tabIndex = 0; probeOutput.setAttribute('aria-label', 'Guidance probe status');
   const scopeForm = node('form', undefined, 'ahub-guidance-scope');
@@ -145,7 +145,7 @@ export default (host) => {
         state(typeof result?.error === 'string' && result.ok === false ? result.error : 'Probe status unavailable. Refresh the probe id or check access and guidance_probe_receipts support.'); return;
       }
       probeOutput.textContent = result.lines.join('\n');
-      state('Probe status read. Fixture evidence only; every unknown stays unknown.');
+      state(result.probe.slots?.some(slot => slot.receipt?.mode === 'live') ? 'Probe status read. Live attempt evidence.' : 'Probe status read. Fixture evidence only; every unknown stays unknown.');
     } catch { if (active(token)) state('Probe status unavailable. Refresh the probe id or check access and guidance_probe_receipts support.'); }
     finally { if (active(token)) { busy = false; update(); } }
   }

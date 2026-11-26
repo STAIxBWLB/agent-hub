@@ -69,6 +69,47 @@ test("Cloudflare Access headers go only to listed hosts", async () => {
   expect(up.requests[1]!.headers["cf-access-client-id"]).toBeUndefined();
 });
 
+test("a pinned campus chat refuses an unconfirmed route", async () => {
+  await expect(new OmniRoute().pinCampusChat("qwen27b/qwen3.8-27b")).rejects.toThrow("campus gateway unavailable");
+});
+
+test("a pinned campus chat reports the response model without selecting another route", async () => {
+  const fallback = startFakeModelServer();
+  const requested: string[] = [];
+  const source = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    async fetch(req) {
+      if (req.method === "GET") return Response.json({ data: [] });
+      requested.push((await req.json() as { model: string }).model);
+      return Response.json({ model: "different/model", choices: [{ message: { content: "fixture answer" } }] });
+    },
+  });
+  cleanup.push(fallback.stop, () => source.stop(true));
+  process.env.OMNIROUTE_API_KEY = "fixture";
+  const client = new OmniRoute({ urls: [`http://127.0.0.1:${source.port}/v1`, fallback.url], access_hosts: [] });
+  const chat = await client.pinCampusChat("qwen27b/qwen3.8-27b");
+  expect(await chat({ messages: [] }, new AbortController().signal))
+    .toMatchObject({ servedModel: "different/model", servedModelExact: true });
+  expect(requested).toEqual(["qwen27b/qwen3.8-27b"]);
+  expect(fallback.requests).toHaveLength(0);
+});
+
+test("a pinned campus chat rejects a redirect without sending a request to its target", async () => {
+  const target = startFakeModelServer();
+  const source = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch: req => req.method === "GET"
+      ? Response.json({ data: [] })
+      : Response.redirect(`${target.url}/chat/completions`, 307),
+  });
+  cleanup.push(target.stop, () => source.stop(true));
+  process.env.OMNIROUTE_API_KEY = "fixture";
+  const client = new OmniRoute({ urls: [`http://127.0.0.1:${source.port}/v1`], access_hosts: [] });
+  const chat = await client.pinCampusChat("qwen27b/qwen3.8-27b");
+  await expect(chat({ messages: [] }, new AbortController().signal)).rejects.toThrow();
+  expect(target.requests).toHaveLength(0);
+});
+
 test("direct calls send gateway auth", async () => {
   const gateway = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: req => new URL(req.url).pathname.endsWith("/models")
     ? Response.json({ data: [{ id: "coding" }] })

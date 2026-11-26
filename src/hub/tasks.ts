@@ -13,7 +13,7 @@ import { buildDecomposePrompt, parseDecomposition, planPartPublish, DECOMPOSE_IT
 import { pathCandidates } from "@staix/agent-mem";
 import { renderGuidanceVariantV1 } from "./guidance-variants.ts";
 import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-probe-store.ts";
-import { GuidanceProbeError, GUIDANCE_PROBE_STOP_TIMEOUT_MS, GUIDANCE_PROBE_FENCE_INTERVAL_MS, guidanceProbeCanonical, guidanceProbeManifestKey,
+import { GuidanceProbeError, GUIDANCE_PROBE_STOP_TIMEOUT_MS, GUIDANCE_PROBE_FENCE_INTERVAL_MS, GUIDANCE_PROBE_LIVE_LIMITS, isLiveGuidanceProbeManifest, guidanceProbeCanonical, guidanceProbeManifestKey,
   parseGuidanceProbeRegistration, parseGuidanceProbeReceiptExport, probeHash, probeSha256, probeInteger, probeSessionGeneration,
   type ProbeChildBinding, type ProbeStoredState, type ProbePublicReceipt, type ProbePublicStatus, type ProbeHostBinding,
   type ProbeReceiptExport, type ProbeExportSlot, type ProbeReceiptV1, type ProbeRetentionState,
@@ -184,10 +184,11 @@ export interface TasksDeps {
   taskTokens?: () => Readonly<Record<number, number | null>>;
   /** Timing-only owner question evidence for the idle-owner ladder. */
   ownerQuestionWait?: (task: number, peer: PeerId) => { open: boolean; settled?: number } | undefined;
-  /** Private host-owned probe ledger and fixture ports. No configuration, wire or model-selected runner. */
+  /** Private probe ledger and host-selected runner. Wire input selects only an already registered content ID. */
   guidanceProbes?: {
     store: GuidanceProbeStore;
     fakePorts?: GuidanceProbeFakePorts;
+    live?: { id: string; adapter: Pick<import("../local/probe-types.ts").ProbeLocalAdapter, "ports" | "prepareWorkerFrame"> };
     prepareWorkerFrame?: ProbeWorkerFramePreparer;
     prepareEditorFrame?: (state: ProbeStoredState, slot: ProbeSlot) => string | Promise<string>;
     session?: (by: PeerId) => { generation: string | number; nativeSession: string | null; requestConnectionId: string; current: () => void } | undefined;
@@ -642,6 +643,7 @@ function hasReviewAnchorInput(raw: unknown): boolean {
 interface GuidanceProbeRuntime {
   id: string; by: PeerId; controller: AbortController; current: () => ProbeAdmissionRecheck;
   requestedRevision: number; variantId?: string;
+  ports: GuidanceProbeFakePorts;
   reservation?: ProbeReservation; promise?: Promise<ProbePublicReceipt>; stopPromise?: Promise<void>;
   launched: boolean; launchSettled: boolean; stopSettled: boolean; stopKnown: boolean; stopRequested: boolean;
   watch?: { handle: unknown }; failure?: Error;
@@ -6515,7 +6517,7 @@ export class Tasks {
     entry.controller.abort();
     if (!entry.launched || !entry.reservation) { this.guidanceProbeRetire(entry); return; }
     if (entry.stopRequested && (!entry.stopSettled || entry.stopKnown || !explicitStop)) return;
-    const reservation = entry.reservation, ports = this.d.guidanceProbes!.fakePorts!;
+    const reservation = entry.reservation, ports = entry.ports;
     entry.stopRequested = true; entry.stopSettled = false; entry.stopKnown = false;
     entry.stopPromise = (async () => {
       try {
@@ -6534,7 +6536,9 @@ export class Tasks {
       if (!state || !entry.reservation || state.firstReservedAt === null) throw new Error("owned probe clock is unavailable");
       const now = this.d.now?.() ?? Date.now(), elapsed = now - state.firstReservedAt;
       if (!probeInteger(elapsed) || elapsed < state.counters.elapsedHighWaterMs || state.admissionHold !== "none") { this.guidanceProbeAbort(entry, "elapsed"); return; }
-      const remaining = state.registration.manifest.limits.elapsedMs - elapsed;
+      const live = state.sessions.find(session => session.slotId === entry.reservation!.slotId)?.live;
+      const remaining = Math.min(state.registration.manifest.limits.elapsedMs - elapsed,
+        live === undefined ? Infinity : GUIDANCE_PROBE_LIVE_LIMITS.elapsedMs - (now - live.reservedAt));
       if (remaining <= 0) { this.guidanceProbeAbort(entry, "elapsed"); return; }
       entry.watch = { handle: this.guidanceProbeTimer().set(() => {
         if (this.guidanceProbeActive.get(entry.id) !== entry || entry.controller.signal.aborted) return;
@@ -6551,7 +6555,7 @@ export class Tasks {
       && state.sessions.filter(item => item.state === "closed_fixture").every(item => item.coverage.coverageVerified)
       && state.sessions.every(item => item.state !== "failed_known" || item.coverage.preLaunchFailure || item.coverage.coverageVerified);
     const evidence: ProbePublicReceipt["evidence"] = state.counters.workerAttempts + state.counters.editorAttempts === 0 ? "declaration"
-      : holds || !verifiedCoverage || state.sessions.some(item => ["reserved", "running", "unknown_held"].includes(item.state)) ? "unknown" : "fixture";
+      : holds || !verifiedCoverage || state.sessions.some(item => ["reserved", "running", "unknown_held"].includes(item.state)) ? "unknown" : launchedSessions.every(item => item.live !== undefined) ? "live" : "fixture";
     return { ...state.receipt, already, taskId: state.registration.manifest.task.id,
       experimentId: this.guidancePublicField(state.registration.manifest.experimentId), evidence,
       counters: { ...state.counters }, cancelRequested: state.cancelRequested, notNeeded: state.notNeeded, authoring,
@@ -6670,8 +6674,17 @@ export class Tasks {
     if (!probeInteger(revision) || variantId !== undefined && !probeSha256(variantId))
       throw new PreEffectToolRefusal("guidance probe start selector is invalid; use its current CAS revision and exact G1 id");
     const dependency = this.d.guidanceProbes!;
-    // No production runner: refuse before original-child selection, G1 raw read, binding, reservation or timer.
-    if (!dependency.fakePorts) throw new PreEffectToolRefusal("guidance probe runner is unavailable in production T1; use fake-only fixtures, not a live launch");
+    // Match a host-configured content ID, never a mode requested by the caller or carried by imported evidence.
+    const live = dependency.live?.id === id ? dependency.live.adapter : undefined;
+    if (live && (by === USER || request.nativeSession === null))
+      // refusal:by-design human-authority: live starts require an authenticated conductor session
+      throw new PreEffectToolRefusal("live guidance probes require the current authenticated conductor native session");
+    if (live && !isLiveGuidanceProbeManifest(state.registration.manifest))
+      // refusal:by-design operator-knowledge: the operator must supply the preregistered bounded declaration
+      throw new PreEffectToolRefusal("live guidance probe requires a bounded baseline and candidate declaration");
+    const selectedPorts = live?.ports ?? dependency.fakePorts;
+    // refusal:by-design human-authority: only the host operator can select a live registration
+    if (!selectedPorts) throw new PreEffectToolRefusal("guidance probe runner is unavailable in production T1 for this registration");
     const key = { projectKey: host.projectKey, id }, original = dependency.store.startSelector(key, revision);
     if (original && (original.actor !== by || original.sessionGeneration !== host.sessionGeneration || original.nativeSession !== host.nativeSession
       || original.requestConnectionId !== host.requestConnectionId)) throw new PreEffectToolRefusal("guidance probe original start belongs to another request session; inspect its retained id without replaying it");
@@ -6697,11 +6710,11 @@ export class Tasks {
         throw new PreEffectToolRefusal("guidance probe active start belongs to another request session; inspect its retained id without replaying it");
       // Frame preparation has not granted a reservation. A duplicate is only a read of truthful current metadata.
       if (!active.reservation) return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), true);
-      const replay = dependency.store.reserveSession({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, current);
+      const replay = dependency.store.reserveSession({ key, expectedRevision: revision, ...prepared, ...(live ? { mode: "live" as const } : {}), now: this.d.now?.() ?? Date.now() }, current);
       if (replay.kind !== "existing") throw new Error("guidance probe start is unconfirmed; inspect retained state before any further work");
       return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), true);
     }
-    const entry: GuidanceProbeRuntime = { id, by, requestedRevision: revision, ...(variantId === undefined ? {} : { variantId }), controller: new AbortController(), current, launched: false, launchSettled: false,
+    const entry: GuidanceProbeRuntime = { id, by, requestedRevision: revision, ...(variantId === undefined ? {} : { variantId }), controller: new AbortController(), current, ports: selectedPorts, launched: false, launchSettled: false,
       stopRequested: false, stopSettled: false, stopKnown: false };
     this.guidanceProbeActive.set(id, entry);
     const ports: GuidanceProbeFakePorts = {
@@ -6710,17 +6723,17 @@ export class Tasks {
         this.guidanceProbeWatch(entry);
         if (signal.aborted) throw new Error("owned probe was aborted before launch");
         entry.launched = true;
-        return dependency.fakePorts!.launch(input, effects, signal);
+        return selectedPorts.launch(input, effects, signal);
       },
-      stop: (input, signal) => dependency.fakePorts!.stop(input, signal),
-      ...(dependency.fakePorts.discardRetained ? { discardRetained: record => dependency.fakePorts!.discardRetained!(record) } : {}),
+      stop: (input, signal) => selectedPorts.stop(input, signal),
+      ...(selectedPorts.discardRetained ? { discardRetained: record => selectedPorts.discardRetained!(record) } : {}),
     };
     let reserved = false, returned = false;
-    const runner = new GuidanceProbeFixtureHost(dependency.store, { ports, revalidate: current, now: () => this.d.now?.() ?? Date.now(),
-      prepareWorkerFrame: dependency.prepareWorkerFrame, prepareEditorFrame: dependency.prepareEditorFrame, onReserved: () => { reserved = true; } });
+    const runner = new GuidanceProbeFixtureHost(dependency.store, { ports, ...(live ? { mode: "live" as const } : {}), revalidate: current, now: () => this.d.now?.() ?? Date.now(),
+      prepareWorkerFrame: live?.prepareWorkerFrame ?? dependency.prepareWorkerFrame, prepareEditorFrame: dependency.prepareEditorFrame, onReserved: () => { reserved = true; } });
     entry.promise = (async () => {
       try {
-        const saved = await runner.start({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, entry.controller.signal);
+        const saved = await runner.start({ key, expectedRevision: revision, ...prepared, ...(live ? { mode: "live" as const } : {}), now: this.d.now?.() ?? Date.now() }, entry.controller.signal);
         returned = true;
         if (saved.state === "unknown_held" && entry.launched) {
           this.guidanceProbeAbort(entry, "observation", true);

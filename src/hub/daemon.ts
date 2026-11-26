@@ -5,7 +5,7 @@ import { piFailureText } from "./pi-failure.ts";
 import { nativeReviewerQuota } from "../adapters/definitions/native-quota.ts";
 import { parseGuidanceCreateInput, parseGuidanceIdQuery } from "./guidance-variants.ts";
 import { GuidanceProbeStore } from "./guidance-probe-store.ts";
-import { GuidanceProbeError, probeSessionGeneration, type ProbePublicReceipt, type ProbePublicStatus, type ProbeReceiptExport } from "./guidance-probes.ts";
+import { GuidanceProbeError, probeSessionGeneration, probeSha256, type ProbePublicReceipt, type ProbePublicStatus, type ProbeReceiptExport } from "./guidance-probes.ts";
 import { executionText, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
 import { publicDeliveryBodies } from "./delivery-public.ts";
 import { GeneratedNoteRegistry, type GeneratedNoteProof } from "../memory/record-provenance.ts";
@@ -187,6 +187,7 @@ import { taskShellSandboxRestrictions } from "./task-shell-sandbox.ts";
 import { hostShellEnvironment } from "../local/shell-environment.ts";
 import { hubGitArgv, hubGitEnv, hubGitSync } from "./git.ts";
 import { isLocalPeer, type LocalPeer } from "../adapters/local-worker.ts";
+import { createLiveGuidanceProbeLocalAdapter } from "../adapters/local-probe.ts";
 import { isClaudeImplementerPeer } from "../adapters/claude-implementer.ts";
 import { isReviewerPrintPeer, reviewerNoVerdictLine, reviewerUnavailableReason, ReviewerUnavailableError, REVIEWER_FALLBACK_UNCONFIRMED, type ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
 import type { OwnedInputContext } from "../adapters/claude-print-child.ts";
@@ -3093,10 +3094,22 @@ export async function startDaemon(opts: DaemonOptions) {
   let releaseReportPolicy: ((head: string, repo: string) => ReleaseReportPolicy | undefined) | undefined;
   let questionStore!: QuestionStore;
   startupTimings.mark("task_ports");
+  const liveProbeId = process.env.AGENTHUB_LIVE_GUIDANCE_PROBE_ID;
+  const liveProbe = probeSha256(liveProbeId) ? {
+    id: liveProbeId,
+    adapter: createLiveGuidanceProbeLocalAdapter({
+      cwd: opts.cwd, omni: new OmniRoute(config.omniroute), permit: async () => false,
+      current: () => {
+        if (process.env.AGENTHUB_LIVE_GUIDANCE_PROBE_ID !== liveProbeId)
+          // refusal:by-design human-authority: only the host operator can restore the startup selection
+          throw new PreEffectToolRefusal("live guidance probe selection changed");
+      },
+    }),
+  } : undefined;
   const tasks: Tasks = new Tasks({
     taskTokens: () => Object.fromEntries(usageRollup.query({ by: "task" }).rows.flatMap(row => /^\d+$/.test(row.key) ? [[Number(row.key), row.counted.value]] : [])),
     ownerQuestionWait: (task, peer) => questionStore?.ownerWait(task, peer),
-    guidanceProbes: { store: guidanceProbeStore, session: by => {
+    guidanceProbes: { store: guidanceProbeStore, ...(liveProbe ? { live: liveProbe } : {}), session: by => {
       const request = guidanceProbeRequestContext.getStore();
       return request?.actor === by ? { generation: request.generation, nativeSession: request.nativeSession,
         requestConnectionId: request.requestConnectionId, current: request.current } : undefined;
@@ -11730,6 +11743,10 @@ export async function startDaemon(opts: DaemonOptions) {
           if (instructionReceipts.hasIntentWitness() || rawIntent) return "target lacks instructed_intent; the retained or configured intent mode requires a supporting daemon";
         }
         catch { return "instructed mode compatibility is unknown; choose a supporting daemon"; }
+      }
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("guidance_probe_live")) {
+        try { if (guidanceProbeStore.hasLiveRecords()) return "target lacks guidance_probe_live; retained live guidance probe state requires a supporting daemon"; }
+        catch { return "live guidance probe compatibility is unknown; inspect retained probe state or choose a supporting target"; }
       }
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("guidance_probes")) {
         try { if (guidanceProbeStore.hasRecords()) return "target lacks guidance_probes; retained probe declarations or held work require a supporting daemon; choose a target advertising guidance_probes"; }

@@ -1,7 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import { USER } from "../src/hub/envelope.ts";
 import { GUIDANCE_PROBE_MODEL, parseGuidanceProbeReceiptExport, probeHash } from "../src/hub/guidance-probes.ts";
 import { guidanceProbeStatusLines } from "../src/ui/guidance-view.ts";
@@ -83,14 +81,43 @@ test("a fallback model or a drifted runtime never rounds to comparable, and the 
   expect(exported.slots[0]!.receipt!.servedModel).toBe("fallback/other");
 });
 
-test("the gate is honest about what it did not run: no production runner, and a start refuses before any reservation", async () => {
+test("an unconfigured registration refuses before any reservation", async () => {
   const f = await probeTasksFixture(clean, { runner: false }), receipt = await f.tasks.guidanceProbeRegister(USER, f.registration());
   const before = rows(f.file);
   await expect(f.tasks.guidanceProbeStart(USER, receipt.id, 0)).rejects.toThrow(/runner is unavailable/);
   expect(rows(f.file)).toBe(before); expect(f.provider.launches).toHaveLength(0);
-  // And no source file selects the constructor-only local adapter: nothing in the daemon, CLI or plugin can start a real probe.
-  const sources = ["src/hub/daemon.ts", "src/hub/tasks.ts", "src/cli/main.ts", "src/ui/plugin.ts", "src/hub/manager.ts"].map(path => readFileSync(join(import.meta.dir, "..", path), "utf8"));
-  for (const source of sources) expect(source).not.toContain("createGuidanceProbeLocalAdapter");
-  const adapters = readdirSync(join(import.meta.dir, "../src/adapters")).filter(name => name !== "local-probe.ts");
-  for (const name of adapters) if (name.endsWith(".ts")) expect(readFileSync(join(import.meta.dir, "../src/adapters", name), "utf8")).not.toContain("createGuidanceProbeLocalAdapter");
+});
+
+test("a host-selected probe still refuses console and non-conductor requests before reserving", async () => {
+  const f = await probeTasksFixture(clean, { runner: false });
+  const receipt = await f.tasks.guidanceProbeRegister(USER, f.registration());
+  f.dependency.live = { id: receipt.id, adapter: {
+    ports: f.provider,
+    prepareWorkerFrame: () => { throw new Error("must refuse before preparation"); },
+  } };
+  const before = rows(f.file);
+  await expect(f.tasks.guidanceProbeStart(USER, receipt.id, 0)).rejects.toThrow(/authenticated conductor/);
+  await expect(f.tasks.guidanceProbeStart("codex", receipt.id, 0)).rejects.toThrow(/conductor|operational/);
+  expect(rows(f.file)).toBe(before);
+  expect(f.provider.launches).toHaveLength(0);
+});
+
+test("only the selected native conductor start gets a durable live-mode reservation", async () => {
+  const f = await probeTasksFixture(clean, { runner: false });
+  const declaration = f.registration();
+  declaration.manifest.limits.modelCalls = 16;
+  delete declaration.manifest.improverContextHash;
+  delete declaration.manifest.improverContextBytes;
+  delete declaration.snapshots.improverContext;
+  const receipt = await f.tasks.guidanceProbeRegister("claude", declaration);
+  f.dependency.live = { id: receipt.id, adapter: {
+    ports: f.provider,
+    prepareWorkerFrame: () => ({ inputFrame: "Model-free wiring fixture", nonGuidanceInputSha256: probeHash("fixture") }),
+  } };
+  f.provider.script = witnessedProbe(f);
+  await f.tasks.guidanceProbeStart("claude", receipt.id, 0);
+  expect(f.provider.launches.map(launch => launch.slot.id)).toEqual(["baseline"]);
+  expect(f.store.hasLiveRecords()).toBe(true);
+  const [baseline] = f.store.receipts({ projectKey: f.projectKey, id: receipt.id });
+  expect(baseline?.mode).toBe("live");
 });

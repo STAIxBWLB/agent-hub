@@ -1435,7 +1435,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const { parseGuidanceCommand, validateGuidancePageReply, validateGuidanceDiffReply, validateGuidanceReceipt, renderGuidance, renderGuidanceReceipt } = await import("./guidance.ts");
     const { parseGuidanceVariantV1, GUIDANCE_RECORD_MAX_BYTES } = await import("../hub/guidance-variants.ts");
     const { parseGuidanceProbeSubcommand, parseGuidanceProbeRegistration, GUIDANCE_PROBE_REGISTRATION_BYTES,
-      parseGuidanceProbePublicReceipt, parseGuidanceProbePublicStatus, parseGuidanceProbeReceiptExport } = await import("../hub/guidance-probes.ts");
+      parseGuidanceProbePublicReceipt, parseGuidanceProbePublicStatus, parseGuidanceProbeReceiptExport, GUIDANCE_PROBE_LIVE_LIMITS, GUIDANCE_PROBE_STOP_TIMEOUT_MS } = await import("../hub/guidance-probes.ts");
     const { guidanceProbeStatusLines } = await import("../ui/guidance-view.ts");
     let probeCommand;
     try { probeCommand = parseGuidanceProbeSubcommand(args); } catch { return fail(guidanceProbeUsage(args)); }
@@ -1464,7 +1464,7 @@ const commands: Record<string, () => Promise<void> | void> = {
           : probeCommand.op === "cancel" ? { t: "guidance_probe_cancel", id: probeCommand.id, revision: probeCommand.revision }
           : probeCommand.op === "receipts" ? { t: "guidance_probe_receipts", id: probeCommand.id }
           : { t: "guidance_probe_show", id: probeCommand.id };
-        const result = await hub.request(request);
+        const result = await hub.request(request, probeCommand.op === "start" ? GUIDANCE_PROBE_LIVE_LIMITS.elapsedMs + GUIDANCE_PROBE_STOP_TIMEOUT_MS : undefined);
         if (result.ok !== true) {
           const detail = terminalText(result.error ?? "guidance probe outcome is unconfirmed").replace(/[\r\n]+/g, " ").slice(0, 512);
           const nextStep = probeCommand.op === "register" ? "" : `; inspect ahub guidance probe show --id ${probeCommand.id} before any explicit retry`;
