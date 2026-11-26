@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.46.1, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.47.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 Inspect bounded task and attempt metadata with `ahub lineage show`; admit external
@@ -107,6 +107,7 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   coverage ledger ([security pass and audit](docs/sdlc.md#security-pass-for-sensitive-paths-hub-task-895-1403-a2)).
   For a PR already merged outside the hub, [merged PR adoption](docs/sdlc.md#adopting-a-pr-merged-outside-the-hub-1328-t3) verifies its recorded head and releases dependents: `ahub sdlc adopt-merge <task> --pr <n>`.
   An explicitly superseding task may [carry existing spec consent](docs/sdlc.md#spec-acceptance-481-s1) for the same repository and issue when the host verifies an unchanged body.
+  `ahub sdlc readback start|show` asks a fresh reader to state a spec issue back before you accept it, as a report and never a gate ([spec read-back](docs/sdlc.md#spec-read-back-1658)), and an optional `[risk]` table sets the minimum review a change owes ([risk tier](docs/sdlc.md#minimum-review-by-risk-tier-1645)).
   Fresh Kimi reviews run periodic isolation checks off the hub event loop;
   verdict and task-tool authority still require the complete synchronous fence
   ([measurements and limits](docs/verification/2026-11-07-kimi-review-watch-1284.md)).
@@ -140,7 +141,9 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   it as a recall preface, as briefs on a task, and through bounded search tools.
   Managed headless peers can save compact `amem:` records from final answers; the
   hub follows amem's `records` policy and removes record lines from shared replies
-  ([details](docs/memory.md#agent-authored-records-1320)).
+  ([details](docs/memory.md#agent-authored-records-1320)). A scheduled memory review,
+  off by default, is the person's switch: `ahub memory review on|off|status`
+  ([scheduled review](docs/memory.md#scheduled-review-and-its-switch-1329-part-1)).
 - **Local and on-prem models.** Pi and the local worker can run on DGX or local MLX
   through an authenticated relay. Tasks marked as PII stay on the on-prem worker.
   Pi can checkpoint and continue after a tool-step ceiling, within a configured
@@ -178,8 +181,9 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   standby session (`ahub peer takeover`), structural config
   (instances, review, lifecycle) edited with a validated diff and a backup from the
   console or a dashboard settings session, token usage and quota
-  history (`ahub usage` and the dashboard's Usage view), and `ahub upgrade`, which
-  carries running sessions across versions.
+  history (`ahub usage` and the dashboard's Usage view), the dashboard's Overview of
+  throughput, board pulse and peer health, `ahub projects move` for a repository
+  you moved, and `ahub upgrade`, which carries running sessions across versions.
 
 ## Upgrading
 

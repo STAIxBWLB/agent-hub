@@ -64,6 +64,7 @@ Defines how the hub MCP server identity reaches the tool:
 * `"project-file"`: Written into workspace plugin or config files (e.g. `.agents/plugins/agent-hub/mcp_config.json`).
 * `"channel-plugin"`: Provided by an installed MCP bundle.
 * `"env"`: Passed via environment variables.
+* `"none"`: The tool gets no hub MCP identity (a configured print peer).
 
 #### `permission`
 Maps hub permission modes (`ask`, `ask-when-needed`, `never-ask`) to native flags or ACP mode IDs:
@@ -91,7 +92,7 @@ The `ahub <kind>` surface: `command`, `startWords(form)`, and for a fixed builti
 `instances.mode` is `headless` (needs a headless `start.create` factory) or `external` (a channel instance started from the person's terminal). A kind with no `instances` policy (Jcode) takes no extra instance, and `validateInstances` refuses a declaration of one. `attach` holds the pull-only forms, external-hello admission and the refusal texts for a TUI that attaches without a driven peer.
 
 #### Peer capability members
-The runtime peer (`PeerAdapter`, `src/hub/peers.ts`) exposes optional members that the daemon reads instead of checking its class (#625 phase 6): `sessionGeneration` (native session identity: absent keeps the owner-token fallback, present but undefined is unknown and refuses bounded checks), `checkpointUsesSessionGeneration` (opt out of generation-fenced checkpoints, as Pi does), `permissionModeState` (the effective native approval state, or `unknown` / `unmanaged`) and `setPermissionMode(mode)` (resolves only after the native side acknowledges). `observedModel()` returns the model the native surface reported for the turn that just ended, with its evidence grade (`served`, `session` or `configured`), read once at `turn_end`; return undefined when the surface reports none, so unknown stays unknown. A driven peer publishes its turn's final answer through `BasePeer.finalAnswer` rather than `onMessage`, so the bus strips `amem:` Record lines before sharing it (#1320); the Record instruction reaches only the owners the daemon binds (see [memory](memory.md#agent-authored-records-1320)). Native safety proofs (Codex proxy and restoration, Claude launch generation) stay in the daemon.
+The runtime peer (`PeerAdapter`, `src/hub/peers.ts`) exposes optional members that the daemon reads instead of checking its class (#625 phase 6): `sessionGeneration` (native session identity: absent keeps the owner-token fallback, present but undefined is unknown and refuses bounded checks), `checkpointUsesSessionGeneration` (opt out of generation-fenced checkpoints, as Pi does), `permissionModeState` (the effective native approval state, or `unknown` / `unmanaged`) and `setPermissionMode(mode)` (resolves only after the native side acknowledges). `observedModel()` returns the model the native surface reported for the turn that just ended, with its evidence grade (`served`, `session` or `configured`), read once at `turn_end`; return undefined when the surface reports none, so unknown stays unknown. `onActivity(kind)`, set by the bus like `onDoing`, takes the closed category of the current native tool start (`files`, `shell`, `network`, `hub`, `memory`, `agents`, `model`, `unknown`) or undefined to clear it (#1512); the daemon withholds it for a private or PII turn and shows it only in live console status. A driven peer publishes its turn's final answer through `BasePeer.finalAnswer` rather than `onMessage`, so the bus strips `amem:` Record lines before sharing it (#1320); the Record instruction reaches only the owners the daemon binds (see [memory](memory.md#agent-authored-records-1320)). Native safety proofs (Codex proxy and restoration, Claude launch generation) stay in the daemon.
 
 #### `budget`
 Defines quota and context window consumption readers:
@@ -207,7 +208,7 @@ An external adapter test imports its definition and calls
 `registerConformance` with its real factory and a fake transport fixture. ACP
 adapters also call `registerAcpConformance({ definition, ... })`; unsupported native
 approval, mode or quota legs require concrete reasons, never silent skips. Other
-exports cover Codex, owned ACP, Pi, local and external-channel fixture contracts.
+exports cover Codex, owned ACP, Pi, local, configured print (`registerPrintConformance`) and external-channel fixture contracts.
 Those exports do not grant an external runtime access to a builtin-only engine.
 The shipped fake assets live under `src/adapters/conformance/fakes`, so package CI needs
 no development-tree files. Native account/TUI probes remain separate from these

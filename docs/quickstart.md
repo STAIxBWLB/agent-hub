@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.46.1
+bun add -g github:STAIxBWLB/agent-hub#v0.47.0
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -53,6 +53,12 @@ A project whose hub is stopped is upgraded without starting it: `ahub upgrade
 --to <version>` in it only retargets its runtime selection, and `ahub upgrade
 --all-stopped --to <version>` does that for every stopped project at once
 (`--dry-run` lists each one first).
+
+## Upgrading to 0.47.0
+
+The declared agent-mem range rises to `>=0.39.0 <1.0.0`: on first open each populated memory profile builds a v6 derived index, a one-time startup cost plus extra disk; the v5 index stays beside it, so a 0.46.1 hub on agent-mem 0.38.0 can still share the home. No store or sync format floor is raised, and a hub that resolves agent-mem 0.38.0 or older now refuses memory at load. Human CLI views print on the shared Report layout and take `--ascii`, and stderr warnings read `ahub: warning: <what>: <why>`; `--json` output and exit codes are unchanged. A task proposal whose detail exceeds 8000 characters is refused with a pointer to a spec issue. The rest does nothing until you use it: `ahub projects move` re-keys a moved project, `ahub memory review on` schedules a memory review (off by default, both token caps required), `ahub sdlc readback start` asks for a spec read-back in `advise` or `enforce` (once one is stored, recovery refuses 0.46.1 as a target), a `[risk]` table in `sdlc.toml` sets a minimum review per risk tier, the dashboard gains an Overview view (key 9), and `"transport": "print"` in `.agenthub/config.local.json` adds a sandboxed advisory peer.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.47.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.46.1
 
