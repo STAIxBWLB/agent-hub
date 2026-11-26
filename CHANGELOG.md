@@ -4,7 +4,11 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Add an opt-in, conductor-only guidance probe pilot with a pinned campus model, per-execution limits and distinct live receipts (Refs #1226, hub task 1155).
+## 0.48.0
+
+- Release N-1 for 0.48.x is published 0.47.0, which declares agent-mem `>=0.39.0 <1.0.0`; its fixture lock pins the 0.39.0 that the 0.47.0 release resolved, with control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.
+- Add an opt-in, conductor-only guidance probe pilot with a pinned campus model, per-execution limits and distinct live receipts (Refs #1226, hub task 1155). It stays off unless the hub starts with `AGENTHUB_LIVE_GUIDANCE_PROBE_ID` naming one registered probe.
+- Commit the #1226 AC7 preregistration (`test/fixtures/guidance-probe-live-1226.json`) with a model-free admission test, document the operator procedure for the pilot, and make a refused campus pin name its cause (no healthy endpoint, Access endpoint, or campus unconfirmed) and `ahub doctor` (Refs #1226, hub task 1156).
 
 ## 0.47.0
 
