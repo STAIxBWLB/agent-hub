@@ -30,10 +30,10 @@ export interface CompatPolicy {
 const plain = (text: string) => text.length <= 64 && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(text) ? text : undefined;
 export const COMPAT = {
   // Receipts: docs/verification/2026-10-26-pi-140-compat.md (1.4.0); docs/verification/2026-11-03-pi-150-compat.md (1.5.0); docs/verification/2026-11-14-pi-152-compat.md (1.5.2); docs/verification/2026-11-25-pi-160-compat.md (1.6.0)
-  pi: { label: "Pi", verified: ["1.4.0", "1.5.0", "1.5.2", "1.6.0"], gate: "contract", probe: ["pi", "--version"], config: "pi.cmd",
+  pi: { label: "Pi", verified: ["1.4.0", "1.5.0", "1.5.2", "1.6.0", "1.6.1"], gate: "contract", probe: ["pi", "--version"], config: "pi.cmd",
     parse: out => plain(out.trim()),
     trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0, 1.5.0, 1.5.2 and 1.6.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
-    receipt: "docs/verification/2026-11-25-pi-160-compat.md" },
+    receipt: "docs/verification/2026-11-26-compat-pi-1.6.1.md" },
   // Transport receipts: docs/verification/2026-10-23-headless-claude-permissions.md; 2.1.310: docs/verification/2026-10-26-claude-implementer-2.1.310.md; 2.1.314 (transport and wrapper): docs/verification/2026-10-31-claude-implementer-2.1.314.md; 2.1.316: docs/verification/2026-10-31-claude-implementer-2.1.316.md; 2.1.318: docs/verification/2026-11-05-claude-implementer-2.1.318.md; 2.1.319: docs/verification/2026-11-06-claude-implementer-2.1.319.md; 2.1.322: docs/verification/2026-11-10-claude-implementer-2.1.322.md; 2.1.323: docs/verification/2026-11-13-claude-implementer-2.1.323.md; 2.1.328: docs/verification/2026-11-19-claude-implementer-2.1.328.md; 2.1.329: docs/verification/2026-11-20-claude-implementer-2.1.329.md; 2.1.332: docs/verification/2026-11-25-claude-implementer-2.1.332.md; host-wrapper receipt below repeats with them.
   "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309", "2.1.310", "2.1.314", "2.1.316", "2.1.318", "2.1.319", "2.1.322", "2.1.323", "2.1.328", "2.1.329", "2.1.332"], gate: "contract", probe: ["claude", "--version"],
     parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
