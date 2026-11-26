@@ -178,7 +178,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub budget execution configure <config.json> [--reason <text>] | disable <id> [--json] [--color=auto|always|never]", "opt-in limits on model calls, tool calls, time and tokens for pi and local; an optional reason is kept with the person and the time"],
   ]],
   ["History and reports", [
-    [`ahub guidance probe ${Object.values(GUIDANCE_PROBE_USAGE).join(" | ")}`, "person or configured conductor only: bounded T1 declaration and fake-only probe lifecycle; receipts reads the sealed receipts, the outcome denominator and the comparability reasons, read-only; production execution is unavailable"],
+    [`ahub guidance probe ${Object.values(GUIDANCE_PROBE_USAGE).join(" | ")}`, "person or configured conductor only: bounded T1 declaration and probe lifecycle; receipts reads the sealed receipts, the outcome denominator and the comparability reasons, read-only; live execution only for the id the hub was started with in AGENTHUB_LIVE_GUIDANCE_PROBE_ID, started by the conductor"],
     ["ahub guidance create --file <json> [--json]", "record a bounded immutable advisory proposal through current task authority; no activation or probe"],
     ["ahub guidance list --task <n> --task-created <ms> [--cursor <token>] [--json]", "bounded guidance metadata pages; withdrawn history and withheld fields remain explicit"],
     ["ahub guidance show --task <n> --task-created <ms> --id <hash> [--json]", "screened editable-section diff selected by existing variant id, never a displayed experiment label"],

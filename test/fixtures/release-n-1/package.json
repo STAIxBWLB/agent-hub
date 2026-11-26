@@ -1,9 +1,9 @@
 {
   "private": true,
   "dependencies": {
-    "@staix/agent-hub": "0.46.1"
+    "@staix/agent-hub": "0.47.0"
   },
   "overrides": {
-    "@staix/agent-mem": "0.38.0"
+    "@staix/agent-mem": "0.39.0"
   }
 }
