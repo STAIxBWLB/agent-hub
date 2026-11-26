@@ -6931,6 +6931,37 @@ The selected project's configured conductor may run the commands below through i
 | settings set | Only the thirteen existing live registry keys listed below |
 | sdlc configure [--mode off\|advise] [--required-checks <names>] | Only on the person's direct instruction in the conductor's own session (#1432); stages `off`/`advise` and the required check names for the next hub start, never `enforce` or while running or file mode is `enforce` ([contract](sdlc.md#instructed-conductor-configuration-1432)) |
 
+### Run the preregistered guidance pilot
+
+1. Upgrade the project hub to a release with `guidance_probe_live`. Bind a local copy of the [committed preregistration](../test/fixtures/guidance-probe-live-1226.json) to the current public task revision, project namespace and catalog role. Use `localProbeFingerprints({ maxSteps: 8, maxOutputTokens: 512, tokenUpperBound: 8000 })` from the installed hub source, on the machine and Bun version that will run it. Copy the runtime, toolset and model config hashes into the manifest and bind the returned system policy snapshot by its UTF-8 byte count and SHA-256. Set `task.flowRevision` to the current task history length. Set `role.baselineSha256` to the catalog role hash and `guidance.baselineSha256` to the SHA-256 of `taskRoleText(role)`. The project namespace is `ahub-` followed by the SHA-256 of `memoryProjectKey(projectRoot)`. Keep the committed task text, baseline context, empty tree, data policy, slots, model and limits. Choose and record the current immutable G1 variant ID before the baseline. It supplies the candidate guidance.
+2. From the conductor session, set `probe_file` to that bound JSON and register it.
+
+   ```sh
+   ahub guidance probe register --file "$probe_file" --json
+   ```
+
+3. The person copies the returned ID into `probe_id` and restarts the project hub with that value in its startup environment. For a manually started hub, run these from the project root.
+
+   ```sh
+   ahub down
+   AGENTHUB_LIVE_GUIDANCE_PROBE_ID="$probe_id" ahub up --no-agents
+   ```
+
+4. Reattach the configured conductor in its native session. Set `probe_revision` to the current revision from `show`. Start the baseline from that session.
+
+   ```sh
+   ahub guidance probe show --id "$probe_id" --json
+   ahub guidance probe start --id "$probe_id" --revision "$probe_revision"
+   ```
+
+5. After a covered baseline, reread its revision and start the candidate with the current immutable G1 variant ID in `variant_id`. Read the sealed outcomes. A refusal for missing conductor native-session identity, an unknown outcome or a mismatched served model stays in the record. Inspect it without retrying either arm.
+
+   ```sh
+   ahub guidance probe show --id "$probe_id" --json
+   ahub guidance probe start --id "$probe_id" --revision "$probe_revision" --variant "$variant_id"
+   ahub guidance probe receipts --id "$probe_id" --json
+   ```
+
 The exact settings keys are `task_sweep.enabled`, `task_sweep.auto_reassign`, `task_sweep.no_writes_turns`, `task_sweep.interval_s`, `task_sweep.unaccepted_min`, `task_sweep.idle_min`, `task_sweep.review_min`, `task_sweep.ready_min`, `task_sweep.ladder_min`, `snapshots.enabled`, `research.enabled`, `approvals.notify` and `tasks.escalate_after`. New keys receive no authority by prefix. Generic roster setting writes still use the dedicated roster lifecycle. Conductor setting records name the initiating peer, and conductor writes preserve the person's pending undo record. An intervening write can still invalidate that undo through the existing file-digest guard; preserving the record does not bypass that guard. Permission modes, roles, `models start|stop`, arbitrary configuration reload and undo remain person commands. `task cancel` remains a separate own-task `hub_task_cancel` permission, not a conductor operation.
 
 Log history is limited to the last 100 retained lines and export to the last 1000 retained events, each within a 128 KiB read. Truncation is explicit. An incomplete public projection reports one bounded reason on stderr, preserving export JSON on stdout. The complete privacy inventory has no 500-task cutoff and is cached until board or privacy/config revisions change, so log-follow does not rebuild it for every line. Export accepts closed metadata shapes; unknown fields and nested records are withheld rather than copied. Task titles, paths and private delivery bodies are not part of this projection. It does not change the person's ordinary logs/export output.

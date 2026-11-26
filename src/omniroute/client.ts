@@ -165,9 +165,11 @@ export class OmniRoute {
 
   /** A single endpoint and model for a confined experiment, with no route selection after admission. */
   async pinCampusChat(model: string): Promise<(body: Omit<ChatRequest, "model">, signal: AbortSignal) => Promise<ChatResult>> {
-    if (!await this.onCampus()) throw new Error("campus gateway unavailable");
+    const onCampus = await this.onCampus();
     const base = this.live;
-    if (!base || this.isAccessHost(base)) throw new Error("campus gateway unavailable");
+    if (!base) throw new Error("campus gateway unavailable (no healthy endpoint); run ahub doctor");
+    if (this.isAccessHost(base)) throw new Error("campus gateway unavailable (Access endpoint selected); run ahub doctor on campus");
+    if (!onCampus) throw new Error("campus gateway unavailable (campus connection unconfirmed); run ahub doctor");
     return (body, signal) => this.chatAt(base, { ...body, model }, { signal }, true);
   }
 
