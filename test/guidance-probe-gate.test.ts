@@ -1,7 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { fileURLToPath } from "node:url";
+import { createLiveGuidanceProbeLocalAdapter } from "../src/adapters/local-probe.ts";
+import { localProbeFingerprints } from "../src/adapters/local-worker.ts";
+import { OmniRoute } from "../src/omniroute/client.ts";
 import { USER } from "../src/hub/envelope.ts";
-import { GUIDANCE_PROBE_MODEL, parseGuidanceProbeReceiptExport, probeHash } from "../src/hub/guidance-probes.ts";
+import { GUIDANCE_PROBE_LIVE_LIMITS, GUIDANCE_PROBE_MODEL, isLiveGuidanceProbeManifest,
+  parseGuidanceProbeReceiptExport, parseGuidanceProbeRegistration, probeHash } from "../src/hub/guidance-probes.ts";
 import { guidanceProbeStatusLines } from "../src/ui/guidance-view.ts";
 import { fakeEffectValue } from "./fakes/guidance-probe-provider.ts";
 import { probeTasksFixture, runProbeExperiment, witnessedProbe } from "./helpers/guidance-probe-tasks.ts";
@@ -120,4 +125,41 @@ test("only the selected native conductor start gets a durable live-mode reservat
   expect(f.store.hasLiveRecords()).toBe(true);
   const [baseline] = f.store.receipts({ projectKey: f.projectKey, id: receipt.id });
   expect(baseline?.mode).toBe("live");
+});
+
+test("the preregistered AC7 declaration admits both worker arms with model-free effects", async () => {
+  const declaration = parseGuidanceProbeRegistration(await Bun.file(
+    new URL("./fixtures/guidance-probe-live-1226.json", import.meta.url),
+  ).json());
+  if (!declaration) throw new Error("expected a valid preregistered AC7 declaration");
+  expect(isLiveGuidanceProbeManifest(declaration.manifest)).toBe(true);
+  expect(declaration.snapshots.dataPolicy.admittedData).toEqual([]);
+  expect(declaration.snapshots.improverContext).toBeUndefined();
+
+  const f = await probeTasksFixture(clean, { runner: false });
+  const { projectKey, task, role, guidance } = f.registration().manifest;
+  const { modelCalls, maxOutputTokens, tokens } = GUIDANCE_PROBE_LIVE_LIMITS;
+  const { systemPolicy, ...runtime } = localProbeFingerprints({ maxSteps: modelCalls, maxOutputTokens, tokenUpperBound: tokens });
+  const policyRef = { sha256: probeHash(systemPolicy), bytes: Buffer.byteLength(systemPolicy) };
+  const registration = {
+    manifest: { ...declaration.manifest, projectKey, task, role, guidance, runtime,
+      inputs: { ...declaration.manifest.inputs, systemPolicy: policyRef } },
+    snapshots: { ...declaration.snapshots, systemPolicy },
+  };
+  const registered = await f.tasks.guidanceProbeRegister("claude", registration);
+  const { prepareWorkerFrame } = createLiveGuidanceProbeLocalAdapter({
+    cwd: fileURLToPath(new URL("..", import.meta.url)), omni: new OmniRoute(), current: () => {}, permit: async () => false,
+  });
+  f.dependency.live = { id: registered.id, adapter: { ports: f.provider, prepareWorkerFrame } };
+  f.provider.script = witnessedProbe(f, { runtime });
+  const first = await f.tasks.guidanceProbeStart("claude", registered.id, registered.revision);
+  const variant = await f.variant();
+  await f.tasks.guidanceProbeStart("claude", registered.id, first.revision, variant.id);
+
+  expect(f.provider.launches.map(({ slot }) => slot.id)).toEqual(["baseline", "candidate1"]);
+  const [baseline, candidate] = f.provider.launches;
+  expect(baseline?.inputSha256).not.toBe(candidate?.inputSha256);
+  expect(baseline?.nonGuidanceInputSha256).toBe(candidate?.nonGuidanceInputSha256);
+  const sealed = f.store.receipts({ projectKey, id: registered.id });
+  expect(sealed.map(({ mode, state }) => [mode, state])).toEqual([["live", "succeeded"], ["live", "succeeded"]]);
 });

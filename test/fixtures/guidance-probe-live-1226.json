@@ -1,0 +1,106 @@
+{
+  "manifest": {
+    "v": 1,
+    "projectKey": "preregistered-project-bind-at-registration",
+    "experimentId": "guidance-probe-live-1226-pilot",
+    "task": {
+      "id": 1,
+      "created": 0,
+      "flowRevision": 0
+    },
+    "role": {
+      "id": "test-engineer",
+      "layer": "project",
+      "baselineSha256": "848a286a07115acc15cf2edc51af62974b2d5cb8bfe27937466bb35af2b0766b"
+    },
+    "inputs": {
+      "task": {
+        "sha256": "42dfc35aa03e0a544fd45c6479b4e5d88932291e8349dda1ad71d11b61a136b1",
+        "bytes": 170
+      },
+      "baselineContext": {
+        "sha256": "b84c94ee69e910201db4cff43b6d8bdc6d4bbc6551c8962d3589985fb49e38db",
+        "bytes": 74
+      },
+      "dataPolicy": {
+        "sha256": "cb239df444e7a3e2baeeee11c2a6bc781fb94c65fcaf9121aa67bf01eba6c6d9",
+        "bytes": 309
+      },
+      "systemPolicy": {
+        "sha256": "7b741cd1caeefddad3763243c733d7b254874e18701fd3d1475f131f56e1e4db",
+        "bytes": 66
+      },
+      "codeTree": {
+        "objectFormat": "sha1",
+        "oid": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+      }
+    },
+    "runtime": {
+      "runtimeSha256": "9bae15ecafa742c6f0ebf73e33d63c1a12275dfcafc2b9fa5fe4a77fb3e2587b",
+      "toolsetSha256": "7aa7b7a452b7de75d6abd605ee974b40c0ea6409c39d29b09a91628e4152de12",
+      "modelConfigSha256": "ed17e6a7ab3a25832497b8ad3aded9cd1d4ec6fcf3ca8c21f6aca5c2926f2ec8"
+    },
+    "model": {
+      "requested": "qwen27b/qwen3.8-27b",
+      "expectedServed": "qwen27b/qwen3.8-27b"
+    },
+    "guidance": {
+      "baselineSha256": "ad5111c8ec4087172d6cff0a7f45cf8061b881486dce6d8f286ce4a3909ed1f3"
+    },
+    "slots": [
+      {
+        "id": "baseline",
+        "stage": "baseline",
+        "role": "worker",
+        "arm": "baseline"
+      },
+      {
+        "id": "candidate1",
+        "stage": "candidate1",
+        "role": "worker",
+        "arm": "candidate1"
+      }
+    ],
+    "limits": {
+      "modelCalls": 16,
+      "toolCalls": 16,
+      "elapsedMs": 120000,
+      "tokens": 16000,
+      "inputBytes": 65536,
+      "scratchBytes": 8388608,
+      "outputBytes": 4096
+    }
+  },
+  "snapshots": {
+    "task": "Summarize this synthetic incident in one sentence. The queue had three pending items, and all three completed after the worker restarted. Use only the details given here.",
+    "baselineContext": "This is a public synthetic workflow example. Return the sentence directly.",
+    "dataPolicy": {
+      "v": 1,
+      "allowedWrites": [],
+      "admittedData": [],
+      "roles": {
+        "worker": {
+          "dataIds": [],
+          "guidanceOnlyExperience": true
+        },
+        "proposal": {
+          "dataIds": [],
+          "improverContext": false
+        },
+        "compose": {
+          "dataIds": [],
+          "improverContext": false
+        },
+        "select": {
+          "dataIds": [],
+          "anonymizedDeliverables": true
+        },
+        "reflect": {
+          "dataIds": [],
+          "closedRoundOnly": true
+        }
+      }
+    },
+    "systemPolicy": "Bind to the trusted live worker system policy before registration."
+  }
+}

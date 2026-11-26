@@ -14,16 +14,22 @@ import { guidanceProbeFixture, guidanceProbeFixtureKey } from "./fakes/guidance-
 const cleanups: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-test("daemon returns fixed probe refusals with every request rid, including production runner refusal", async () => {
+test("daemon returns fixed probe refusals with every rid and uses only the exact startup selection", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-guidance-probe-daemon-")), stateDir = join(root, "state"), home = join(root, "home");
-  const previousHome = process.env.HOME;
+  const previousHome = process.env.HOME, previousLiveId = process.env.AGENTHUB_LIVE_GUIDANCE_PROBE_ID;
+  delete process.env.AGENTHUB_LIVE_GUIDANCE_PROBE_ID;
   mkdirSync(stateDir); mkdirSync(join(home, "kimi"), { recursive: true }); mkdirSync(join(root, ".agenthub/roles"), { recursive: true });
   writeFileSync(join(root, ".agenthub/roles/test-engineer.md"), vectors.baseline);
   process.env.HOME = home;
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, person: ControlClient | undefined;
   cleanups.push(async () => {
     try { person?.close(); await daemon?.stop(); }
-    finally { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; rmSync(root, { recursive: true, force: true }); }
+    finally {
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      if (previousLiveId === undefined) delete process.env.AGENTHUB_LIVE_GUIDANCE_PROBE_ID;
+      else process.env.AGENTHUB_LIVE_GUIDANCE_PROBE_ID = previousLiveId;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   const board = new Board(join(stateDir, "hub.db"));
@@ -32,15 +38,19 @@ test("daemon returns fixed probe refusals with every request rid, including prod
   const currentTask = board.get(task.id)!;
   board.close();
 
-  const config: HubConfig = { ...DEFAULT_CONFIG, roster: {}, start: { agents: [] }, batch_ms: 0,
-    memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
-    mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, omniroute: { urls: [], access_hosts: [] },
-    pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, specs: { ...DEFAULT_CONFIG.specs, enabled: false },
-    snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
-    approvals: { ...DEFAULT_CONFIG.approvals, notify: false } };
-  daemon = await startDaemon({ cwd: root, stateDir, instanceId: "guidance-probe-refusal-fixture", kimiHome: join(home, "kimi"), config,
-    controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, memorySyncTrigger: () => {} });
-  person = await ControlClient.connect(stateDir, { role: "console" });
+  const start = async () => {
+    daemon = await startDaemon({ cwd: root, stateDir, instanceId: "guidance-probe-refusal-fixture", kimiHome: join(home, "kimi"), config: quietConfig(),
+      controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, memorySyncTrigger: () => {} });
+    person = await ControlClient.connect(stateDir, { role: "console" });
+    return person;
+  };
+  const restart = async (selection: string) => {
+    person?.close(); await daemon?.stop();
+    person = undefined; daemon = undefined;
+    process.env.AGENTHUB_LIVE_GUIDANCE_PROBE_ID = selection;
+    await start();
+  };
+  const consoleClient = await start();
   const expectRefusal = async (request: Record<string, unknown>, cause: string) => {
     const reply = await person!.request(request);
     expect(reply.ok).toBe(false);
@@ -53,7 +63,7 @@ test("daemon returns fixed probe refusals with every request rid, including prod
   await expectRefusal({ t: "guidance_probe_show", id: "f".repeat(64) }, "guidance probe is unavailable");
   await expectRefusal({ t: "guidance_probe_register", registration: {} }, "guidance probe declaration is invalid or oversized");
 
-  const lineage = await person.request({ t: "lineage_show", taskId: task.id });
+  const lineage = await consoleClient.request({ t: "lineage_show", taskId: task.id });
   expect(lineage.ok).toBe(true);
   const taskRef = lineage.lineage.nodes.find((entry: { ref: { tool: string; kind: string } }) => entry.ref.tool === "ahub" && entry.ref.kind === "task");
   if (!taskRef) throw new Error("expected project task lineage");
@@ -63,11 +73,28 @@ test("daemon returns fixed probe refusals with every request rid, including prod
   value.manifest.task = { id: currentTask.id, created: currentTask.created, flowRevision: currentTask.history.length };
   value.manifest.role = { id: role.id, layer: "project", baselineSha256: role.hash };
   value.manifest.guidance.baselineSha256 = probeHash(taskRoleText(role));
-  const registered = await person.request({ t: "guidance_probe_register", registration: value });
+  const registered = await consoleClient.request({ t: "guidance_probe_register", registration: value });
   expect(registered.ok === true, String(registered.error ?? "expected a registration receipt")).toBe(true);
   expect(Number.isSafeInteger(registered.rid)).toBe(true);
-  await expectRefusal({ t: "guidance_probe_start", id: registered.receipt.id, revision: registered.receipt.revision },
-    "guidance probe runner is unavailable in production T1");
+  const other = await consoleClient.request({ t: "guidance_probe_register", registration: {
+    ...value, manifest: { ...value.manifest, experimentId: "other-live-selection-fixture" },
+  } });
+  expect(other.ok === true, String(other.error ?? "expected a second registration receipt")).toBe(true);
+  const startRequest = (registration: typeof registered) => ({
+    t: "guidance_probe_start", id: registration.receipt.id, revision: registration.receipt.revision,
+  });
+  const unavailable = "guidance probe runner is unavailable in production T1";
+  await expectRefusal(startRequest(registered), unavailable);
+  await restart("not-a-sha");
+  await expectRefusal(startRequest(registered), unavailable);
+  await restart(registered.receipt.id);
+  // The exact selection gets past runner lookup and hits the conductor fence. A console start has no model effect.
+  await expectRefusal(startRequest(registered), "live guidance probes require the current authenticated conductor");
+  await expectRefusal(startRequest(other), unavailable);
+  const reader = new GuidanceProbeStore(join(stateDir, "hub.db"), Date.now, true);
+  try { expect(reader.hasLiveRecords()).toBe(false); }
+  finally { reader.close(); }
+
 });
 
 const quietConfig = (): HubConfig => ({ ...DEFAULT_CONFIG, roster: {}, start: { agents: [] }, batch_ms: 0,

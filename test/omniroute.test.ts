@@ -70,7 +70,17 @@ test("Cloudflare Access headers go only to listed hosts", async () => {
 });
 
 test("a pinned campus chat refuses an unconfirmed route", async () => {
-  await expect(new OmniRoute().pinCampusChat("qwen27b/qwen3.8-27b")).rejects.toThrow("campus gateway unavailable");
+  await expect(new OmniRoute().pinCampusChat("qwen27b/qwen3.8-27b")).rejects.toThrow("campus gateway unavailable (no healthy endpoint); run ahub doctor");
+});
+
+test("a pinned campus chat reports an Access route without sending a generation request", async () => {
+  const gateway = startFakeModelServer();
+  cleanup.push(gateway.stop);
+  process.env.OMNIROUTE_API_KEY = "fixture";
+  const client = new OmniRoute({ urls: [gateway.url], access_hosts: [new URL(gateway.url).hostname] });
+  await expect(client.pinCampusChat("qwen27b/qwen3.8-27b"))
+    .rejects.toThrow("campus gateway unavailable (Access endpoint selected); run ahub doctor on campus");
+  expect(gateway.requests).toHaveLength(0);
 });
 
 test("a pinned campus chat reports the response model without selecting another route", async () => {
