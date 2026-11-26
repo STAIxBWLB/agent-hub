@@ -128,6 +128,7 @@ Glyphs are semantic; each pairs with one role. Code uses named constants, never 
 - Error line (stderr): `<tool>: <what failed>: <why>`. When stderr is a TTY it is prefixed with the `fail` marker (`✗ ahub: ...`); piped stderr keeps the plain form, so scripts and agents that match `<tool>: ` keep working.
 - Next step: when the CLI knows the fix, a second line `  → <command or setting>` (ASCII `  -> `), complete and copyable (`cd` prefix and every value filled in), in `accent`. An error raised by a server or daemon that carries no fix prints no `→` line; the CLI never invents one.
 - Warning (stderr): `<tool>: warning: <what>: <why>`, `warn` marker on a TTY, optional `→` line.
+  In ahub, `warn()` in `main.ts` is `warnLine()` from `src/cli/warn-line.ts`, which prints `warningLines`, the one formatter (re-exported by `src/cli/error-format.ts`). A raw `console.log` or `console.error` in `src/cli` that bypasses Report, `printOutput`, `errorLines` or the warning printers is allowed only while `scripts/cli-raw-output.baseline.json` lists it with its reason; that list can only shrink, and `test/cli-output-conformance.test.ts` fails on a new call and on a stale entry.
 - Success confirmation (stdout): `✓ <what was done>`; omit it when the output already shows the result.
 - Usage error: the message, then `Usage: <tool> <command> <args>` and `Run '<tool> help <command>' for details.`, exit `2`.
 - Plain English sentences, no emoji, no exclamation marks. Relative times in human output (`47d ago`, `in 5d15h`).

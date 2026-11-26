@@ -111,20 +111,20 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | --- | --- |
 | upgrade | Delegated / no direct output call |
 | restart | Delegated / no direct output call |
-| recovery | fail (12), console.error (4), console.log (15), renderOperation (1), renderBlocked (1), renderRecoveryStatus (1), renderSummary (1) |
+| recovery | fail (12), console.error (3), console.log (15), renderOperation (1), renderBlocked (1), renderRecoveryStatus (1), renderSummary (1) |
 | recovery-run | fail (1) |
 | help | renderHelp (1), fail (1), console.log (1) |
 | completion | fail (1), process.stdout.write (1) |
 | --version | console.log (1) |
 | version | console.log (1) |
 | projects | fail (4), console.log (2) |
-| ui | fail (6), console.log (4), console.error (1) |
+| ui | fail (6), console.log (4) |
 | manager | Delegated / no direct output call |
 | setup | fail (7), console.log (9) |
-| init | fail (5), console.log (11), console.error (5) |
+| init | fail (5), console.log (11), console.error (1) |
 | daemon | console.error (2) |
 | console | fail (2) |
-| up | console.error (3), console.log (2) |
+| up | console.error (2), console.log (2) |
 | claude | Delegated / no direct output call |
 | codex | Delegated / no direct output call |
 | kimi | Delegated / no direct output call |
@@ -138,7 +138,7 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | model | fail (6), console.log (1), printOutput (1), renderRuntimeModels (1) |
 | models | console.log (3), printOutput (1), renderModelsStatus (1), fail (4) |
 | say | fail (2), console.log (4) |
-| queue | fail (12), console.log (6), printOutput (3), renderQueue (1), console.error (1), renderQueueShow (2) |
+| queue | fail (12), console.log (6), printOutput (3), renderQueue (1), renderQueueShow (2) |
 | watch | fail (3), console.log (1) |
 | tail | console.log (4), renderTailEvent (1) |
 | budget | fail (8), console.log (3), printOutput (3), renderBudgetResult (1), renderExecutionBudgetStatus (1), renderBudget (1) |
@@ -148,14 +148,14 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | smoke | fail (6), console.log (2) |
 | room | fail (2) |
 | broker | fail (1) |
-| source | console.log (2), printOutput (2), renderSourceList (1), fail (4), console.error (1), renderSourceAdd (1) |
+| source | console.log (2), printOutput (2), renderSourceList (1), fail (4), renderSourceAdd (1) |
 | schedule | showToolText (3), renderScheduleList (1), fail (1), renderScheduleRun (1), renderScheduleChange (1) |
 | study | fail (2), showToolText (6), renderStudyEvidence (2), renderSynthesisReadiness (1), renderExperiments (1), renderStudyShow (1), renderStudyList (1), renderStudyReceipt (1) |
 | capabilities | fail (1), showToolText (1), renderCapabilities (1) |
 | learn | fail (2), showToolText (2), renderLearnList (1), renderLearnChange (1) |
 | intake | fail (3), showToolText (2), renderIntakeChange (1), renderIntake (1) |
 | deliverables | fail (2), console.log (5) |
-| board | fail (8), console.log (3), showToolText (1), renderHandoffs (1), console.error (1), printOutput (2), renderBoardColumns (1), renderBoard (1) |
+| board | fail (8), console.log (3), showToolText (1), renderHandoffs (1), printOutput (2), renderBoardColumns (1), renderBoard (1) |
 | sdlc | printOutput (2), fail (51), console.log (35), process.stdout.write (2), showToolText (2), renderSdlcCosts (1), renderSdlcMetrics (1), renderSdlcMerge (1) |
 | task | showToolText (3), fail (15), console.log (7), renderHandoffs (1), renderHandoffReceipt (1) |
 | review | fail (5), console.log (2) |
@@ -192,7 +192,7 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | facts | fail (1), console.log (1) |
 | check-path | fail (1), console.log (2) |
 | turns | console.log (1), printOutput (1), renderTurns (1) |
-| undo | fail (12), console.log (8), console.error (1) |
+| undo | fail (12), console.log (8) |
 | kill | console.log (2), fail (1) |
 | down | Delegated / no direct output call |
 | reset | fail (7), console.log (19) |
@@ -207,37 +207,36 @@ Interpolated and daemon-supplied strings require runtime fixtures. They are coun
 
 | Command | Text source | Stream | Literal width |
 | --- | --- | --- | ---: |
-| recovery | src/cli/main.ts:1039 | stdout | 29 |
-| recovery | src/cli/main.ts:1072 | stdout | 60 |
-| projects | src/cli/main.ts:1166 | stdout | 45 |
-| ui | src/cli/main.ts:1182 | stdout | 57 |
-| ui | src/cli/main.ts:1197 | stderr | 112 |
-| ui | src/cli/main.ts:1202 | stdout | 76 |
-| models | src/cli/main.ts:1590 | stdout | 11 |
-| say | src/cli/main.ts:1614 | stdout | 46 |
-| roadmap | src/cli/main.ts:1818 | stdout | 46 |
-| deliverables | src/cli/main.ts:2055 | stdout | 70 |
-| sdlc | src/cli/main.ts:2160 | stdout | 29 |
-| ask | src/cli/main.ts:2505 | stdout | 9 |
-| ask | src/cli/main.ts:2508 | stdout | 54 |
-| roster | src/cli/main.ts:2625 | stdout | 19 |
-| roster | src/cli/main.ts:2632 | stdout | 19 |
-| autonomy | src/cli/main.ts:2683 | stdout | 75 |
-| settings | src/cli/main.ts:2776 | stdout | 39 |
-| settings | src/cli/main.ts:2789 | stdout | 33 |
-| settings | src/cli/main.ts:2820 | stdout | 33 |
-| answer | src/cli/main.ts:2865 | stdout | 17 |
-| bench | src/cli/main.ts:3006 | stdout | 107 |
-| usage | src/cli/main.ts:3190 | stderr | 121 |
-| undo | src/cli/main.ts:3326 | stdout | 103 |
-| undo | src/cli/main.ts:3331 | stdout | 53 |
-| kill | src/cli/main.ts:3348 | stdout | 18 |
-| kill | src/cli/main.ts:3352 | stdout | 11 |
-| reset | src/cli/main.ts:3366 | stdout | 36 |
-| reset | src/cli/main.ts:3390 | stdout | 56 |
-| reset | src/cli/main.ts:3396 | stdout | 39 |
-| reset | src/cli/main.ts:3399 | stdout | 11 |
-| reset | src/cli/main.ts:3434 | stdout | 96 |
+| recovery | src/cli/main.ts:1038 | stdout | 29 |
+| recovery | src/cli/main.ts:1071 | stdout | 60 |
+| projects | src/cli/main.ts:1165 | stdout | 45 |
+| ui | src/cli/main.ts:1181 | stdout | 57 |
+| ui | src/cli/main.ts:1201 | stdout | 76 |
+| models | src/cli/main.ts:1589 | stdout | 11 |
+| say | src/cli/main.ts:1613 | stdout | 46 |
+| roadmap | src/cli/main.ts:1817 | stdout | 46 |
+| deliverables | src/cli/main.ts:2054 | stdout | 70 |
+| sdlc | src/cli/main.ts:2159 | stdout | 29 |
+| ask | src/cli/main.ts:2504 | stdout | 9 |
+| ask | src/cli/main.ts:2507 | stdout | 54 |
+| roster | src/cli/main.ts:2624 | stdout | 19 |
+| roster | src/cli/main.ts:2631 | stdout | 19 |
+| autonomy | src/cli/main.ts:2682 | stdout | 75 |
+| settings | src/cli/main.ts:2775 | stdout | 39 |
+| settings | src/cli/main.ts:2788 | stdout | 33 |
+| settings | src/cli/main.ts:2819 | stdout | 33 |
+| answer | src/cli/main.ts:2864 | stdout | 17 |
+| bench | src/cli/main.ts:3005 | stdout | 107 |
+| usage | src/cli/main.ts:3189 | stderr | 121 |
+| undo | src/cli/main.ts:3325 | stdout | 103 |
+| undo | src/cli/main.ts:3330 | stdout | 53 |
+| kill | src/cli/main.ts:3347 | stdout | 18 |
+| kill | src/cli/main.ts:3351 | stdout | 11 |
+| reset | src/cli/main.ts:3365 | stdout | 36 |
+| reset | src/cli/main.ts:3389 | stdout | 56 |
+| reset | src/cli/main.ts:3395 | stdout | 39 |
+| reset | src/cli/main.ts:3398 | stdout | 11 |
+| reset | src/cli/main.ts:3433 | stdout | 96 |
 
 ## Renderer candidates
 
@@ -285,6 +284,11 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/output.ts:renderTotal | CLI | - | table | 78 |
 | src/cli/pet.ts:renderPet | CLI | - | Inline / indirect | 21 |
 | src/cli/roadmap.ts:renderRoadmap | CLI | - | wrap | 23 |
+| src/cli/room-output.ts:renderRooms | CLI | Direct | Report | Unmeasured |
+| src/cli/room-output.ts:renderRoomInbox | CLI | Direct | Report, moment | Unmeasured |
+| src/cli/room-output.ts:renderRoomInboxResult | CLI | Direct | Report | Unmeasured |
+| src/cli/room-output.ts:renderRoomPreview | CLI | Direct | Report | Unmeasured |
+| src/cli/room-output.ts:renderRoomResult | CLI | Direct | Report | Unmeasured |
 | src/cli/schedule-output.ts:renderScheduleList | CLI | Direct | Report, grid, moment | 82 |
 | src/cli/schedule-output.ts:renderScheduleRun | CLI | Direct | Report | 33 |
 | src/cli/schedule-output.ts:renderScheduleChange | CLI | Direct | Report | 23 |

@@ -18,6 +18,7 @@ import { renderLearnChange, renderLearnList } from "../src/cli/learn-output.ts";
 import { renderIntake, renderIntakeChange } from "../src/cli/intake-output.ts";
 import { renderCapabilities } from "../src/cli/capabilities-output.ts";
 import { renderTidyPreview, renderTidyResult, renderWorktrees } from "../src/cli/worktrees-output.ts";
+import { renderRoomInbox, renderRoomInboxResult, renderRoomPreview, renderRoomResult, renderRooms } from "../src/cli/room-output.ts";
 import { PALETTE, Report, TONE_ROLE, paint, table, wrap } from "../src/cli/console-state.ts";
 import { errorLines, failureExitCode, warningLines } from "../src/cli/error-format.ts";
 import { MARKERS, MARKER_COLUMN, MARKER_NAMES, ROLE_SGR, SECTION_MARKER, SGR_RESET, asciiMarkers, cellWidth, markerCell, resolveColor, streamEnv } from "../src/cli/output-standard.ts";
@@ -449,6 +450,12 @@ describe("CLI output standard v1: each converted view follows the grammar (#1654
     "worktrees": (c, a) => renderWorktrees({ live: [{ path: "/w/a", branch: "feat/a", task: 7, pr: 9, lastActiveAt: NOW - 1000 }], settled: [{ path: "/w/b", branch: "feat/b", reason: "merged", lastActiveAt: NOW - 5000 }], complete: false }, c, NOW, a),
     "worktrees tidy": (c, a) => renderTidyPreview({ entries: [{ shown: "/w/b", branch: "feat/b", reason: "merged" }], removable: [{ shown: "/w/b", branch: "feat/b", reason: "merged" }], fingerprint: "abc123" }, c, NOW, a),
     "worktrees tidy confirm": (c, a) => renderTidyResult([{ shown: "/w/b", branch: "feat/b", worktreeRemoved: true, branchDeleted: false, note: "branch kept" }], c, NOW, a),
+    "room list": (c, a) => renderRooms([{ name: "lab", room: "ccccccccccccccccccccccccccccccccccccccccccc", owner: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", member: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", epoch: "2", state: "offline", linkCause: "transport_closed", linkNextStep: "Check the broker address and network connection.", health: { refused: { wrong_epoch: 2 }, outboxDepth: 3, oldestOutboxAgeMs: 50, lastReceiptAgeMs: null }, remotePeers: [{ id: "codex@guest", state: "idle" }, { id: "kimi@guest", state: "offline", liveness: "untracked" }], deliveries: [{ direction: "outbound", id: "12345678-1234-4234-8234-123456789abc", application: "12345678-1234-4234-8234-123456789abc", peer: "codex@guest", state: "needs_review", holdReason: "epoch rotated" }, { direction: "inbound", pending: 1, needsReview: 1, truncated: true }] }], false, c, a),
+    "room status": (c, a) => renderRooms([{ name: "lab", room: "ccccccccccccccccccccccccccccccccccccccccccc", owner: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", member: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", epoch: "2", state: "offline", linkCause: "transport_closed", linkNextStep: "Check the broker address and network connection.", health: { refused: { wrong_epoch: 2 }, outboxDepth: 3, oldestOutboxAgeMs: 50, lastReceiptAgeMs: null }, remotePeers: [{ id: "codex@guest", state: "idle" }, { id: "kimi@guest", state: "offline", liveness: "untracked" }], deliveries: [{ direction: "outbound", id: "12345678-1234-4234-8234-123456789abc", application: "12345678-1234-4234-8234-123456789abc", peer: "codex@guest", state: "needs_review", holdReason: "epoch rotated" }, { direction: "inbound", pending: 1, needsReview: 1, truncated: true }] }], true, c, a),
+    "room inbox": (c, a) => renderRoomInbox([{ id: "12345678-1234-4234-8234-123456789abc", name: "lab", from: "codex@guest", state: "unread", receivedAt: NOW - 60000, expiresAt: NOW + 86400000, bytes: 42, sender: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }], NOW, c, a),
+    "room inbox result": (c, a) => renderRoomInboxResult({ id: "12345678-1234-4234-8234-123456789abc", state: "done" }, false, c, a),
+    "room preview": (c, a) => renderRoomPreview("invite", { owner: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", member: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", outstanding: ["12345678-1234-4234-8234-123456789abc"] }, c, a),
+    "room result": (c, a) => renderRoomResult("join", { name: "lab", artifact: true }, c, a),
   };
   const text = (lines: ReturnType<typeof renderSdlcMerge>) => lines.map(line => line.map(span => span.text).join(""));
   for (const [name, render] of Object.entries(views)) {
@@ -498,12 +505,13 @@ describe("Report.titled: the header fits, else the context moves to a note (#165
 
 // #1654 T4 / AC4: a `console.log` or `console.error` in src/cli that bypasses Report, printOutput, errorLines or warningLines fails here unless
 // `scripts/cli-raw-output.baseline.json` lists it. The baseline can only shrink: a new call is refused, and an entry whose call is gone or reduced must be removed.
-const OUTPUT_PATHS = /JSON\.stringify|errorLines\(|warningLines\(|printOutput|\brender[A-Z]\w*\(|\.render\(|\bwarn\(/;
+const OUTPUT_PATHS = /JSON\.stringify|errorLines\(|warningLines\(|printOutput|\brender[A-Z]\w*\(|\.render\(|\bwarn\(|\bwarnLine\(/;
 const RAW_CALL = /console\.(log|error)\(/;
 interface RawBaseline { file: string; text: string; count: number; reason: string }
 function rawCalls(): Map<string, number> {
   const found = new Map<string, number>();
   for (const file of sources("src/cli")) {
+    if (file === "src/cli/warn-line.ts") continue; // the warning printer itself: its one console.error is the sanctioned path
     for (const line of readFileSync(join(ROOT, file), "utf8").split("\n")) {
       if (!RAW_CALL.test(line) || OUTPUT_PATHS.test(line)) continue;
       const key = `${file}\u0000${line.trim()}`;
@@ -520,6 +528,10 @@ describe("CLI output standard v1: raw console output is a shrink-only baseline (
     for (const line of ["console.error(errorLines(a, b, c, d).join())", "console.error(warningLines(a))", "console.log(JSON.stringify(x))", "printOutput(x)", "warn(`x`)"]) {
       expect(RAW_CALL.test(line) && !OUTPUT_PATHS.test(line)).toBe(false);
     }
+  });
+  test("main.ts warn() only forwards to warnLine(), and error-format re-exports the one formatter", () => {
+    expect(readFileSync(join(ROOT, "src/cli/main.ts"), "utf8")).toContain("function warn(message: string, next?: string): void { warnLine(message, next); }");
+    expect(readFileSync(join(ROOT, "src/cli/error-format.ts"), "utf8")).toContain('export { warningLines } from "./warn-line.ts";');
   });
   test("a warning is `ahub: warning: <what>: <why>` with an optional next step, a marker only on a terminal", () => {
     expect(warningLines("never-ask: nothing asks", undefined, false, false)).toEqual(["ahub: warning: never-ask: nothing asks"]);

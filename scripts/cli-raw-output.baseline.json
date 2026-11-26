@@ -25,12 +25,6 @@
  },
  {
   "file": "src/cli/bench.ts",
-  "text": "else console.error(`  bench: a command's process group could not be stopped and may still run in the tree (${error.message})`);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/bench.ts",
   "text": "log: (line) => console.log(line),",
   "count": 1,
   "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
@@ -46,12 +40,6 @@
   "text": "console.log(`broker listening at ${broker.publicUrl} (ciphertext relay; application delivery is not acknowledged here)`);",
   "count": 1,
   "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/broker.ts",
-  "text": "const stop = () => { void broker.stop().catch(() => { process.exitCode = 1; console.error(\"broker: stop failed\"); }); };",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
  },
  {
   "file": "src/cli/claude-profile-hook.ts",
@@ -70,24 +58,6 @@
   "text": "if (out) console.log(out);",
   "count": 1,
   "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/launch.ts",
-  "text": "const unavailable = (reason: string) => console.error(`Native identity and crash cleanup disabled for this launch; managed hook record stays current. ${reason}.`);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/launch.ts",
-  "text": "attestation = recordClaudeNative(options.stateDir, options.record, child.pid, signature, warning => console.error(warning)).catch(() => undefined);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "console.error(\"ahub: CLI audit could not be recorded (outbox unavailable or full)\");",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
  },
  {
   "file": "src/cli/main.ts",
@@ -115,30 +85,6 @@
  },
  {
   "file": "src/cli/main.ts",
-  "text": "? console.error(paint([{ text }], false))",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if(result.complete===false)console.error(`ahub: operational output is incomplete: ${typeof result.incompleteReason===\"string\"?terminalText(result.incompleteReason).replace(/[\\r\\n]+/g,\" \").slice(0,200):\"public privacy or history coverage unavailable\"}`);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "else if(result.truncated)console.error(`ahub: operational ${history} history is truncated`);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (cause) console.error(`ahub: ${res.error}\\n${cause}`), process.exit(1);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
   "text": "console.log(`${args[0]} is ${res.state}`);",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
@@ -148,12 +94,6 @@
   "text": "const printRecovery = (lines: readonly string[]) => { for (const line of lines) console.log(line); };",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "child.on(\"error\", () => console.error(`runner launch failed; use ${recoveryCommand(operation, \"resume\")}`));",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
  },
  {
   "file": "src/cli/main.ts",
@@ -177,37 +117,13 @@
   "file": "src/cli/main.ts",
   "text": "console.error(`ahub: the latest release is ${to}`);",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: an informational progress line, not a warning, and test/upgrade-cli.test.ts pins both lines exactly"
  },
  {
   "file": "src/cli/main.ts",
   "text": "console.error(`ahub: ${to} is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${argv.join(\" \")}`);",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "child.on(\"error\", (error) => { console.error(`ahub: cannot run bun x: ${error.message}`); resolve(1); });",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (kind === \"upgrade\") console.error(\"ahub: Kimi now defaults to its own TUI (pull-only) in projects without peers.kimi.start_mode. To keep ACP: ahub settings set peers.kimi.start_mode headless\");",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: an informational progress line, not a warning, and test/upgrade-cli.test.ts pins both lines exactly"
  },
  {
   "file": "src/cli/main.ts",
@@ -225,25 +141,19 @@
   "file": "src/cli/main.ts",
   "text": "for (const line of wrap(\"ahub: using the operation's retained coordinator for reattachment\", display.options.columns)) console.error(line);",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: an informational line of the recovery reattach path, wrapped to the terminal width; not a warning"
  },
  {
   "file": "src/cli/main.ts",
   "text": "if (display.options.verbose) for (const line of wrap(recoveryCommand(operation, \"reattach\", selected.peer), display.options.columns)) console.error(line);",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: an informational line of the recovery reattach path, wrapped to the terminal width; not a warning"
  },
  {
   "file": "src/cli/main.ts",
   "text": "} else console.error(`ahub: using the operation's coordinator: ${recoveryCommand(operation, \"reattach\", selected.peer)}`);",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "child.on(\"error\", () => { console.error(`ahub: coordinator could not start; ${recoveryCommand(operation, \"status\")}`); resolve(1); });",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: an informational line of the recovery reattach path, wrapped to the terminal width; not a warning"
  },
  {
   "file": "src/cli/main.ts",
@@ -313,12 +223,6 @@
  },
  {
   "file": "src/cli/main.ts",
-  "text": "if (settings) console.error(\"Settings session: for 15 minutes this dashboard session may change permission modes, routing and start settings.\");",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
   "text": "if (args.includes(\"--no-open\")) return console.log(url);",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
@@ -379,18 +283,6 @@
  },
  {
   "file": "src/cli/main.ts",
-  "text": "if (!result.ok) { console.error(`ahub init: ${result.reason === \"refused\" ? result.message : result.reason === \"interrupted\" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === \"refused\" ? 1 : 0; return; }",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (defaults.notice) console.error(defaults.notice);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
   "text": "return console.log([...plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : \"\"}`), ...settingLines].join(\"\\n\") || \"already up to date\");",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
@@ -409,27 +301,9 @@
  },
  {
   "file": "src/cli/main.ts",
-  "text": "if (homeInit.switchHome) { try { writeJcodeHomeConfig(cwd, homeInit.plan.home); console.log(`jcode_home now points at ${homeInit.plan.home}`); } catch (error) { console.error((error as Error).message); process.exitCode = 1; } }",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (jcodeHomeBlocked(homeInit.plan.home)) console.error(`jcode home ${homeInit.plan.home} is not a plain directory; nothing was created there`);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
   "text": "console.log(`wrote ${homeInit.plan.home}; hub skills: ${installed.filter(entry => entry.action === \"install\" || entry.action === \"replace\").length} installed`);",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "} catch (error) { console.error(`jcode home was not fully set up: ${(error as Error).message}`); process.exitCode = 1; }",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
  },
  {
   "file": "src/cli/main.ts",
@@ -459,37 +333,31 @@
   "file": "src/cli/main.ts",
   "text": "process.on(\"unhandledRejection\", (e) => console.error(`${new Date().toISOString()} unhandled rejection:`, e));",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: a timestamped daemon log line for a crash handler, not CLI output"
  },
  {
   "file": "src/cli/main.ts",
   "text": "process.on(\"uncaughtException\", (e) => console.error(`${new Date().toISOString()} uncaught exception:`, e));",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: a timestamped daemon log line for a crash handler, not CLI output"
  },
  {
   "file": "src/cli/main.ts",
   "text": "if (unattended) console.error(UNATTENDED_WARNING);",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: the unattended banner is a launch constant that test/cli.test.ts pins by identity"
  },
  {
   "file": "src/cli/main.ts",
   "text": "const status = await startProject(registeredProject(), { unattended, liveTest, starting: pid => console.error(`ahub: hub is still starting, pid ${pid}; waiting for readiness, run ahub status in another terminal to inspect progress`), ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId, AGENTHUB_PEER_ID: continuationPeer, AGENTHUB_RECOVERY_CONDUCTOR: continuationPeer, AGENTHUB_RECOVERY_CONTINUATION: continuationId } } : {}) });",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: test/lifecycle-starting-1232.test.ts runs this body with an injected console and pins the line, so it keeps its direct console.error"
  },
  {
   "file": "src/cli/main.ts",
   "text": "console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (chosen.notice) console.error(chosen.notice);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
  },
  {
   "file": "src/cli/main.ts",
@@ -556,12 +424,6 @@
   "text": "if (typeof res.notice === \"string\" && res.notice) console.log(paint([{ text: res.notice }], false));",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (result.hiddenSettled) console.error(`${result.hiddenSettled} settled deliver${result.hiddenSettled === 1 ? \"y\" : \"ies\"} hidden (already resolved); ahub queue list --all shows them`);",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
  },
  {
   "file": "src/cli/main.ts",
@@ -655,12 +517,6 @@
  },
  {
   "file": "src/cli/main.ts",
-  "text": "const projections = new TextProjections({ cwd, stateDir, config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log: line => console.error(line) });",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
   "text": "if (!rows.length) return console.log(task === undefined ? `no ${approved ? \"approved \" : \"\"}deliverables on the board` : `task #${task} has no ${approved ? \"approved \" : \"\"}deliverables`);",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
@@ -688,12 +544,6 @@
   "text": "return console.log(await taskOp(\"github_import\", selection));",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "console.error(paint([{ text: `ahub: board dependency stages unavailable; showing filtered rows without stages: ${String((error as Error).message).replace(/[\\n\\t]/g, \" \")}` }], false));",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
  },
  {
   "file": "src/cli/main.ts",
@@ -1273,12 +1123,6 @@
  },
  {
   "file": "src/cli/main.ts",
-  "text": "const projections = new TextProjections({ cwd: undoCwd, stateDir, config: undoConfig.text_projection ?? {}, deny: undoConfig.local.deny, readAllow: undoConfig.local.read_allow, log: line => console.error(line) });",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
   "text": "if (preview) console.log(terminalText(\"Undo preview (end snapshot to start snapshot):\\n\" + preview));",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
@@ -1441,12 +1285,6 @@
  },
  {
   "file": "src/cli/main.ts",
-  "text": "await requireActiveConfiguredAcp(hub, cmd, selection.peer, text => console.error(text));",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/main.ts",
   "text": "console.log(await taskOp(\"hub_peer_start\", { peer: selection.peer, mode: \"headless\" }, false, hub, 70_000));",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
@@ -1465,152 +1303,26 @@
  },
  {
   "file": "src/cli/room.ts",
-  "text": "console.log(`Room inbox (${rows.length})`);",
+  "text": "const show = (lines: readonly Span[][], present: RoomPresentation) => { for (const line of lines) console.log(paint(line, present.color === true)); };",
   "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+  "reason": "#1654 item 13, answered: the room module's one print loop, the sink every room view renders through Report into"
  },
  {
   "file": "src/cli/room.ts",
-  "text": "for (const row of rows) console.log(`${row.id} ${row.name} ${row.from} ${row.state}; received ${row.receivedAt}; expires ${row.expiresAt}; ${row.bytes} bytes\\n  sender ${row.sender}`);",
+  "text": "console.log(frame(env)); // a hub envelope frame, the same text `ahub inbox` prints",
   "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+  "reason": "#1654 item 13, answered: a hub envelope frame, the same text ahub inbox prints, owned by src/hub/envelope.ts"
  },
  {
   "file": "src/cli/room.ts",
-  "text": "console.log(`Room inbox ${item.id}: ${item.state}`);",
+  "text": "console.log(encoded); // raw on purpose: the artifact is copied exactly, never wrapped or painted",
   "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "if (item.body === undefined) { console.log(`Room inbox ${item.id}: ${item.state} (body unavailable)`); return; }",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(frame(env));",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(`Rooms (${rows.length})`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(`${row.name} ${row.room} epoch ${row.epoch} ${row.state}\\n  owner ${row.owner}\\n  member ${row.member}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "if (row.state === \"online\" && (row.linkCause === null || row.linkCause === undefined)) console.log(\"  link online\");",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "else console.log(`  link cause ${row.linkCause ?? \"unknown\"}; next: ${row.linkNextStep ?? \"Check broker availability, then read ahub room status again.\"}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(`  outbox ${health?.outboxDepth ?? \"unknown\"}; oldest ${age(health?.oldestOutboxAgeMs)}; last receipt ${age(health?.lastReceiptAgeMs)}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(`  refused: ${health?.refused ? Object.entries(health.refused).map(([reason, count]) => `${reason} ${count}`).join(\", \") : \"unknown\"}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "for (const peer of row.remotePeers ?? []) console.log(`  peer ${peer.id}: ${peer.presence ?? peer.state}${peer.liveness === \"untracked\" ? \"; liveness not tracked (broker without ephemeral); upgrade the broker to track liveness\" : \"\"}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "if (!(\"id\" in delivery)) console.log(`  inbound: pending ${delivery.pending}, needs_review ${delivery.needsReview}${delivery.truncated ? \"; truncated\" : \"\"}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "else console.log(`  ${delivery.direction} ${delivery.id}: ${delivery.state}; application ${delivery.application}; peer ${delivery.peer}${delivery.disposition ? `; person disposition ${delivery.disposition}` : \"\"}${delivery.lateReceipt ? `; late receipt evidence ${delivery.lateReceipt}` : \"\"}${delivery.refusalReason ? `; refusal ${roomReceiptReasonText(delivery.refusalReason)}` : \"\"}${delivery.holdReason ? \"; reason epoch rotated; inspect ahub queue show before resolving\" : \"\"}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(`Owner fingerprint: ${preview.owner}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(`Member fingerprint: ${preview.member}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(`Outstanding deliveries on the old epoch (${preview.outstanding.length}):`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "for (const id of preview.outstanding) console.log(`  ${id}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(`Room: ${result.name}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(\"Room artifact (share out of band):\");",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "console.log(encoded);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/room.ts",
-  "text": "} else console.log(command.action === \"resolve\" && result.kind === \"disposed\" ? \"room resolve: disposed\" : `room ${command.action}: complete`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
+  "reason": "#1654 item 13, answered: the invitation artifact is printed raw on purpose so it copies exactly, never wrapped or painted"
  },
  {
   "file": "src/cli/specs.ts",
   "text": "const output: SpecsOutput = { out: line => console.log(line), error: line => console.error(line) };",
   "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/terminal-recovery.ts",
-  "text": "console.error(\"terminal launcher is unrecorded; upgrade the running hub for managed terminal recovery\");",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
- },
- {
-  "file": "src/cli/upgrade-runtime.ts",
-  "text": "catch { console.error(\"Pi continuity retirement is unconfirmed after successful recovery release; inspect the retained bookmark before another automatic start\"); }",
-  "count": 1,
-  "reason": "#1654 item 23 residue: a stderr diagnostic outside the Messages format, to move onto warn() or fail() with its own wording test"
+  "reason": "#1654 item 23, answered: the default sink of the injectable SpecsOutput; its lines already carry the Messages format"
  }
 ]

@@ -84,14 +84,14 @@ test("room CLI shows both fingerprints before executing its same-connection prev
         expect(lines).toEqual([]);
         return { ok: true, owner, member, ticket };
       }
-      expect(lines).toEqual([`Owner fingerprint: ${owner}`, `Member fingerprint: ${member}`]);
+      expect(lines.slice(3).map(line => line.replace(/\s+/g, " ").trim())).toEqual([`Owner fingerprint: ${owner}`, `Member fingerprint: ${member}`]);
       expect(message).toEqual({ t: "room", op: "execute", ticket, confirm: member.slice(0, 16) });
       return { ok: true, artifact, kind: "invite" };
     };
     await runRoomCommand(["invite", "example", "--confirm", member.slice(0, 16)], request, nonTTY);
   });
   expect(requests).toEqual([{ t: "room", op: "preview", action: "invite", input: { name: "example" } }, { t: "room", op: "execute", ticket, confirm: member.slice(0, 16) }]);
-  expect(lines.slice(2)).toEqual(["Room artifact (share out of band):", artifact]);
+  expect(lines.at(-2)).toContain("Room artifact (share out of band):"); expect(lines.at(-1)).toBe(artifact);
 });
 
 test("room CLI never executes an invalid preview or prints artifacts from a refused execution", async () => {
@@ -118,7 +118,7 @@ test("room CLI read output projects only ids and uses JSON only when explicitly 
   const json = await printed(async () => { await runRoomCommand(["status", "example", "--json"], request); });
   expect(JSON.parse(json.join("\n"))).toEqual([row]);
   const human = await printed(async () => { await runRoomCommand(["status", "example"], request); });
-  expect(human[0]).toBe("Rooms (1)");
+  expect(human[0]).toContain("Room status"); expect(human[0]).toMatch(/Room status\s+1$/);
   expect(human.join("\n")).toContain(owner);
   expect(human.join("\n")).toContain(member);
   expect(human.join("\n")).not.toContain("private");
@@ -152,7 +152,7 @@ test("room CLI reports the generated pending name needed by the later roster imp
   const lines = await printed(async () => runRoomCommand(["join", artifact, "--confirm", member], async message => message.op === "preview"
     ? { ok: true, owner, member, ticket }
     : { ok: true, name: "room-generated", artifact, kind: "join-request" }));
-  expect(lines).toContain("Room: room-generated");
+  expect(lines.some(line => line.includes("Room: room-generated"))).toBe(true);
 });
 
 test("every room mutation waits for explicit confirmation and abort never sends execute", async () => {
@@ -162,11 +162,11 @@ test("every room mutation waits for explicit confirmation and abort never sends 
     const requests: Record<string, unknown>[] = [];
     await printed(async lines => {
       const io: RoomConfirmationIO = { isTTY: () => true, answer: async prompt => {
-        expect(lines).toEqual([`Owner fingerprint: ${owner}`, `Member fingerprint: ${member}`]);
+        expect(lines.slice(3).map(line => line.replace(/\s+/g, " ").trim())).toEqual([`Owner fingerprint: ${owner}`, `Member fingerprint: ${member}`]);
         expect(prompt).toContain("[y/N]"); return answer;
       } };
       await expect(runRoomCommand(args, async message => { requests.push(message); return { ok: true, owner, member, ticket }; }, io)).rejects.toThrow("not confirmed");
-      expect(lines).toHaveLength(2);
+      expect(lines).toHaveLength(5);
     });
     expect(requests).toHaveLength(1); expect(requests[0]!.op).toBe("preview");
   }
@@ -177,7 +177,7 @@ test("non-TTY missing or mismatched fingerprint confirmation cannot execute", as
     const requests: Record<string, unknown>[] = [];
     await printed(async lines => {
       await expect(runRoomCommand(args, async message => { requests.push(message); return { ok: true, owner, member, ticket }; }, nonTTY)).rejects.toThrow("confirmation");
-      expect(lines).toEqual([`Owner fingerprint: ${owner}`, `Member fingerprint: ${member}`]);
+      expect(lines.slice(3).map(line => line.replace(/\s+/g, " ").trim())).toEqual([`Owner fingerprint: ${owner}`, `Member fingerprint: ${member}`]);
     });
     expect(requests).toHaveLength(1); expect(requests[0]!.op).toBe("preview");
   }
@@ -188,7 +188,7 @@ test("TTY confirmation sends the exact displayed member fingerprint and EOF abor
   await printed(async lines => {
     await runRoomCommand(["expose", "example"], async message => {
       requests.push(message); return message.op === "preview" ? { ok: true, owner, member, ticket } : { ok: true };
-    }, { isTTY: () => true, answer: async () => { expect(lines).toHaveLength(2); return "y"; } });
+    }, { isTTY: () => true, answer: async () => { expect(lines).toHaveLength(5); return "y"; } });
   });
   expect(requests[1]).toEqual({ t: "room", op: "execute", ticket, confirm: member });
   let executed = false;
@@ -225,7 +225,7 @@ test("room status renders safe health counts and ages in text and JSON with the 
   const health = { refused: { invalid_presence: 1, wrong_epoch: 2, trust_changed: 0, stale: 0, invalid_frame: 0 }, outboxDepth: 3, oldestOutboxAgeMs: 50, lastReceiptAgeMs: null };
   const request: RoomRequest = async () => ({ ok: true, rooms: [{ ...row, state: "offline", health: { ...health, body: "PRIVATE_CANARY" }, linkCause: "transport_closed", linkNextStep: "PRIVATE_CANARY" }] });
   const human = (await printed(async () => runRoomCommand(["status", "example"], request))).join("\n");
-  expect(human).toContain("link cause transport_closed; next: Check the broker address and network connection");
+  expect(human).toContain("link cause transport_closed"); expect(human).toContain("Check the broker address and network connection");
   expect(human).toContain("outbox 3; oldest 50ms; last receipt unknown");
   expect(human).toContain("refused: invalid_presence 1, wrong_epoch 2");
   expect(human).not.toContain("CANARY");

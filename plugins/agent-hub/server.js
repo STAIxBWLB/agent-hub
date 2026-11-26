@@ -20839,6 +20839,18 @@ function kimiAcpCommand(command, model) {
   return [cmd, ...model ? ["--model", model, ...args] : args];
 }
 
+// src/cli/output-standard.ts
+var TONE_SGR;
+var init_output_standard = __esm(() => {
+  init_src();
+  TONE_SGR = Object.freeze({ strong: "\x1B[1;36m", failure: "\x1B[31m", number: "\x1B[1m", issueRef: "\x1B[4m", taskRef: "\x1B[4;35m" });
+});
+
+// src/cli/warn-line.ts
+var init_warn_line = __esm(() => {
+  init_output_standard();
+});
+
 // src/adapters/definitions/native-cli-retained.ts
 function retainedLaunchWarning(status, peer, definition) {
   const keys = definition.cli.launchConfigKeys;
@@ -20878,6 +20890,7 @@ var init_launch2 = __esm(() => {
   init_project();
   init_child_process();
   init_registry();
+  init_warn_line();
   init_qwen_native();
 });
 

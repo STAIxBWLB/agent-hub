@@ -11,6 +11,7 @@ import { peerChildEnv, processTable } from "../hub/child-process.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import type { InstancesConfig } from "../hub/instances.ts";
 import { kimiAcpCommand } from "../adapters/definitions/native-daemon-kimi.ts";
+import { warnLine } from "./warn-line.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
 export { retainedLaunchWarning } from "../adapters/definitions/native-cli-retained.ts";
@@ -263,13 +264,13 @@ export async function runClaudeLaunch(launch: Launch, options: { cwd: string; en
     const child = spawn(launch.cmd, launch.args, { cwd: options.cwd, env: options.env, stdio: "inherit" });
     child.once("spawn", () => {
       if (!options.record || !child.pid) return;
-      const unavailable = (reason: string) => console.error(`Native identity and crash cleanup disabled for this launch; managed hook record stays current. ${reason}.`);
+      const unavailable = (reason: string) => warnLine(`Native identity and crash cleanup disabled for this launch: ${reason}; the managed hook record stays current`);
       if (!direct) { unavailable("native executable is a script or an unverified interpreter"); return; }
       if (!options.record.launcherSignature) { unavailable("launcher identity could not be verified"); return; }
       const signature = processSignature(child.pid);
       if (!signature) { unavailable("native process identity could not be verified"); return; }
       childSignature = signature;
-      attestation = recordClaudeNative(options.stateDir, options.record, child.pid, signature, warning => console.error(warning)).catch(() => undefined);
+      attestation = recordClaudeNative(options.stateDir, options.record, child.pid, signature, warning => warnLine(warning)).catch(() => undefined);
     });
     child.once("error", error => resolveResult({ status: null, signal: null, error }));
     child.once("exit", async (status, signal) => {

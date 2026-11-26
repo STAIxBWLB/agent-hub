@@ -2,7 +2,8 @@ import { projectRoomUnavailable, projectRoomDiagnostics, type RoomStatusDiagnost
 import { decodeBase64url } from "../rooms/crypto.ts";
 import { roomReceiptReasonText, type RoomReceiptReason } from "../rooms/application.ts";
 import { frame, type Envelope } from "../hub/envelope.ts";
-import { terminalText } from "./console-state.ts";
+import { paint, terminalText, type Span } from "./console-state.ts";
+import { renderRoomInbox, renderRoomInboxResult, renderRoomPreview, renderRoomResult, renderRooms } from "./room-output.ts";
 import { ROOM_STORE_LIMITS, type RoomPersonInboxMeta, type RoomPersonInboxItem } from "../rooms/store.ts";
 /** Membership mutations and inbox forms are person-only; main.ts refuses agent/live-test calls before importing this module. */
 export const ROOM_USAGE = "usage: ahub room create <name> --broker <url> [--label <id>] | invite <name> [--accept <request>] | join <token> [--name <name>] [--label <id>] | join <name> --roster <signed-roster> | leave <name> | revoke <name> <fingerprint> | expose <name> [<peer>...] | resolve <name> --frame <digest> --action accept|discard (membership mutations and resolve require TTY y/N or --confirm <member-fingerprint-prefix>, 16..64 lowercase hex) | list [--json] | status [<name>] [--json] | inbox [<name>] [--json] | inbox show|done|discard <id>";
@@ -242,7 +243,12 @@ function inboxItem(value: unknown, expectedId: string): RoomPersonInboxItem {
   return { ...meta, body };
 }
 
-async function runInboxCommand(options: Extract<RoomCliCommand, { op: "inbox" }>, request: RoomRequest): Promise<void> {
+/** How a human view is drawn: the terminal width, color and ASCII markers `main.ts` resolved for this process; a test passes none and reads plain lines. */
+export interface RoomPresentation { columns?: number; color?: boolean; ascii?: boolean }
+// ponytail: the one print loop of this module; it moves onto a shared printer when main.ts's printOutput leaves main.ts (#1724).
+const show = (lines: readonly Span[][], present: RoomPresentation) => { for (const line of lines) console.log(paint(line, present.color === true)); };
+
+async function runInboxCommand(options: Extract<RoomCliCommand, { op: "inbox" }>, request: RoomRequest, present: RoomPresentation): Promise<void> {
   if (options.action === "list") {
     const reply = record(await request({ t: "room", op: "inbox_list", input: options.input }));
     if (reply.ok !== true && reply.code === "inbox_list_limit") fail("inbox_list_limit");
@@ -252,72 +258,52 @@ async function runInboxCommand(options: Extract<RoomCliCommand, { op: "inbox" }>
     const rows = value.map(inboxMeta);
     if (new Set(rows.map(row => row.id)).size !== rows.length || options.input.name !== undefined && rows.some(row => row.name !== options.input.name)) fail("invalid_reply");
     if (options.json) return console.log(JSON.stringify(rows));
-    console.log(`Room inbox (${rows.length})`);
-    for (const row of rows) console.log(`${row.id} ${row.name} ${row.from} ${row.state}; received ${row.receivedAt}; expires ${row.expiresAt}; ${row.bytes} bytes\n  sender ${row.sender}`);
+    show(renderRoomInbox(rows, Date.now(), present.columns, present.ascii), present);
     return;
   }
   const reply = success(await request({ t: "room", op: `inbox_${options.action}`, input: options.input }));
   if (options.action !== "show") {
     const item = inboxMeta(reply.item);
     if (item.id !== options.input.id || item.state === "unread") fail("invalid_reply");
-    console.log(`Room inbox ${item.id}: ${item.state}`);
+    show(renderRoomInboxResult(item, false, present.columns, present.ascii), present);
     return;
   }
   const item = inboxItem(reply.item, options.input.id);
-  if (item.body === undefined) { console.log(`Room inbox ${item.id}: ${item.state} (body unavailable)`); return; }
+  if (item.body === undefined) { show(renderRoomInboxResult(item, true, present.columns, present.ascii), present); return; }
   const env: Envelope = { id: item.id, trace: item.id, hop: 0, from: item.from, to: ["user"], kind: "chat", priority: "status", ts: item.receivedAt, body: terminalText(item.body) };
-  console.log(frame(env));
+  console.log(frame(env)); // a hub envelope frame, the same text `ahub inbox` prints
 }
 
 /** Uses one already authenticated control connection so an ephemeral preview ticket cannot cross callers. */
-export async function runRoomCommand(args: readonly string[], request: RoomRequest, io: RoomConfirmationIO = confirmationIO): Promise<void> {
+export async function runRoomCommand(args: readonly string[], request: RoomRequest, io: RoomConfirmationIO = confirmationIO, present: RoomPresentation = {}): Promise<void> {
   const command = parseRoomCommand(args);
-  if (command.op === "inbox") return runInboxCommand(command, request);
+  if (command.op === "inbox") return runInboxCommand(command, request, present);
   if (command.op !== "mutation") {
     const result = success(await request({ t: "room", op: command.op, input: command.input })), rows = roomRows(result.rooms);
     if (args.includes("--json")) return console.log(JSON.stringify(rows));
-    console.log(`Rooms (${rows.length})`);
-    for (const row of rows) {
-      console.log(`${row.name} ${row.room} epoch ${row.epoch} ${row.state}\n  owner ${row.owner}\n  member ${row.member}`);
-      if (command.op === "status") {
-        const health = row.health, age = (value: number | null | undefined) => typeof value === "number" ? `${value}ms` : "unknown";
-        if (row.state === "online" && (row.linkCause === null || row.linkCause === undefined)) console.log("  link online");
-        else console.log(`  link cause ${row.linkCause ?? "unknown"}; next: ${row.linkNextStep ?? "Check broker availability, then read ahub room status again."}`);
-        console.log(`  outbox ${health?.outboxDepth ?? "unknown"}; oldest ${age(health?.oldestOutboxAgeMs)}; last receipt ${age(health?.lastReceiptAgeMs)}`);
-        console.log(`  refused: ${health?.refused ? Object.entries(health.refused).map(([reason, count]) => `${reason} ${count}`).join(", ") : "unknown"}`);
-      }
-      for (const peer of row.remotePeers ?? []) console.log(`  peer ${peer.id}: ${peer.presence ?? peer.state}${peer.liveness === "untracked" ? "; liveness not tracked (broker without ephemeral); upgrade the broker to track liveness" : ""}`);
-      for (const delivery of row.deliveries ?? []) {
-        if (!("id" in delivery)) console.log(`  inbound: pending ${delivery.pending}, needs_review ${delivery.needsReview}${delivery.truncated ? "; truncated" : ""}`);
-        else console.log(`  ${delivery.direction} ${delivery.id}: ${delivery.state}; application ${delivery.application}; peer ${delivery.peer}${delivery.disposition ? `; person disposition ${delivery.disposition}` : ""}${delivery.lateReceipt ? `; late receipt evidence ${delivery.lateReceipt}` : ""}${delivery.refusalReason ? `; refusal ${roomReceiptReasonText(delivery.refusalReason)}` : ""}${delivery.holdReason ? "; reason epoch rotated; inspect ahub queue show before resolving" : ""}`);
-      }
-    }
+    show(renderRooms(rows, command.op === "status", present.columns, present.ascii), present);
     return;
   }
   const preview = success(await request({ t: "room", op: "preview", action: command.action, input: command.input }));
   if (typeof preview.owner !== "string" || !FP.test(preview.owner) || typeof preview.member !== "string" || !FP.test(preview.member)
     || typeof preview.ticket !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(preview.ticket)) fail("invalid_reply");
-  console.log(`Owner fingerprint: ${preview.owner}`);
-  console.log(`Member fingerprint: ${preview.member}`);
   if (preview.outstanding !== undefined) {
     if (!Array.isArray(preview.outstanding) || preview.outstanding.length > ROOM_STORE_LIMITS.outboxPerRoom
       || preview.outstanding.some(value => typeof value !== "string" || !UUID.test(value)) || new Set(preview.outstanding).size !== preview.outstanding.length) fail("invalid_reply");
-    console.log(`Outstanding deliveries on the old epoch (${preview.outstanding.length}):`);
-    for (const id of preview.outstanding) console.log(`  ${id}`);
   }
+  show(renderRoomPreview(command.action, { owner: preview.owner, member: preview.member, ...(preview.outstanding !== undefined ? { outstanding: preview.outstanding as string[] } : {}) }, present.columns, present.ascii), present);
   const confirm = await confirmMember(preview.member, command.confirm, io);
   const result = success(await request({ t: "room", op: "execute", ticket: preview.ticket, confirm }));
   if (result.name !== undefined) {
     if (typeof result.name !== "string" || !ID.test(result.name)) fail("invalid_reply");
-    console.log(`Room: ${result.name}`);
   }
   if (result.artifact !== undefined) {
     if (typeof result.artifact !== "string") fail("invalid_reply");
     let encoded: string;
     try { encoded = artifact(result.artifact); } catch { return fail("invalid_reply"); }
-    console.log("Room artifact (share out of band):");
-    console.log(encoded);
-  } else console.log(command.action === "resolve" && result.kind === "disposed" ? "room resolve: disposed" : `room ${command.action}: complete`);
+    show(renderRoomResult(command.action, { ...(typeof result.name === "string" ? { name: result.name } : {}), artifact: true }, present.columns, present.ascii), present);
+    console.log(encoded); // raw on purpose: the artifact is copied exactly, never wrapped or painted
+  } else show(renderRoomResult(command.action, { ...(typeof result.name === "string" ? { name: result.name } : {}), disposed: command.action === "resolve" && result.kind === "disposed" }, present.columns, present.ascii), present);
 }
 
 /** Never echo tokens, broker URLs, daemon payloads or native diagnostics on refusal. */
