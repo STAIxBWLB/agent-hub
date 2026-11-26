@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
 import { GuidanceProbeFixtureHost, GuidanceProbeStore } from "../src/hub/guidance-probe-store.ts";
-import { GUIDANCE_PROBE_MODEL, GuidanceProbeError, PROBE_OUTPUT_LIMITS, PROBE_RETENTION_MS, guidanceProbeCanonical, probeHash, probeReceiptDigest, type ProbeChildBinding, type ProbeMeasuredSession, type ProbeReservation, type ProbeRetentionFs } from "../src/hub/guidance-probes.ts";
+import { GUIDANCE_PROBE_LIVE_LIMITS, GUIDANCE_PROBE_MODEL, GuidanceProbeError, PROBE_OUTPUT_LIMITS, PROBE_RETENTION_MS, guidanceProbeCanonical, probeHash, probeReceiptDigest, type ProbeChildBinding, type ProbeMeasuredSession, type ProbeReservation, type ProbeRetentionFs } from "../src/hub/guidance-probes.ts";
 import { previewRetained, removeRetained } from "../src/local/probe-workspace.ts";
 import { FakeGuidanceProbeProvider, fakeEffectValue, guidanceProbeFixture, guidanceProbeFixtureKey } from "./fakes/guidance-probe-provider.ts";
 
@@ -17,12 +17,18 @@ const measured = (over: Partial<ProbeMeasuredSession> = {}): ProbeMeasuredSessio
   runtime: { runtimeSha256: declared.runtimeSha256, toolsetSha256: declared.toolsetSha256, modelConfigSha256: declared.modelConfigSha256 },
   teardownVerified: true, cancelled: false, timedOut: false, unavailable: false, limits: [], scratchBytes: 0, output: { v: 1, entries: [], excluded: [], totalBytes: 0 }, ...over });
 
-function fixture() {
+function fixture(live = false) {
   const directory = mkdtempSync(join(tmpdir(), "ahub-probe-receipts-")), file = join(directory, "hub.db");
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
   const clock = { now: 100 };
   const store = new GuidanceProbeStore(file, () => clock.now); cleanup.push(() => store.close());
-  const source = guidanceProbeFixture(), key = guidanceProbeFixtureKey(source.registration);
+  const source = guidanceProbeFixture();
+  if (live) {
+    const manifest = source.registration.manifest;
+    manifest.slots = manifest.slots.filter(slot => slot.role === "worker");
+    manifest.limits = { ...manifest.limits, modelCalls: 16, tokens: 16_000, elapsedMs: 120_000 };
+  }
+  const key = guidanceProbeFixtureKey(source.registration);
   const revalidate = () => ({ host: source.host });
   store.register(source.registration, source.host, () => source.host);
   const provider = new FakeGuidanceProbeProvider();
@@ -83,6 +89,75 @@ function fixture() {
   async function baseline(): Promise<ProbeReservation> { return settleNext(); }
   return { directory, file, store, key, clock, source, revalidate, provider, host, baseline, runAll, runAllThroughHost, openNext };
 }
+
+test("live reservations survive reopen, enforce independent ceilings, and seal with durable mode", () => {
+  const f = fixture(true), { key, clock, source, store } = f;
+  expect(store.hasLiveRecords()).toBe(false);
+  const reserve = (variant?: ProbeChildBinding) => {
+    const state = store.read(key)!;
+    const slot = state.sessions.find(item => item.state === "planned")!;
+    const check = () => ({ host: source.host, child: variant });
+    const input = { key, mode: "live" as const, expectedRevision: state.receipt.revision, host: source.host, child: variant,
+      preparedFrame: { slotId: slot.slotId, sha256: probeHash(slot.slotId), bytes: 5 }, now: clock.now };
+    const result = store.reserveSession(input, check);
+    if (result.kind !== "granted") throw new Error("expected live reservation");
+    expect(() => store.reserveSession({ ...input, mode: undefined }, check)).toThrow(GuidanceProbeError);
+    store.exposeLaunch(result.reservation, check);
+    return { reservation: result.reservation, check };
+  };
+  const baseline = reserve();
+  const reopened = new GuidanceProbeStore(f.file, () => clock.now);
+  cleanup.push(() => reopened.close());
+  expect(reopened.hasLiveRecords()).toBe(true);
+  expect(reopened.read(key)?.sessions[0]?.live).toEqual({ reservedAt: clock.now, tokensReserved: 0 });
+  const call = (session: ReturnType<typeof reserve>, sequence: number, reservedTokens = 1_000) => {
+    const { reservation, check } = session;
+    const result = store.admitEffect({ reservation, sequence, unit: "model_calls", amount: 1, reservedTokens,
+      descriptorSha256: probeHash(String(sequence)), now: clock.now }, check);
+    if (result.kind !== "granted") throw new Error("expected model admission");
+    const admission = result.admission, observed = 5;
+    store.recordUsage({ admission, observed, observationSha256: probeHash(guidanceProbeCanonical({ admission, observed })) });
+    store.settleEffect({ admission, outcome: "settled" });
+  };
+  expect(() => call(baseline, 0, GUIDANCE_PROBE_LIVE_LIMITS.tokens + 1)).toThrow(GuidanceProbeError);
+  for (let sequence = 0; sequence < GUIDANCE_PROBE_LIVE_LIMITS.modelCalls; sequence++) call(baseline, sequence, 900);
+  expect(() => call(baseline, GUIDANCE_PROBE_LIVE_LIMITS.modelCalls)).toThrow(GuidanceProbeError);
+  const seal = (session: ReturnType<typeof reserve>) => store.settleAndSeal({
+    reservation: session.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: clock.now,
+  }, "known_fixture", measured({ startedAt: clock.now })).sealed;
+  expect(seal(baseline)).toMatchObject({ mode: "live", state: "succeeded" });
+
+  const guidance = "Candidate guidance.";
+  const candidate = reserve({ variantId: probeHash("variant"), candidateSha256: probeHash(guidance), guidanceSha256: probeHash(guidance),
+    guidance, task: source.host.task, role: source.host.role, authoring: "uncontrolled", sourceSessionId: null });
+  call(candidate, 0, GUIDANCE_PROBE_LIVE_LIMITS.tokens);
+  expect(() => call(candidate, 1)).toThrow(GuidanceProbeError);
+  clock.now += GUIDANCE_PROBE_LIVE_LIMITS.elapsedMs;
+  expect(() => store.checkInvocation(candidate.reservation, candidate.check)).toThrow(GuidanceProbeError);
+  expect(seal(candidate)).toMatchObject({ mode: "live", state: "timed_out" });
+  expect(reopened.receipts(key).map(receipt => receipt.mode)).toEqual(["live", "live"]);
+});
+
+test("a live-mode observed mismatch remains visible and prevents another admission", async () => {
+  const f = fixture(true);
+  const original = new FakeGuidanceProbeProvider();
+  f.provider.script = async (input, effects, signal) => {
+    const result = await original.launch(input, effects, signal);
+    const { startedAt: _startedAt, ...observed } = measured({ servedModel: "different/model" });
+    return { ...result, servedModel: observed.servedModel, measured: observed };
+  };
+  const host = new GuidanceProbeFixtureHost(f.store, { mode: "live", ports: f.provider, revalidate: f.revalidate, now: () => f.clock.now });
+  const admission = { key: f.key, expectedRevision: 0, host: f.source.host, mode: "live" as const, now: f.clock.now };
+  await expect(f.host.start(admission, new AbortController().signal)).rejects.toThrow(GuidanceProbeError);
+  expect(f.store.hasLiveRecords()).toBe(false);
+  const finished = await host.start(admission, new AbortController().signal);
+  expect(finished.state).toBe("unknown_held");
+  expect(f.store.receipts(f.key)).toEqual([expect.objectContaining({
+    mode: "live", servedModel: "different/model", limits: expect.arrayContaining(["served_model_mismatch"]),
+  })]);
+  await expect(host.start({ ...admission, expectedRevision: finished.revision }, new AbortController().signal)).rejects.toThrow(GuidanceProbeError);
+  expect(f.provider.launches).toHaveLength(1);
+});
 
 describe("sealing", () => {
   test("a fully covered closed session seals as a success with the host's own fingerprints, not the provider's", async () => {

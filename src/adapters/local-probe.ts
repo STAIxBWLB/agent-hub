@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
+import { hubGitSync } from "../hub/git.ts";
 import { LocalPeer, localProbeFingerprints, prepareLocalProbeInput } from "./local-worker.ts";
-import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, probeHash,
+import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_LIVE_LIMITS, GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, probeHash,
   type ProbeFakeLaunch, type ProbeFakeObservation, type ProbeMeasuredSession, type ProbeReceiptLimit, type ProbeReservation, type ProbeRetainedRecord, type ProbeResourceCharges, type ProbeSlot, type ProbeStoredState } from "../hub/guidance-probes.ts";
-import { collectProbeOutput, materializeProbeWorkspace, probeWorkspaceCurrent, PROBE_WORKSPACE_LIMITS, removeRetained, retainProbeOutput,
+import { collectProbeOutput, materializeProbeWorkspace, probeWorkspaceCurrent, PROBE_WORKSPACE_LIMITS, releaseEmptyProbeWorkspace, removeRetained, retainProbeOutput,
   type ProbeWorkspace } from "../local/probe-workspace.ts";
 import { ProbeConfinementError, requireProbeConfinement, verifyProbeConfinement, type ProbeConfinement } from "../local/probe-sandbox.ts";
 import { ProbeLocalError, probeLocalEffect, type ProbeLocalAdapter, type ProbeLocalAdapterOptions, type ProbeLocalEffectScope,
@@ -25,6 +26,9 @@ interface Owned {
   closeUnknown?: () => Promise<void>;
   closed: boolean;
   closeFailed?: boolean;
+  timedOut?: boolean;
+  releaseAttempted?: boolean;
+  releaseFailed?: boolean;
   /** Output collected and retained once, after the stop reported quiescence and before the host releases the workspace. */
   harvest?: { output: ProbeMeasuredSession["output"]; scratchBytes: number; limits: ProbeReceiptLimit[]; retained?: ProbeMeasuredSession["retained"] };
 }
@@ -36,8 +40,32 @@ function freeze<T>(value: T): T {
   return value;
 }
 
-/** Constructor-only host adapter. No runtime, configuration or wire path selects this factory. */
+const LIVE_GUIDANCE_PROBE_CONFIG = Object.freeze({ maxSteps: GUIDANCE_PROBE_LIVE_LIMITS.modelCalls, maxOutputTokens: GUIDANCE_PROBE_LIVE_LIMITS.maxOutputTokens, tokenUpperBound: GUIDANCE_PROBE_LIVE_LIMITS.tokens });
+
+/** The initial live leg materializes only the empty tree and no admitted files. */
+export function createLiveGuidanceProbeLocalAdapter(
+  options: Omit<ProbeLocalAdapterOptions, "fixture" | "config" | "resolveInput"> & { cwd: string },
+): ProbeLocalAdapter {
+  return createLocalAdapter({ ...options, config: LIVE_GUIDANCE_PROBE_CONFIG,
+    resolveInput(state, slot) {
+      const { manifest, snapshots } = state.registration;
+      const { objectFormat, oid } = manifest.inputs.codeTree;
+      if (slot.role !== "worker" || snapshots.dataPolicy.admittedData.length || snapshots.dataPolicy.roles.worker.dataIds.length
+        || oid !== createHash(objectFormat).update("tree 0").update(Buffer.alloc(1)).digest("hex")) throw new ProbeLocalError("invalid");
+      const format = hubGitSync(["-C", options.cwd, "rev-parse", "--show-object-format"], { encoding: "utf8", timeout: 5000, maxBuffer: 1024 });
+      if (format.error || format.status !== 0 || format.stdout.trim() !== objectFormat) throw new ProbeLocalError("drift");
+      return { files: [], verifySource: () => { throw new ProbeLocalError("invalid"); } };
+    },
+  }, true);
+}
+
+/** Constructor-only fixture adapter. */
 export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOptions): ProbeLocalAdapter {
+  return createLocalAdapter(options, false);
+}
+
+function createLocalAdapter(options: ProbeLocalAdapterOptions, live: boolean): ProbeLocalAdapter {
+  if (live && options.fixture) throw new ProbeLocalError("invalid");
   if (options.fixture && options.fixture.evidence !== "fixture_only") throw new ProbeLocalError("invalid");
   const current = options.current.bind(options), resolveInput = options.resolveInput.bind(options), permit = options.permit.bind(options), omni = options.omni;
   const workspaceOwned = options.workspaceOwned?.bind(options);
@@ -127,20 +155,30 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
   };
   const measuredSession = (entry: Owned, servedModel: string | null, flags: { unavailable: boolean }): Omit<ProbeMeasuredSession, "startedAt"> => ({
     servedModel, workerEffectiveInputSha256: null, nonGuidanceInputSha256: null, runtime: hostRuntime(),
-    teardownVerified: entry.closed && !entry.closeFailed, cancelled: entry.controller.signal.aborted, timedOut: false, unavailable: flags.unavailable,
+    teardownVerified: entry.closed && !entry.closeFailed && !entry.releaseFailed, cancelled: entry.controller.signal.aborted && !entry.timedOut,
+    timedOut: entry.timedOut === true, unavailable: flags.unavailable,
     limits: entry.harvest?.limits ?? [], scratchBytes: entry.harvest?.scratchBytes ?? 0,
     output: entry.harvest?.output ?? { v: 1, entries: [], excluded: [], totalBytes: 0 }, ...(entry.harvest?.retained ? { retained: entry.harvest.retained } : {}),
   });
+  const release = (entry: Owned): void => {
+    if (!live || !entry.workspace || !entry.closed || entry.releaseAttempted) return;
+    entry.releaseAttempted = true;
+    try { releaseEmptyProbeWorkspace(entry.workspace); }
+    catch { entry.releaseFailed = true; }
+  };
   const observation = (input: ProbeFakeLaunch, ready: Prepared, servedModel: string | null, outcome: ProbeFakeObservation["outcome"], usage: ProbeFakeObservation["usage"],
-    entry?: Owned, unavailable = false): ProbeFakeObservation => ({
-    reservation: input.reservation, outcome, servedModel, inputFrameHash: ready.input.inputSha256,
-    workerEffectiveInputHash: input.slot.role === "worker" ? ready.input.inputSha256 : null,
-    nonGuidanceInputSha256: input.slot.role === "worker" ? ready.input.nonGuidanceInputSha256 : null,
-    candidateArtifactSha256: null, usage,
-    ...(entry ? { measured: { ...measuredSession(entry, servedModel, { unavailable }),
-      workerEffectiveInputSha256: input.slot.role === "worker" ? ready.input.inputSha256 : null,
-      nonGuidanceInputSha256: input.slot.role === "worker" ? ready.input.nonGuidanceInputSha256 : null } } : {}),
-  });
+    entry?: Owned, unavailable = false): ProbeFakeObservation => {
+    const delivered = input.slot.role === "worker" && (!live || entry?.peer?.probeObservation().providerResponded);
+    return {
+      reservation: input.reservation, outcome, servedModel, inputFrameHash: ready.input.inputSha256,
+      workerEffectiveInputHash: input.slot.role === "worker" ? ready.input.inputSha256 : null,
+      nonGuidanceInputSha256: input.slot.role === "worker" ? ready.input.nonGuidanceInputSha256 : null,
+      candidateArtifactSha256: null, usage,
+      ...(entry ? { measured: { ...measuredSession(entry, servedModel, { unavailable }),
+        workerEffectiveInputSha256: delivered ? ready.input.inputSha256 : null,
+        nonGuidanceInputSha256: delivered ? ready.input.nonGuidanceInputSha256 : null } } : {}),
+    };
+  };
   return {
     prepareWorkerFrame: async (state, slot, guidance) => {
       const record = await prepare(state, slot, guidance);
@@ -159,6 +197,8 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
         const entry: Owned = { reservation: input.reservation, controller: new AbortController(), closed: false };
         owned.set(id, entry);
         const abort = () => entry.controller.abort(); signal.addEventListener("abort", abort, { once: true });
+        const timeout = live ? setTimeout(() => { entry.timedOut = true; abort(); }, GUIDANCE_PROBE_LIVE_LIMITS.elapsedMs) : undefined;
+        timeout?.unref?.();
         let sequence = 0;
         const sourceCurrent = () => {
           if (signal.aborted || entry.controller.signal.aborted || entry.closed) throw new ProbeLocalError("interrupted");
@@ -191,11 +231,14 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
           entry.confinement = await (fixture ? fixture.confine(entry.workspace) : verifyProbeConfinement(entry.workspace, entry.controller.signal));
           if (entry.confinement.workspace !== entry.workspace) throw new ProbeLocalError("drift");
           accounting.current();
+          const chat = live ? await omni.pinCampusChat(GUIDANCE_PROBE_MODEL) : undefined;
+          accounting.current();
           entry.peer = new LocalPeer("local", { cwd: entry.workspace.root, omni, fixedModel: GUIDANCE_PROBE_MODEL,
             maxSteps: config.maxSteps, tools: { deny: [], permit } }, entry.confinement, fixture ? "fixture_only" : undefined);
           const result = await entry.peer.runProbe({ purpose: "guidance_probe", prepared: ready.input, workspace: entry.workspace,
-            confinement: entry.confinement, config, accounting, reserve }, entry.controller.signal);
+            confinement: entry.confinement, config, accounting, reserve, ...(chat ? { pinnedChat: chat } : {}) }, entry.controller.signal);
           accounting.current(); await close(entry); harvestOutput(entry, ready);
+          release(entry);
           effects.current(); current();
           return observation(input, ready, result.servedModel, result.complete ? "closed_fixture" : "failed_known", result.usageKnown ? "known_fixture" : "unknown", entry);
         }).catch(async error => {
@@ -204,9 +247,11 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
           catch { throw new ProbeLocalError("interrupted"); }
           // Only after the stop confirmed quiescence, and only while the workspace is still ours: a drifted workspace is read by identity or not at all.
           harvestOutput(entry, ready);
+          release(entry);
           // `unavailable` means the session could not start: a confinement error before any peer existed. Once a peer ran, the Store treats it as unknown or failed.
           return observation(input, ready, entry.peer?.probeObservation().servedModel ?? null, "unknown", "unknown", entry, error instanceof ProbeConfinementError && !entry.peer);
         }).finally(() => {
+          clearTimeout(timeout);
           signal.removeEventListener("abort", abort);
           if (entry.closed) { completed.add(entry.reservation); owned.delete(id); }
         });

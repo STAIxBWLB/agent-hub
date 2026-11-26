@@ -67,7 +67,20 @@ export interface ProbePreparedFrame { slotId: string; sha256: string; bytes: num
 export interface ProbePreparedWorkerFrame { inputFrame: string; nonGuidanceInputSha256: string }
 export type ProbeWorkerFramePreparer = (state: ProbeStoredState, slot: ProbeSlot, guidance: string) => ProbePreparedWorkerFrame | Promise<ProbePreparedWorkerFrame>;
 export interface ProbeResourceCharges { inputBytes?: number; scratchBytes?: number; outputBytes?: number }
+export const GUIDANCE_PROBE_LIVE_LIMITS = { modelCalls: 8, tokens: 8_000, elapsedMs: 60_000, maxOutputTokens: 512 } as const;
+export function isLiveGuidanceProbeManifest(manifest: GuidanceProbeManifestV1): boolean {
+  const { slots, limits } = manifest;
+  const [baseline, candidate] = slots;
+  return slots.length === 2 && baseline?.stage === "baseline" && baseline.arm === "baseline"
+    && candidate?.stage === "candidate1" && candidate.arm === "candidate1"
+    && slots.every(slot => slot.role === "worker" && slot.retryOf === undefined)
+    && manifest.improverContextHash === undefined && manifest.improverContextBytes === undefined
+    && limits.modelCalls <= slots.length * GUIDANCE_PROBE_LIVE_LIMITS.modelCalls
+    && limits.tokens !== undefined && limits.tokens <= slots.length * GUIDANCE_PROBE_LIVE_LIMITS.tokens
+    && limits.elapsedMs <= slots.length * GUIDANCE_PROBE_LIVE_LIMITS.elapsedMs;
+}
 export interface ProbeSessionAdmission {
+  mode?: "live";
   key: ProbeKey; expectedRevision: number; host: ProbeHostBinding; child?: ProbeChildBinding; preparedFrame?: ProbePreparedFrame; now: number;
 }
 export interface ProbeReservation { key: ProbeKey; slotId: string; generation: number; revision: number }
@@ -97,6 +110,7 @@ export interface ProbeCounters {
 /** Why a session settled, recorded once when it settled so a receipt is derived from the session's own facts and never from experiment state that moves later. */
 export type ProbeCloseCause = "none" | "cancel" | "elapsed" | "hold" | "crash";
 export interface ProbeSession {
+  live?: { reservedAt: number; tokensReserved: number };
   slotId: string; generation: number; revision: number; state: ProbeSessionState; candidateArtifactSha256: string | null;
   closeCause?: ProbeCloseCause;
   child?: ProbeChildBinding;
@@ -137,7 +151,7 @@ export interface GuidanceProbeFakePorts {
    */
   discardRetained?(retained: ProbeRetainedRecord): void;
 }
-export interface ProbePublicReceipt extends ProbeReceipt { experimentId: string; taskId: number; evidence: "declaration" | "fixture" | "unknown" }
+export interface ProbePublicReceipt extends ProbeReceipt { experimentId: string; taskId: number; evidence: "declaration" | "fixture" | "live" | "unknown" }
 export interface ProbePublicStatus extends ProbePublicReceipt { counters: ProbeCounters; cancelRequested: boolean; notNeeded: number; comparable: boolean; authoring: "admitted_fixture" | "uncontrolled" | "unknown" }
 export type GuidanceProbeCommand = { op: "register"; file: string; json: boolean }
   | { op: "start"; id: string; revision: number; variantId?: string; json: boolean }
@@ -342,7 +356,7 @@ export function parseGuidanceProbeSubcommand(args: readonly string[]): GuidanceP
 }
 
 const probeStates: readonly ProbeState[] = ["declared", "active", "closing", "closed_fixture", "failed_fixture", "unknown_held"];
-const publicEvidence = (value: unknown): value is ProbePublicReceipt["evidence"] => ["declaration", "fixture", "unknown"].includes(value as string);
+const publicEvidence = (value: unknown): value is ProbePublicReceipt["evidence"] => ["declaration", "fixture", "live", "unknown"].includes(value as string);
 function publicReceipt(value: unknown, status: boolean): ProbePublicReceipt | ProbePublicStatus | undefined {
   try {
     const extra = status ? ["counters", "cancelRequested", "notNeeded", "comparable", "authoring"] : [];
@@ -403,6 +417,7 @@ export interface ProbeOutputManifestV1 { v: 1; entries: readonly ProbeOutputEntr
 export interface ProbeReceiptUsage { modelCalls: number; modelUsageKnown: number; toolCalls: number; toolUsageKnown: number; tokensObserved: number | null }
 /** The host's immutable record of one finished session. Every field is host-computed; none is a provider claim. */
 export interface ProbeReceiptV1 {
+  mode?: "live";
   v: 1;
   experimentId: string;
   slotId: string;
@@ -449,7 +464,8 @@ export function parseProbeReceipt(value: unknown): ProbeReceiptV1 | undefined {
   try {
     const f = object(inert(value, PROBE_OUTPUT_LIMITS.receiptBytes), ["v", "experimentId", "slotId", "generation", "revision", "requestedModel", "servedModel", "inputFrameSha256",
       "workerEffectiveInputSha256", "nonGuidanceInputSha256", "guidanceSha256", "runtimeSha256", "toolsetSha256", "modelConfigSha256", "startedAt", "endedAt", "elapsedMs", "state",
-      "usage", "limits", "output", "expiresAt", "digest"]);
+      "usage", "limits", "output", "expiresAt", "digest"], ["mode"]);
+    required(f.mode === undefined || f.mode === "live");
     required(f.v === 1 && identity(f.experimentId) && identity(f.slotId) && probeInteger(f.generation) && probeInteger(f.revision));
     required(f.requestedModel === GUIDANCE_PROBE_MODEL && (f.servedModel === null || typeof f.servedModel === "string" && Buffer.byteLength(f.servedModel) <= 256));
     required(nullableSha(f.inputFrameSha256) && nullableSha(f.workerEffectiveInputSha256) && nullableSha(f.nonGuidanceInputSha256) && nullableSha(f.guidanceSha256));
@@ -634,7 +650,7 @@ export interface ProbeExportSlot {
 }
 /**
  * What a producer or a receipt consumer reads about one experiment. Everything in it is host-observed or host-computed from sealed receipts; a fixture
- * run is `evidence: "fixture"`, and nothing here claims a live trial, sampling control, provider behaviour or model quality. Unknown stays unknown: a
+ * run is `evidence: "fixture"`; a live run carries a host-sealed mode. Neither attests sampling control, provider behaviour or model quality. Unknown stays unknown: a
  * usage gap is `usage_unknown`, an unobserved served model is `served_model_unobserved`, and a slot with no receipt is `unknown` in the denominator.
  */
 export interface ProbeReceiptExport {
@@ -670,7 +686,7 @@ export function parseGuidanceProbeReceiptExport(value: unknown): ProbeReceiptExp
     const counts = object(f.counts, COUNT_KEYS);
     required(COUNT_KEYS.every(key => probeInteger(counts[key])));
     const slots = f.slots; required(Array.isArray(slots) && slots.length <= GUIDANCE_PROBE_LIMITS.slots);
-    const seen = new Set<string>(); let withReceipt = 0;
+    const seen = new Set<string>(); let withReceipt = 0, liveReceipts = 0;
     for (const item of slots as unknown[]) {
       const s = object(item, ["slotId", "stage", "role", "arm", "state", "receipt", "receiptDigest", "withheld", "retention"]);
       required(identity(s.slotId) && !seen.has(s.slotId as string) && STAGES.includes(s.stage as ProbeStage) && SLOT_ROLES.includes(s.role as ProbeSlot["role"])
@@ -681,12 +697,14 @@ export function parseGuidanceProbeReceiptExport(value: unknown): ProbeReceiptExp
         // A withheld receipt still names its digest; a slot with no receipt has neither, and is never marked withheld.
         required(s.withheld ? probeSha256(s.receiptDigest) : s.receiptDigest === null);
       } else {
-        const receipt = parseProbeReceipt(s.receipt); required(receipt && !s.withheld && receipt.slotId === s.slotId && s.receiptDigest === receipt.digest);
+        const receipt = parseProbeReceipt(s.receipt); required(receipt && !s.withheld && receipt.slotId === s.slotId && s.receiptDigest === receipt.digest
+          && (status!.evidence !== "live" || receipt.mode === "live") && (status!.evidence !== "fixture" || receipt.mode === undefined));
         withReceipt++;
+        if (receipt!.mode === "live") { required(s.role === "worker"); liveReceipts++; }
       }
     }
     const total = COUNT_KEYS.reduce((sum, key) => sum + (counts[key] as number), 0);
-    required(total === (slots as unknown[]).length && withReceipt <= total);
+    required(total === (slots as unknown[]).length && withReceipt <= total && (liveReceipts === 0 || liveReceipts === withReceipt));
     return f as unknown as ProbeReceiptExport;
   } catch { return undefined; }
 }

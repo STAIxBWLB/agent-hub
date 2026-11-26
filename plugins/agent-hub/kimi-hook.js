@@ -20128,6 +20128,7 @@ var init_local_worker = __esm(() => {
     probeCalls = 0;
     probeServedModel = null;
     probeServedExact = false;
+    probeProviderResponded = false;
     probeUsageKnown = true;
     probeToolPlan;
     probePermits = new Set;
@@ -20266,7 +20267,12 @@ var init_local_worker = __esm(() => {
       await this.probeConfinement?.stop();
     }
     probeObservation() {
-      return { servedModel: this.probeServedModel, servedModelExact: this.probeServedExact, usageKnown: this.probeUsageKnown };
+      return {
+        servedModel: this.probeServedModel,
+        servedModelExact: this.probeServedExact,
+        usageKnown: this.probeUsageKnown,
+        providerResponded: this.probeProviderResponded
+      };
     }
     async deliver(envs, deliveryId) {
       if (this.probeConfinement)
@@ -20706,15 +20712,23 @@ var init_local_worker = __esm(() => {
       const upper = probe.config.tokenUpperBound, inputBytes = Buffer.byteLength(frame, "utf8");
       if (upper !== undefined && (probe.config.maxOutputTokens > upper || inputBytes > upper - probe.config.maxOutputTokens))
         throw new ProbeToolRefusal("token_ceiling");
-      const result = await probeLocalEffect(probe.accounting, "model_calls", frame, first ? undefined : { inputBytes }, probe.config.tokenUpperBound, async (signal) => {
+      const reservedTokens = probe.pinnedChat ? inputBytes + probe.config.maxOutputTokens : upper;
+      const result = await probeLocalEffect(probe.accounting, "model_calls", frame, first ? undefined : { inputBytes }, reservedTokens, async (signal) => {
         if (signal.aborted || this.abort?.signal.aborted)
           throw new ProbeLocalError("interrupted");
-        const value = await this.opts.omni.chat(body, { signal: this.abort.signal });
+        const value = probe.pinnedChat ? await probe.pinnedChat(body, this.abort.signal) : await this.opts.omni.chat(body, { signal: this.abort.signal });
+        if (probe.pinnedChat) {
+          this.probeProviderResponded = true;
+          this.probeServedExact = value.servedModelExact === true;
+          this.probeServedModel = value.servedModel === GUIDANCE_PROBE_MODEL && !this.probeServedExact ? null : value.servedModel ?? null;
+        }
         return { value, usage: probeObservedTokens(value) };
       });
       this.probeCalls++;
-      this.probeServedModel = result.servedModel ?? null;
-      this.probeServedExact = result.servedModelExact === true;
+      if (!probe.pinnedChat) {
+        this.probeServedModel = result.servedModel ?? null;
+        this.probeServedExact = result.servedModelExact === true;
+      }
       this.probeUsageKnown = this.probeUsageKnown && probeObservedTokens(result) !== null;
       if (!this.probeUsageKnown)
         throw new ProbeLocalError("usage");

@@ -232,6 +232,7 @@ export class LocalPeer extends BasePeer {
   private probeCalls = 0;
   private probeServedModel: string | null = null;
   private probeServedExact = false;
+  private probeProviderResponded = false;
   private probeUsageKnown = true;
   private probeToolPlan: ProbeToolResourcePlan | undefined;
   private readonly probePermits = new Set<Promise<unknown>>();
@@ -348,8 +349,9 @@ export class LocalPeer extends BasePeer {
   }
 
   /** Private adapter bookkeeping, not an ordinary usage/status observer. */
-  probeObservation(): Pick<ProbeLocalResult, "servedModel" | "servedModelExact" | "usageKnown"> {
-    return { servedModel: this.probeServedModel, servedModelExact: this.probeServedExact, usageKnown: this.probeUsageKnown };
+  probeObservation(): Pick<ProbeLocalResult, "servedModel" | "servedModelExact" | "usageKnown"> & { providerResponded: boolean } {
+    return { servedModel: this.probeServedModel, servedModelExact: this.probeServedExact, usageKnown: this.probeUsageKnown,
+      providerResponded: this.probeProviderResponded };
   }
 
   /** Resolves once the turn is claimed; a turn that cannot reach any model hands the envelopes back through onFailed. */
@@ -708,15 +710,25 @@ export class LocalPeer extends BasePeer {
     const upper = probe.config.tokenUpperBound, inputBytes = Buffer.byteLength(frame, "utf8");
     if (upper !== undefined && (probe.config.maxOutputTokens > upper || inputBytes > upper - probe.config.maxOutputTokens))
       throw new ProbeToolRefusal("token_ceiling");
+    const reservedTokens = probe.pinnedChat ? inputBytes + probe.config.maxOutputTokens : upper;
     const result = await probeLocalEffect(probe.accounting, "model_calls", frame, first ? undefined : { inputBytes },
-      probe.config.tokenUpperBound, async signal => {
+      reservedTokens, async signal => {
         if (signal.aborted || this.abort?.signal.aborted) throw new ProbeLocalError("interrupted");
-        const value = await this.opts.omni.chat(body, { signal: this.abort!.signal });
+        const value = probe.pinnedChat
+          ? await probe.pinnedChat(body, this.abort!.signal)
+          : await this.opts.omni.chat(body, { signal: this.abort!.signal });
+        if (probe.pinnedChat) {
+          this.probeProviderResponded = true;
+          this.probeServedExact = value.servedModelExact === true;
+          this.probeServedModel = value.servedModel === GUIDANCE_PROBE_MODEL && !this.probeServedExact ? null : value.servedModel ?? null;
+        }
         return { value, usage: probeObservedTokens(value) };
       });
     this.probeCalls++;
-    this.probeServedModel = result.servedModel ?? null;
-    this.probeServedExact = result.servedModelExact === true;
+    if (!probe.pinnedChat) {
+      this.probeServedModel = result.servedModel ?? null;
+      this.probeServedExact = result.servedModelExact === true;
+    }
     this.probeUsageKnown = this.probeUsageKnown && probeObservedTokens(result) !== null;
     if (!this.probeUsageKnown) throw new ProbeLocalError("usage");
     if (result.servedModel !== GUIDANCE_PROBE_MODEL || result.servedModelExact !== true) throw new ProbeLocalError("model");

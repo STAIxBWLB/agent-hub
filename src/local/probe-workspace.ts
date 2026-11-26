@@ -224,6 +224,55 @@ export function probeWorkspaceCurrent(workspace: ProbeWorkspace): void {
 }
 export function probeWorkspacePrivateRoot(workspace: ProbeWorkspace): string { probeWorkspaceCurrent(workspace); return workspaces.get(workspace)!.parent; }
 export function probeWorkspaceTemporaryRoot(workspace: ProbeWorkspace): string { probeWorkspaceCurrent(workspace); return workspaces.get(workspace)!.temporaryRoot; }
+
+/** Release an empty-source live workspace after its owner joined the stop and collected output. */
+export function releaseEmptyProbeWorkspace(workspace: ProbeWorkspace): void {
+  probeWorkspacePhysical(workspace);
+  const state = workspaces.get(workspace)!;
+  if (state.identities.length || workspace.files.length) refused();
+  const directories = new Map(state.directories.map(entry => [entry.file, entry])), allowedDirectories = new Set(directories.keys());
+  const writable = new Set(workspace.allowedWrites);
+  for (const file of writable) {
+    for (let directory = dirname(file); !allowedDirectories.has(directory); directory = dirname(directory)) {
+      if (directory === dirname(directory)) refused();
+      allowedDirectories.add(directory);
+    }
+  }
+  const files: { file: string; dev: number; ino: number }[] = [];
+  const find = (directory: string): void => {
+    const handle = opendirSync(directory);
+    try {
+      for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
+        const file = join(directory, entry.name);
+        if (allowedDirectories.has(file)) {
+          const existing = directories.get(file);
+          if (existing) requireDirectory(existing);
+          else directories.set(file, directoryIdentity(file));
+          find(file);
+        } else if (writable.has(file)) {
+          const stat = lstatSync(file);
+          if (!stat.isFile() || stat.nlink !== 1) refused();
+          files.push({ file, dev: stat.dev, ino: stat.ino });
+        } else refused();
+      }
+    } finally { handle.closeSync(); }
+  };
+  find(state.parent);
+  const requireParents = (file: string): void => {
+    for (let directory = dirname(file); directories.has(directory); directory = dirname(directory))
+      requireDirectory(directories.get(directory)!);
+  };
+  for (const entry of files) {
+    requireParents(entry.file);
+    const stat = lstatSync(entry.file);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== entry.dev || stat.ino !== entry.ino) refused();
+    unlinkSync(entry.file);
+  }
+  for (const entry of [...directories.values()].sort((a, b) => b.file.length - a.file.length)) {
+    requireParents(entry.file); requireDirectory(entry); rmdirSync(entry.file);
+  }
+  workspaces.delete(workspace);
+}
 /** Local conservative ceiling, called before the owner ledger's compound admission; never performs a second ledger effect. */
 export function reserveProbeWorkspaceBytes(workspace: ProbeWorkspace, bytes: number): void {
   probeWorkspaceCurrent(workspace); const state = workspaces.get(workspace)!;

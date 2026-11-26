@@ -45,6 +45,7 @@ export interface ChatOptions {
   onCampusOnly?: boolean;
   signal?: AbortSignal;
 }
+type ChatRequest = { model: string; messages: ChatMessage[]; tools?: unknown[]; max_tokens?: number; temperature?: number; reasoning_effort?: string };
 
 const readSecret = (file?: string) => {
   try {
@@ -155,10 +156,22 @@ export class OmniRoute {
     }
   }
 
-  async chat(body: { model: string; messages: ChatMessage[]; tools?: unknown[]; max_tokens?: number; temperature?: number; reasoning_effort?: string }, opts: ChatOptions = {}): Promise<ChatResult> {
+  async chat(body: ChatRequest, opts: ChatOptions = {}): Promise<ChatResult> {
     const base = await this.base();
     if (!base) throw new Error("no model gateway is configured or reachable (omniroute.urls in .agenthub/config.json; see ahub doctor)");
     if (opts.onCampusOnly && this.isAccessHost(base)) throw new Error("PII model calls require the confirmed campus gateway");
+    return this.chatAt(base, body, opts);
+  }
+
+  /** A single endpoint and model for a confined experiment, with no route selection after admission. */
+  async pinCampusChat(model: string): Promise<(body: Omit<ChatRequest, "model">, signal: AbortSignal) => Promise<ChatResult>> {
+    if (!await this.onCampus()) throw new Error("campus gateway unavailable");
+    const base = this.live;
+    if (!base || this.isAccessHost(base)) throw new Error("campus gateway unavailable");
+    return (body, signal) => this.chatAt(base, { ...body, model }, { signal }, true);
+  }
+
+  private async chatAt(base: string, body: ChatRequest, opts: ChatOptions, pinned = false): Promise<ChatResult> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     const key = this.apiKey();
     if (!key) throw new Error("no OmniRoute API key (set OMNIROUTE_API_KEY or omniroute.api_key_file)");
@@ -167,15 +180,16 @@ export class OmniRoute {
     try {
       res = await fetch(`${base}/chat/completions`, {
         method: "POST",
+        ...(pinned ? { redirect: "error" as const } : {}),
         headers,
         body: JSON.stringify({ ...body, messages: body.messages.map(({ is_error: _internalError, ...message }) => message), stream: false }),
         ...(opts.signal ? { signal: opts.signal } : {}),
       });
     } catch (e) {
-      this.live = undefined; // probe again next time: the VPN may have dropped
+      if (!pinned) this.live = undefined; // probe again next time: the VPN may have dropped
       throw e;
     }
-    if (!res.ok) throw new Error(`model call failed: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
+    if (!res.ok) throw new Error(`model call failed: HTTP ${res.status}${pinned ? "" : ` ${(await res.text()).slice(0, 300)}`}`);
     const json = (await res.json()) as { choices?: { message?: ChatMessage }[]; usage?: unknown; model?: unknown };
     const message = json.choices?.[0]?.message;
     if (!message) throw new Error("model call returned no message");

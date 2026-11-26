@@ -50,6 +50,7 @@ export interface ProbeLocalSession {
   config: Readonly<ProbeLocalModelConfig>;
   accounting: ProbeLocalEffectScope;
   reserve(charges: ProbeResourceCharges, descriptor: string): Promise<void>;
+  pinnedChat?: Awaited<ReturnType<OmniRoute["pinCampusChat"]>>;
 }
 export interface ProbeLocalResult {
   answer: string;

@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add an opt-in, conductor-only guidance probe pilot with a pinned campus model, per-execution limits and distinct live receipts (Refs #1226, hub task 1155).
+
 ## 0.47.0
 
 - Release N-1 for 0.47.x is published 0.46.1, which declares agent-mem `>=0.33.0 <1.0.0`; its fixture lock pins the 0.38.0 that the 0.46.1 release resolved, with control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.0. The isolated compatibility fixture covers old clients and plugins against the new daemon and new clients and plugins against the old daemon; it does not prove live-agent, rollback, or shared-home compatibility. The protocol window is unchanged; the daemon adds the `configured_print` and `spec_readbacks` features, and a recovery target without `spec_readbacks` (0.46.1) is refused once a spec read-back is stored. The CLI adds `ahub projects move`, `ahub memory review` and `ahub sdlc readback`; a 0.46.1 CLI does not offer these. The MCP tools add `hub_readback_report` and `hub_review_file`, and `hub_task_propose` takes an optional `reason`. The declared agent-mem range rises to `>=0.39.0 <1.0.0`: on first open each populated profile builds a v6 derived index beside the v5 one, so a 0.46.1 hub on agent-mem 0.38.0 still reads the same home; no store or sync format floor is raised.

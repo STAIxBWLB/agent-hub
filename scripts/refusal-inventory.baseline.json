@@ -449,7 +449,6 @@
     "[\"src/hub/tasks.ts\",[\"guidance probe original start belongs to another request session; inspect its retained id without replaying it\"]]",
     "[\"src/hub/tasks.ts\",[\"guidance probe project changed; register within the current project namespace\"]]",
     "[\"src/hub/tasks.ts\",[\"guidance probe request session is unavailable; reconnect through a current authenticated project connection\"]]",
-    "[\"src/hub/tasks.ts\",[\"guidance probe runner is unavailable in production T1; use fake-only fixtures, not a live launch\"]]",
     "[\"src/hub/tasks.ts\",[\"guidance probe start selector is invalid; use its current CAS revision and exact G1 id\"]]",
     "[\"src/hub/tasks.ts\",[\"guidance probe storage is unavailable; restart a supporting hub before retrying\"]]",
     "[\"src/hub/tasks.ts\",[\"guidance probe variant selector is invalid; choose an existing current G1 content id\"]]",

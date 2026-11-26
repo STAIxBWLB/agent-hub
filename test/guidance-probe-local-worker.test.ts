@@ -3,11 +3,11 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalPeer, localProbeFingerprints, prepareLocalProbeInput, type LocalOptions } from "../src/adapters/local-worker.ts";
-import { createGuidanceProbeLocalAdapter } from "../src/adapters/local-probe.ts";
+import { createGuidanceProbeLocalAdapter, createLiveGuidanceProbeLocalAdapter } from "../src/adapters/local-probe.ts";
 import { ProbeLocalError, probeLocalEffect, type ProbeLocalEffectScope, type ProbeLocalModelConfig, type ProbeLocalSession } from "../src/local/probe-types.ts";
 import { materializeProbeWorkspace, probeWorkspacePrivateRoot, type ProbeWorkspace } from "../src/local/probe-workspace.ts";
 import type { ProbeConfinement } from "../src/local/probe-sandbox.ts";
-import { GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, probeHash,
+import { GUIDANCE_PROBE_LIVE_LIMITS, GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, probeHash,
   type ProbeFakeEffectRequest, type ProbeFakeEffects, type ProbeSlot, type ProbeStoredState } from "../src/hub/guidance-probes.ts";
 import { OmniRoute, type ChatResult } from "../src/omniroute/client.ts";
 import type { Capture } from "../src/memory/capture.ts";
@@ -21,12 +21,12 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 const config: ProbeLocalModelConfig = { maxSteps: 4, maxOutputTokens: 128, tokenUpperBound: 16384 };
 const reference = (text: string) => ({ sha256: probeHash(text), bytes: Buffer.byteLength(text) });
 
-function state() {
-  const value = guidanceProbeFixture(), actual = localProbeFingerprints(config), registration = value.registration;
+function state(modelConfig: ProbeLocalModelConfig = config) {
+  const value = guidanceProbeFixture(), actual = localProbeFingerprints(modelConfig), registration = value.registration;
   registration.snapshots.systemPolicy = actual.systemPolicy;
   registration.manifest.inputs.systemPolicy = { sha256: probeHash(actual.systemPolicy), bytes: Buffer.byteLength(actual.systemPolicy) };
   registration.manifest.runtime = { runtimeSha256: actual.runtimeSha256, toolsetSha256: actual.toolsetSha256, modelConfigSha256: actual.modelConfigSha256 };
-  registration.manifest.limits.tokens = config.tokenUpperBound! * config.maxSteps;
+  registration.manifest.limits.tokens = modelConfig.tokenUpperBound! * modelConfig.maxSteps;
   return { registration, binding: value.host, receipt: { id: guidanceProbeManifestKey(registration.manifest), revision: 0, state: "declared", already: false },
     counters: { workerAttempts: 0, editorAttempts: 0, modelCalls: 0, toolCalls: 0, tokensReserved: 0, tokensObservedKnown: 0,
       inputBytes: 0, scratchBytes: 0, outputBytes: 0, elapsedHighWaterMs: 0, usageUnknown: false },
@@ -279,6 +279,56 @@ test.skipIf(process.platform !== "darwin")("default real confinement plus a fake
   expect(parent).toBeDefined(); expect(models).toBe(1);
   expect(observed.outcome).toBe("closed_fixture"); expect(observed.usage).toBe("known_fixture");
 });
+
+function liveState() {
+  const saved = state({ maxSteps: GUIDANCE_PROBE_LIVE_LIMITS.modelCalls, maxOutputTokens: GUIDANCE_PROBE_LIVE_LIMITS.maxOutputTokens,
+    tokenUpperBound: GUIDANCE_PROBE_LIVE_LIMITS.tokens });
+  saved.registration.manifest.inputs.codeTree = { objectFormat: "sha1", oid: "4b825dc642cb6eb9a060e54bf8d69288fbee4904" };
+  saved.receipt.id = guidanceProbeManifestKey(saved.registration.manifest);
+  return saved;
+}
+
+test("the live adapter refuses declared file data before pinning the gateway", async () => {
+  const saved = liveState(), slot = saved.registration.manifest.slots[0]!;
+  let pins = 0;
+  const adapter = createLiveGuidanceProbeLocalAdapter({ cwd: import.meta.dir,
+    omni: { async pinCampusChat() { pins++; throw new Error("must not pin"); } } as unknown as OmniRoute,
+    permit: async () => false, current: () => {} });
+  saved.registration.snapshots.dataPolicy.admittedData = [{ id: "file", sha256: probeHash("declared bytes"), bytes: 14 }];
+  await expect(adapter.prepareWorkerFrame(saved, slot, saved.binding.baselineGuidance)).rejects.toThrow(ProbeLocalError);
+  expect(pins).toBe(0);
+});
+
+for (const label of ["exact", "normalized", "mismatch"] as const) {
+  test.skipIf(process.platform !== "darwin")(`live adapter uses real confinement and preserves ${label} model evidence from its pinned transport`, async () => {
+    const saved = liveState(), slot = saved.registration.manifest.slots[0]!, ledger = effects();
+    let privateRoot: string | undefined, pins = 0, requests = 0;
+    const served = label === "mismatch" ? "different/model" : GUIDANCE_PROBE_MODEL;
+    const adapter = createLiveGuidanceProbeLocalAdapter({ cwd: import.meta.dir,
+      omni: { async pinCampusChat(model: string) {
+        expect(model).toBe(GUIDANCE_PROBE_MODEL);
+        pins++;
+        return async () => {
+          requests++;
+          return { ...result(), servedModel: served, servedModelExact: label === "normalized" ? undefined : true };
+        };
+      } } as unknown as OmniRoute, permit: async () => false, current: () => {},
+      workspaceOwned: workspace => { privateRoot = probeWorkspacePrivateRoot(workspace); } });
+    const frame = await adapter.prepareWorkerFrame(saved, slot, saved.binding.baselineGuidance);
+    const reservation = { key: { projectKey: saved.registration.manifest.projectKey, id: saved.receipt.id }, slotId: slot.id, generation: 1, revision: 1 };
+    const observed = await adapter.ports.launch({ reservation, slot, manifest: saved.registration.manifest, inputFrame: frame.inputFrame,
+      inputSha256: probeHash(frame.inputFrame), nonGuidanceInputSha256: frame.nonGuidanceInputSha256, purpose: "guidance_probe" }, ledger.port, new AbortController().signal);
+    expect([pins, requests]).toEqual([1, 1]);
+    expect(observed.servedModel).toBe(label === "normalized" ? null : served);
+    expect(observed.outcome).toBe(label === "exact" ? "closed_fixture" : "unknown");
+    expect(observed.measured?.workerEffectiveInputSha256).toBe(probeHash(frame.inputFrame));
+    expect(observed.measured?.teardownVerified).toBe(true);
+    expect(ledger.requests.find(request => request.unit === "model_calls")?.reservedTokens)
+      .toBe(Buffer.byteLength(frame.inputFrame) + GUIDANCE_PROBE_LIVE_LIMITS.maxOutputTokens);
+    expect(privateRoot).toBeDefined();
+    expect(existsSync(privateRoot!)).toBe(false);
+  });
+}
 
 test("actual loopback HTTP request bytes preserve the prepared frame and omit internal tool outcome markers", async () => {
   const prior = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "probe-fixture-key";
