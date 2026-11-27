@@ -8,7 +8,7 @@ import { sanitize } from "../src/hub/envelope.ts";
 import { renderHelp } from "../src/cli/help.ts";
 import { renderStatus, renderStatusDefault, renderReport } from "../src/cli/output.ts";
 import { summarize } from "../src/hub/report.ts";
-import { renderAuthorization, renderSdlcAudit, renderSdlcConfiguration, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcSurvey } from "../src/cli/sdlc-output.ts";
+import { renderAuthorization, renderSdlcAudit, renderSdlcConfiguration, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcSurvey, renderSdlcReceipt, renderSdlcReadback, renderSdlcTrain } from "../src/cli/sdlc-output.ts";
 import { renderBacklogResult, renderGroom, renderReleaseList, renderReleaseShow, renderTaskCancel, renderTaskShow } from "../src/cli/task-output.ts";
 import { renderSourceAdd, renderSourceList } from "../src/cli/source-output.ts";
 import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "../src/cli/schedule-output.ts";
@@ -421,6 +421,18 @@ describe("CLI output standard v1: each converted view follows the grammar (#1654
     // #1654 AC3: the views that still used the old heading/pair/grid helpers
     "sdlc configure": (c, a) => renderSdlcConfiguration({ by: "claude", restartPending: ["sdlc.toml"], lines: ["mode advise", "required checks unit, lint"], backup: "/work/project/.agenthub/sdlc.toml.bak" }, c, NOW, a),
     "sdlc survey": (c, a) => renderSdlcSurvey({ task: 7, survey: 3, ref: A, focus: "tests", items: [{ finding: { id: "F1", evidence: "src/cli/a.ts:1", impact: "high", fix_sketch: "guard the call" }, decision: { verdict: "accepted" }, rejected: [{ id: "R1", change: "unknown", reason: "covered by an existing guard" }] }], rejected: [{ id: "R2", status: "unknown", reason: "older survey" }] }, c, NOW, a),
+    "sdlc release-guard": (c, a) => renderSdlcReceipt({ title: "Release guard", lines: ["release authorization matched"] }, c, NOW, a),
+    "sdlc audit start": (c, a) => renderSdlcReceipt({ title: "Audit start", lines: ["task #7: security audit A1 started at aaaaaaaaaaaa, 4 units (3 planned, 1 carried over), partial"] }, c, NOW, a),
+    "sdlc accept-departure": (c, a) => renderSdlcReceipt({ title: "Accept departure", lines: ["task #7: plan departure accepted for the reviewed head"] }, c, NOW, a),
+    "sdlc adopt-merge": (c, a) => renderSdlcReceipt({ title: "Adopt merge", lines: ["task #7: merged outside the hub; approved"] }, c, NOW, a),
+    "sdlc accept": (c, a) => renderSdlcReceipt({ title: "Accept spec", lines: ["spec read-back: none (start one with ahub sdlc readback start 7)", "task #7: spec issue #21 accepted at body edit never"] }, c, NOW, a),
+    "sdlc readback start": (c, a) => renderSdlcReadback({ task: 7, op: "start", reply: { state: "requested", readback: 5, reader: "claude", repo: "owner/repo", issue: 21 } }, c, NOW, a),
+    "sdlc readback show": (c, a) => renderSdlcReadback({ task: 7, op: "show", reply: { readback: { status: "reported", readback: 5, reader: "claude", repo: "owner/repo", issue: 21, report: { proposes: "Use the shared report", existing: "Raw output", undefined: [{ term: "scope", where: "section 2" }], open_decisions: [{ decision: "name the view", where: "section 3" }], refs: ["src/cli/main.ts"] }, missing_refs: ["docs/old.md"] } } }, c, NOW, a),
+    "sdlc train report": (c, a) => renderSdlcTrain({ release: { id: 2, name: "0.18.0", goal: "Release reports", state: "active", revision: 6 }, readiness: { trigger: "waiting", tasks: [{ id: 7, state: "in_review" }], blockers: ["task #7: not approved"] }, native: "unverified", metrics: { hotfixCount: 2, hotfixRate: 0.5, ciRuns: 7, reviews: 3, unknown: [1], intervals: [{ from: 1, to: 2, ms: 900000 }] } }, c, NOW, a),
+    "sdlc train configure": (c, a) => renderSdlcTrain({ id: 2, name: "0.18.0", goal: "Release reports", state: "active", revision: 7 }, c, NOW, a),
+    "sdlc train cut": (c, a) => renderSdlcTrain({ id: 2, name: "0.18.0", goal: "Release reports", state: "frozen", revision: 8, train: { scope: [7, 21] } }, c, NOW, a),
+    "sdlc release-assign": (c, a) => renderTaskShow({ ...taskCard, release: 2 }, c, NOW, a),
+    "sdlc plan-review": (c, a) => renderTaskShow(taskCard, c, NOW, a),
     "task show": (c, a) => renderTaskShow(taskCard, c, NOW, a),
     "task cancel": (c, a) => renderTaskCancel({ ...taskCard, state: "cancelled", cancelled: { reason: "superseded by the new plan", supersededBy: "#8" } }, c, NOW, a),
     "backlog plan": (c, a) => renderBacklogResult("plan", { ...taskCard, state: "backlog", planningRevision: 0, history: [{ at: NOW - 1000, by: "claude", event: "planned", note: "priority 1" }] }, c, NOW, a),

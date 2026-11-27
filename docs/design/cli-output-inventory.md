@@ -156,7 +156,7 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | intake | fail (3), showToolText (2), renderIntakeChange (1), renderIntake (1) |
 | deliverables | fail (2), console.log (5) |
 | board | fail (8), console.log (3), showToolText (1), renderHandoffs (1), printOutput (2), renderBoardColumns (1), renderBoard (1) |
-| sdlc | printOutput (2), fail (51), console.log (35), process.stdout.write (2), showToolText (2), renderSdlcCosts (1), renderSdlcMetrics (1), renderSdlcMerge (1) |
+| sdlc | printOutput (2), showToolText (3), fail (51), console.log (12), process.stdout.write (2), renderSdlcCosts (1), renderSdlcMetrics (1), renderSdlcMerge (1) |
 | task | showToolText (3), fail (15), console.log (7), renderHandoffs (1), renderHandoffReceipt (1) |
 | review | fail (5), console.log (2) |
 | remember | console.log (1) |
@@ -207,36 +207,35 @@ Interpolated and daemon-supplied strings require runtime fixtures. They are coun
 
 | Command | Text source | Stream | Literal width |
 | --- | --- | --- | ---: |
-| recovery | src/cli/main.ts:1038 | stdout | 29 |
-| recovery | src/cli/main.ts:1071 | stdout | 60 |
-| projects | src/cli/main.ts:1165 | stdout | 45 |
-| ui | src/cli/main.ts:1181 | stdout | 57 |
-| ui | src/cli/main.ts:1201 | stdout | 76 |
-| models | src/cli/main.ts:1589 | stdout | 11 |
-| say | src/cli/main.ts:1613 | stdout | 46 |
-| roadmap | src/cli/main.ts:1817 | stdout | 46 |
-| deliverables | src/cli/main.ts:2054 | stdout | 70 |
-| sdlc | src/cli/main.ts:2159 | stdout | 29 |
-| ask | src/cli/main.ts:2504 | stdout | 9 |
-| ask | src/cli/main.ts:2507 | stdout | 54 |
+| recovery | src/cli/main.ts:1044 | stdout | 29 |
+| recovery | src/cli/main.ts:1077 | stdout | 60 |
+| projects | src/cli/main.ts:1171 | stdout | 45 |
+| ui | src/cli/main.ts:1187 | stdout | 57 |
+| ui | src/cli/main.ts:1207 | stdout | 76 |
+| models | src/cli/main.ts:1595 | stdout | 11 |
+| say | src/cli/main.ts:1619 | stdout | 46 |
+| roadmap | src/cli/main.ts:1823 | stdout | 46 |
+| deliverables | src/cli/main.ts:2060 | stdout | 70 |
+| ask | src/cli/main.ts:2497 | stdout | 9 |
+| ask | src/cli/main.ts:2500 | stdout | 54 |
+| roster | src/cli/main.ts:2617 | stdout | 19 |
 | roster | src/cli/main.ts:2624 | stdout | 19 |
-| roster | src/cli/main.ts:2631 | stdout | 19 |
-| autonomy | src/cli/main.ts:2682 | stdout | 75 |
-| settings | src/cli/main.ts:2775 | stdout | 39 |
-| settings | src/cli/main.ts:2788 | stdout | 33 |
-| settings | src/cli/main.ts:2819 | stdout | 33 |
-| answer | src/cli/main.ts:2864 | stdout | 17 |
-| bench | src/cli/main.ts:3005 | stdout | 107 |
-| usage | src/cli/main.ts:3189 | stderr | 121 |
-| undo | src/cli/main.ts:3325 | stdout | 103 |
-| undo | src/cli/main.ts:3330 | stdout | 53 |
-| kill | src/cli/main.ts:3347 | stdout | 18 |
-| kill | src/cli/main.ts:3351 | stdout | 11 |
-| reset | src/cli/main.ts:3365 | stdout | 36 |
-| reset | src/cli/main.ts:3389 | stdout | 56 |
-| reset | src/cli/main.ts:3395 | stdout | 39 |
-| reset | src/cli/main.ts:3398 | stdout | 11 |
-| reset | src/cli/main.ts:3433 | stdout | 96 |
+| autonomy | src/cli/main.ts:2675 | stdout | 75 |
+| settings | src/cli/main.ts:2768 | stdout | 39 |
+| settings | src/cli/main.ts:2781 | stdout | 33 |
+| settings | src/cli/main.ts:2812 | stdout | 33 |
+| answer | src/cli/main.ts:2857 | stdout | 17 |
+| bench | src/cli/main.ts:2998 | stdout | 107 |
+| usage | src/cli/main.ts:3182 | stderr | 121 |
+| undo | src/cli/main.ts:3318 | stdout | 103 |
+| undo | src/cli/main.ts:3323 | stdout | 53 |
+| kill | src/cli/main.ts:3340 | stdout | 18 |
+| kill | src/cli/main.ts:3344 | stdout | 11 |
+| reset | src/cli/main.ts:3358 | stdout | 36 |
+| reset | src/cli/main.ts:3382 | stdout | 56 |
+| reset | src/cli/main.ts:3388 | stdout | 39 |
+| reset | src/cli/main.ts:3391 | stdout | 11 |
+| reset | src/cli/main.ts:3426 | stdout | 96 |
 
 ## Renderer candidates
 
@@ -301,6 +300,9 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/sdlc-output.ts:renderSdlcCosts | CLI | Direct | LayoutReport, grid | 39 |
 | src/cli/sdlc-output.ts:renderAuthorization | CLI | Direct | LayoutReport, moment | 46 |
 | src/cli/sdlc-output.ts:renderSdlcMerge | CLI | Direct | LayoutReport | 36 |
+| src/cli/sdlc-output.ts:renderSdlcReceipt | CLI | Direct | LayoutReport | Unmeasured |
+| src/cli/sdlc-output.ts:renderSdlcReadback | CLI | Direct | LayoutReport, Report | Unmeasured |
+| src/cli/sdlc-output.ts:renderSdlcTrain | CLI | Direct | LayoutReport, moment | Unmeasured |
 | src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |
 | src/cli/source-output.ts:renderSourceAdd | CLI | Direct | Report | 51 |
 | src/cli/source-output.ts:renderSourceList | CLI | Direct | Report, grid, moment | 62 |
