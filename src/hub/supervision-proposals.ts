@@ -3,9 +3,9 @@
  *
  * The rule layer (`supervision-rules.ts`) answers whether one of a closed set of conditions holds. This module is the
  * only place that turns such a reading into something a present role can decide on, and it decides nothing itself: it
- * stores proposals (three additive tables in hub.db, no format bump — an older hub ignores them, the way
- * `completions-store.ts` does), and it has no timer, no worker and no action of its own. Observation attaches to board
- * events the daemon already handles, and one reconcile pass runs at startup.
+ * stores proposals in the additive `supervision_proposals` table in hub.db and creates one index, with no format bump.
+ * It has no timer, worker or action of its own. Observation attaches to board events the daemon already handles,
+ * and one reconcile pass runs at startup.
  *
  * What an acceptance runs is an existing action, through that action's own authority: the port `run` is supplied by the
  * caller and its outcome is recorded as a receipt beside the decision, never inside the task's own result. Intent

@@ -1,7 +1,7 @@
 ---
 id: guidance-probes
 type: module
-title: Fake-Only Guidance Probe Admission
+title: Guidance Probe Admission and Live Worker Pilot
 status: draft
 parent: agent-hub-architecture
 depends-on: [guidance-experiments, task-board]
@@ -44,15 +44,23 @@ paths:
   - test/guidance-probe-cli.test.ts
   - test/guidance-probe-gate.test.ts
   - test/helpers/guidance-probe-tasks.ts
+  - src/local/probe-errors.ts
+  - test/fixtures/guidance-probe-live-1226.json
+  - test/guidance-probe-cleanup.test.ts
+  - test/guidance-probe-receipts-store.test.ts
+  - test/guidance-probe-receipts.test.ts
+  - test/guidance-probe-retention-ownership.test.ts
+  - test/guidance-probe-usage.test.ts
+  - test/guidance-probes-daemon.test.ts
 ---
 
-# Fake-only guidance probe admission
+# Guidance probe admission and live worker pilot
 
-This draft defines the #1226 T1 manifest, private ledger and host admission boundary. It is a contract proposal for review before implementation. T1 can exercise the boundary with constructor-injected fixture ports. Production has no probe runner and refuses execution before reserving an active lane or session slot. Registration is an inert private declaration, not permission to execute.
+The #1226 contract covers the private manifest and ledger, host admission, confined worker adapter, and sealed receipts. Registration stores an inert declaration. The daemon selects the [live worker pilot](#conductor-selected-live-worker-pilot) only for the exact content ID in `AGENTHUB_LIVE_GUIDANCE_PROBE_ID` at startup. A live start requires the current configured conductor's authenticated native session and all ordinary admission checks. Without that selection, production refuses execution before reserving a lane or session.
 
-No #1226 task authorizes a real worker, model or live experiment. A later confined worker implementation, receipts, cleanup and any live admission require their own accepted contract. A fake launch result proves fixture behavior only. It cannot attest native confinement, served model identity, usage, quiescence, cleanup or improvement.
+Fixture ports remain constructor-only. Their receipts establish fixture behavior. Live receipts require the host-selected adapter and recorded live mode. Model-free checks exercise wiring and confinement boundaries within their stated limits.
 
-This feature does not activate guidance, edit roles, complete tasks, record review outcomes, train or select models, route ordinary work, or feed memory, capture, progress or learning. The host stamps `guidance_probe` purpose; it does not impersonate a PII task or reviewer to obtain exclusions. Existing LocalPeer, adapters, sandbox and ExecutionBudget behavior remains unchanged.
+The host stamps `guidance_probe` purpose. Probe runs do not activate or edit guidance, complete tasks, record reviews, route ordinary work, or feed memory, capture, progress or learning. The pilot uses the existing LocalPeer tool loop under the probe-specific admission and resource fences.
 
 ## Manifest and units
 
@@ -198,17 +206,17 @@ Unknown, missing or mismatched fixed inputs, model identity, runtime/toolset/con
 
 ## Authority and currentness
 
-All writes and effects enter through Tasks. CLI and daemon only parse, authenticate and delegate; they never open a writable ledger. The declaration cannot name an actor, session or authority override. Minimal T1 register/start/show/cancel access is limited to the person or the one currently configured authorized conductor, using the existing operational-authority admission path. A console delegation, ordinary peer or live-test session cannot borrow USER authority.
+All writes and effects enter through Tasks. CLI and daemon only parse, authenticate and delegate; they never open a writable ledger. The declaration cannot name an actor, session or authority override. Register/start/show/receipts/cancel access is limited to the person or the one currently configured authorized conductor, using the existing operational-authority admission path. A console delegation, ordinary peer or live-test session cannot borrow USER authority.
 
 Tasks' private bridge reuses its current request/private/review/recovery fences, requires the unique configured conductor to remain rostered and inside an admitted operational context, and uses the current public Task/repository scope before source reads. New snapshot text passes existing pure nameable/secret checks. G1 is rendered first, then the exact sanitized rendered guidance actually handed off passes raw nameable/secret checks plus first-party lexical path-candidate/private-policy checks; its private raw role-file provenance is not screened as worker input. Unlike an opaque address field, actual prose such as "merge/release" is not private solely because it contains a slash under an unrelated deny rule. A candidate matching private lexical policy or its literal prefix refuses. This is a lexical screen, not alias discovery or confinement proof. Raw candidate SHA remains separate metadata. No new model, file/address resolver or generation path is added. Historical metadata show does not return raw snapshots. Narrowing cancellation does not rescreen stored prose or require a still-applicable G1, while retaining its specified current caller/Task-epoch/privacy fences.
 
-Tasks captures and revalidates project identity, actual actor/roster/conductor currentness, peer identity, session generation/native session, current task epoch/flow and privacy/review-only context across every await and immediately before each write or fake effect. A private turn or private/PII task refuses before content leaves its existing private boundary. Unknown or missing current proof refuses with a next step.
+Tasks captures and revalidates project identity, actual actor/roster/conductor currentness, peer identity, session generation/native session, current task epoch/flow and privacy/review-only context across every await and immediately before each write or effect. A private turn or private/PII task refuses before content leaves its existing private boundary. Unknown or missing current proof refuses with a next step.
 
 Private session generation is an exact bounded identifier string or nonnegative safe integer, matching the existing Peer contract without coercion/hash/default zero. The daemon mints a per-connection UUID for each authenticated console or tools connection, never a control token or daemon-wide person epoch. For console requests, that UUID is both `sessionGeneration` and `requestConnectionId`. A conductor captures its actual Peer generation/native session and the original live socket fence, plus the separate connection UUID comparator. Tasks captures a host-only `guidanceProbes.session(by)` context with generation/nativeSession/requestConnectionId/current callback at admission; that callback closes over the original request/socket authority, rather than consulting a later request's ambient context. A new connection for either caller cannot replay a prior connection's start CAS, even when the conductor's native session is unchanged. The IDs are durably stored only as private replay comparators; they never restore or attest live authority.
 
-The host-only `TasksDeps.guidanceProbes` dependency contains Store, optional fakePorts/editor-frame preparer, session context reader and optional timer.set/clear seam. There is no corresponding config/wire runner, session or timer selector. `guidanceProbesPending()` counts owned in-process admissions/launch/stop/drain work, not persisted held lanes; zero does not prove unknown durable work quiescent. `stopGuidanceProbes()` aborts and requests stop only for captured owned reservation/generation, then awaits actual launch and stop settlements. Its named operational 5,000 ms bound rejects with cause/next step on a noncooperative fixture, retains unsettled handles and durable hold, and never claims zero/drained, refunds/releases or closes Store/Board beneath callbacks. A later explicit drain can finish once those actual promises settle. Daemon awaits it before its finally-bearing cleanup/stopped-notification path; a rejected drain is retryable explicitly while new admissions remain fenced.
+The host-only `TasksDeps.guidanceProbes` dependency contains the Store, optional `fakePorts`, an optional live content ID and adapter (`ports` and `prepareWorkerFrame`), optional host worker- and editor-frame preparers, a session context reader and an optional timer.set/clear seam. Wire input selects an already registered content ID. The host supplies the runner, session and timer. `guidanceProbesPending()` counts owned in-process admissions/launch/stop/drain work, not persisted held lanes; zero does not prove unknown durable work quiescent. `stopGuidanceProbes()` aborts and requests stop only for captured owned reservation/generation, then awaits actual launch and stop settlements. Its named operational 5,000 ms bound rejects with cause/next step on a noncooperative fixture, retains unsettled handles and durable hold, and never claims zero/drained, refunds/releases or closes Store/Board beneath callbacks. A later explicit drain can finish once those actual promises settle. Daemon awaits it before its finally-bearing cleanup/stopped-notification path; a rejected drain is retryable explicitly while new admissions remain fenced.
 
-Only active owned fake work has one watchdog: named operational interval 250 ms, scheduled with `setTimeout(min(interval, remainingMs))`. It rechecks the captured currentness/clock; nonpositive remaining time aborts/stops without rescheduling, and cancel/finish clears the handle. Small chunks avoid the JavaScript long-timeout overflow without a new manifest duration cap. Timer handles are wrapped with an explicit absence sentinel so valid zero/null handles clear correctly. A stale callback checks active-map identity before any Store write/effect. Tests inject the host-only scheduler/clock, never a global clock, and explicitly release/drain noncooperative fixture promises in cleanup.
+Active owned work has one watchdog: named operational interval 250 ms, scheduled with `setTimeout(min(interval, remainingMs))`. It rechecks the captured currentness/clock; nonpositive remaining time aborts/stops without rescheduling, and cancel/finish clears the handle. Small chunks avoid the JavaScript long-timeout overflow without a new manifest duration cap. Timer handles are wrapped with an explicit absence sentinel so valid zero/null handles clear correctly. A stale callback checks active-map identity before any Store write/effect. Tests inject the host-only scheduler/clock, never a global clock, and explicitly release/drain noncooperative fixture promises in cleanup.
 
 New registration and session start require an already accepted task in `in_progress` or `changes_requested`. There is no implicit assignment/acceptance, no generic MOVES change, and no bypass of existing Task, role, SDLC or operational guards. Historical show is separate from fresh applicability.
 
@@ -490,7 +498,7 @@ interface ProbeFakeStopObservation {
 interface ProbePublicReceipt extends ProbeReceipt {
   experimentId: string | "withheld";
   taskId: number;
-  evidence: "declaration" | "fixture" | "unknown";
+  evidence: "declaration" | "fixture" | "live" | "unknown";
 }
 interface ProbePublicStatus extends ProbePublicReceipt {
   counters: ProbeCounters;
@@ -503,6 +511,7 @@ type GuidanceProbeCommand =
   | { op: "register"; file: string; json: boolean }
   | { op: "start"; id: ProbeSha256; revision: ProbeInteger; variantId?: ProbeSha256; json: boolean }
   | { op: "show"; id: ProbeSha256; json: boolean }
+  | { op: "receipts"; id: ProbeSha256; json: boolean }
   | { op: "cancel"; id: ProbeSha256; revision: ProbeInteger; json: boolean };
 
 interface ProbeFakeEffectRequest {
@@ -535,6 +544,7 @@ interface GuidanceProbeFakePorts {
 Tasks.guidanceProbeRegister(by: PeerId, value: unknown): Promise<ProbePublicReceipt>;
 Tasks.guidanceProbeStart(by: PeerId, id: string, revision: number, variantId?: string): Promise<ProbePublicReceipt>;
 Tasks.guidanceProbeShow(by: PeerId, id: string): Promise<ProbePublicStatus>;
+Tasks.guidanceProbeReceipts(by: PeerId, id: string): Promise<ProbeReceiptExport>;
 Tasks.guidanceProbeCancel(by: PeerId, id: string, revision: number): Promise<ProbePublicReceipt>;
 ```
 
@@ -571,7 +581,7 @@ Every role observation must report the exact full served model and a generic `in
 
 A visible observation-hash mismatch unconditionally latches conflict/unknown before bookkeeping. Provider hashes are never passed through as ledger correlation identities, even if they happen to equal the host correlation hash; ledger identities are always host-computed.
 
-The proposed control operations are `guidance_probe_register`, `guidance_probe_start`, `guidance_probe_show` and `guidance_probe_cancel`, each always replying to rid, including errors. CLI forms are `ahub guidance probe register --file <json>`, `start --id <hash> --revision <n> [--variant <variant-id>]`, `show --id <hash>` and `cancel --id <hash> --revision <n>`, with optional JSON output. `<n>` is the probe CAS revision, not the frozen Task flow revision. There are no MCP probe tools, console mutations or new daemon authority flags. Unknown operation responses give upgrade/restart guidance. An uncertain write response directs an explicit keyed show, never an automatic replay.
+The control operations are `guidance_probe_register`, `guidance_probe_start`, `guidance_probe_show`, `guidance_probe_receipts` and `guidance_probe_cancel`, each always replying to rid, including errors. CLI forms are `ahub guidance probe register --file <json>`, `start --id <hash> --revision <n> [--variant <variant-id>]`, `show --id <hash>`, `receipts --id <hash>` and `cancel --id <hash> --revision <n>`, with optional JSON output. `<n>` is the probe CAS revision, not the frozen Task flow revision. There are no MCP probe tools, console mutations or new daemon authority flags. Unknown operation responses give upgrade/restart guidance. An uncertain write response directs an explicit keyed show, never an automatic replay.
 
 The additive conditional recovery feature declares private probe state only when present. Control-client/restart snapshots carry its integrity binding through all existing recovery verification sites; absent legacy state is unchanged. Reads never invoke models, resolve opaque addresses or launch effects.
 
@@ -619,11 +629,9 @@ restoring an unbound probe ledger could lose its shared budget or uncertain lane
 
 ## T2 confined adapter contract
 
-This section defines the approved T2 boundary on merged T1. It does not enable a runner,
-claim native confinement, or authorize a real model/worker trial. The existing T1
-constructor-only fake runner remains the production default until the receipt and
-live-admission slices are separately ready. T2 tests use fake model ports and
-model-free OS-boundary canaries only.
+T2 defines the confined adapter boundary. T2 tests use fake model ports and
+model-free OS-boundary canaries. Production activation follows the separate
+[conductor-selected live pilot](#conductor-selected-live-worker-pilot).
 
 ### Same loop, separate host lifecycle
 
@@ -813,11 +821,8 @@ change authority/privacy and prove the next effect is refused.
 
 ## T3 receipts, reconcile and cleanup contract
 
-This section is a contract proposal for review before implementation, on merged T2
-(`fa53e8b1`). It does not enable a runner, claim native confinement or authorize a real
-model or worker trial. The constructor-only host adapter stays unwired. T3 adds evidence
-and cleanup around sessions the existing lifecycle already runs; it changes no admission,
-budget, fence or authority rule.
+T3 defines the evidence and cleanup rules for sessions the probe lifecycle runs.
+The [live pilot](#conductor-selected-live-worker-pilot) governs production admission.
 
 ### What a receipt is
 
@@ -837,7 +842,8 @@ exact experiment and slot ids, the reservation generation and revision, and:
   They are `null` when the host could not read them (a crash reconcile never saw them),
   which is unverified coverage. A fingerprint that differs from the declared one is
   recorded as it is and makes the pair incomparable (`input_drift`).
-- `startedAt`, `endedAt` and `elapsedMs` from the Store's trusted clock.
+- `mode: "live"` on a live receipt. Fixture and older receipts omit `mode`.
+- `startedAt`, `endedAt` and `elapsedMs` from the Store's trusted clock, and `expiresAt` at `endedAt + PROBE_RETENTION_MS` (14 days).
 - `state`: one of `succeeded`, `failed`, `cancelled`, `timed_out`, `unavailable`,
   `unknown`. `succeeded` requires every condition under "Sealing" below.
 - `usage`: per-session model calls and tool calls with their known counts, and the
@@ -975,9 +981,8 @@ baseline's, or a fingerprint differs), `usage_unknown`, `incomplete_coverage`,
 
 - A pair is incomparable if either side has a reason. One reason is enough; reasons are
   listed, not ranked.
-- The public `comparable` flag becomes this function's result. It replaces the current
-  inline expression in `Tasks.guidanceProbeProjection` and may only get stricter: every
-  case the current expression calls incomparable stays incomparable.
+- The public `comparable` flag requires both the prior eligibility expression and
+  this sealed-receipt verdict. A store read failure yields `false`.
 - The outcome denominator is every preregistered attempt slot that was reserved:
   `succeeded`, `failed`, `cancelled`, `timed_out`, `unavailable` and `unknown` all count.
   Slots never started stay `planned` or `not_needed` and are reported separately as such;
@@ -1100,10 +1105,7 @@ counts as `unknown`.
 
 ## T4 producer status and receipt export
 
-T4 (#1226) adds the producer-facing read of what T3 sealed, and the focused check that runs the whole fake lifecycle end to end. It adds no way to start work.
-It does not enable a runner, claim native confinement, call a model or launch a worker, and the constructor-only adapter stays unwired (a test reads the daemon,
-the CLI, the plugin, the manager and every other adapter and fails if one names it). **AC7's authorized real local-worker trial is not part of this change and
-stays open**: nothing here shows actual isolation or effective guidance delivery to a model, and nothing may be read as showing either.
+T4 (#1226) exposes T3 receipts to producers and tests the fixture lifecycle end to end. This read surface never starts work. The daemon wiring and authority for AC7 are defined in the [live pilot](#conductor-selected-live-worker-pilot).
 
 ### What a producer or a receipt consumer reads
 
@@ -1121,7 +1123,7 @@ it launches, reserves, writes and prunes nothing, and a read-only Store serves i
   `withheld` flag and the retention state of its output (`none`, `retained` or `pruned`).
 
 Unknown stays unknown: a usage gap is `usage_unknown` and prints as `unknown`, never zero; an unobserved served model is `unobserved`; a slot with no receipt says
-so. Evidence is at most `fixture`, and every rendering says that no live model or worker trial, sampling control, provider behaviour or model quality is claimed.
+so. Renderings distinguish fixture evidence from a sealed live receipt. Neither grade establishes sampling control, provider behaviour or model quality.
 
 ### Bounds, privacy and tamper
 
