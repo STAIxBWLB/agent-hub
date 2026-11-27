@@ -327,6 +327,8 @@ export class MemoryProfileBinding {
     // #1747: status is read on every status answer, and the full fence re-resolves the profile through agent-mem (every shard placement through
     // canonicalJSON). Run it only when the cheap stamp moved since the last passing check. The stamp is taken first, so a change during the check
     // is seen by the next read; run() stays a full check on every call.
+    // ponytail: a change the stamp does not cover (an append to an existing placement journal, see fenceObjects) shows in status only after the
+    // next run() latches the binding; stamp that journal too if status alone must report it.
     const stamp = this.fenceStamp();
     if (stamp === "unavailable" || stamp !== this.verifiedStamp) {
       try { this.assertCurrent(); this.verifiedStamp = stamp; } catch { /* Report the latched state without exposing metadata errors. */ }
