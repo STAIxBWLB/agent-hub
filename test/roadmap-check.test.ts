@@ -172,3 +172,22 @@ test("#1741 a roadmap check runs one spec check and builds its views once howeve
     expect(checks).toBe(2); // a person's check is not served from an earlier one
   } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("#1741 a roadmap notice pass builds its membership recheck once for all findings", async () => {
+  const { Board } = await import("../src/hub/board.ts"); const { Bus } = await import("../src/hub/bus.ts"); const { Tasks } = await import("../src/hub/tasks.ts");
+  const { loadRouting } = await import("../src/hub/routing.ts"); const { mkdtempSync, rmSync } = await import("node:fs"); const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "roadmap-notify-")), board = new Board(join(root, "hub.db")), bus = new Bus({ batchMs: 0 });
+  const tasks = new Tasks({ cwd: root, board, bus, project: "project", repository: "example/repo", routing: () => loadRouting(root), notify: () => {} });
+  try {
+    const milestone = board.newMilestone({ title: "Public", outcome: "Outcome", state: "active" }, "user");
+    const ids: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const task = board.propose("user", { title: `feat: member ${i}`, class: "implement" }); ids.push(task.id);
+      board.linkMilestone(milestone.id, "task", String(task.id), "user", board.milestone(milestone.id)!.revision);
+    }
+    let lists = 0; const list = board.list.bind(board); board.list = ((...args: Parameters<typeof board.list>) => { lists++; return list(...args); }) as typeof board.list;
+    const sent = await tasks.roadmapNotify(ids, () => true);
+    expect(sent).toBeGreaterThanOrEqual(4);
+    expect(lists).toBe(3); // the pass's views, the check's views and one recheck; before, one recheck per finding
+  } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
+});
