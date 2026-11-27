@@ -180,7 +180,7 @@ export interface AuditView extends AuditSummary {
   notUpdated?: string[];
 }
 /** #1738: how long one working-tree spec check serves the roadmap snapshot. */
-export const ROADMAP_SPECS_REUSE_MS = 60_000;
+const ROADMAP_SPECS_REUSE_MS = 60_000;
 
 export interface TasksDeps {
   /** #1647 AC4: the hub's own token increments per task (a task id to its count, null when unknown), for the metrics grouped by reason. Read-only; absent means no reading. */

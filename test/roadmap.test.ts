@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board, type Task } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { ROADMAP_SPECS_REUSE_MS, Tasks } from "../src/hub/tasks.ts";
+import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig, type PlanIssueMetadata } from "../src/hub/sdlc.ts";
 import type { SpecsCheckReport } from "../src/hub/specs.ts";
@@ -216,7 +216,7 @@ test("#1738 the hub's roadmap pass reuses one spec check for a minute; person an
   expect(checks).toBe(1);
   f.tasks.milestoneList("codex"); f.tasks.milestoneList("user");
   expect(checks).toBe(3);
-  f.control.now += ROADMAP_SPECS_REUSE_MS - 1;
+  f.control.now += 60_000 - 1; // ROADMAP_SPECS_REUSE_MS
   f.tasks.milestoneList("hub");
   expect(checks).toBe(3);
   f.control.now += 1;
