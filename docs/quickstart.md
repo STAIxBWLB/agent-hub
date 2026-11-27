@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.48.1
+bun add -g github:STAIxBWLB/agent-hub#v0.48.2
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -53,6 +53,12 @@ A project whose hub is stopped is upgraded without starting it: `ahub upgrade
 --to <version>` in it only retargets its runtime selection, and `ahub upgrade
 --all-stopped --to <version>` does that for every stopped project at once
 (`--dry-run` lists each one first).
+
+## Upgrading to 0.48.2
+
+Nothing to do beyond the upgrade. The daemon stops stalling on roadmap checks, task lists and status (#1741). A roadmap check now runs one spec check and builds its milestone views once, unless the board changes during the check; before, it repeated both around every GitHub issue it read. A task list no longer reads the whole board for every row. Status no longer starts two git processes per request. The daemon's RSS also stays lower, because those repeats caused most of its transient allocation. 0.48.2 raises no store, sync or agent-mem floor.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.48.2` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.48.1
 
