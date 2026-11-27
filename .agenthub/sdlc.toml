@@ -11,3 +11,10 @@ eval_check = "routing-eval"
 [security_scan]
 sources = ["dependabot", "secret_scanning"]
 every_h = 24
+
+# #1645: minimum review by risk tier (person decision 2026-11-27). high needs one reviewer plus an
+# approved test-class verifier card by a peer other than the implementer; unnamed paths are medium.
+# high = the security-review area paths (docs/agent-notes/security-review.md). advise records, never blocks.
+[risk]
+high = ["src/local/**", "src/omniroute/**", "src/hub/envelope.ts", "src/hub/memory-policy.ts", "src/hub/tool-refusal.ts", ".github/workflows/**", "scripts/release-*"]
+low = ["docs/**", "*.md"]
