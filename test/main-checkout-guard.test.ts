@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
-import { mainCheckoutWarning } from "../src/hub/main-checkout.ts";
+import { mainCheckoutBranch, mainCheckoutWarning } from "../src/hub/main-checkout.ts";
 import { realPath } from "../src/hub/project.ts";
 import { renderStatus } from "../src/cli/output.ts";
 
@@ -33,6 +33,19 @@ test("the main checkout warning names a feature branch, and says nothing on the 
   expect(mainCheckoutWarning(dir, ok)).toBe("the main checkout is on `fix/feature`; move the work to a worktree under .worktrees/");
   git(dir, "switch", "-q", "--detach", "HEAD");
   expect(mainCheckoutWarning(dir, ok)).toBeUndefined();
+});
+
+test("#1741 the branch answer is reused while HEAD is unchanged and read again after a switch", () => {
+  const dir = repo("main", true);
+  git(dir, "switch", "-q", "-c", "fix/one");
+  const first = mainCheckoutBranch(dir);
+  expect(first).toEqual({ branch: "fix/one", defaultBranch: "main" });
+  expect(mainCheckoutBranch(dir)).toBe(first);
+  git(dir, "switch", "-q", "-c", "fix/two");
+  expect(mainCheckoutBranch(dir)).toEqual({ branch: "fix/two", defaultBranch: "main" });
+  git(dir, "update-ref", "refs/remotes/origin/fix/two", "HEAD");
+  git(dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/fix/two");
+  expect(mainCheckoutBranch(dir)).toBeUndefined();
 });
 
 test("the default branch comes from origin/HEAD, falling back to main (#572 AC3)", () => {

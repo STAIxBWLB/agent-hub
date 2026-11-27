@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The daemon no longer stalls on a roadmap check, on task lists or on status (#1741, #1738). A roadmap check runs one working-tree spec check per call instead of two per GitHub issue it reads (about a second of synchronous git each). A task without a risk receipt no longer reads the whole board for each row of a task list. Status reuses the main checkout's branch answer while git's HEAD and origin/HEAD files are unchanged, instead of two git processes per request.
+
 ## 0.48.1
 
 - A large board no longer blocks the daemon's event loop (#1738). The supervision round check, run every second and on every task change, skips its full board read while the board status revision, the conductor, the scope and the stored round are unchanged, and per-task supervision notices read one task instead of the whole board. The hub's own roadmap pass (the five-minute sweep and each task change's notice) reuses one working-tree spec check for up to 60 s instead of running one per `milestoneList` call. On a 1156-task board the two paths held the loop about 2.5 s of every 3 s and for 28-38 s every five minutes.
