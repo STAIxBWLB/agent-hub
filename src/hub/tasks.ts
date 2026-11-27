@@ -3795,9 +3795,13 @@ export class Tasks {
     return report;
   }
 
-  private roadmapSnapshot(by: PeerId): RoadmapSnapshot {
+  private roadmapSpecsFor(by: PeerId): SpecsCheckReport | SpecsCoverReport | undefined {
+    return by === HUB ? this.roadmapSpecsCheck() : this.d.specsRead?.("check", []);
+  }
+
+  private roadmapSnapshot(by: PeerId, specs = () => this.roadmapSpecsFor(by)): RoadmapSnapshot {
     let freshness: SpecsCheckReport["freshness"] | undefined;
-    try { const report = by === HUB ? this.roadmapSpecsCheck() : this.d.specsRead?.("check", []); if (report && "freshness" in report && !report.truncated && report.errors === 0)
+    try { const report = specs(); if (report && "freshness" in report && !report.truncated && report.errors === 0)
       freshness = report.freshness.filter(row => this.publicMetadataText(row.path) && (row.id === undefined || this.publicMetadataText(row.id))); } catch { /* unavailable evidence stays unknown */ }
     return { milestones: this.d.board.milestones(), links: this.d.board.milestoneLinks(), tasks: this.d.board.list(), releases: this.d.board.releases(), freshness,
       issueOf: task => { try { const source = this.planIssueIdentity(task); return source ? `${source.repo.toLowerCase()}#${source.issue}` : undefined; } catch { return undefined; } },
@@ -3806,9 +3810,9 @@ export class Tasks {
     };
   }
 
-  milestoneList(by: PeerId): (MilestoneView & { tree: TreeRollup; readyToClose: ReadyToClose })[] {
+  milestoneList(by: PeerId, specs?: () => SpecsCheckReport | SpecsCoverReport | undefined): (MilestoneView & { tree: TreeRollup; readyToClose: ReadyToClose })[] {
     this.roadmapReadAuthority(by);
-    const views = withTree(milestoneViews(this.roadmapSnapshot(by)));
+    const views = withTree(milestoneViews(this.roadmapSnapshot(by, specs)));
     this.roadmapReadAuthority(by); return views;
   }
 
@@ -3861,10 +3865,14 @@ export class Tasks {
   /** Build drift only from the same screened views and host-owned evidence as roadmap reads. */
   async roadmapCheck(by: PeerId, include?: (finding: RoadmapDrift) => boolean): Promise<ReturnType<typeof checkRoadmap>> {
     const check = this.requestCheck(by); check(); this.roadmapReadAuthority(by);
-    const views = this.milestoneList(by), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const }, privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
+    // #1741: one spec check per roadmap check. current() rebuilds the views before and after every issue read, and an uncached working-tree check is a
+    // synchronous git per spec path (about a second on this repository), so it ran up to 200 times per call. A thrown check is kept as unavailable.
+    let pinned: { report: SpecsCheckReport | SpecsCoverReport | undefined } | undefined;
+    const specs = () => { if (!pinned) { pinned = { report: undefined }; pinned.report = this.roadmapSpecsFor(by); } return pinned.report; };
+    const views = this.milestoneList(by, specs), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const }, privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
     const snapshot = (rows: typeof views) => JSON.stringify([rows, rows.flatMap(view => view.tasks.map(member => this.d.board.get(member.id)))]);
     const evidence = snapshot(views);
-    const current = () => { check(); this.roadmapReadAuthority(by); if (snapshot(this.milestoneList(by)) !== evidence || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
+    const current = () => { check(); this.roadmapReadAuthority(by); if (snapshot(this.milestoneList(by, specs)) !== evidence || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
     const rendered = roadmapExport(views), exportStates: (boolean | undefined)[] = [];
     for (const [path, expected] of [["docs/roadmap.json", rendered.json], ["docs/roadmap.md", rendered.markdown]] as const) {
       try {
@@ -9061,6 +9069,8 @@ export class Tasks {
    * retroactive, because the verdict that already passed is a statement about the board it saw.
    */
   private riskViewFor(task: Task, head: string | undefined): RiskView | undefined {
+    // #1741: riskView answers undefined without a receipt for this head, so skip the whole-board card read. A task list renders one view per row.
+    if (!task.sdlc?.risk || task.sdlc.risk.head !== head) return undefined;
     const repo = task.sdlc?.repo ?? task.refs.repo;
     return riskView(task.sdlc?.risk, this.riskCards(), { ...(repo ? { repo } : {}), ...(task.refs.branch ? { branch: task.refs.branch } : {}), head, implementer: task.owner });
   }
