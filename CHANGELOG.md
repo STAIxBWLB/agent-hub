@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A large board no longer blocks the daemon's event loop (#1738). The supervision round check, run every second and on every task change, skips its full board read while the board status revision, the conductor, the scope and the stored round are unchanged, and per-task supervision notices read one task instead of the whole board. The hub's own roadmap pass (the five-minute sweep and each task change's notice) reuses one working-tree spec check for up to 60 s instead of running one per `milestoneList` call. On a 1156-task board the two paths held the loop about 2.5 s of every 3 s and for 28-38 s every five minutes.
+
 ## 0.48.0
 
 - Release N-1 for 0.48.x is published 0.47.0, which declares agent-mem `>=0.39.0 <1.0.0`; its fixture lock pins the 0.39.0 that the 0.47.0 release resolved, with control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.

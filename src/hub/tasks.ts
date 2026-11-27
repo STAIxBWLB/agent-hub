@@ -179,6 +179,9 @@ export interface AuditView extends AuditSummary {
   /** Findings in this report that were already verified or rejected, so the hub left them as decided. */
   notUpdated?: string[];
 }
+/** #1738: how long one working-tree spec check serves the roadmap snapshot. */
+const ROADMAP_SPECS_REUSE_MS = 60_000;
+
 export interface TasksDeps {
   /** #1647 AC4: the hub's own token increments per task (a task id to its count, null when unknown), for the metrics grouped by reason. Read-only; absent means no reading. */
   taskTokens?: () => Readonly<Record<number, number | null>>;
@@ -3779,9 +3782,22 @@ export class Tasks {
     return this.roadmapResult(by, id);
   }
 
+  /** #1738: the hub's own roadmap pass (the five-minute sweep and each task change's notice) runs milestoneList several times (the sweep, roadmapNotify, roadmapCheck and each
+   * finding's recheck), and a working-tree spec check runs one synchronous git per spec path, so hub reads reuse one check for ROADMAP_SPECS_REUSE_MS. A thrown check is not
+   * kept. Reads by the person and peers, and explicit `specs check`, stay uncached.
+   * ponytail: a time window, not a repository key; key it on HEAD and index state, or run the check off the event loop, if a minute of stale freshness ever matters. */
+  private roadmapSpecs: { at: number; report: SpecsCheckReport | SpecsCoverReport | undefined } | undefined;
+  private roadmapSpecsCheck(): SpecsCheckReport | SpecsCoverReport | undefined {
+    const now = this.d.now?.() ?? Date.now(), kept = this.roadmapSpecs;
+    if (kept && now >= kept.at && now - kept.at < ROADMAP_SPECS_REUSE_MS) return kept.report;
+    const report = this.d.specsRead?.("check", []);
+    this.roadmapSpecs = { at: now, report };
+    return report;
+  }
+
   private roadmapSnapshot(by: PeerId): RoadmapSnapshot {
     let freshness: SpecsCheckReport["freshness"] | undefined;
-    try { const report = this.d.specsRead?.("check", []); if (report && "freshness" in report && !report.truncated && report.errors === 0)
+    try { const report = by === HUB ? this.roadmapSpecsCheck() : this.d.specsRead?.("check", []); if (report && "freshness" in report && !report.truncated && report.errors === 0)
       freshness = report.freshness.filter(row => this.publicMetadataText(row.path) && (row.id === undefined || this.publicMetadataText(row.id))); } catch { /* unavailable evidence stays unknown */ }
     return { milestones: this.d.board.milestones(), links: this.d.board.milestoneLinks(), tasks: this.d.board.list(), releases: this.d.board.releases(), freshness,
       issueOf: task => { try { const source = this.planIssueIdentity(task); return source ? `${source.repo.toLowerCase()}#${source.issue}` : undefined; } catch { return undefined; } },

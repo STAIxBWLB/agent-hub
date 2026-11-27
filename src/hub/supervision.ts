@@ -37,6 +37,10 @@ export interface SupervisionDeps {
   /** Durable round state belongs to the daemon's store, not the controller. */
   readRound?: (peer: string) => string | undefined;
   writeRound?: (peer: string, signature: string) => void;
+  /** #1738: the board status revision, moved by every task write. With it, an unchanged round check skips the full board read. */
+  revision?: () => number;
+  /** #1738: one task by id, so a per-task notice does not read the whole board. */
+  task?: (id: number) => Task | undefined;
 }
 
 /** Deterministic milestone producer. The Bus alone owns batching, retry and native turns. */
@@ -44,7 +48,13 @@ export class SupervisionFeed {
   private readonly approvals = new Set<string>();
   private readonly holds = new Set<string>();
   private readonly rounds = new Map<string, string>();
+  /** #1738: the key of the last round check that sent nothing; never set after a refused send, which must stay retryable. */
+  private quietRound: string | undefined;
   constructor(private readonly d: SupervisionDeps) {}
+
+  private taskById(id: number): Task | undefined {
+    return this.d.task ? this.d.task(id) : this.d.tasks().find((t) => t.id === id);
+  }
 
   /** Pending notices may have been withdrawn on role/off change; live requests can notify again on regrant. */
   resetPending(peer: string): void {
@@ -71,7 +81,7 @@ export class SupervisionFeed {
   }
 
   milestone(id: number, milestone: SupervisionMilestone, fields: SupervisionFields = {}): boolean {
-    const task = this.d.tasks().find((t) => t.id === id);
+    const task = this.taskById(id);
     if (!task || !this.includes(task)) return false;
     if (this.d.isPrivate(task)) return this.send(`task:${id}:${milestone}`, `#${id} [pii]: ${milestone}; ahub task show ${id}`, "status", id);
     const bits = [this.d.publicTitle(task), milestone];
@@ -86,7 +96,7 @@ export class SupervisionFeed {
 
   /** R4: only ids and the fixed rule number enter the conductor's feed. */
   roadmapFinding(taskId: number, milestone: number | null, rule: number, marker: string): boolean {
-    const task = this.d.tasks().find(row => row.id === taskId);
+    const task = this.taskById(taskId);
     if (!task || !this.includes(task) || this.d.isPrivate(task) || milestone !== null && (!Number.isSafeInteger(milestone) || milestone < 1) || !Number.isSafeInteger(rule) || rule < 1 || rule > 8 || !/^[a-f0-9]{64}$/.test(marker)) return false;
     return this.send(`roadmap:${marker}`, `roadmap${milestone === null ? "" : ` milestone ${milestone}`}, task ${taskId}: drift rule ${rule}; inspect ahub roadmap check`, "status", taskId);
   }
@@ -114,7 +124,7 @@ export class SupervisionFeed {
 
   /** Tasks owns durable cause/replan deduplication; the feed keeps its configured recipient and scope. */
   taskStalled(stall: TaskStall): boolean {
-    const task = this.d.tasks().find(task => task.id === stall.task);
+    const task = this.taskById(stall.task);
     if (!task || isClosedTaskState(task.state) || !this.includes(task)) return false;
     const cause = stall.cause;
     const bits = [`#${stall.task}: stalled`, `cause ${cause.kind}`, `reason ${cause.code}`];
@@ -159,13 +169,16 @@ export class SupervisionFeed {
   checkRound(): boolean {
     const peer = this.recipient();
     if (!peer) return false;
-    const tasks = this.d.tasks().filter((t) => this.includes(t));
-    if (!tasks.length || tasks.some((t) => !isClosedTaskState(t.state))) return false;
-    const signature = tasks.map((t) => t.id).sort((a, b) => a - b).join(",");
     const previous = this.d.readRound?.(peer) ?? this.rounds.get(peer);
+    // #1738: the result depends only on the recipient, the scope, the tasks and the stored round. While none moved since a check that sent nothing, it sends nothing again.
+    const key = this.d.revision ? JSON.stringify([peer, this.d.scope(), this.d.revision(), previous ?? null]) : undefined;
+    if (key !== undefined && key === this.quietRound) return false;
+    const tasks = this.d.tasks().filter((t) => this.includes(t));
+    if (!tasks.length || tasks.some((t) => !isClosedTaskState(t.state))) { this.quietRound = key; return false; }
+    const signature = tasks.map((t) => t.id).sort((a, b) => a - b).join(",");
     const completed = new Set(previous?.split(",") ?? []);
     const newlyJoined = tasks.filter((t) => !completed.has(String(t.id)));
-    if (!newlyJoined.length) return false;
+    if (!newlyJoined.length) { this.quietRound = key; return false; }
     const count = `${newlyJoined.length} task${newlyJoined.length === 1 ? "" : "s"}`;
     const cancelled = newlyJoined.filter(t => t.state === "cancelled").length;
     const outcome = cancelled ? `${count} closed (${newlyJoined.length - cancelled} approved, ${cancelled} cancelled)` : `${count} approved`;
