@@ -1512,15 +1512,23 @@ the selected variant's applicability and privacy across every await: a private
 turn or a private or PII task refuses. Registration is an inert private
 declaration in additive `hub.db` tables (`guidance_probe_*`), never on the task,
 its history or a public view, and no actor, session or authority can be named in
-it. Production has no probe runner: start refuses before reserving a lane, and
-fixture runners are injected only by test constructors, never by wire data, CLI,
-config or a model id. The T2 confined path (a private `LocalPeer` with no bus,
+it. By default production has no probe runner: start refuses before reserving a
+lane, and fixture runners are injected only by test constructors, never by wire
+data, CLI, config or a model id. The one exception is the live pilot (#1226 AC7):
+the hub process's startup environment `AGENTHUB_LIVE_GUIDANCE_PROBE_ID` selects
+one exact registered id, and only the configured conductor's authenticated
+native session can start it (the person's console is refused). It runs only the
+canonical empty tree with no admitted data, requires `onCampus()`, pins the
+campus endpoint and `qwen27b/qwen3.8-27b` without redirect, fallback or retry,
+and caps each execution at 8 model calls, 8,000 reserved tokens and 60 s. Live
+mode is sealed into the receipt digest, and recovery to a daemon without
+`guidance_probe_live` is refused while live records exist. The T2 confined path (a private `LocalPeer` with no bus,
 memory capture, observer or ordinary history) offers only `read`, `write` and
 `edit` under a logical `/workspace`, writes only under declared `scratch/` and
 `output/` paths, refuses non-regular and hardlinked targets and files over
 1 MiB, and runs any proof command under a narrowed seatbelt profile with network
-denied (the model-free proof's own control listener aside). It is fixture-proven
-only and grants no real model or worker run ([design](design/guidance-probes.md)). `receipts`
+denied (the model-free proof's own control listener aside). Outside the selected
+pilot it grants no real model or worker run ([design](design/guidance-probes.md)). `receipts`
 is read-only under the same fences: it returns the host-sealed receipts, each
 re-verified against its own digest (a tampered row refuses the whole read), the
 outcome denominator and each slot's retention state, never a path; a

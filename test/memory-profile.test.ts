@@ -148,3 +148,17 @@ test("memoryIndexExists accepts the package's versioned index file names and not
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("#1747 status runs the full fence only when the fence stamp moved", () => {
+  const home = temporary(), { store, binding } = openProfileMemory({ home, now: () => NOW });
+  try {
+    let checks = 0; const assertCurrent = binding.assertCurrent.bind(binding);
+    binding.assertCurrent = () => { checks++; assertCurrent(); };
+    for (let i = 0; i < 3; i++) expect(binding.status(store).state).toBe("ready");
+    expect(checks).toBe(1);
+    writeFileSync(join(home, "memory", "profile.json"), "{invalid");
+    expect(binding.status(store)).toMatchObject({ state: "unavailable", error: MEMORY_PROFILE_UNAVAILABLE });
+    expect(checks).toBe(2);
+    expect(() => binding.run(() => 0)).toThrow(MEMORY_PROFILE_UNAVAILABLE);
+  } finally { store.close(); }
+});

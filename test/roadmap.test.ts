@@ -17,7 +17,7 @@ function fixture() {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-roadmap-tasks-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const roles: Record<string, string[]> = { claude: ["conductor"], kimi: ["planner"], codex: ["implementer"] };
-  const control: { private: boolean; observer: boolean; screening: boolean; screen?: () => Promise<void>; patterns?: string[]; specsRead?: () => void } = { private: false, observer: false, screening: false };
+  const control: { private: boolean; observer: boolean; screening: boolean; screen?: () => Promise<void>; patterns?: string[]; specsRead?: () => void; now?: number } = { private: false, observer: false, screening: false };
   const notices: string[] = [], routing = loadRouting(cwd);
   const specs: SpecsCheckReport = { specCount: 0, errors: 0, warnings: 0, stale: 0, truncated: false, freshness: [], items: [] };
   const tasks = new Tasks({ board, bus, cwd, project: "roadmap-fixture", repository: "example/repo", roles, notify: message => { notices.push(message); },
@@ -25,7 +25,8 @@ function fixture() {
     privateTurn: () => control.private, reviewObserverInput: () => control.observer,
     operational: by => by === "claude" && roles.claude?.includes("conductor") === true,
     piiScreen: async () => { await control.screen?.(); return { label: "clear", ms: 0 }; },
-    specsRead: action => { control.specsRead?.(); return action === "check" ? specs : { specs: [], errors: 0, truncated: false, items: [] }; }, sdlc: { config: () => sdlcConfig(undefined) } });
+    specsRead: action => { control.specsRead?.(); return action === "check" ? specs : { specs: [], errors: 0, truncated: false, items: [] }; }, sdlc: { config: () => sdlcConfig(undefined) },
+    now: () => control.now ?? Date.now() });
   return { cwd, board, bus, tasks, roles, control, notices, specs };
 }
 const fields = (title = "Outcome milestone") => ({ title, outcome: "Observable outcome", horizon: "now" as const, order: 0 });
@@ -205,4 +206,20 @@ test("privacy changing in post-write readback reports an uncertain read, never a
   f.control.specsRead = undefined; f.control.private = false;
   expect(f.tasks.milestoneShow("kimi", committedId!).title).toBe("Committed before readback");
   expect(f.board.milestones()).toEqual(retained);
+});
+
+test("#1738 the hub's roadmap pass reuses one spec check for a minute; person and peer reads stay uncached", async () => {
+  const f = fixture(); await f.tasks.milestoneNew("kimi", fields());
+  let checks = 0; f.control.specsRead = () => { checks++; };
+  f.control.now = 1_000_000;
+  for (let i = 0; i < 3; i++) f.tasks.milestoneList("hub");
+  expect(checks).toBe(1);
+  f.tasks.milestoneList("codex"); f.tasks.milestoneList("user");
+  expect(checks).toBe(3);
+  f.control.now += 60_000 - 1; // ROADMAP_SPECS_REUSE_MS
+  f.tasks.milestoneList("hub");
+  expect(checks).toBe(3);
+  f.control.now += 1;
+  f.tasks.milestoneList("hub"); f.tasks.milestoneList("hub");
+  expect(checks).toBe(4);
 });

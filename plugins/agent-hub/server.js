@@ -731,7 +731,7 @@ var init_compat = __esm(() => {
       config: "pi.cmd",
       parse: (out) => plain(out.trim()),
       trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0, 1.5.0, 1.5.2 and 1.6.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
-      receipt: "docs/verification/2026-11-26-compat-pi-1.6.1.md"
+      receipt: "docs/verification/2026-11-27-compat-pi-1.6.1.md"
     },
     "claude-implementer": {
       label: "Claude headless implementer",
@@ -14799,7 +14799,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "@staix/agent-hub",
-    version: "0.47.0",
+    version: "0.48.4",
     description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
     license: "MIT",
     type: "module",

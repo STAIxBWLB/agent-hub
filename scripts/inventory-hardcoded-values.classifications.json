@@ -2731,6 +2731,7 @@
   "src/hub/tasks.ts:GROOM_FYI_WINDOW_MS:constant:GROOM_FYI_WINDOW_MS=10 * 60000#0": "operational",
   "src/hub/tasks.ts:PARALLEL_PATHS_NAMED:constant:PARALLEL_PATHS_NAMED=5#0": "contract",
   "src/hub/tasks.ts:RESCREEN_MAX:constant:RESCREEN_MAX=10#0": "operational",
+  "src/hub/tasks.ts:ROADMAP_SPECS_REUSE_MS:constant:ROADMAP_SPECS_REUSE_MS=60000#0": "operational",
   "src/hub/tasks.ts:acceptPlanDeparture:inline:reason.length > 2048=2048#0": "contract",
   "src/hub/tasks.ts:acceptRefs:inline:raw.repo.length > 300=300#0": "contract",
   "src/hub/tasks.ts:admission:inline:Array.from(sanitize(pool.admissionRule).replace(/\\s+/g, )).slice=160#0": "safety floor",

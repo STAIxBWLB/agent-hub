@@ -2765,6 +2765,7 @@ export async function startDaemon(opts: DaemonOptions) {
     tasks: () => board.list(), publicTitle: (task) => tasks.publicTitle(task), isPrivate: (task) => tasks.isPii(task),
     approvalAgeMs: () => (config.conductor?.approval_wait_s ?? 30) * 1000,
     readRound: (peer) => conductorHolds.readRound(peer), writeRound: (peer, signature) => conductorHolds.writeRound(peer, signature),
+    revision: () => board.statusRevision(), task: (id) => board.get(id), // #1738: the 1 s tick and every task change check the round
     emit: (notice) => {
       if (stopping || recoveryActive()) return false;
       return bus.publish(newEnvelope(HUB, notice.body, { to: [notice.peer], kind: notice.kind, priority: notice.priority,

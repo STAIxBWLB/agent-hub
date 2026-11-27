@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.47.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.48.4, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 Inspect bounded task and attempt metadata with `ahub lineage show`; admit external
@@ -131,8 +131,10 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   and public projections; the producer console's Guidance panel is read-only.
   Section diffs remain advisory, without activation, permissions or probes.
   `ahub guidance probe register|start|show|cancel` (the person or the configured
-  conductor) records a bounded private probe declaration; only a fake fixture
-  lifecycle runs, and production has no probe runner
+  conductor) records a bounded private probe declaration. Live start is off by
+  default: a hub started with `AGENTHUB_LIVE_GUIDANCE_PROBE_ID` runs that one
+  preregistered pilot, started only by the configured conductor, on the pinned
+  campus model with per-run limits
   ([guidance probes](docs/design/guidance-probes.md)).
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,

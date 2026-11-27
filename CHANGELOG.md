@@ -4,7 +4,28 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Add an opt-in, conductor-only guidance probe pilot with a pinned campus model, per-execution limits and distinct live receipts (Refs #1226, hub task 1155).
+## 0.48.4
+
+- A memory status read no longer re-resolves the whole memory profile through agent-mem (#1747). On a sharded home that resolution re-validates every shard placement; in a daemon profile it was about 6% of the main thread. Status now runs the full check only when the binding's fence stamp has moved since the last passing check. The entry fence for memory work still checks in full on every call.
+
+## 0.48.3
+
+- The five-minute roadmap sweep no longer blocks the daemon for about 2.5 s after its issue reads (#1741). The notice pass checked each finding's task against freshly built milestone views, one build (about 140 ms on a 1156-task board) per finding. It now rebuilds them only when the board changed.
+
+## 0.48.2
+
+- The daemon no longer stalls on a roadmap check, on task lists or on status (#1741, #1738). A roadmap check runs one working-tree spec check per call instead of two per GitHub issue it reads (about a second of synchronous git each). A task without a risk receipt no longer reads the whole board for each row of a task list. Status reuses the main checkout's branch answer while git's HEAD and origin/HEAD files are unchanged, instead of two git processes per request.
+- A roadmap check rebuilds its milestone views only when a task, milestone, link or release changed during the check, instead of before and after every GitHub issue it reads (#1741). On a 1156-task board with 52 linked issues, one check fell from about 15 s of main-thread work and 107 whole-board reads to under 0.2 s and one. The transient allocation it caused is what kept the daemon's RSS high: its physical footprint stays small, and the rest is reclaimable heap pages.
+
+## 0.48.1
+
+- A large board no longer blocks the daemon's event loop (#1738). The supervision round check, run every second and on every task change, skips its full board read while the board status revision, the conductor, the scope and the stored round are unchanged, and per-task supervision notices read one task instead of the whole board. The hub's own roadmap pass (the five-minute sweep and each task change's notice) reuses one working-tree spec check for up to 60 s instead of running one per `milestoneList` call. On a 1156-task board the two paths held the loop about 2.5 s of every 3 s and for 28-38 s every five minutes.
+
+## 0.48.0
+
+- Release N-1 for 0.48.x is published 0.47.0, which declares agent-mem `>=0.39.0 <1.0.0`; its fixture lock pins the 0.39.0 that the 0.47.0 release resolved, with control protocol 17 (descriptor floor 16). The N-1 fixture and matrix pin that package; the separate protocol-16 fixture stays at 0.25.
+- Add an opt-in, conductor-only guidance probe pilot with a pinned campus model, per-execution limits and distinct live receipts (Refs #1226, hub task 1155). It stays off unless the hub starts with `AGENTHUB_LIVE_GUIDANCE_PROBE_ID` naming one registered probe.
+- Commit the #1226 AC7 preregistration (`test/fixtures/guidance-probe-live-1226.json`) with a model-free admission test, document the operator procedure for the pilot, and make a refused campus pin name its cause (no healthy endpoint, Access endpoint, or campus unconfirmed) and `ahub doctor` (Refs #1226, hub task 1156).
 
 ## 0.47.0
 

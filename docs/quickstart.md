@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.47.0
+bun add -g github:STAIxBWLB/agent-hub#v0.48.4
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -53,6 +53,36 @@ A project whose hub is stopped is upgraded without starting it: `ahub upgrade
 --to <version>` in it only retargets its runtime selection, and `ahub upgrade
 --all-stopped --to <version>` does that for every stopped project at once
 (`--dry-run` lists each one first).
+
+## Upgrading to 0.48.4
+
+Nothing to do beyond the upgrade. A memory status read no longer re-resolves the whole memory profile through agent-mem unless a profile metadata file changed (#1747). Memory work itself still runs the full check on every call. 0.48.4 raises no store, sync or agent-mem floor.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.48.4` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.48.3
+
+Nothing to do beyond the upgrade. The five-minute roadmap sweep no longer blocks the daemon for about 2.5 s after its issue reads (#1741), because its notice pass reuses the milestone views across findings while the board is unchanged. 0.48.3 raises no store, sync or agent-mem floor.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.48.3` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.48.2
+
+Nothing to do beyond the upgrade. The daemon stops stalling on roadmap checks, task lists and status (#1741). A roadmap check now runs one spec check and builds its milestone views once, unless the board changes during the check; before, it repeated both around every GitHub issue it read. A task list no longer reads the whole board for every row. Status no longer starts two git processes per request. The daemon's RSS also stays lower, because those repeats caused most of its transient allocation. 0.48.2 raises no store, sync or agent-mem floor.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.48.2` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.48.1
+
+Nothing to do beyond the upgrade. A hub on a large board stops blocking its event loop (#1738): the supervision round check no longer reads the whole board every second, and the hub's own roadmap pass reuses one spec check for up to 60 s, so spec freshness in a roadmap finding can be up to a minute old. 0.48.1 raises no store, sync or agent-mem floor.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.48.1` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
+## Upgrading to 0.48.0
+
+Nothing changes until you use something new. The guidance probe pilot (#1226) stays off unless the hub is started with `AGENTHUB_LIVE_GUIDANCE_PROBE_ID` set to one registered probe id; the procedure is in [operations](operations.md#run-the-preregistered-guidance-pilot). 0.48.0 raises no store, sync or agent-mem floor.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.48.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.47.0
 

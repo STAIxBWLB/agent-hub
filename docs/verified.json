@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "1d9774ac0d509011d51f5453be0f86b039e9f782",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "1d9774ac0d509011d51f5453be0f86b039e9f782",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "1d9774ac0d509011d51f5453be0f86b039e9f782",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "1d9774ac0d509011d51f5453be0f86b039e9f782",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/adding-an-ai-tool.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "1d9774ac0d509011d51f5453be0f86b039e9f782",
       "paths": [
         "src/adapters/registry-types.ts",
         "src/adapters/registry.ts",
@@ -62,7 +62,7 @@
       ]
     },
     "docs/addons/claude-mem.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "1d9774ac0d509011d51f5453be0f86b039e9f782",
       "paths": [
         "src/hub/tooling.ts",
         "src/adapters/definitions/native-policy-aux.ts",
@@ -154,7 +154,7 @@
       ]
     },
     "docs/dogfood.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "c73ad69559f72e57233a7525c07fb8892aa41441",
       "paths": [
         "src/hub/dogfood.ts",
         "src/hub/dogfood-read.ts",
@@ -189,7 +189,7 @@
       ]
     },
     "docs/memory.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "1d9774ac0d509011d51f5453be0f86b039e9f782",
       "paths": [
         "package.json",
         "src/memory/",
@@ -285,7 +285,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "4ef41748e0ae28e1f2854eac0c4d317e199971c0",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -324,7 +324,7 @@
       ]
     },
     "docs/agent-notes/benchmarks.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "c73ad69559f72e57233a7525c07fb8892aa41441",
       "paths": [
         "scripts/benchmarks/",
         "test/benchmarks/",
@@ -336,7 +336,7 @@
       ]
     },
     "docs/agent-notes/budget.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "4ef41748e0ae28e1f2854eac0c4d317e199971c0",
       "paths": [
         "src/hub/budget.ts",
         "src/cli/statusline-tee.ts",
@@ -360,7 +360,7 @@
       ]
     },
     "docs/agent-notes/bus.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "4ef41748e0ae28e1f2854eac0c4d317e199971c0",
       "paths": [
         "src/hub/bus.ts",
         "src/hub/envelope.ts",
@@ -375,7 +375,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "1d9774ac0d509011d51f5453be0f86b039e9f782",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -468,7 +468,7 @@
       ]
     },
     "docs/agent-notes/local-worker.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "c73ad69559f72e57233a7525c07fb8892aa41441",
       "paths": [
         "src/adapters/local-worker.ts",
         "src/local/",
@@ -480,7 +480,7 @@
       ]
     },
     "docs/agent-notes/models.md": {
-      "verifiedAgainst": "90114588a482b46009120d199c919137bae4e4cf",
+      "verifiedAgainst": "c73ad69559f72e57233a7525c07fb8892aa41441",
       "paths": [
         "src/models/",
         "src/hub/inference.ts",
@@ -488,7 +488,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "b56c4a6ac74a1b8a38cc058a81eb6794c79d6e9f",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
@@ -539,7 +539,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "1d9774ac0d509011d51f5453be0f86b039e9f782",
       "paths": [
         "test/",
         "scripts/check.sh",
@@ -568,7 +568,7 @@
       ]
     },
     "docs/agent-notes/README.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "c73ad69559f72e57233a7525c07fb8892aa41441",
       "paths": [
         "src/cli/console-state.ts",
         "src/cli/attention.ts",
@@ -577,7 +577,7 @@
       ]
     },
     "src/cli/help.ts": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "c73ad69559f72e57233a7525c07fb8892aa41441",
       "paths": [
         "src/cli/main.ts",
         "src/cli/launch.ts",
@@ -596,7 +596,7 @@
       ]
     },
     "docs/agent-notes/security-review.md": {
-      "verifiedAgainst": "a060eec04044cc81a9bb10361d293a5d467edaa2",
+      "verifiedAgainst": "b56c4a6ac74a1b8a38cc058a81eb6794c79d6e9f",
       "paths": [
         "src/hub/envelope.ts",
         "src/hub/conductor.ts",

@@ -179,6 +179,9 @@ export interface AuditView extends AuditSummary {
   /** Findings in this report that were already verified or rejected, so the hub left them as decided. */
   notUpdated?: string[];
 }
+/** #1738: how long one working-tree spec check serves the roadmap snapshot. */
+const ROADMAP_SPECS_REUSE_MS = 60_000;
+
 export interface TasksDeps {
   /** #1647 AC4: the hub's own token increments per task (a task id to its count, null when unknown), for the metrics grouped by reason. Read-only; absent means no reading. */
   taskTokens?: () => Readonly<Record<number, number | null>>;
@@ -3779,9 +3782,26 @@ export class Tasks {
     return this.roadmapResult(by, id);
   }
 
-  private roadmapSnapshot(by: PeerId): RoadmapSnapshot {
+  /** #1738: the hub's own roadmap pass (the five-minute sweep and each task change's notice) runs milestoneList several times (the sweep, roadmapNotify, roadmapCheck and each
+   * finding's recheck), and a working-tree spec check runs one synchronous git per spec path, so hub reads reuse one check for ROADMAP_SPECS_REUSE_MS. A thrown check is not
+   * kept. Reads by the person and peers, and explicit `specs check`, stay uncached.
+   * ponytail: a time window, not a repository key; key it on HEAD and index state, or run the check off the event loop, if a minute of stale freshness ever matters. */
+  private roadmapSpecs: { at: number; report: SpecsCheckReport | SpecsCoverReport | undefined } | undefined;
+  private roadmapSpecsCheck(): SpecsCheckReport | SpecsCoverReport | undefined {
+    const now = this.d.now?.() ?? Date.now(), kept = this.roadmapSpecs;
+    if (kept && now >= kept.at && now - kept.at < ROADMAP_SPECS_REUSE_MS) return kept.report;
+    const report = this.d.specsRead?.("check", []);
+    this.roadmapSpecs = { at: now, report };
+    return report;
+  }
+
+  private roadmapSpecsFor(by: PeerId): SpecsCheckReport | SpecsCoverReport | undefined {
+    return by === HUB ? this.roadmapSpecsCheck() : this.d.specsRead?.("check", []);
+  }
+
+  private roadmapSnapshot(by: PeerId, specs = () => this.roadmapSpecsFor(by)): RoadmapSnapshot {
     let freshness: SpecsCheckReport["freshness"] | undefined;
-    try { const report = this.d.specsRead?.("check", []); if (report && "freshness" in report && !report.truncated && report.errors === 0)
+    try { const report = specs(); if (report && "freshness" in report && !report.truncated && report.errors === 0)
       freshness = report.freshness.filter(row => this.publicMetadataText(row.path) && (row.id === undefined || this.publicMetadataText(row.id))); } catch { /* unavailable evidence stays unknown */ }
     return { milestones: this.d.board.milestones(), links: this.d.board.milestoneLinks(), tasks: this.d.board.list(), releases: this.d.board.releases(), freshness,
       issueOf: task => { try { const source = this.planIssueIdentity(task); return source ? `${source.repo.toLowerCase()}#${source.issue}` : undefined; } catch { return undefined; } },
@@ -3790,9 +3810,9 @@ export class Tasks {
     };
   }
 
-  milestoneList(by: PeerId): (MilestoneView & { tree: TreeRollup; readyToClose: ReadyToClose })[] {
+  milestoneList(by: PeerId, specs?: () => SpecsCheckReport | SpecsCoverReport | undefined): (MilestoneView & { tree: TreeRollup; readyToClose: ReadyToClose })[] {
     this.roadmapReadAuthority(by);
-    const views = withTree(milestoneViews(this.roadmapSnapshot(by)));
+    const views = withTree(milestoneViews(this.roadmapSnapshot(by, specs)));
     this.roadmapReadAuthority(by); return views;
   }
 
@@ -3845,10 +3865,19 @@ export class Tasks {
   /** Build drift only from the same screened views and host-owned evidence as roadmap reads. */
   async roadmapCheck(by: PeerId, include?: (finding: RoadmapDrift) => boolean): Promise<ReturnType<typeof checkRoadmap>> {
     const check = this.requestCheck(by); check(); this.roadmapReadAuthority(by);
-    const views = this.milestoneList(by), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const }, privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
+    // #1741: one spec check per roadmap check. current() rebuilds the views before and after every issue read, and an uncached working-tree check is a
+    // synchronous git per spec path (about a second on this repository), so it ran up to 200 times per call. A thrown check is kept as unavailable.
+    let pinned: { report: SpecsCheckReport | SpecsCoverReport | undefined } | undefined;
+    const specs = () => { if (!pinned) { pinned = { report: undefined }; pinned.report = this.roadmapSpecsFor(by); } return pinned.report; };
+    const boardKey = () => this.roadmapBoardKey(by);
+    let checkedKey = boardKey(); // taken before the views, so a write between the two is compared, not skipped
+    const views = this.milestoneList(by, specs), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const }, privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
     const snapshot = (rows: typeof views) => JSON.stringify([rows, rows.flatMap(view => view.tasks.map(member => this.d.board.get(member.id)))]);
     const evidence = snapshot(views);
-    const current = () => { check(); this.roadmapReadAuthority(by); if (snapshot(this.milestoneList(by)) !== evidence || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
+    // #1741: building the views runs issueOf over every board task (a regex scan of its text), about 140 ms on a 1156-task board, and current() runs before
+    // and after each issue read. Rebuild only when a task write (statusRevision), a milestone, link or release row, or the caller's planner role (it screens backlog tasks) says the views can differ; config and privacy are compared on every call below.
+    const sameViews = () => { const key = boardKey(); if (key === checkedKey) return true; if (snapshot(this.milestoneList(by, specs)) !== evidence) return false; checkedKey = key; return true; };
+    const current = () => { check(); this.roadmapReadAuthority(by); if (!sameViews() || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
     const rendered = roadmapExport(views), exportStates: (boolean | undefined)[] = [];
     for (const [path, expected] of [["docs/roadmap.json", rendered.json], ["docs/roadmap.md", rendered.markdown]] as const) {
       try {
@@ -3915,6 +3944,11 @@ export class Tasks {
     current(); return checkRoadmap({ milestones, now: this.d.now?.() ?? Date.now(), closeLagMs: 24 * 60 * 60_000, mirrorEnabled: config.github_mirror, exportMatches }, include);
   }
 
+  /** #1741: what the milestone views are built from, apart from config, privacy and the spec report: equal keys build equal views. */
+  private roadmapBoardKey(by: PeerId): string {
+    return JSON.stringify([this.d.board.statusRevision(), this.d.board.milestones(), this.d.board.milestoneLinks(), this.d.board.releases(), this.isConfiguredPlanner(by)]);
+  }
+
   /** Serialize at the host caller. Persist only admitted ids-only notices, so unavailable feeds can retry. */
   async roadmapNotify(taskIds: readonly number[], send: (task: number, milestone: number | null, rule: number, marker: string) => boolean): Promise<number> {
     if (!taskIds.length) return 0;
@@ -3927,6 +3961,9 @@ export class Tasks {
       return !this.d.board.hasRoadmapNotice(marker) && taskIds.some(id => eligible.includes(id) && (!referenced.length || referenced.includes(id)));
     };
     const checked = await this.roadmapCheck(HUB, select);
+    // #1741: each finding rechecks membership against the current views; rebuild them only when the board key moved (a build is ~140 ms on a 1156-task board, once per finding before).
+    let latestViews: ReturnType<Tasks["milestoneList"]> | undefined, latestKey: string | undefined;
+    const currentViews = () => { const key = this.roadmapBoardKey(HUB); if (key !== latestKey || !latestViews) { latestKey = key; latestViews = this.milestoneList(HUB); } return latestViews; };
     let sent = 0;
     for (const finding of checked.findings) {
       const referenced = finding.items.filter(item => /^task:[1-9][0-9]*$/.test(item)).map(item => Number(item.slice(5)));
@@ -3936,7 +3973,7 @@ export class Tasks {
       const marker = createHash("sha256").update(JSON.stringify([finding.rule, finding.milestone, finding.items, finding.cause])).digest("hex");
       if (this.d.board.hasRoadmapNotice(marker)) continue;
       const latest = this.d.board.get(task);
-      if (!latest || this.isPii(latest) || !this.milestoneList(HUB).some(view => (finding.milestone === null || view.id === finding.milestone) && view.tasks.some(row => row.id === task))) continue;
+      if (!latest || this.isPii(latest) || !currentViews().some(view => (finding.milestone === null || view.id === finding.milestone) && view.tasks.some(row => row.id === task))) continue;
       if (send(task, finding.milestone, finding.rule, marker) && this.d.board.recordRoadmapNotice(marker)) sent++;
     }
     return sent;
@@ -9045,6 +9082,8 @@ export class Tasks {
    * retroactive, because the verdict that already passed is a statement about the board it saw.
    */
   private riskViewFor(task: Task, head: string | undefined): RiskView | undefined {
+    // #1741: riskView answers undefined without a receipt for this head, so skip the whole-board card read. A task list renders one view per row.
+    if (!task.sdlc?.risk || task.sdlc.risk.head !== head) return undefined;
     const repo = task.sdlc?.repo ?? task.refs.repo;
     return riskView(task.sdlc?.risk, this.riskCards(), { ...(repo ? { repo } : {}), ...(task.refs.branch ? { branch: task.refs.branch } : {}), head, implementer: task.owner });
   }
