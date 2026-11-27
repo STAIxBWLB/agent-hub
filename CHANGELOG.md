@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Daemon startup runs the orphan check sweep and GitHub spec availability probe in the background. Isolated check requests wait for orphan recovery before reading receipts or starting a run (Refs #1445).
+
 ## 0.48.4
 
 - A memory status read no longer re-resolves the whole memory profile through agent-mem (#1747). On a sharded home that resolution re-validates every shard placement; in a daemon profile it was about 6% of the main thread. Status now runs the full check only when the binding's fence stamp has moved since the last passing check. The entry fence for memory work still checks in full on every call.

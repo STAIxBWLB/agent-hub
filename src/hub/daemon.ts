@@ -2984,10 +2984,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const checkRunner = opts.boundedTools?.runner?.(checkOptions) ?? (config.checks.runner === "remote" ? new RemoteRunner(checkOptions) : new ContainerRunner(checkOptions));
   const runnerRefreshAbort = new AbortController();
   startupCleanup.push(() => { runnerRefreshAbort.abort(); void checkRunner.stopAll(); });
-  // #1445 step 2: the first runner probe (a remote runner takes about 8 s: ssh, docker version, image inspect, a launched and torn down
-  // probe container) no longer holds startup. It runs single-flight beside the orphan sweep and the spec probe, and startup waits for it
-  // only STARTUP_RUNNER_WAIT_MS. A probe that is not done yet leaves `runnerState` unavailable with a fixed reason, and every reader that
-  // needs the answer (`check_run` awaits `refreshRunner()`) joins the same promise, so the settled state equals the one a blocking start gives.
+  // #1445: run all three checks concurrently and spend at most STARTUP_RUNNER_WAIT_MS waiting for runner availability.
+  // Check and spec requests join the shared work before using its result.
   let runnerState: RunnerState = { available: false, reason: "runner probe in progress" };
   let runnerStateAt = 0, refreshingRunner: Promise<void> | undefined;
   // `stopping` is declared far below and a probe can settle during startup, so the runner keeps its own closed flag, set where `stopping` is.
@@ -2999,9 +2997,18 @@ export async function startDaemon(opts: DaemonOptions) {
     if (runnerClosed || runnerRefreshAbort.signal.aborted) return;
     runnerState = { available: false, reason: config.checks.runner === "remote" ? "remote runner unavailable" : "container unavailable" }; runnerStateAt = Date.now();
   }).finally(() => { refreshingRunner = undefined; });
-  const orphanChecks = (await checkRunner.sweep()).map(line => boundedSafe(line) ? sanitize(line) : "orphan check: details withheld by privacy policy");
+  let orphanChecks: string[] | undefined;
+  const orphanSweep = Promise.resolve().then(() => checkRunner.sweep(runnerRefreshAbort.signal)).then(lines => {
+    if (runnerClosed || runnerRefreshAbort.signal.aborted) return;
+    orphanChecks = lines.map(line => boundedSafe(line) ? sanitize(line) : "orphan check: details withheld by privacy policy");
+  }).catch(() => {
+    if (runnerClosed || runnerRefreshAbort.signal.aborted) return;
+    orphanChecks = ["orphan check: sweep unavailable"];
+  });
   const firstRunnerProbe = refreshingRunner = settleRunner(checkRunner.available(runnerRefreshAbort.signal));
-  if (opts.boundedTools?.specAvailable || !opts.config && (config.pi.enabled || config.checks.runner === "container" || config.checks.runner === "remote")) await ensureSpec();
+  const firstSpecProbe = opts.boundedTools?.specAvailable || !opts.config && (config.pi.enabled || config.checks.runner === "container" || config.checks.runner === "remote")
+    ? ensureSpec() : undefined;
+  const startupSpecPending = () => firstSpecProbe !== undefined && !specProbeSettled;
   await Promise.race([firstRunnerProbe, new Promise<void>(resolve => { const timer = setTimeout(resolve, STARTUP_RUNNER_WAIT_MS); timer.unref?.(); void firstRunnerProbe.finally(() => clearTimeout(timer)); })]);
   startupTimings.mark("task_checks");
   const refreshRunner = (): Promise<void> => {
@@ -3322,7 +3329,7 @@ export async function startDaemon(opts: DaemonOptions) {
           ? projections.fingerprint(join(opts.cwd, `source${receipt.converter.extension}`)) : SOURCE_UTF8_PROJECTION_VERSION,
       });
     },
-    experimentCheck: run => checkRunner.result(run),
+    experimentCheck: async run => { await orphanSweep; return checkRunner.result(run); },
     // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
     piiScreen: (text) => {
       const screen = () => (opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })))(text);
@@ -3502,7 +3509,7 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch { /* An unknown projection never reaches a model. */ }
       if (!binding || binding.owner !== peer || !currentCheck(binding) || !outputSafe) {
         checkBindings.delete(run);
-        void checkRunner.markStale(run).catch(() => {});
+        void orphanSweep.then(() => runnerClosed ? undefined : checkRunner.markStale(run)).catch(() => {});
         return false;
       }
       return true;
@@ -3810,7 +3817,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** #1555 AC6: ephemeral per-task state of a task that reached approved or cancelled. Retention only: a failure keeps the rows and the files, and no board row, rollup row or history field is read or written. */
   const compactClosedTask = (task: number) => {
     try { turnLog?.pruneTouches([task]); } catch { log("touches retention pass failed; the table keeps its rows"); }
-    void checkRunner.compactTask?.(task).catch(() => { log("check output retention pass failed; the files stay"); });
+    void orphanSweep.then(() => runnerClosed ? undefined : checkRunner.compactTask?.(task)).catch(() => { log("check output retention pass failed; the files stay"); });
   };
   const compactedTasks = new Set<number>();
   const roadmapStates = new Map(board.list().map(task => [task.id, task.state]));
@@ -5693,6 +5700,9 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (changed.size) void handoffCatchUp(changed);   // one request for the whole changed set: none of them waits for another to finish
   };
+  // Routing can skip a sandboxed owner that needs the issue. The board's read-only tools remain available while auth is probed.
+  const specRoutingOps = new Set(["hub_task_propose", "hub_task_accept", "hub_task_decline", "hub_task_cancel", "hub_task_wait",
+    "hub_roadmap_decompose", "hub_backlog_pull", "hub_backlog_split", "task_assign", "task_assign_checked", "task_unassign", "task_escalate", "route_explain"]);
   const conductedMutations = new Set(["hub_task_propose", "hub_task_accept", "hub_task_decline", "hub_task_done", "hub_review", "hub_checkpoint", "hub_remember"]);
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
     const [by, op, input] = args;
@@ -5708,6 +5718,11 @@ export async function startDaemon(opts: DaemonOptions) {
     if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool);
     taskOpsInFlight++;
     try {
+      if (startupSpecPending() && specRoutingOps.has(op)) {
+        await firstSpecProbe;
+        // refusal:by-design world-action: routing is held by the hub until it finishes stopping or recovering.
+        if (stopping || recoveryActive()) throw new PreEffectToolRefusal("task routing is held by recovery or shutdown");
+      }
       const readAuthority=op==="hub_task_show"?runningReviewAuthority(by,Number(input?.id)):undefined;
       const before=readAuthority?.();if(before)throw new PreEffectToolRefusal(before);
       const text = await taskOpBody(...args);
@@ -6353,7 +6368,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (a.check !== "test" && a.check !== "typecheck"
         || a.check === "test" && (!Array.isArray(a.files) || a.files.length < 1 || a.files.length > 32 || a.files.some((file: unknown) => typeof file !== "string" || !/^test\/[A-Za-z0-9._/-]+\.test\.ts$/.test(file) || file.split("/").some(part => !part || part === "." || part === "..")))
         || a.check === "typecheck" && a.files !== undefined) throw new PreEffectToolRefusal("invalid check request");
-      await refreshRunner();
+      await Promise.all([refreshRunner(), orphanSweep]);
       const current = authorized();
       if (current.updated !== updated || current.history.length !== revision || connectionGeneration(by) !== generation || !may(by, "check_run") || stopping || recoveryActive()) throw new PreEffectToolRefusal("check unavailable");
       if (!runnerState.available) throw new PreEffectToolRefusal(`runner unavailable: ${runnerState.reason ?? "unknown"}`);
@@ -6385,6 +6400,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return JSON.stringify({ run: handle.run });
     }
     if (op === "hub_check_result" || op === "hub_check_cancel") {
+      await orphanSweep;
       need("check_run", "read or cancel isolated checks");
       let receipt = await checkRunner.result(a.run);
       const task = receipt ? board.get(receipt.task) : undefined;
@@ -8024,7 +8040,7 @@ export async function startDaemon(opts: DaemonOptions) {
     reviewFallback: { required: config.review.pool !== undefined, sameFamily: config.review.same_family ?? "fallback" },
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
-    isolatedChecks: { pending: checkPending.size, orphans: orphanChecks, unknownReceipts: checkRunner.unknownReceipts ?? [], maintenanceUnavailable: checkRunner.maintenanceUnavailable === true },
+    ...(orphanChecks && { isolatedChecks: { pending: checkPending.size, orphans: orphanChecks, unknownReceipts: checkRunner.unknownReceipts ?? [], maintenanceUnavailable: checkRunner.maintenanceUnavailable === true } }),
     taskCapabilities: peerCapabilities(),
     tasks: board.counts(),
     ...(board.personRunIds().length ? { personRun: board.personRunIds() } : {}), // #1176: cards waiting on the person (ids only)
@@ -8151,7 +8167,8 @@ export async function startDaemon(opts: DaemonOptions) {
       writeStatus();
     } finally { reportingQueues = false; }
     if (ready) {
-      tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits();
+      if (!startupSpecPending()) tasks.scheduleQueuePressureRecheck();
+      tasks.refreshReviewerQuotaWaits();
       const policy = queuePolicy();
       if ((policy.max_queued > 0 || policy.max_oldest_s > 0) && !queuePressureStatusQueued) {
         queuePressureStatusQueued = true;
@@ -8421,7 +8438,7 @@ export async function startDaemon(opts: DaemonOptions) {
       roomCommands.changed();
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
-      if (ready) { tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits(); }
+      if (ready) { if (!startupSpecPending()) tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits(); }
       if (e.peer.includes("@")) { if (!stopping) writeStatus(); return; }
       // #248: the add-ons it works with, once per attach (names and versions only).
       // A result is written unless a later attachment began meanwhile: a peer that detached before its probe settled
@@ -10509,6 +10526,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const query = input?.memory as Record<string, unknown> | undefined;
     const start = input?.view === "memory" && query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
     const code = start ? await memoryCode([start]).catch(() => unavailableMemoryCodeOverlay()) : undefined;
+    if (startupSpecPending()) await firstSpecProbe;
     const snapshot = uiSnapshot(after, input, session);
     if (input?.visual !== undefined) {
       const record = visualRecord(input.visual);
@@ -13765,16 +13783,20 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: false, error: "unknown room operation" });
       }
       case "status": {
-        const current = status(c.role === "console", false, true, c.role === "console" || (c.role === "tools" || c.role === "peer") && c.peer === conductorPeer(config.roles), c.role === "console");
-        if ((c.role === "console" || c.role === "tools") && msg.specs === true) {
-          const summary = projectSpecs.status();
-          if (summary) {
-            const missingBlockHint = !specsMissingBlockHintShown && projectSpecs.missingBlock() === true;
-            if (missingBlockHint) specsMissingBlockHintShown = true;
-            return void reply({ t: "status", status: { ...current, specs: { ...summary, ...(missingBlockHint ? { missingBlockHint: true } : {}) } } });
+        void Promise.all([orphanSweep, specProbe]).then(() => {
+          if (stopping) return void reply({ ok: false, error: "hub stopping" });
+          const current = status(c.role === "console", false, true, c.role === "console" || (c.role === "tools" || c.role === "peer") && c.peer === conductorPeer(config.roles), c.role === "console");
+          if ((c.role === "console" || c.role === "tools") && msg.specs === true) {
+            const summary = projectSpecs.status();
+            if (summary) {
+              const missingBlockHint = !specsMissingBlockHintShown && projectSpecs.missingBlock() === true;
+              if (missingBlockHint) specsMissingBlockHintShown = true;
+              return void reply({ t: "status", status: { ...current, specs: { ...summary, ...(missingBlockHint ? { missingBlockHint: true } : {}) } } });
+            }
           }
-        }
-        return void reply({ t: "status", status: current });
+          return void reply({ t: "status", status: current });
+        }).catch(() => reply({ ok: false, error: "status unavailable" }));
+        return;
       }
       case "peer_takeover": {
         if (c.role !== "console") return void reply({ t: "peer_takeover", ok: false, error: "peer takeover is a person-only command; run it from the console or a terminal" });
@@ -14310,7 +14332,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Counted like a task op: a recovery commit waits for it (`recoveryReady` reads `taskOpsInFlight`), and the fence is asked again right before the board write, after the PII screen.
         taskOpsInFlight++;
         const recoveryFence = (): string | undefined => recoveryActive() || stopping ? "recovery or shutdown is holding mutations; hand the task off again after it ends" : undefined;
-        void tasks.handoffIn(msg.origin ?? {}, msg.request, recoveryFence).then(
+        void Promise.resolve(startupSpecPending() ? firstSpecProbe : undefined).then(() => tasks.handoffIn(msg.origin ?? {}, msg.request, recoveryFence)).then(
           result => reply({ t: "task_handoff", ok: true, ...result }),
           error => reply({ t: "task_handoff", ok: false, error: error instanceof HandoffRefusal ? error.message : "the handoff was refused" })).finally(() => { taskOpsInFlight--; });
         return;
@@ -14398,7 +14420,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
       // Fence/abort the runner now, but slow container teardown must not consume the peer-stop deadline.
-      const runnerStopped = Promise.allSettled([checkRunner.stopAll(), refreshingRunner ?? Promise.resolve()]);
+      const runnerStopped = Promise.allSettled([checkRunner.stopAll(), refreshingRunner, orphanSweep, specProbe]);
       await Promise.allSettled([...starting.values()]);
       // A fingerprint still being detected belongs in the research records written below; its peer must still be
       // attached when it settles, so this comes before the peers stop (each detection is bounded by its probe deadline).
@@ -14473,6 +14495,13 @@ export async function startDaemon(opts: DaemonOptions) {
   reconstructRuns();
   ready = true;
   startupTimings.mark("ready");
+  // Keep the connection manifest available immediately, then publish each settled projection even on an idle hub.
+  if (!orphanChecks) void orphanSweep.then(() => { if (!stopping) writeStatus(); });
+  if (startupSpecPending()) void firstSpecProbe?.then(() => {
+    if (stopping) return;
+    writeStatus();
+    tasks.scheduleQueuePressureRecheck();
+  });
   controlWriteTelemetry?.start();
   void handoffCatchUp();
   // #733: the periodic catch-up and the descriptor watch. Unref'd, cleared with the other intervals at stop; each pass is guarded by `stopping` and never overlaps another.
@@ -14480,7 +14509,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const periodic = setInterval(() => void handoffCatchUp(), every), descriptorWatch = setInterval(handoffWatch, watch);
     periodic.unref?.(); descriptorWatch.unref?.(); intervals.push(periodic, descriptorWatch); }
   startupTimings.mark("post_ready_handoff");
-  tasks.scheduleQueuePressureRecheck(); tasks.refreshReviewerQuotaWaits();
+  if (!startupSpecPending()) tasks.scheduleQueuePressureRecheck();
+  tasks.refreshReviewerQuotaWaits();
   startupTimings.mark("post_ready_queue");
   for (const name of opts.configWatch === false ? [] : CONFIG_SOURCE_FILES) {
     const path = join(opts.cwd, ".agenthub", name);
