@@ -206,3 +206,31 @@ test("merge adoption emits only the approved supervision milestone, never a revi
   expect(f.notices.some(n => n.key === "supervision:claude:task:1:review")).toBe(false);
   expect(JSON.stringify(f.notices)).not.toMatch(/verdict|PRIVATE/);
 });
+
+test("#1738 an unchanged board revision skips the round check's board read; a move, a role change or a refused send reads again", () => {
+  const tasks = [task(1), task(2, "claude", "approved")];
+  let revision = 1, reads = 0, admit = true, conductor: string | undefined = "claude";
+  const notices: SupervisionNotice[] = [];
+  const feed = new SupervisionFeed({ conductor: () => conductor, scope: () => "own", tasks: () => { reads++; return tasks; },
+    task: id => tasks.find(t => t.id === id), revision: () => revision,
+    isPrivate: () => false, publicTitle: t => `#${t.id}`, emit: n => { if (!admit) return false; notices.push(n); return true; } });
+  expect(feed.checkRound()).toBe(false);
+  expect(feed.checkRound()).toBe(false);
+  expect(reads).toBe(1);
+  expect(feed.milestone(2, "approved")).toBe(true);
+  expect(reads).toBe(1);
+  tasks[0]!.state = "approved"; revision++;
+  admit = false;
+  expect(feed.checkRound()).toBe(false);
+  expect(feed.checkRound()).toBe(false);
+  expect(reads).toBe(3);
+  admit = true;
+  expect(feed.checkRound()).toBe(true);
+  expect(feed.checkRound()).toBe(false);
+  expect(feed.checkRound()).toBe(false);
+  expect(reads).toBe(5);
+  conductor = "codex";
+  expect(feed.checkRound()).toBe(false);
+  expect(reads).toBe(6);
+  expect(notices.filter(n => n.key.endsWith(":round"))).toHaveLength(1);
+});
