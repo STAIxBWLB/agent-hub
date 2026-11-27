@@ -1,11 +1,13 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon, type DaemonOptions } from "../src/hub/daemon.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+import { startFakeModelServer } from "./fakes/model-server.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -20,12 +22,15 @@ class CheckPeer extends BasePeer {
   async deliver() {}
 }
 
-async function start(sweep: Runner["sweep"], specAvailable: Tools["specAvailable"], run?: Runner["start"]) {
+async function start(sweep: Runner["sweep"], specAvailable: Tools["specAvailable"], run?: Runner["start"], modelUrl?: string) {
   const root = mkdtempSync(join(tmpdir(), "ahub-startup-checks-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const keyFile = join(root, "fixture-api-key");
+  if (modelUrl) writeFileSync(keyFile, "fixture-only-key");
   const daemon = await startDaemon({
     cwd: root, stateDir: root, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { enabled: false, keep: 1 } },
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { enabled: false, keep: 1 },
+      ...(modelUrl ? { omniroute: { urls: [modelUrl], access_hosts: [], api_key_file: keyFile } } : {}) },
     boundedTools: {
       specAvailable,
       runner: () => ({
@@ -120,4 +125,38 @@ test("shutdown aborts and drains the outstanding orphan sweep", async () => {
   expect(running).toBe(true);
   await fixture.daemon.stop();
   expect(running).toBe(false);
+});
+
+test("a peer's spec refresh leaves status and queue rechecks available", async () => {
+  const refreshStarted = Promise.withResolvers<void>();
+  const refresh = Promise.withResolvers<{ available: boolean }>();
+  const model = startFakeModelServer({ key: "fixture-only-key" });
+  cleanups.push(() => model.stop());
+  let calls = 0;
+  const fixture = await start(async () => [], async () => {
+    if (++calls === 1) return { available: true };
+    refreshStarted.resolve();
+    return refresh.promise;
+  }, undefined, model.url);
+  expect(await fixture.projection()).toMatchObject({ spec: true });
+  const peer = new CheckPeer("codex");
+  fixture.daemon.bus.add(peer);
+  const rechecks = spyOn(Tasks.prototype, "scheduleQueuePressureRecheck");
+  const starting = fixture.console.request({ t: "start", peer: "local", args: { model: "m" } });
+  try {
+    await Promise.race([refreshStarted.promise, starting.then(() => { throw new Error("peer start did not refresh spec auth"); })]);
+    rechecks.mockClear();
+    await peer.start();
+    expect(rechecks).toHaveBeenCalled();
+    let statusReturned = false;
+    const status = fixture.projection().then(result => { statusReturned = true; return result; });
+    await fixture.console.request({ t: "task", op: "hub_task_list", args: {} });
+    expect(statusReturned).toBe(true);
+    expect(await status).toMatchObject({ spec: true });
+  } finally {
+    rechecks.mockRestore();
+    refresh.resolve({ available: false });
+    await starting;
+  }
+  expect(await fixture.projection()).toMatchObject({ spec: false });
 });

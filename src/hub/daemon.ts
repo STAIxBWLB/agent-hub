@@ -3001,7 +3001,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const firstRunnerProbe = refreshingRunner = settleRunner(checkRunner.available(runnerRefreshAbort.signal));
   const firstSpecProbe = opts.boundedTools?.specAvailable || !opts.config && (config.pi.enabled || config.checks.runner === "container" || config.checks.runner === "remote")
     ? ensureSpec() : undefined;
-  const startupSpecPending = () => firstSpecProbe !== undefined && !specProbeSettled;
+  let firstSpecSettled = firstSpecProbe === undefined;
+  void firstSpecProbe?.finally(() => { firstSpecSettled = true; });
+  const startupSpecPending = () => !firstSpecSettled;
   await Promise.race([firstRunnerProbe, new Promise<void>(resolve => { const timer = setTimeout(resolve, STARTUP_RUNNER_WAIT_MS); timer.unref?.(); void firstRunnerProbe.finally(() => clearTimeout(timer)); })]);
   startupTimings.mark("task_checks");
   const refreshRunner = (): Promise<void> => {
@@ -13803,9 +13805,9 @@ export async function startDaemon(opts: DaemonOptions) {
           }
           return void reply({ t: "status", status: current });
         };
-        if (orphanChecks && (!specProbe || specProbeSettled)) return sendStatus();
-        void Promise.all([orphanSweep, specProbe]).then(() => {
-          if (stopping) return void reply({ ok: false, error: "hub stopping" });
+        if (orphanChecks && !startupSpecPending()) return sendStatus();
+        void Promise.all([orphanSweep, firstSpecProbe]).then(() => {
+          if (stopping) return void reply({ ok: false, error: "hub stopping; run ahub status again after it restarts" });
           sendStatus();
         }).catch(error => controlOperationFailed(sock, msg, error));
         return;
