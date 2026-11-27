@@ -552,14 +552,16 @@ export class ContainerRunner {
     await Promise.allSettled([...this.probes.values()]);
     while (this.entries.size) await new Promise(r => setTimeout(r, 5));
   }
-  async sweep(): Promise<string[]> {
+  async sweep(signal?: AbortSignal): Promise<string[]> {
     const unknown: string[] = [];
+    if (this.closing || signal?.aborted) return unknown;
     if (!this.enabled()) { await this.maintain(); return unknown; }
     try {
       let containers: unknown;
-      try { const list = await this.command(this.transport?.listArgs ?? ["list", "--all", "--format", "json"]); if (list.code !== 0) return unknown; containers = this.transport?.list(list.stdout) ?? JSON.parse(list.stdout); } catch { return unknown; }
+      try { const list = await this.command(this.transport?.listArgs ?? ["list", "--all", "--format", "json"], { signal }); if (list.code !== 0) return unknown; containers = this.transport?.list(list.stdout) ?? JSON.parse(list.stdout); } catch { return unknown; }
       if (!Array.isArray(containers)) return unknown;
       for (const container of containers) {
+        if (this.closing || signal?.aborted) break;
         const c = container as { id?: string; configuration?: { id?: string; labels?: Record<string, string> }; labels?: Record<string, string> };
         const labels = c.configuration?.labels ?? c.labels;
         if (labels?.["agenthub.project"] !== this.options.projectKey) continue;
@@ -578,12 +580,14 @@ export class ContainerRunner {
         const liveness = (this.options.liveness ?? processLiveness)(r.hub_pid, r.hub_signature);
         if (liveness === "live") continue;
         if (liveness !== "gone") { unknown.push(`orphan check ${name}: unknown owner`); continue; }
+        if (this.closing || signal?.aborted) break;
+        // Once cleanup starts, finish its receipt update before shutdown returns.
         if (!await this.cleanup(name)) { unknown.push(`orphan check ${name}: cleanup unconfirmed`); continue; }
         r.interrupted = true; if (r.status !== "stale") r.status = "finished"; r.exit = null; r.tail = "";
         await rm(join(this.root, run, "src"), { recursive: true, force: true }); await this.save(r);
       }
       return unknown;
-    } finally { await this.maintain(); }
+    } finally { if (!this.closing && !signal?.aborted) await this.maintain(); }
   }
   private async maintain(): Promise<void> {
     try { await this.retain(); this.maintenanceFailed = false; }
