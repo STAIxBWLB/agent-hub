@@ -155,7 +155,7 @@ test("#1741 a roadmap check runs one spec check however many issues it reads", a
   let checks = 0, reads = 0;
   const gh = async () => { reads++; return { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number: 7, state: "OPEN", createdAt: "2026-01-01T00:00:00Z", lastEditedAt: null } } } }) }; };
   const tasks = new Tasks({ cwd: root, board, bus, project: "project", repository: "example/repo", routing: () => loadRouting(root), roadmapGh: gh, notify: () => {},
-    specsRead: () => { checks++; return undefined; } });
+    specsRead: () => { checks++; throw new Error("unavailable"); } }); // a thrown check is kept as unavailable, not retried
   try {
     const milestone = board.newMilestone({ title: "Public", outcome: "Outcome", state: "active" }, "user");
     for (const issue of [7, 8, 9]) {
