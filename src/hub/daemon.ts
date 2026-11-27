@@ -1497,14 +1497,7 @@ export async function startDaemon(opts: DaemonOptions) {
           parsed = JSON.parse(String(data));
           onControlMessage(sock, parsed);
         } catch (e) {
-          if (isDatabaseBusy(e) && sock.data.authed && Number.isSafeInteger(parsed?.rid)) {
-            const busy = new RecoveryDatabaseBusy();
-            try { log(`control ${sanitize(String(parsed.t))} database contention: ${databaseBusySite(e).join("\n")}`); } catch { /* the reply still settles its rid */ }
-            sock.send(JSON.stringify({ rid: parsed.rid, ok: false, error: busy.message, code: busy.code, retryable: busy.retryable }));
-            return;
-          }
-          log("control operation failed; inspect delivery storage and recovery status");
-          if (sock.data.authed && Number.isSafeInteger(parsed?.rid)) sock.send(JSON.stringify({ rid: parsed.rid, ok: false, error: "operation failed; inspect delivery storage and recovery status before retrying" }));
+          controlOperationFailed(sock, parsed, e);
         }
       },
       close(sock) {
@@ -5718,11 +5711,6 @@ export async function startDaemon(opts: DaemonOptions) {
     if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool);
     taskOpsInFlight++;
     try {
-      if (startupSpecPending() && specRoutingOps.has(op)) {
-        await firstSpecProbe;
-        // refusal:by-design world-action: routing is held by the hub until it finishes stopping or recovering.
-        if (stopping || recoveryActive()) throw new PreEffectToolRefusal("task routing is held by recovery or shutdown");
-      }
       const readAuthority=op==="hub_task_show"?runningReviewAuthority(by,Number(input?.id)):undefined;
       const before=readAuthority?.();if(before)throw new PreEffectToolRefusal(before);
       const text = await taskOpBody(...args);
@@ -6114,6 +6102,11 @@ export async function startDaemon(opts: DaemonOptions) {
       : op === "list" ? tasks.guidanceVariantList(by, input) : tasks.guidanceVariantDiff(by, input) };
   }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+    if (startupSpecPending() && specRoutingOps.has(op)) {
+      await firstSpecProbe;
+      // refusal:by-design world-action: routing is held by the hub until it finishes stopping or recovering.
+      if (stopping || recoveryActive()) throw new PreEffectToolRefusal("task routing is held by recovery or shutdown");
+    }
     if (op === "hub_visual" || op === "hub_visual_show") return visualTool(by, op, a, piiTurn);
     // #1646 T3: a brief file read is the reviewer's read of the commit it approves. A PII or private turn reads none: its words
     // may carry the PII, and the file body would be a second carrier of it.
@@ -10522,11 +10515,15 @@ export async function startDaemon(opts: DaemonOptions) {
     try { return { milestones: tasks.milestoneList(USER), person: session?.liveTest !== true }; }
     catch { return { unavailable: true, person: false }; }
   }
+  async function dashboardSnapshot(...args: Parameters<typeof uiMemorySnapshot>) {
+    if (startupSpecPending()) await firstSpecProbe;
+    return uiMemorySnapshot(...args);
+  }
+
   async function uiMemorySnapshot(after: number, input?: Record<string, unknown>, session?: DashboardSession) {
     const query = input?.memory as Record<string, unknown> | undefined;
     const start = input?.view === "memory" && query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
     const code = start ? await memoryCode([start]).catch(() => unavailableMemoryCodeOverlay()) : undefined;
-    if (startupSpecPending()) await firstSpecProbe;
     const snapshot = uiSnapshot(after, input, session);
     if (input?.visual !== undefined) {
       const record = visualRecord(input.visual);
@@ -12223,6 +12220,17 @@ export async function startDaemon(opts: DaemonOptions) {
     return overflow ? { ok: false, error: "instruction output exceeded its limit; inspect the target before retrying because the effect may have occurred" } : { ok: code === 0, exitCode: code, output: output.toString("utf8") };
   }
 
+  function controlOperationFailed(sock: Sock, parsed: any, e: unknown): void {
+    if (isDatabaseBusy(e) && sock.data.authed && Number.isSafeInteger(parsed?.rid)) {
+      const busy = new RecoveryDatabaseBusy();
+      try { log(`control ${sanitize(String(parsed.t))} database contention: ${databaseBusySite(e).join("\n")}`); } catch { /* the reply still settles its rid */ }
+      sock.send(JSON.stringify({ rid: parsed.rid, ok: false, error: busy.message, code: busy.code, retryable: busy.retryable }));
+      return;
+    }
+    log("control operation failed; inspect delivery storage and recovery status");
+    if (sock.data.authed && Number.isSafeInteger(parsed?.rid)) sock.send(JSON.stringify({ rid: parsed.rid, ok: false, error: "operation failed; inspect delivery storage and recovery status before retrying" }));
+  }
+
   function onControlMessage(sock: Sock, msg: any): void {
     const client = sock.data;
     if (client.instructed && instructedExecution.getStore() !== client.instructed) {
@@ -13456,7 +13464,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ui":
         if (c.role !== "console") return void reply({ t: "ui", ok: false, error: "ui is a console command" });
         try {
-          dashboard ??= startDashboard({ snapshot: uiMemorySnapshot, action: uiAction });
+          dashboard ??= startDashboard({ snapshot: dashboardSnapshot, action: uiAction });
           writeStatus();
           // #269: `ahub ui --settings` is the same person's command; its ticket marks the session it opens.
           if (msg.settings === true) notify("settings session opened from ahub ui --settings: for 15 minutes that dashboard session may change permission modes, routing and start settings");
@@ -13783,8 +13791,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: false, error: "unknown room operation" });
       }
       case "status": {
-        void Promise.all([orphanSweep, specProbe]).then(() => {
-          if (stopping) return void reply({ ok: false, error: "hub stopping" });
+        const sendStatus = () => {
           const current = status(c.role === "console", false, true, c.role === "console" || (c.role === "tools" || c.role === "peer") && c.peer === conductorPeer(config.roles), c.role === "console");
           if ((c.role === "console" || c.role === "tools") && msg.specs === true) {
             const summary = projectSpecs.status();
@@ -13795,7 +13802,12 @@ export async function startDaemon(opts: DaemonOptions) {
             }
           }
           return void reply({ t: "status", status: current });
-        }).catch(() => reply({ ok: false, error: "status unavailable" }));
+        };
+        if (orphanChecks && (!specProbe || specProbeSettled)) return sendStatus();
+        void Promise.all([orphanSweep, specProbe]).then(() => {
+          if (stopping) return void reply({ ok: false, error: "hub stopping" });
+          sendStatus();
+        }).catch(error => controlOperationFailed(sock, msg, error));
         return;
       }
       case "peer_takeover": {
@@ -13867,7 +13879,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
-        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || msg.reviewRefresh === true || dashboardView(msg.view) || msg.visual !== undefined || msg.visualTask !== undefined || msg.visualAsset !== undefined ? { ...(msg.visual !== undefined ? { visual: msg.visual } : {}), ...(msg.visualTask !== undefined ? { visualTask: msg.visualTask } : {}), ...(msg.visualAsset !== undefined ? { visualAsset: msg.visualAsset } : {}), ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(msg.reviewRefresh === true && msg.reviewTask !== undefined ? { reviewTask: msg.reviewTask, reviewRefresh: true } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
+        void dashboardSnapshot(msg.after ?? 0, msg.memory !== undefined || msg.reviewRefresh === true || dashboardView(msg.view) || msg.visual !== undefined || msg.visualTask !== undefined || msg.visualAsset !== undefined ? { ...(msg.visual !== undefined ? { visual: msg.visual } : {}), ...(msg.visualTask !== undefined ? { visualTask: msg.visualTask } : {}), ...(msg.visualAsset !== undefined ? { visualAsset: msg.visualAsset } : {}), ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(msg.reviewRefresh === true && msg.reviewTask !== undefined ? { reviewTask: msg.reviewTask, reviewRefresh: true } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
         return;
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
