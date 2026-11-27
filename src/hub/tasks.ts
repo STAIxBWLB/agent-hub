@@ -3869,10 +3869,15 @@ export class Tasks {
     // synchronous git per spec path (about a second on this repository), so it ran up to 200 times per call. A thrown check is kept as unavailable.
     let pinned: { report: SpecsCheckReport | SpecsCoverReport | undefined } | undefined;
     const specs = () => { if (!pinned) { pinned = { report: undefined }; pinned.report = this.roadmapSpecsFor(by); } return pinned.report; };
+    const boardKey = () => JSON.stringify([this.d.board.statusRevision(), this.d.board.milestones(), this.d.board.milestoneLinks(), this.d.board.releases(), this.isConfiguredPlanner(by)]);
+    let checkedKey = boardKey(); // taken before the views, so a write between the two is compared, not skipped
     const views = this.milestoneList(by, specs), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const }, privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
     const snapshot = (rows: typeof views) => JSON.stringify([rows, rows.flatMap(view => view.tasks.map(member => this.d.board.get(member.id)))]);
     const evidence = snapshot(views);
-    const current = () => { check(); this.roadmapReadAuthority(by); if (snapshot(this.milestoneList(by, specs)) !== evidence || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
+    // #1741: building the views runs issueOf over every board task (a regex scan of its text), about 140 ms on a 1156-task board, and current() runs before
+    // and after each issue read. Rebuild only when a task write (statusRevision), a milestone, link or release row, or the caller's planner role (it screens backlog tasks) says the views can differ; config and privacy are compared on every call below.
+    const sameViews = () => { const key = boardKey(); if (key === checkedKey) return true; if (snapshot(this.milestoneList(by, specs)) !== evidence) return false; checkedKey = key; return true; };
+    const current = () => { check(); this.roadmapReadAuthority(by); if (!sameViews() || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
     const rendered = roadmapExport(views), exportStates: (boolean | undefined)[] = [];
     for (const [path, expected] of [["docs/roadmap.json", rendered.json], ["docs/roadmap.md", rendered.markdown]] as const) {
       try {
