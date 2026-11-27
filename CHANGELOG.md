@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.48.2
+
 - The daemon no longer stalls on a roadmap check, on task lists or on status (#1741, #1738). A roadmap check runs one working-tree spec check per call instead of two per GitHub issue it reads (about a second of synchronous git each). A task without a risk receipt no longer reads the whole board for each row of a task list. Status reuses the main checkout's branch answer while git's HEAD and origin/HEAD files are unchanged, instead of two git processes per request.
 - A roadmap check rebuilds its milestone views only when a task, milestone, link or release changed during the check, instead of before and after every GitHub issue it reads (#1741). On a 1156-task board with 52 linked issues, one check fell from about 15 s of main-thread work and 107 whole-board reads to under 0.2 s and one. The transient allocation it caused is what kept the daemon's RSS high: its physical footprint stays small, and the rest is reclaimable heap pages.
 
