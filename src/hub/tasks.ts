@@ -3869,7 +3869,7 @@ export class Tasks {
     // synchronous git per spec path (about a second on this repository), so it ran up to 200 times per call. A thrown check is kept as unavailable.
     let pinned: { report: SpecsCheckReport | SpecsCoverReport | undefined } | undefined;
     const specs = () => { if (!pinned) { pinned = { report: undefined }; pinned.report = this.roadmapSpecsFor(by); } return pinned.report; };
-    const boardKey = () => JSON.stringify([this.d.board.statusRevision(), this.d.board.milestones(), this.d.board.milestoneLinks(), this.d.board.releases(), this.isConfiguredPlanner(by)]);
+    const boardKey = () => this.roadmapBoardKey(by);
     let checkedKey = boardKey(); // taken before the views, so a write between the two is compared, not skipped
     const views = this.milestoneList(by, specs), config = this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" as const }, privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
     const snapshot = (rows: typeof views) => JSON.stringify([rows, rows.flatMap(view => view.tasks.map(member => this.d.board.get(member.id)))]);
@@ -3944,6 +3944,11 @@ export class Tasks {
     current(); return checkRoadmap({ milestones, now: this.d.now?.() ?? Date.now(), closeLagMs: 24 * 60 * 60_000, mirrorEnabled: config.github_mirror, exportMatches }, include);
   }
 
+  /** #1741: what the milestone views are built from, apart from config, privacy and the spec report: equal keys build equal views. */
+  private roadmapBoardKey(by: PeerId): string {
+    return JSON.stringify([this.d.board.statusRevision(), this.d.board.milestones(), this.d.board.milestoneLinks(), this.d.board.releases(), this.isConfiguredPlanner(by)]);
+  }
+
   /** Serialize at the host caller. Persist only admitted ids-only notices, so unavailable feeds can retry. */
   async roadmapNotify(taskIds: readonly number[], send: (task: number, milestone: number | null, rule: number, marker: string) => boolean): Promise<number> {
     if (!taskIds.length) return 0;
@@ -3956,6 +3961,9 @@ export class Tasks {
       return !this.d.board.hasRoadmapNotice(marker) && taskIds.some(id => eligible.includes(id) && (!referenced.length || referenced.includes(id)));
     };
     const checked = await this.roadmapCheck(HUB, select);
+    // #1741: each finding rechecks membership against the current views; rebuild them only when the board key moved (a build is ~140 ms on a 1156-task board, once per finding before).
+    let latestViews: ReturnType<Tasks["milestoneList"]> | undefined, latestKey: string | undefined;
+    const currentViews = () => { const key = this.roadmapBoardKey(HUB); if (key !== latestKey || !latestViews) { latestKey = key; latestViews = this.milestoneList(HUB); } return latestViews; };
     let sent = 0;
     for (const finding of checked.findings) {
       const referenced = finding.items.filter(item => /^task:[1-9][0-9]*$/.test(item)).map(item => Number(item.slice(5)));
@@ -3965,7 +3973,7 @@ export class Tasks {
       const marker = createHash("sha256").update(JSON.stringify([finding.rule, finding.milestone, finding.items, finding.cause])).digest("hex");
       if (this.d.board.hasRoadmapNotice(marker)) continue;
       const latest = this.d.board.get(task);
-      if (!latest || this.isPii(latest) || !this.milestoneList(HUB).some(view => (finding.milestone === null || view.id === finding.milestone) && view.tasks.some(row => row.id === task))) continue;
+      if (!latest || this.isPii(latest) || !currentViews().some(view => (finding.milestone === null || view.id === finding.milestone) && view.tasks.some(row => row.id === task))) continue;
       if (send(task, finding.milestone, finding.rule, marker) && this.d.board.recordRoadmapNotice(marker)) sent++;
     }
     return sent;

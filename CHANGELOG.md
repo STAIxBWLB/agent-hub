@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The five-minute roadmap sweep no longer blocks the daemon for about 2.5 s after its issue reads (#1741). The notice pass checked each finding's task against freshly built milestone views, one build (about 140 ms on a 1156-task board) per finding. It now rebuilds them only when the board changed.
+
 ## 0.48.2
 
 - The daemon no longer stalls on a roadmap check, on task lists or on status (#1741, #1738). A roadmap check runs one working-tree spec check per call instead of two per GitHub issue it reads (about a second of synchronous git each). A task without a risk receipt no longer reads the whole board for each row of a task list. Status reuses the main checkout's branch answer while git's HEAD and origin/HEAD files are unchanged, instead of two git processes per request.
