@@ -150,7 +150,7 @@ import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,
 import { renderHelp, configuredAcpHelp, guidanceProbeUsage, listsSubcommand, subcommandUsage } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
 import { SURVEY_FOCUS } from "../hub/advisor-survey.ts";
-import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit, renderSdlcConfiguration, renderSdlcSurvey } from "./sdlc-output.ts";
+import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit, renderSdlcConfiguration, renderSdlcSurvey, renderSdlcReceipt, renderSdlcReadback, renderSdlcTrain } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
@@ -2099,7 +2099,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   sdlc: async () => {
     const args = sdlcOperands(), present = SDLC_READ.includes(args[0] ?? "") ? outputOptions() : undefined;
     /** The human form (#814). Each site keeps its own `if (present.json) console.log(JSON.stringify(...))`, so the JSON branch stays visible to the guard test. */
-    const human = (render: (data: any, columns?: number, now?: number, ascii?: boolean) => Span[][], data: unknown) => printOutput(render(data, present!.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), present!.color);
+    const human = (render: Parameters<typeof showToolText>[0], data: unknown, display = present ?? outputOptions([])) =>
+      printOutput(render(data, display.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), display.color);
+    const receipt = (title: string, ...lines: string[]) => human(renderSdlcReceipt, { title, lines });
+    const toolReport = async (render: Parameters<typeof showToolText>[0], result: Promise<string>) => showToolText(render, await result, outputOptions([]));
     const sub = args[0], id = args[1] === undefined ? undefined : Number(args[1]);
     if (sub === "configure") {
       const parsed = takeFlags(args.slice(1), ["--mode", "--required-checks"], []);
@@ -2156,7 +2159,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         hub = await connect();
         const reply = await hub.request(request, 30_000);
         if (!reply.ok) fail(reply.error ?? "release authorization refused");
-        if (original) process.stdout.write(original); else console.log("release authorization matched");
+        if (original) process.stdout.write(original); else receipt("Release guard", "release authorization matched");
       } catch { fail("release authorization unavailable; the daemon must be reachable with a matching person approval"); }
       finally { hub?.close(); }
       return;
@@ -2197,7 +2200,7 @@ const commands: Record<string, () => Promise<void> | void> = {
           const reply = await hub.request({ t: "sdlc", op: "audit-start", ...(flags.one["--profile"] !== undefined ? { profile: flags.one["--profile"] } : {}), ...(flags.one["--since"] !== undefined ? { since: flags.one["--since"] } : {}) }, 60_000);
           if (!reply.ok) fail(/unknown SDLC operation|does not know/.test(String(reply.error)) ? `${reply.error}; the running hub does not support security audits; upgrade agent-hub and run ahub restart before retrying` : reply.error);
           if (present!.json) console.log(JSON.stringify({ task: reply.task, audit: reply.audit, units: reply.units, planned: reply.planned, carried: reply.carried, partial: reply.partial, ref: reply.ref }, null, 2));
-          else console.log(`task #${reply.task}: security audit ${reply.audit} started at ${String(reply.ref).slice(0, 12)}, ${reply.units} units (${reply.planned} planned, ${reply.carried} carried over)${reply.partial ? ", partial" : ""}`);
+          else receipt("Audit start", `task #${reply.task}: security audit ${reply.audit} started at ${String(reply.ref).slice(0, 12)}, ${reply.units} units (${reply.planned} planned, ${reply.carried} carried over)${reply.partial ? ", partial" : ""}`);
         } finally { hub.close(); }
         return;
       }
@@ -2225,21 +2228,21 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "train") {
       const operation = args[1], releaseId = Number(args[2]), revision = Number(args[3]);
       if (!Number.isSafeInteger(releaseId) || releaseId <= 0) fail("usage: ahub sdlc train report|configure|cut <release-id> [revision] [configuration-json]");
-      if (operation === "report" && args.length === 3) return console.log(await taskOp("hub_release_report", { id: releaseId }));
+      if (operation === "report" && args.length === 3) return toolReport(renderSdlcTrain, taskOp("hub_release_report", { id: releaseId }));
       if (!Number.isSafeInteger(revision) || revision < 0) fail("train mutation requires its current revision");
-      if (operation === "cut" && args.length === 4) return console.log(await taskOp("hub_release_cut", { id: releaseId, revision }));
+      if (operation === "cut" && args.length === 4) return toolReport(renderSdlcTrain, taskOp("hub_release_cut", { id: releaseId, revision }));
       if (operation === "configure" && args.length === 5) {
         let fields;
         try { fields = JSON.parse(args[4]!); } catch { return fail("release train configuration must be JSON"); }
         if (!fields || typeof fields !== "object" || Array.isArray(fields) || Object.keys(fields).some(key => !["state", "cut", "hotfix"].includes(key))) fail("invalid release train configuration fields");
-        return console.log(await taskOp("hub_release_configure", { ...fields, id: releaseId, revision }));
+        return toolReport(renderSdlcTrain, taskOp("hub_release_configure", { ...fields, id: releaseId, revision }));
       }
       fail("usage: ahub sdlc train report|configure|cut <release-id> [revision] [configuration-json]");
     }
     if (sub === "release-assign") {
       const revision = Number(args[2]), release = args[3] === "none" ? null : Number(args[3]);
       if (!Number.isSafeInteger(id) || id! <= 0 || !Number.isSafeInteger(revision) || revision < 0 || release !== null && (!Number.isSafeInteger(release) || release <= 0) || args.length < 5) fail("usage: ahub sdlc release-assign <task> <planning-revision> <release-id|none> <reason...>");
-      return console.log(await taskOp("hub_release_assign", { id, revision, release, reason: args.slice(4).join(" ") }));
+      return toolReport(renderTaskShow, taskOp("hub_release_assign", { id, revision, release, reason: args.slice(4).join(" ") }));
     }
     if (sub === "costs") {
       if (args.length > 2) fail("usage: ahub sdlc costs [owner/repository]");
@@ -2258,7 +2261,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const flags = takeFlags(args.slice(3), ["--review", "--reviewers", "--ci"], []);
       const scope = flags.one["--review"], reviewers = flags.one["--reviewers"];
       if (!flags.rest.length || (scope === undefined) !== (reviewers === undefined)) fail("plan-review needs a reason and both --review and --reviewers when supplying review scope");
-      return console.log(await taskOp("hub_plan_review", { id, revision, reason: flags.rest.join(" "), ...(scope !== undefined ? { review: { scope, reviewers: Number(reviewers) } } : {}), ...(flags.one["--ci"] !== undefined ? { ci: flags.one["--ci"] } : {}) }));
+      return toolReport(renderTaskShow, taskOp("hub_plan_review", { id, revision, reason: flags.rest.join(" "), ...(scope !== undefined ? { review: { scope, reviewers: Number(reviewers) } } : {}), ...(flags.one["--ci"] !== undefined ? { ci: flags.one["--ci"] } : {}) }));
     }
     if (sub === "accept-departure") {
       const head = args[2], rawReason = args.slice(3).join(" "), reason = rawReason.trim();
@@ -2267,7 +2270,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       try {
         const reply = await hub.request({ t: "sdlc", op: "accept-departure", id, head, reason }, 30_000);
         if (!reply.ok) fail(reply.error);
-        console.log(`task #${id}: plan departure accepted for the reviewed head`);
+        receipt("Accept departure", `task #${id}: plan departure accepted for the reviewed head`);
       } finally { hub.close(); }
       return;
     }
@@ -2282,7 +2285,7 @@ const commands: Record<string, () => Promise<void> | void> = {
           if (/unknown SDLC operation|does not know|SDLC readback is console only/.test(reason)) fail(`${reason}; the running hub does not support adopt-merge; upgrade agent-hub and run ahub restart before retrying ahub sdlc adopt-merge`);
           fail(reason);
         }
-        console.log(`task #${id}: merged outside the hub; approved`);
+        receipt("Adopt merge", `task #${id}: merged outside the hub; approved`);
       } finally { hub.close(); }
       return;
     }
@@ -2317,23 +2320,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (!reply.ok) fail(reply.error, false, undefined, `check ahub sdlc status ${task} for the task's lifecycle receipt, then retry`);
         const view = reply.readback;
         if (options.json) return console.log(JSON.stringify(op === "start" ? reply : view ?? null, null, 2));
-        if (op === "start") {
-          const state = String(reply.state ?? "");
-          console.log(state === "requested" || state === "reported"
-            ? `task #${task}: spec read-back ${reply.readback} ${state === "reported" ? "already reported" : "requested"}${state === "requested" ? ` from ${reply.reader}` : ""} (${reply.repo}#${reply.issue})`
-            : `task #${task}: spec read-back unavailable: ${reply.reason ?? "no eligible reader"}`);
-          return;
-        }
-        if (!view || view.status === "none") return console.log(`task #${task}: no spec read-back; start one with ahub sdlc readback start ${task}`);
-        if (view.status === "private") return console.log(`task #${task}: read-back ${view.readback} belongs to a private task; its report is not printed here`);
-        if (view.status === "requested") return console.log(`task #${task}: read-back ${view.readback} requested from ${view.reader}; the reader has not reported yet`);
-        console.log(`task #${task}: read-back ${view.readback} of ${view.repo}#${view.issue} by ${view.reader}`);
-        if (view.report.cannot_paraphrase) console.log(`cannot paraphrase: ${view.report.cannot_paraphrase}`);
-        else { console.log(`proposes: ${view.report.proposes}`); console.log(`existing: ${view.report.existing}`); }
-        for (const item of view.report.undefined ?? []) console.log(`undefined: ${item.term} (${item.where})`);
-        for (const item of view.report.open_decisions ?? []) console.log(`open decision: ${item.decision} (${item.where})`);
-        for (const path of view.report.refs ?? []) console.log(`ref: ${path}`);
-        for (const path of view.missing_refs ?? []) console.log(`missing ref: ${path}`);
+        human(renderSdlcReadback, { task, op, reply }, options);
       } finally { hub.close(); }
       return;
     }
@@ -2347,8 +2334,8 @@ const commands: Record<string, () => Promise<void> | void> = {
         const reply = await hub.request({ t: "sdlc", op: "accept", id, issue, ...(repo ? { repo } : {}) }, 30_000);
         if (!reply.ok) fail(reply.error);
         // #1658 AC6: the line names the read-back state read before the acceptance; the acceptance proceeds in every state.
-        if (reply.readback) console.log(reply.readback);
-        console.log(`task #${id}: spec issue #${issue} accepted at body edit ${reply.acceptance?.lastEditedAt ?? "never"}`);
+        receipt("Accept spec", ...(reply.readback ? [reply.readback] : []),
+          `task #${id}: spec issue #${issue} accepted at body edit ${reply.acceptance?.lastEditedAt ?? "never"}`);
       } finally { hub.close(); }
       return;
     }

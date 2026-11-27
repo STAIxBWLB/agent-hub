@@ -156,7 +156,7 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | intake | fail (3), showToolText (2), renderIntakeChange (1), renderIntake (1) |
 | deliverables | fail (2), console.log (5) |
 | board | fail (8), console.log (3), showToolText (1), renderHandoffs (1), printOutput (2), renderBoardColumns (1), renderBoard (1) |
-| sdlc | printOutput (2), fail (51), console.log (35), process.stdout.write (2), showToolText (2), renderSdlcCosts (1), renderSdlcMetrics (1), renderSdlcMerge (1) |
+| sdlc | printOutput (2), showToolText (3), fail (51), console.log (12), process.stdout.write (2), renderSdlcCosts (1), renderSdlcMetrics (1), renderSdlcMerge (1) |
 | task | showToolText (3), fail (15), console.log (7), renderHandoffs (1), renderHandoffReceipt (1) |
 | review | fail (5), console.log (2) |
 | remember | console.log (1) |
@@ -216,27 +216,26 @@ Interpolated and daemon-supplied strings require runtime fixtures. They are coun
 | say | src/cli/main.ts:1613 | stdout | 46 |
 | roadmap | src/cli/main.ts:1817 | stdout | 46 |
 | deliverables | src/cli/main.ts:2054 | stdout | 70 |
-| sdlc | src/cli/main.ts:2159 | stdout | 29 |
-| ask | src/cli/main.ts:2504 | stdout | 9 |
-| ask | src/cli/main.ts:2507 | stdout | 54 |
-| roster | src/cli/main.ts:2624 | stdout | 19 |
-| roster | src/cli/main.ts:2631 | stdout | 19 |
-| autonomy | src/cli/main.ts:2682 | stdout | 75 |
-| settings | src/cli/main.ts:2775 | stdout | 39 |
-| settings | src/cli/main.ts:2788 | stdout | 33 |
-| settings | src/cli/main.ts:2819 | stdout | 33 |
-| answer | src/cli/main.ts:2864 | stdout | 17 |
-| bench | src/cli/main.ts:3005 | stdout | 107 |
-| usage | src/cli/main.ts:3189 | stderr | 121 |
-| undo | src/cli/main.ts:3325 | stdout | 103 |
-| undo | src/cli/main.ts:3330 | stdout | 53 |
-| kill | src/cli/main.ts:3347 | stdout | 18 |
-| kill | src/cli/main.ts:3351 | stdout | 11 |
-| reset | src/cli/main.ts:3365 | stdout | 36 |
-| reset | src/cli/main.ts:3389 | stdout | 56 |
-| reset | src/cli/main.ts:3395 | stdout | 39 |
-| reset | src/cli/main.ts:3398 | stdout | 11 |
-| reset | src/cli/main.ts:3433 | stdout | 96 |
+| ask | src/cli/main.ts:2491 | stdout | 9 |
+| ask | src/cli/main.ts:2494 | stdout | 54 |
+| roster | src/cli/main.ts:2611 | stdout | 19 |
+| roster | src/cli/main.ts:2618 | stdout | 19 |
+| autonomy | src/cli/main.ts:2669 | stdout | 75 |
+| settings | src/cli/main.ts:2762 | stdout | 39 |
+| settings | src/cli/main.ts:2775 | stdout | 33 |
+| settings | src/cli/main.ts:2806 | stdout | 33 |
+| answer | src/cli/main.ts:2851 | stdout | 17 |
+| bench | src/cli/main.ts:2992 | stdout | 107 |
+| usage | src/cli/main.ts:3176 | stderr | 121 |
+| undo | src/cli/main.ts:3312 | stdout | 103 |
+| undo | src/cli/main.ts:3317 | stdout | 53 |
+| kill | src/cli/main.ts:3334 | stdout | 18 |
+| kill | src/cli/main.ts:3338 | stdout | 11 |
+| reset | src/cli/main.ts:3352 | stdout | 36 |
+| reset | src/cli/main.ts:3376 | stdout | 56 |
+| reset | src/cli/main.ts:3382 | stdout | 39 |
+| reset | src/cli/main.ts:3385 | stdout | 11 |
+| reset | src/cli/main.ts:3420 | stdout | 96 |
 
 ## Renderer candidates
 
@@ -301,6 +300,9 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/sdlc-output.ts:renderSdlcCosts | CLI | Direct | LayoutReport, grid | 39 |
 | src/cli/sdlc-output.ts:renderAuthorization | CLI | Direct | LayoutReport, moment | 46 |
 | src/cli/sdlc-output.ts:renderSdlcMerge | CLI | Direct | LayoutReport | 36 |
+| src/cli/sdlc-output.ts:renderSdlcReceipt | CLI | Direct | LayoutReport | Unmeasured |
+| src/cli/sdlc-output.ts:renderSdlcReadback | CLI | Direct | LayoutReport, Report | Unmeasured |
+| src/cli/sdlc-output.ts:renderSdlcTrain | CLI | Direct | LayoutReport, moment | Unmeasured |
 | src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |
 | src/cli/source-output.ts:renderSourceAdd | CLI | Direct | Report | 51 |
 | src/cli/source-output.ts:renderSourceList | CLI | Direct | Report, grid, moment | 62 |

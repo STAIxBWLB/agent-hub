@@ -375,3 +375,60 @@ export function renderSdlcMerge(view: unknown, columns?: number, _now = Date.now
   }
   return report.lines();
 }
+
+/** Short operator receipts use the same wrapping and terminal sanitation as the SDLC reports. */
+export function renderSdlcReceipt(value: { title: string; lines: readonly string[] }, columns?: number, _now = Date.now(), ascii = false): Span[][] {
+  const out = new LayoutReport(columns, ascii).titled("ahub", value.title).section("Receipt");
+  for (const line of value.lines) out.note(line, "value");
+  return out.lines();
+}
+
+/** Authorization and privacy are already resolved by the host. Only render report fields on the reported path. */
+export function renderSdlcReadback(value: { task: number; op: "start" | "show"; reply: Record<string, any> }, columns?: number, _now = Date.now(), ascii = false): Span[][] {
+  const { task, op, reply } = value;
+  const view = reply.readback;
+  const out = new LayoutReport(columns, ascii).titled("ahub", "Spec read-back", `task #${task}`).section("Read-back");
+  if (op === "start") {
+    if (reply.state !== "requested" && reply.state !== "reported") return out.note(`spec read-back unavailable: ${reply.reason ?? "no eligible reader"}`).lines();
+    return out.kv([["read-back", view], ["state", reply.state === "reported" ? "already reported" : "requested"],
+      ["issue", `${reply.repo}#${reply.issue}`], ...(reply.state === "requested" ? [["reader", reply.reader] as const] : [])]).lines();
+  }
+  if (!view || view.status === "none") return out.note(`no spec read-back; start one with ahub sdlc readback start ${task}`).lines();
+  if (view.status === "private") return out.note(`read-back ${view.readback} belongs to a private task; its report is not printed here`).lines();
+  if (view.status === "requested") return out.note(`read-back ${view.readback} requested from ${view.reader}; the reader has not reported yet`).lines();
+  out.kv([["read-back", view.readback], ["issue", `${view.repo}#${view.issue}`], ["reader", view.reader]]);
+  const report = view.report;
+  out.section("Report").kv(report.cannot_paraphrase ? [["cannot paraphrase", report.cannot_paraphrase]] : [["proposes", report.proposes], ["existing", report.existing]]);
+  for (const item of list(report.undefined)) out.note(`undefined: ${item.term} (${item.where})`);
+  for (const item of list(report.open_decisions)) out.note(`open decision: ${item.decision} (${item.where})`);
+  for (const path of list(report.refs)) out.note(`ref: ${path}`);
+  for (const path of list(view.missing_refs)) out.bullet("warn", `missing ref: ${path}`);
+  return out.lines();
+}
+
+/** The report adds readiness and metrics to the release returned by configure and cut. */
+export function renderSdlcTrain(value: unknown, columns?: number, now = Date.now(), ascii = false): Span[][] {
+  const row = value as any;
+  const release = row?.release ?? row;
+  const out = new LayoutReport(columns, ascii).titled("ahub", "Release train", release?.name)
+    .section("Release").kv([["id", release?.id], ["state", release?.state], ["revision", release?.revision], ["goal", release?.goal]]);
+  if (release?.cut != null) out.kv([["planned cut", moment(release.cut, now)]]);
+  if (release?.frozenAt != null) out.kv([["frozen at", moment(release.frozenAt, now)]]);
+  if (release?.train?.scope?.length) out.kv([["frozen scope", release.train.scope.map((id: number) => `#${id}`).join(", ")]]);
+  if (release?.train?.hotfix) out.kv([["hotfix", release.train.hotfix.cause], ["reason", release.train.hotfix.reason]]);
+  if (row?.readiness) {
+    out.section("Readiness").kv([["trigger", row.readiness.trigger], ["native", row.native]]);
+    for (const task of list(row.readiness.tasks)) out.note(`task #${task.id}: ${task.state}`, "value");
+    for (const blocker of list(row.readiness.blockers)) out.bullet("warn", String(blocker));
+  }
+  if (row?.metrics) {
+    const metrics = row.metrics;
+    out.section("Metrics").kv([["hotfixes", metrics.hotfixCount ?? "unknown"],
+      ["hotfix rate", percent(metrics.hotfixRate)],
+      ["CI runs", metrics.ciRuns ?? "unknown"], ["reviews", metrics.reviews ?? "unknown"]]);
+    for (const entry of list(metrics.intervals)) out.note(`release #${entry.from} to #${entry.to}: ${span(entry.ms)}`);
+    for (const entry of list(metrics.approvalToReleaseMs)) out.note(`task #${entry.task} to release #${entry.release}: ${span(entry.ms)}`);
+    if (metrics.unknown?.length) out.bullet("warn", `unknown evidence for releases ${metrics.unknown.map((id: number) => `#${id}`).join(", ")}`);
+  }
+  return out.lines();
+}

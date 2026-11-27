@@ -144,11 +144,6 @@ const SENTENCE_OPS = new Set(["hub_task_propose", "backlog_pull", "backlog_retur
 /** Bare prints of JSON text that no #814 task has converted yet. Remove an entry in the PR that converts it; an entry with no bare print fails. */
 const TEXT_DEBT: Record<string, string> = {
   github_import: "board import github: the import report, not in #814 Context",
-  hub_release_report: "sdlc train report: the release-train report (an sdlc subcommand, not ahub release)",
-  hub_release_configure: "sdlc train configure",
-  hub_release_cut: "sdlc train cut",
-  hub_release_assign: "sdlc release-assign",
-  hub_plan_review: "sdlc plan-review",
   turn_revert: "undo --context: not in #814 Context",
 };
 /** Conductor-role agent-shell commands (`ahub <peer>`, pause, resume, task assign|escalate): conductor.ts returns an object, not a person's text. Not in #814 Context; named so a new one is noticed. */
