@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "4ef41748e0ae28e1f2854eac0c4d317e199971c0",
+      "verifiedAgainst": "19b5ae2859acd182d43d7bb3441ee19d9f15981a",
       "paths": [
         "package.json",
         "src/",
@@ -18,7 +18,7 @@
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "4ef41748e0ae28e1f2854eac0c4d317e199971c0",
+      "verifiedAgainst": "19b5ae2859acd182d43d7bb3441ee19d9f15981a",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/adding-an-ai-tool.md": {
-      "verifiedAgainst": "4ef41748e0ae28e1f2854eac0c4d317e199971c0",
+      "verifiedAgainst": "19b5ae2859acd182d43d7bb3441ee19d9f15981a",
       "paths": [
         "src/adapters/registry-types.ts",
         "src/adapters/registry.ts",
@@ -62,7 +62,7 @@
       ]
     },
     "docs/addons/claude-mem.md": {
-      "verifiedAgainst": "4ef41748e0ae28e1f2854eac0c4d317e199971c0",
+      "verifiedAgainst": "19b5ae2859acd182d43d7bb3441ee19d9f15981a",
       "paths": [
         "src/hub/tooling.ts",
         "src/adapters/definitions/native-policy-aux.ts",
@@ -189,7 +189,7 @@
       ]
     },
     "docs/memory.md": {
-      "verifiedAgainst": "4ef41748e0ae28e1f2854eac0c4d317e199971c0",
+      "verifiedAgainst": "19b5ae2859acd182d43d7bb3441ee19d9f15981a",
       "paths": [
         "package.json",
         "src/memory/",
