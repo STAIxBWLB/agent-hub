@@ -148,7 +148,7 @@ test("roadmap rule 5 excludes a recorded spec acknowledgement at the merged head
   } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("#1741 a roadmap check runs one spec check however many issues it reads", async () => {
+test("#1741 a roadmap check runs one spec check and builds its views once however many issues it reads", async () => {
   const { Board } = await import("../src/hub/board.ts"); const { Bus } = await import("../src/hub/bus.ts"); const { Tasks } = await import("../src/hub/tasks.ts");
   const { loadRouting } = await import("../src/hub/routing.ts"); const { mkdtempSync, rmSync } = await import("node:fs"); const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
   const root = mkdtempSync(join(tmpdir(), "roadmap-specs-")), board = new Board(join(root, "hub.db")), bus = new Bus({ batchMs: 0 });
@@ -163,9 +163,11 @@ test("#1741 a roadmap check runs one spec check however many issues it reads", a
       board.update(task.id, "user", "accepted", { state: "in_progress", owner: "codex", sdlc: { stage: "build", repo: "example/repo", issue } });
       board.linkMilestone(milestone.id, "task", String(task.id), "user", board.milestone(milestone.id)!.revision);
     }
+    let lists = 0; const list = board.list.bind(board); board.list = ((...args: Parameters<typeof board.list>) => { lists++; return list(...args); }) as typeof board.list;
     await tasks.roadmapCheck("user");
     expect(reads).toBe(3);
     expect(checks).toBe(1);
+    expect(lists).toBe(1); // #1741: the views are built once while no task, milestone, link or release row changes
     await tasks.roadmapCheck("user");
     expect(checks).toBe(2); // a person's check is not served from an earlier one
   } finally { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); }
