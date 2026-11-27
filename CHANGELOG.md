@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.48.3
+
 - The five-minute roadmap sweep no longer blocks the daemon for about 2.5 s after its issue reads (#1741). The notice pass checked each finding's task against freshly built milestone views, one build (about 140 ms on a 1156-task board) per finding. It now rebuilds them only when the board changed.
 
 ## 0.48.2
