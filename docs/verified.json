@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "4ef41748e0ae28e1f2854eac0c4d317e199971c0",
+      "verifiedAgainst": "d7c733817dbfc2c640d3749a921a7f9e5eda1fbd",
       "paths": [
         "package.json",
         "src/",
