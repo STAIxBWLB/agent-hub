@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A memory status read no longer re-resolves the whole memory profile through agent-mem (#1747). On a sharded home that resolution re-validates every shard placement; in a daemon profile it was about 6% of the main thread. Status now runs the full check only when the binding's fence stamp has moved since the last passing check. The entry fence for memory work still checks in full on every call.
+
 ## 0.48.3
 
 - The five-minute roadmap sweep no longer blocks the daemon for about 2.5 s after its issue reads (#1741). The notice pass checked each finding's task against freshly built milestone views, one build (about 140 ms on a 1156-task board) per finding. It now rebuilds them only when the board changed.
