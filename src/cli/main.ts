@@ -989,7 +989,13 @@ const consoleInstalled = () => installedVersions(join(import.meta.dir, "..", "..
 const GOAL_NEW_VALUE_FLAGS = ["--milestone", "--depends"], GOAL_NEW_FLAGS = [...GOAL_NEW_VALUE_FLAGS, "--shared", "--json"];
 /** `ahub doctor` exits 1 on a failed row; `ahub setup` runs the same function and keeps its own exit behavior. */
 let doctorSetsExit = true;
-const commands: Record<string, () => Promise<void> | void> = {
+type SdlcReceiptOutput = (title: string, ...lines: string[]) => void;
+function printSdlcReceipt(title: string, ...lines: string[]): void {
+  const display = outputOptions([]);
+  printOutput(renderSdlcReceipt({ title, lines }, display.columns, Date.now(), asciiMarkers(process.env, process.argv.includes("--ascii"))), display.color);
+}
+
+const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
   recovery: async () => {
@@ -2096,7 +2102,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally { boardHub.close(); }
   },
 
-  sdlc: async () => {
+  sdlc: async (receiptOutput) => {
     const args = sdlcOperands(), present = SDLC_READ.includes(args[0] ?? "") ? outputOptions() : undefined;
     /** The human form (#814). Each site keeps its own `if (present.json) console.log(JSON.stringify(...))`, so the JSON branch stays visible to the guard test. */
     const human = (render: Parameters<typeof showToolText>[0], data: unknown, display = present ?? outputOptions([])) =>
@@ -2270,7 +2276,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       try {
         const reply = await hub.request({ t: "sdlc", op: "accept-departure", id, head, reason }, 30_000);
         if (!reply.ok) fail(reply.error);
-        receipt("Accept departure", `task #${id}: plan departure accepted for the reviewed head`);
+        receiptOutput?.("Accept departure", `task #${id}: plan departure accepted for the reviewed head`);
       } finally { hub.close(); }
       return;
     }
@@ -3708,6 +3714,8 @@ function inspectDoctorRouting(cwd: string): { routing?: Routing; errors: string[
   }
 }
 
+const runSdlcCommand = () => commands.sdlc!(printSdlcReceipt);
+
 async function runConductorCommand(): Promise<void> {
   if (recoveryRunnerContinuation) return commands[cmd]!();
   const operation=conductorOperation(cmd,args);
@@ -3736,7 +3744,7 @@ async function runConductorCommand(): Promise<void> {
   let op: string;
   let input: Record<string, unknown>;
   if (cmd === "answer") return commands.answer!(); // The daemon checks instructed answer authority.
-  if (cmd === "sdlc") return commands.sdlc!(); // SDLC operational subcommands are role-checked by the daemon.
+  if (cmd === "sdlc") return runSdlcCommand(); // SDLC operational subcommands are role-checked by the daemon.
   if (cmd === "task") {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
     const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);
@@ -3779,7 +3787,7 @@ const runConfigured = configuredCommand ? async () => {
   if (!selection.preview) assertLifecycleAvailable(cwd);
   await runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, declaredExternalInstances: peerConfig.declaredExternalInstances, projectRoot: cwd, connect: connectLaunch, print: text => console.log(text), operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
 } : undefined;
-const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? runConfigured ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
+const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (cmd === "sdlc" ? runSdlcCommand : Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? runConfigured ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
 try {
   assertDelegatedAuditConsumer(); // Local command paths must not begin after the authenticated consumer was replaced either.
   await run();
