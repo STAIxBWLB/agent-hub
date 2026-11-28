@@ -32467,6 +32467,9 @@ init_envelope();
 // src/hub/roadmap-sync.ts
 init_roadmap();
 
+// src/hub/roadmap-issue-states.ts
+init_sdlc();
+
 // src/hub/roadmap-unplaced.ts
 init_envelope();
 
