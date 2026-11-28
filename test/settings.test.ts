@@ -526,15 +526,18 @@ test("AC8: ahub settings list, get, set, undo and ahub ui --settings work from a
   const listed = await cli(rig.cwd, ["settings"]);
   expect(listed.code).toBe(0);
   for (const heading of ["Permissions", "Start", "Routing", "Switches"]) expect(listed.stdout).toContain(`${heading}\n`);
-  expect(listed.stdout).toMatch(/ {2}pi\.auto_start +true +from config\.json; file: true; applies at next use\n/);
-  expect(listed.stdout).toMatch(/ {2}permission\.kimi +ask +from this hub run; file: ask; applies at once; not attached: only ask can be set\n/);
+  expect(listed.stdout).toMatch(/ {2}pi\.auto_start: +true\n {2}from config\.json; file: true; applies at next use\n/);
+  expect(listed.stdout).toMatch(/ {2}permission\.kimi: +ask\n {2}from this hub run; file: ask; applies at once; not attached: only ask can be set\n/);
   expect(JSON.parse((await cli(rig.cwd, ["settings", "list", "--json"])).stdout).rows).toHaveLength(SETTINGS.length);
 
-  expect(await cli(rig.cwd, ["settings", "set", "research.enabled", "true"])).toEqual({ code: 0, stdout: "research.enabled: true (in force now)\n", stderr: "" });
+  const set = await cli(rig.cwd, ["settings", "set", "research.enabled", "true"]);
+  expect(set).toMatchObject({ code: 0, stderr: "" });
+  expect(set.stdout).toContain("Settings set");
+  expect(set.stdout).toContain("research.enabled: true (in force now)\n");
   expect(JSON.parse(text(local)!)).toEqual({ research: { enabled: true } });
   const got = await cli(rig.cwd, ["settings", "get", "research.enabled"]);
   // #439 applies the live switch without restarting and shows its matching file value.
-  expect(got.stdout).toContain("research.enabled  true  from config.local.json; file: true; applies at once\n");
+  expect(got.stdout).toContain("research.enabled:  true\n  from config.local.json; file: true; applies at once\n");
   expect(got.stdout).toContain("written to config.local.json; takes true, false, or inherit to remove the machine-local value");
   expect(JSON.parse((await cli(rig.cwd, ["settings", "get", "research.enabled", "--json"])).stdout)).toMatchObject({ key: "research.enabled", value: true, fileValue: true, applies: "live", source: "config.local.json" });
   expect((await cli(rig.cwd, ["settings", "reload"])).code).toBe(0);
@@ -543,7 +546,7 @@ test("AC8: ahub settings list, get, set, undo and ahub ui --settings work from a
   expect(order.code).toBe(0);
   expect(order.stdout).toContain("-> kimi,codex\n"); expect(order.stdout).toContain("preview only; nothing was changed\n");
   expect(text(rig.file(OVERLAY_FILE))).toBeNull();
-  expect((await cli(rig.cwd, ["settings", "set", "routing.classes.implement.peers", "kimi,codex"])).stdout).toBe("routing.classes.implement.peers: kimi,codex (in force now)\n");
+  expect((await cli(rig.cwd, ["settings", "set", "routing.classes.implement.peers", "kimi,codex"])).stdout).toContain("routing.classes.implement.peers: kimi,codex (in force now)\n");
   expect(currentRouting(rig.cwd).classes.implement!.peers).toEqual(["kimi", "codex"]);
   expect((await cli(rig.cwd, ["settings", "undo"])).stdout).toContain("routing.classes.implement.peers: put back to ");
   expect(text(rig.file(OVERLAY_FILE))).toBeNull();
