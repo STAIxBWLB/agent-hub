@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process";
 import { assessVersion, COMPAT, describe, isCompatId, readTrust, trustFile, writeTrust, type CompatId, type CompatVerdict } from "../adapters/compat.ts";
 import { childEnv } from "../hub/child-process.ts";
 import { withoutOrcaEnv } from "../hub/orca-env.ts";
-import { Report, asciiMarkers, resolveColor, streamEnv, type Span } from "./console-state.ts";
+import { Report, asciiMarkers, resolveColor, streamEnv } from "./console-state.ts";
 import { outputWidth } from "./output.ts";
-import { grid, s } from "./sdlc-output.ts";
+import { renderAgents } from "./agents-output.ts";
 
 /** #691: what `ahub agents` and `ahub doctor` show for each gated native CLI. */
 export interface AgentVersionRow { id: CompatId; executable?: string; verdict: CompatVerdict; policy: string }
@@ -82,16 +82,6 @@ export async function agentVersionsAsync(commands: Partial<Record<CompatId, read
     try { return probeRow(id, target.executable, await runProbe(target.executable, target.args, timeoutMs, graceMs), trusted); }
     catch { return probeRow(id, target.executable, undefined, trusted); }
   }));
-}
-
-export function renderAgents(rows: readonly AgentVersionRow[], columns?: number, ascii = false): Span[][] {
-  if (!rows.length) return [[{ text: "no native agents" }]];
-  const items = rows.map(({ id, verdict, policy }) => [
-    s(id, "info"), s(verdict.version ?? "-"), s(verdict.state, verdict.ok ? "success" : "attention"),
-    s(policy), s(verdict.ok ? verdict.note ?? "" : verdict.reason),
-  ]);
-  return new Report(columns, ascii).titled("ahub", "Agents")
-    .section("Versions", String(rows.length)).append(grid(["AGENT", "VERSION", "STATE", "POLICY", "DETAIL"], items, columns)).lines();
 }
 
 export function runAgents(args: string[], commands: Partial<Record<CompatId, readonly string[]>>, fail: (message: string) => never): void {

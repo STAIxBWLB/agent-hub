@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assessVersion, COMPAT, describe } from "../src/adapters/compat.ts";
-import { renderAgents } from "../src/cli/agents.ts";
+import { renderAgents } from "../src/cli/agents-output.ts";
 import { paint } from "../src/cli/console-state.ts";
 
 test("agents reports verified notes and refused reasons in a counted table, with a bare empty state", () => {

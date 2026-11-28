@@ -242,7 +242,7 @@ The separate report-by-task fixture measures 79 cells.
 
 | File and renderer | Text source | Report | Direct layout references | Fixture width or scope |
 | --- | --- | --- | --- | --- |
-| src/cli/agents.ts:renderAgents | CLI | Direct | Report, grid | Unmeasured |
+| src/cli/agents-output.ts:renderAgents | CLI | Direct | Report, grid | Unmeasured |
 | src/cli/autonomy.ts:renderAutonomyStatus | CLI | - | Inline / indirect | 77 |
 | src/cli/capabilities-output.ts:renderCapabilities | CLI | Direct | Report, grid | 77 |
 | src/cli/console-state.ts:renderConsole | CLI | - | paint | Full-screen console |
