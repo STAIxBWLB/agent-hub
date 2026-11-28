@@ -1,4 +1,522 @@
 {
   "version": 1,
-  "milestones": []
+  "milestones": [
+    {
+      "id": 1,
+      "title": "P1: small unblocked work",
+      "outcome": "Startup reconcile bounded, task detail never cut silently, compat CI opens its own verification PRs, every command meets CLI output standard v1, the top CI flake is gone, and a moved repository keeps its registration",
+      "state": "active",
+      "horizon": "now",
+      "order": 1,
+      "target": null,
+      "parent": null,
+      "issues": [
+        {
+          "ref": "staixbwlb/agent-hub#1248",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1424",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1445",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1578",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1648",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1654",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1669",
+          "state": "open"
+        }
+      ],
+      "specs": [
+        {
+          "id": "cli-output",
+          "state": "unknown"
+        }
+      ],
+      "progress": {
+        "tasks": {
+          "approved": 36,
+          "total": 39
+        },
+        "issues": {
+          "closed": 5,
+          "total": 7,
+          "unknown": 0
+        },
+        "specs": {
+          "fresh": 0,
+          "stale": 0,
+          "unverified": 0,
+          "unknown": 1,
+          "total": 1
+        },
+        "releases": {
+          "shipped": 0,
+          "total": 0,
+          "unknown": 0
+        }
+      },
+      "withheld": 0
+    },
+    {
+      "id": 7,
+      "title": "Person-run receipts, decisions and trackers",
+      "outcome": "Owed live legs, dogfood receipts, spec stamps and person decisions are recorded, and the standing trackers stay current",
+      "state": "active",
+      "horizon": "now",
+      "order": 7,
+      "target": null,
+      "parent": null,
+      "issues": [
+        {
+          "ref": "staixbwlb/agent-hub#1064",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1143",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1145",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1260",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1478",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#687",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#888",
+          "state": "open"
+        }
+      ],
+      "specs": [
+        {
+          "id": "adapters",
+          "state": "unknown"
+        },
+        {
+          "id": "agent-hub",
+          "state": "unknown"
+        },
+        {
+          "id": "agent-hub-architecture",
+          "state": "unknown"
+        },
+        {
+          "id": "bus",
+          "state": "unknown"
+        },
+        {
+          "id": "execution-reference",
+          "state": "unknown"
+        },
+        {
+          "id": "guidance-experiments",
+          "state": "unknown"
+        },
+        {
+          "id": "guidance-probes",
+          "state": "unknown"
+        },
+        {
+          "id": "model-routes",
+          "state": "unknown"
+        },
+        {
+          "id": "roadmap",
+          "state": "unknown"
+        },
+        {
+          "id": "supervision",
+          "state": "unknown"
+        },
+        {
+          "id": "task-board",
+          "state": "unknown"
+        }
+      ],
+      "progress": {
+        "tasks": {
+          "approved": 39,
+          "total": 49
+        },
+        "issues": {
+          "closed": 1,
+          "total": 7,
+          "unknown": 0
+        },
+        "specs": {
+          "fresh": 0,
+          "stale": 0,
+          "unverified": 0,
+          "unknown": 11,
+          "total": 11
+        },
+        "releases": {
+          "shipped": 0,
+          "total": 0,
+          "unknown": 0
+        }
+      },
+      "withheld": 0
+    },
+    {
+      "id": 2,
+      "title": "Review integrity",
+      "outcome": "A verdict is bound to the tree it read, carried findings get an owner answer on re-file, review depth follows a risk tier, and a spec issue is stated back by a fresh reader before acceptance",
+      "state": "planned",
+      "horizon": "next",
+      "order": 2,
+      "target": null,
+      "parent": null,
+      "issues": [
+        {
+          "ref": "staixbwlb/agent-hub#1645",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1646",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1657",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1658",
+          "state": "open"
+        }
+      ],
+      "specs": [],
+      "progress": {
+        "tasks": {
+          "approved": 7,
+          "total": 8
+        },
+        "issues": {
+          "closed": 0,
+          "total": 4,
+          "unknown": 0
+        },
+        "specs": {
+          "fresh": 0,
+          "stale": 0,
+          "unverified": 0,
+          "unknown": 0,
+          "total": 0
+        },
+        "releases": {
+          "shipped": 0,
+          "total": 0,
+          "unknown": 0
+        }
+      },
+      "withheld": 0
+    },
+    {
+      "id": 3,
+      "title": "Refusals and friction",
+      "outcome": "Dead code and refusals without a runnable continuation can only shrink, and offline journeys classify every block as in band, out of band or dead end",
+      "state": "planned",
+      "horizon": "next",
+      "order": 3,
+      "target": null,
+      "parent": null,
+      "issues": [
+        {
+          "ref": "staixbwlb/agent-hub#1643",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1644",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1649",
+          "state": "closed"
+        }
+      ],
+      "specs": [],
+      "progress": {
+        "tasks": {
+          "approved": 5,
+          "total": 5
+        },
+        "issues": {
+          "closed": 2,
+          "total": 3,
+          "unknown": 0
+        },
+        "specs": {
+          "fresh": 0,
+          "stale": 0,
+          "unverified": 0,
+          "unknown": 0,
+          "total": 0
+        },
+        "releases": {
+          "shipped": 0,
+          "total": 0,
+          "unknown": 0
+        }
+      },
+      "withheld": 0
+    },
+    {
+      "id": 4,
+      "title": "Planner and learning",
+      "outcome": "A split or handoff carries a named reason, and accepted checklist lines are kept only while their outcome counts show they help",
+      "state": "planned",
+      "horizon": "next",
+      "order": 4,
+      "target": null,
+      "parent": null,
+      "issues": [
+        {
+          "ref": "staixbwlb/agent-hub#1642",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1647",
+          "state": "open"
+        }
+      ],
+      "specs": [],
+      "progress": {
+        "tasks": {
+          "approved": 3,
+          "total": 3
+        },
+        "issues": {
+          "closed": 1,
+          "total": 2,
+          "unknown": 0
+        },
+        "specs": {
+          "fresh": 0,
+          "stale": 0,
+          "unverified": 0,
+          "unknown": 0,
+          "total": 0
+        },
+        "releases": {
+          "shipped": 0,
+          "total": 0,
+          "unknown": 0
+        }
+      },
+      "withheld": 0
+    },
+    {
+      "id": 5,
+      "title": "Larger features",
+      "outcome": "Remote principals and peers, dashboard overview, print transport, activity kinds, memory review, agy and Jcode remainders, guidance runner, shared TS packages, Grok, and acon plugin contracts, each on its own go-ahead",
+      "state": "proposed",
+      "horizon": "later",
+      "order": 5,
+      "target": null,
+      "parent": null,
+      "issues": [
+        {
+          "ref": "staixbwlb/agent-hub#1226",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1280",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1326",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1329",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1495",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1512",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1514",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1515",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1517",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1632",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1635",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1668",
+          "state": "closed"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#516",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#635",
+          "state": "open"
+        }
+      ],
+      "specs": [],
+      "progress": {
+        "tasks": {
+          "approved": 17,
+          "total": 21
+        },
+        "issues": {
+          "closed": 2,
+          "total": 14,
+          "unknown": 0
+        },
+        "specs": {
+          "fresh": 0,
+          "stale": 0,
+          "unverified": 0,
+          "unknown": 0,
+          "total": 0
+        },
+        "releases": {
+          "shipped": 0,
+          "total": 0,
+          "unknown": 0
+        }
+      },
+      "withheld": 0
+    },
+    {
+      "id": 6,
+      "title": "Research programs",
+      "outcome": "Coordination research layers, model and effort policy, research workflows, bench conditions and cost components, each started on a go-ahead plus data, accounts or time",
+      "state": "proposed",
+      "horizon": "later",
+      "order": 6,
+      "target": null,
+      "parent": null,
+      "issues": [
+        {
+          "ref": "staixbwlb/agent-hub#109",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1219",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1221",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1615",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1660",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#1661",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#266",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#30",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#41",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#42",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#43",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#44",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#45",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#554",
+          "state": "open"
+        },
+        {
+          "ref": "staixbwlb/agent-hub#929",
+          "state": "open"
+        }
+      ],
+      "specs": [],
+      "progress": {
+        "tasks": {
+          "approved": 8,
+          "total": 12
+        },
+        "issues": {
+          "closed": 0,
+          "total": 15,
+          "unknown": 0
+        },
+        "specs": {
+          "fresh": 0,
+          "stale": 0,
+          "unverified": 0,
+          "unknown": 0,
+          "total": 0
+        },
+        "releases": {
+          "shipped": 0,
+          "total": 0,
+          "unknown": 0
+        }
+      },
+      "withheld": 0
+    }
+  ]
 }
