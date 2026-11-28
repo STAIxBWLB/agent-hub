@@ -19,7 +19,7 @@ import { processSignature, processLiveness } from "../src/pi/process-signature.t
 const VERSION = "0.99.0", CORE = "0.18.0", cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 const put = (root: string, name: string, text: string) => { const file = join(root, name); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); };
-function fixture() {
+function fixture(pins: Record<string, string> = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-capture-prune-"))), home = join(root, "home"), source = join(root, "package");
   mkdirSync(home); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   put(source, "package.json", JSON.stringify({ name: "@staix/agent-hub", version: VERSION, dependencies: { "@staix/agent-mem": CORE } }));
@@ -28,8 +28,13 @@ function fixture() {
   put(source, "plugins/agent-hub/server.js", "// fixture\n"); put(source, "templates/fixture.txt", "fixture\n"); put(source, ".claude-plugin/marketplace.json", "{}\n");
   for (const name of ["README.md", "LICENSE", "CHANGELOG.md"]) put(source, name, `fixture ${name}\n`);
   const core = join(source, "node_modules/@staix/agent-mem");
-  put(core, "package.json", JSON.stringify({ name: "@staix/agent-mem", version: CORE, main: "src/index.js" }));
+  put(core, "package.json", JSON.stringify({ name: "@staix/agent-mem", version: CORE, main: "src/index.js", ...(Object.keys(pins).length ? { dependencies: pins } : {}) }));
   put(core, "src/index.js", "// first-party core fixture\n"); put(core, "bin/amem.js", "// fixture\n"); put(core, "README.md", "fixture\n"); put(core, "LICENSE", "fixture\n");
+  for (const [name, version] of Object.entries(pins)) {
+    const dependency = join(source, "node_modules", name);
+    put(dependency, "package.json", JSON.stringify({ name, version }));
+    for (const asset of ["src/index.js", "fixtures/example.json", "README.md", "LICENSE"]) put(dependency, asset, "fixture\n");
+  }
   const registry = new Registry(join(home, "registry.db")); cleanup.push(() => registry.close());
   let revision = 0;
   const capture = (version = VERSION) => {
@@ -51,6 +56,7 @@ function copyPruner(target: string, verifier?: string): string {
   if (verifier) put(target, "src/cli/recovery-package.ts", verifier);
   else reexport("src/cli/recovery-package.ts", "verifyPackage", "../src/cli/recovery-package.ts");
   reexport("src/pi/process-signature.ts", "processLiveness, processSignature", "../src/pi/process-signature.ts");
+  reexport("src/hub/runtime-package-assets.ts", "MEMORY_RUNTIME_LAYOUTS", "../src/hub/runtime-package-assets.ts");
   reexport("src/hub/project.ts", "hubHome, realPath", "../src/hub/project.ts");
   reexport("src/hub/project-runtime-state.ts", "readProjectRuntimeReference, projectRuntimeFile", "../src/hub/project-runtime-state.ts");
   reexport("src/hub/registry.ts", "Registry, REGISTRY_DB_BUSY_TIMEOUT_MS", "../src/hub/registry.ts");
@@ -85,6 +91,37 @@ test("#610 pruning keeps newest captures per version and only removes verified o
   expect(result.deferred).toBeUndefined(); expect(result.removed.sort()).toEqual(before.remove.sort());
   for (const value of [first, second]) expect(existsSync(value.root)).toBe(false);
   for (const value of [third, other]) expect(existsSync(value.root)).toBe(true);
+});
+
+const recoveryPins = { "@staix/mcp-stdio": "0.2.0", "@staix/agent-hosts": "0.1.0" };
+for (const pins of [Object.fromEntries(Object.entries(recoveryPins).slice(0, 1)), Object.fromEntries(Object.entries(recoveryPins).slice(1)), recoveryPins]) {
+  test(`prune verifies and removes captures with ${Object.keys(pins).join(" and ")} (#1737)`, () => {
+    const f = fixture(pins), capture = f.capture();
+    expect(pruneRuntimeCaptures(f.home, 0)).toEqual({ removed: [capture.root], kept: [] });
+    expect(existsSync(capture.root)).toBe(false);
+  });
+}
+
+test("prune retains captures with unrecognized files or an unknown dependency sibling (#1737)", () => {
+  for (const extra of ["@staix/unreviewed/extra.txt", "@staix/mcp-stdio/extra.txt", "@staix/agent-hosts/extra.txt"]) {
+    const f = fixture(recoveryPins), capture = f.capture();
+    put(capture.root, `node_modules/${extra}`, "not an owned asset");
+    const result = pruneRuntimeCaptures(f.home, 0);
+    expect(result.removed).toEqual([]);
+    expect(result.deferred).toContain("unknown asset layout");
+    expect(existsSync(join(capture.root, "node_modules", extra))).toBe(true);
+  }
+});
+
+test("prune refuses a reviewed sibling that the capture did not hash (#1737)", () => {
+  const f = fixture(), capture = f.capture(), name = "@staix/mcp-stdio";
+  const extra = join(capture.root, "node_modules", name);
+  put(extra, "package.json", JSON.stringify({ name, version: recoveryPins[name] }));
+  for (const asset of ["src/index.js", "fixtures/example.json", "README.md", "LICENSE"]) put(extra, asset, "unowned");
+  const result = pruneRuntimeCaptures(f.home, 0);
+  expect(result.removed).toEqual([]);
+  expect(result.deferred).toContain("undeclared agent-mem dependency");
+  expect(existsSync(extra)).toBe(true);
 });
 
 test("#610 one prune call limits deletion work to a small candidate batch", () => {
