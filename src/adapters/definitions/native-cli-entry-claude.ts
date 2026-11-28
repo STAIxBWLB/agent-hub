@@ -4,7 +4,26 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ClaudeLaunchRecord } from "../../cli/launch.ts";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
-import { claudeStateFile } from "../../hub/claude-state.ts";
+import { claudeStateFile, isClaudeSessionUuid } from "../../hub/claude-state.ts";
+
+/** Preserve native selectors. A picker, continuation or fork without an explicit id stays unattested. */
+function managedSession(nativeArgs: string[]): string | undefined {
+  const separator = nativeArgs.indexOf("--");
+  const options = separator < 0 ? nativeArgs : nativeArgs.slice(0, separator);
+  const values = (names: readonly string[]) => options.flatMap((arg, index) => {
+    if (names.includes(arg)) return [options[index + 1]];
+    const name = names.find(value => arg.startsWith(value + "="));
+    return name ? [arg.slice(name.length + 1)] : [];
+  });
+  const explicit = values(["--session-id"]);
+  const resume = values(["--resume", "-r"]);
+  if (explicit.length) return explicit.length === 1 && isClaudeSessionUuid(explicit[0]) ? explicit[0] : undefined;
+  if (options.some(arg => ["-c", "--continue", "--from-pr", "--teleport", "--fork-session"].some(flag => arg === flag || arg.startsWith(flag + "=")))) return;
+  if (resume.length) return resume.length === 1 && isClaudeSessionUuid(resume[0]) ? resume[0] : undefined;
+  const id = randomUUID();
+  nativeArgs.unshift("--session-id", id);
+  return id;
+}
 
 export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
@@ -64,6 +83,8 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
     if (control?.instanceId) {
       // Publish only the final launch's installed hook and effective permission flags.
       launchRecord = { ...(ctx.instance ? { peer, executionCwd } : {}), instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID!, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
+      const nativeSessionId = managedSession(launch.args);
+      if (nativeSessionId) launchRecord.nativeSessionId = nativeSessionId;
       recordClaudeLaunch(stateDir, launchRecord);
       cleanupStaleClaudeSettings(stateDir, previousLaunch);
     }

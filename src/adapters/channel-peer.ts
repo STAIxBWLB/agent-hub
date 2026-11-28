@@ -7,7 +7,7 @@ import type { ClaudeChannelEvidence } from "./claude-channel-evidence.ts";
 /** Only the control socket operations the peer owns; authentication remains in the daemon. */
 export interface ChannelSocket {
   readyState: number;
-  data: { launchId?: string; protocol?: number; standbyId?: string; retainStandby?: boolean; clientPid?: number; clientVersion?: string; channel?: boolean; channelEvidence?: ClaudeChannelEvidence; cwd?: string; peerGeneration?: string | number; detachedByPerson?: boolean };
+  data: { launchId?: string; claudeSessionId?: string; protocol?: number; standbyId?: string; retainStandby?: boolean; clientPid?: number; clientVersion?: string; channel?: boolean; channelEvidence?: ClaudeChannelEvidence; cwd?: string; peerGeneration?: string | number; detachedByPerson?: boolean };
   send(data: string): unknown;
   close(code?: number, reason?: string): void;
 }
@@ -23,6 +23,7 @@ export class WsPeer extends BasePeer {
   private static readonly MAX_STANDBY_SESSIONS = 8;
   readonly acceptedSettlement = "explicit" as const;
   readonly form: StartForm = "tui";
+  constructor(id: string, private readonly nativeSessionAtAttach?: (socket: ChannelSocket) => string | undefined) { super(id); }
   private generation = crypto.randomUUID();
   // Checkpoints become stale at hello/claim, before asynchronous recall finishes and attach changes delivery generation.
   private claimGeneration = crypto.randomUUID();
@@ -86,7 +87,7 @@ export class WsPeer extends BasePeer {
     if (!facts || facts.socket !== this.sock || !this.attached) return undefined;
     const native = (this as { nativeSession?: string }).nativeSession;
     return { ...(facts.ownerPid !== undefined ? { ownerPid: facts.ownerPid } : {}), attachedAt: facts.attachedAt,
-      ...(typeof native === "string" && NATIVE_SESSION_ID.test(native) ? { nativeSessionId: native } : {}) };
+      ...(!this.nativeSessionAtAttach && typeof native === "string" && NATIVE_SESSION_ID.test(native) ? { nativeSessionId: native } : {}) };
   }
 
   /** A session that shows pushes holds the peer or is arriving: a session without them must not take it (issue #205). */
@@ -166,6 +167,8 @@ export class WsPeer extends BasePeer {
     this.delivered.clear();
     this.nativeTurnSession = undefined;
     delete (this as { nativeSession?: string }).nativeSession;
+    const nativeSession = this.nativeSessionAtAttach?.(sock);
+    if (nativeSession) this.bindNativeSession(nativeSession);
     this.nativeActive = false;
     this.pullOnly = this.claimedPullOnly; // before idle: the idle transition drains
     this.attachMode = this.pullOnly ? "tools-only" : "channel";

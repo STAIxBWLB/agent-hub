@@ -64,6 +64,8 @@ export interface Hello {
   channelEvidence?: "development-channel-launch" | "inherited-marker" | "launch-unverified" | "unknown" | "unreported";
   /** Managed Claude launch identity; absent for plain or pre-daemon sessions. */
   launchId?: string;
+  /** Claude Code marker; the daemon compares it against host-owned launch evidence. */
+  claudeSessionId?: string;
   /** Optional canonical native execution cwd; ownership requires independent host proof. */
   cwd?: string;
   /**

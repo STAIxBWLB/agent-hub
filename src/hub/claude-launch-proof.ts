@@ -1,6 +1,7 @@
 import { closeSync, fstatSync, openSync, readSync, constants } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { claudeStateFile } from "./claude-state.ts";
+import { processLiveness } from "../pi/process-signature.ts";
+import { claudeStateFile, isClaudeSessionUuid } from "./claude-state.ts";
 import { readFileSync } from "node:fs";
 import { isWsPeer, type WsPeer } from "../adapters/channel-peer.ts";
 import { isFixedBuiltinDefinition, type AdapterDefinition } from "../adapters/registry.ts";
@@ -8,6 +9,7 @@ import type { PeerAdapter } from "./peers.ts";
 
 export interface ClaudeLaunchRecordProof {
   launchId: string;
+  nativeSessionId?: string;
   launcherPid?: number;
   launcherSignature?: string;
   executionCwd?: string;
@@ -17,7 +19,7 @@ export interface ClaudeLaunchRecordProof {
   hookPurpose?: string;
 }
 
-/** One bounded reader for current managed launch metadata; no native identity or payload escapes. */
+/** One bounded reader for current managed launch metadata, including an optional validated session UUID. */
 export function readClaudeLaunchProof(stateDir: string, peer: string, instanceId: string): ClaudeLaunchRecordProof | undefined {
   let fd: number | undefined;
   try {
@@ -31,6 +33,7 @@ export function readClaudeLaunchProof(stateDir: string, peer: string, instanceId
     const row = JSON.parse(bytes.subarray(0, count).toString("utf8"));
     if (row?.instanceId !== instanceId || typeof row.launchId !== "string" || !row.launchId || row.launchId.length > 128) return;
     return { launchId: row.launchId,
+      ...(isClaudeSessionUuid(row.nativeSessionId) ? { nativeSessionId: row.nativeSessionId } : {}),
       ...(Number.isSafeInteger(row.launcherPid) && row.launcherPid > 0 ? { launcherPid: row.launcherPid } : {}),
       ...(typeof row.launcherSignature === "string" && row.launcherSignature.length > 0 && row.launcherSignature.length <= 256 && !/[\p{Cc}\p{Cf}]/u.test(row.launcherSignature) ? { launcherSignature: row.launcherSignature } : {}), privateRecord: stat.nlink === 1 && (stat.mode & 0o777) === 0o600 && !!process.getuid && stat.uid === process.getuid(),
       ...(typeof row.executionCwd === "string" && row.executionCwd.length <= 4096 && isAbsolute(row.executionCwd) ? { executionCwd: row.executionCwd } : {}),
@@ -44,6 +47,7 @@ export function readClaudeLaunchProof(stateDir: string, peer: string, instanceId
 export interface ClaudeLaunchProof {
   permissionLaunch(peer: string): { launchId: string; unattended: boolean; hookPurpose?: string } | undefined;
   helloLaunch(peer: string, launchId: unknown): "admit" | "refuse";
+  attestedSession(peer: string, launchId: string | undefined, reported: string | undefined): string | undefined;
   expectedLaunch(peer: string): string | undefined;
   owner(peer: string): WsPeer | undefined;
   bindGeneration(peer: string, generation: string): void;
@@ -96,6 +100,12 @@ export function createClaudeLaunchProof(opts: {
   }
   return {
     permissionLaunch, helloLaunch, expectedLaunch, owner,
+    attestedSession(peer, launchId, reported) {
+      if (!channel(peer) || !launchId || !isClaudeSessionUuid(reported)) return;
+      const launch = readClaudeLaunchProof(opts.stateDir, peer, opts.instanceId);
+      if (launch?.privateRecord && launch.launchId === launchId && launch.nativeSessionId === reported
+        && launch.launcherPid && launch.launcherSignature && processLiveness(launch.launcherPid, launch.launcherSignature) === "live") return reported;
+    },
     bindGeneration(peer, generation) { if (owner(peer)) generations.set(peer, generation); },
     verified(peer) { const current = owner(peer); return !!current && generations.get(peer) === current.sessionGeneration; },
   };
