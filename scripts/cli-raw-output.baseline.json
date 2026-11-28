@@ -1,43 +1,7 @@
 [
  {
-  "file": "src/cli/agents.ts",
-  "text": "if (!revoke) console.log(`${COMPAT[id].label} ${version}: ${COMPAT[id].trustNote}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/agents.ts",
-  "text": "if (revoke) return console.log(`revoked: ${id} ${version} (${rows.length} trusted on this machine, ${trustFile()})`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/agents.ts",
-  "text": "console.log(`trusted on this machine: ${COMPAT[id].label} ${version}\\nUndo: ahub agents trust ${id} ${version} --revoke`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/agents.ts",
-  "text": "console.log(`${row.id.padEnd(13)} ${(v.version ?? \"-\").padEnd(10)} ${v.state.padEnd(9)} ${row.policy}${v.ok ? (v.note ? `\\n${\" \".repeat(14)}${v.note}` : \"\") : `\\n${\" \".repeat(14)}${v.reason}`}`);",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
   "file": "src/cli/bench.ts",
   "text": "log: (line) => console.log(line),",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/broker.ts",
-  "text": "try { console.log(`broker room ${store.dropRoom(drop.room).removed ? \"dropped\" : \"not found\"}: ${drop.room}`); }",
-  "count": 1,
-  "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
- },
- {
-  "file": "src/cli/broker.ts",
-  "text": "console.log(`broker listening at ${broker.publicUrl} (ciphertext relay; application delivery is not acknowledged here)`);",
   "count": 1,
   "reason": "#1654 item 13: ad hoc human output of a command outside the Report views; moves onto Report with its command"
  },

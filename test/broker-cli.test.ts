@@ -89,11 +89,16 @@ test("a separate broker CLI process receives only sealed canary data and stops w
     client.close(); child.kill("SIGTERM");
     expect(await child.exited).toBe(0);
     expect(await stdout).not.toContain(canary); expect(await stderr).not.toContain(canary);
+    expect((await stdout).trim().split("\n")).toEqual([
+      `ahub broker listening at ${url} (ciphertext relay; application delivery is not acknowledged here)`,
+    ]);
     const drop = Bun.spawn([process.execPath, CLI, "broker", "room", "drop", epoch.epoch.room, "--yes", "--state-dir", f.stateDir], { cwd: f.root, env: f.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     running.push(drop);
     const [dropCode, dropOut, dropErr] = await Promise.all([drop.exited, new Response(drop.stdout).text(), new Response(drop.stderr).text()]);
     expect({ code: dropCode, error: dropErr }).toEqual({ code: 0, error: "" });
     expect(dropOut).toContain(`broker room dropped: ${epoch.epoch.room}`);
+    expect(dropOut).toContain("ahub Broker room");
+    expect(dropOut).toContain("Result");
     const inspect = await BrokerStore.open({ stateDir: f.stateDir, create: false });
     try { expect(inspect.stats()).toEqual({ rooms: 0, queuedFrames: 0, queuedBytes: 0 }); }
     finally { inspect.close(); }

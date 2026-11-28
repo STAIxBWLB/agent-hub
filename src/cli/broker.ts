@@ -4,6 +4,7 @@ import { BrokerStore, BrokerStoreError } from "../broker/store.ts";
 import { decodeBase64url, RoomCryptoError } from "../rooms/crypto.ts";
 import { startBroker, BrokerServerError, type BrokerOptions } from "../broker/server.ts";
 import { warnLine } from "./warn-line.ts";
+import { Report, asciiMarkers, terminalText } from "./console-state.ts";
 
 export const BROKER_USAGE = "usage: ahub broker serve [--hostname <host>] [--port <0..65535>] [--public-url <ws[s]://host/>] [--owner <fingerprint>]... [--state-dir <dir>] | broker room drop <room> --yes [--state-dir <dir>]";
 export function brokerOptions(args: readonly string[], stateDir: string): BrokerOptions {
@@ -36,16 +37,22 @@ export function brokerDropOptions(args: readonly string[], stateDir: string): { 
   return { room, stateDir: selected };
 }
 export async function runBrokerCommand(args: readonly string[], stateDir: string): Promise<void> {
+  const print = (report: Report) => { process.stdout.write(report.render(false).join("\n") + "\n"); };
   if (args[0] === "room") {
     const drop = brokerDropOptions(args, stateDir);
     const store = await BrokerStore.open({ stateDir: drop.stateDir, create: false });
-    try { console.log(`broker room ${store.dropRoom(drop.room).removed ? "dropped" : "not found"}: ${drop.room}`); }
+    try {
+      const { removed } = store.dropRoom(drop.room);
+      print(new Report(undefined, asciiMarkers(process.env)).titled("ahub", "Broker room")
+        .section("Result").bullet(removed ? "ok" : "unknown", `broker room ${removed ? "dropped" : "not found"}: ${drop.room}`));
+    }
     finally { store.close(); }
     return;
   }
   const options = brokerOptions(args, stateDir);
   const broker = await startBroker(options);
-  console.log(`broker listening at ${broker.publicUrl} (ciphertext relay; application delivery is not acknowledged here)`);
+  // A machine-readable readiness line is intentionally unwrapped and uncolored.
+  print(new Report().header("ahub", `broker listening at ${terminalText(broker.publicUrl)} (ciphertext relay; application delivery is not acknowledged here)`));
   const stop = () => { void broker.stop().catch(() => { process.exitCode = 1; warnLine("broker: stop failed"); }); };
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
   try { await broker.closed; }

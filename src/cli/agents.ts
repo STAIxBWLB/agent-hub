@@ -2,6 +2,9 @@ import { spawnSync } from "node:child_process";
 import { assessVersion, COMPAT, describe, isCompatId, readTrust, trustFile, writeTrust, type CompatId, type CompatVerdict } from "../adapters/compat.ts";
 import { childEnv } from "../hub/child-process.ts";
 import { withoutOrcaEnv } from "../hub/orca-env.ts";
+import { Report, asciiMarkers, resolveColor, streamEnv, type Span } from "./console-state.ts";
+import { outputWidth } from "./output.ts";
+import { grid, s } from "./sdlc-output.ts";
 
 /** #691: what `ahub agents` and `ahub doctor` show for each gated native CLI. */
 export interface AgentVersionRow { id: CompatId; executable?: string; verdict: CompatVerdict; policy: string }
@@ -81,24 +84,40 @@ export async function agentVersionsAsync(commands: Partial<Record<CompatId, read
   }));
 }
 
+export function renderAgents(rows: readonly AgentVersionRow[], columns?: number, ascii = false): Span[][] {
+  if (!rows.length) return [[{ text: "no native agents" }]];
+  const items = rows.map(({ id, verdict, policy }) => [
+    s(id, "info"), s(verdict.version ?? "-"), s(verdict.state, verdict.ok ? "success" : "attention"),
+    s(policy), s(verdict.ok ? verdict.note ?? "" : verdict.reason),
+  ]);
+  return new Report(columns, ascii).titled("ahub", "Agents")
+    .section("Versions", String(rows.length)).append(grid(["AGENT", "VERSION", "STATE", "POLICY", "DETAIL"], items, columns)).lines();
+}
+
 export function runAgents(args: string[], commands: Partial<Record<CompatId, readonly string[]>>, fail: (message: string) => never): void {
+  const isTTY = !!process.stdout.isTTY;
+  const columns = outputWidth({ isTTY, columns: process.stdout.columns, COLUMNS: process.env.COLUMNS });
+  const ascii = asciiMarkers(process.env);
+  const color = resolveColor(undefined, streamEnv(isTTY), "ahub") === true;
+  const print = (report: Report) => console.log(report.render(color).join("\n"));
   const [sub, id, version, ...rest] = args.filter(arg => arg !== "--json");
   if (sub === "trust") {
     const revoke = rest.includes("--revoke");
     if (!isCompatId(id) || !version || rest.some(arg => arg !== "--revoke")) fail(`usage: ahub agents trust <${Object.keys(COMPAT).join("|")}> <version> [--revoke]`);
     // The issue requires saying what trust covers before it is recorded.
-    if (!revoke) console.log(`${COMPAT[id].label} ${version}: ${COMPAT[id].trustNote}`);
+    if (!revoke) print(new Report(columns, ascii).titled("ahub", "Agent trust")
+      .section("Scope").note(`${COMPAT[id].label} ${version}: ${COMPAT[id].trustNote}`, "value"));
     let rows;
     try { rows = writeTrust(id, version, revoke); } catch (error) { fail((error as Error).message); }
-    if (revoke) return console.log(`revoked: ${id} ${version} (${rows.length} trusted on this machine, ${trustFile()})`);
-    console.log(`trusted on this machine: ${COMPAT[id].label} ${version}\nUndo: ahub agents trust ${id} ${version} --revoke`);
+    const receipt = new Report(columns, ascii).titled("ahub", "Agent trust")
+      .section("Result").bullet("ok", revoke ? `revoked: ${id} ${version}` : `trusted on this machine: ${COMPAT[id].label} ${version}`)
+      .note(`${rows.length} trusted on this machine`).kv([["trust file", trustFile()]]);
+    receipt.next(`ahub agents trust ${id} ${version}${revoke ? "" : " --revoke"}`);
+    print(receipt);
     return;
   }
   if (sub !== undefined) fail("usage: ahub agents [--json] | ahub agents trust <id> <version> [--revoke]");
   const rows = agentVersions(commands);
   if (args.includes("--json")) return console.log(JSON.stringify(rows.map(row => ({ id: row.id, executable: row.executable ?? null, ...row.verdict, policy: row.policy })), null, 2));
-  for (const row of rows) {
-    const v = row.verdict;
-    console.log(`${row.id.padEnd(13)} ${(v.version ?? "-").padEnd(10)} ${v.state.padEnd(9)} ${row.policy}${v.ok ? (v.note ? `\n${" ".repeat(14)}${v.note}` : "") : `\n${" ".repeat(14)}${v.reason}`}`);
-  }
+  print(new Report(columns, ascii).append(renderAgents(rows, columns, ascii)));
 }

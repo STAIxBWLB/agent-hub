@@ -11,6 +11,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - SDLC audit start, release train, plan review, acceptance, and read-back receipts use the shared CLI report layout (Refs #1724).
 - Managed Claude channels attest their native session for conductor guidance probes (Refs #1751, #1226).
 - Settings output uses the shared report layout (Refs #1724).
+- Agent version, trust, and broker output use shared reports (Refs #1724).
 
 ## 0.48.4
 
