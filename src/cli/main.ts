@@ -154,6 +154,7 @@ import { SURVEY_FOCUS } from "../hub/advisor-survey.ts";
 import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit, renderSdlcConfiguration, renderSdlcSurvey, renderSdlcReceipt, renderSdlcReadback, renderSdlcTrain } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
+import { RESET_KEPT, RESET_MEMORY, renderLifecycleReceipt, renderResetPlan, renderUndoPlan } from "./reset-output.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
 const since = (): number => {
@@ -3306,21 +3307,17 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
     };
     // #798 D3: the hub saw these submodules dirty when the turn ended and cannot see inside them: they are never restored, and never counted as "no change".
     const unobserved = turn.unobserved ?? [];
-    const unobservedNote = unobserved.length ? `\nthese submodules were changed during the turn and their contents cannot be restored (the hub does not observe inside a submodule); undo them in the submodule itself:\n  ${unobserved.join("\n  ")}` : "";
     const first = plan();
-    if (first.undone && !unobserved.length) return console.log(`turn ${id} is already undone: its files are as they were before it started`);
-    if (first.undone) return console.log(`turn ${id}: its files are as they were before it started${unobservedNote}`);
-    // "changed no files" is true of the files the hub observes and false of the turn: with a submodule dirty it says what it can and cannot see instead.
-    console.log((first.restore.length ? `turn ${id} changed:\n  ${first.restore.join("\n  ")}` : unobserved.length ? `turn ${id} changed no files the hub can restore` : `turn ${id} changed no files`) + unobservedNote);
-    console.log("(every change made in the project during the turn counts as its own, including any by Claude or by you)");
+    printOutput(renderUndoPlan({ id, restore: first.restore, unobserved, undone: first.undone }, undefined, undefined, asciiMarkers(process.env)), false);
+    if (first.undone) return;
     const projections = new TextProjections({ cwd: undoCwd, stateDir, config: undoConfig.text_projection ?? {}, deny: undoConfig.local.deny, readAllow: undoConfig.local.read_allow, log: line => warn(line) });
     const preview = projectedDiff({ repo, from: endTree, to: startTree, paths: first.restore, projections, deny: undoConfig.local.deny, privatePath: path => matchesPolicy(undoCwd, join(repo.top, path), undoConfig.pii?.paths ?? []) });
-    if (preview) console.log(terminalText("Undo preview (end snapshot to start snapshot):\n" + preview));
+    if (preview) printOutput(renderLifecycleReceipt({ lines: [terminalText("Undo preview (end snapshot to start snapshot):\n" + preview)] }), false);
 
-    if (!args.includes("--yes")) return console.log("nothing was changed; add --yes to restore these files");
+    if (!args.includes("--yes")) return printOutput(renderLifecycleReceipt({ lines: ["nothing was changed; add --yes to restore these files"] }), false);
     requireUndoWorkspace();
     if (args.includes("--context")) {
-      console.log(await taskOp("turn_revert", { turn: id }));
+      printOutput(renderLifecycleReceipt({ lines: [await taskOp("turn_revert", { turn: id })] }), false);
       reverted = true;
     }
     // A peer may have written meanwhile (the revert alone can take seconds): plan again right before restoring.
@@ -3328,17 +3325,17 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
     if (second.restore.join("\0") !== first.restore.join("\0")) fail(`the project changed while undoing; nothing was restored, run ahub undo again${reverted ? " without --context (Codex's conversation was already reverted)" : ""}`);
     requireUndoWorkspace();
     restore(repo, startTree, second.restore);
-    if (second.restore.length) console.log(`restored to their state before ${id}`);
+    if (second.restore.length) printOutput(renderLifecycleReceipt({ lines: [`restored to their state before ${id}`] }), false);
   },
 
   kill: async () => {
     const project = matchingProject();
     if (!project) {
-      if (!hubManifest()) return console.log("hub is not running");
+      if (!hubManifest()) return printOutput(renderLifecycleReceipt({ lines: ["hub is not running"] }), false);
       fail("hub has no matching registration; use its matching CLI to stop it before upgrading");
     }
     await stopProject(project);
-    console.log("hub stopped");
+    printOutput(renderLifecycleReceipt({ lines: ["hub stopped"] }), false);
   },
   // The counterpart of `ahub up`: the same verified graceful stop as `ahub kill`, never a second shutdown path.
   down: async () => { await commands.kill!(); },
@@ -3352,7 +3349,7 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
     const project = matchingProject() ?? fail(hubManifest() ? "hub has no matching registration; use its matching CLI to stop it; nothing was changed"
       : elsewhere ? `this project is registered with the state directory ${elsewhere.stateDir}; run ahub --project ${elsewhere.id} reset; nothing was changed`
         : "no registration matches this project and state directory; nothing was changed (ahub up registers it)");
-    if (!existsSync(stateDir)) return console.log("no state directory; nothing to reset");
+    if (!existsSync(stateDir)) return printOutput(renderLifecycleReceipt({ lines: ["no state directory; nothing to reset"] }), false);
     // A state directory elsewhere (AGENTHUB_STATE_DIR, or a symlink) would cross file systems or pull outside state
     // into the project tree.
     if (all && stateDir !== join(cwd, ".agenthub", "state")) fail(`--all moves only ${join(cwd, ".agenthub", "state")}; this project's state is in ${stateDir}: stop the hub and archive it by hand; nothing was changed`);
@@ -3362,8 +3359,7 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
     if (!["stopped", "running", "stopping"].includes(live.state)) fail(`${live.error ?? `hub is ${live.state}`}; nothing was changed`);
     const recovery = live.status?.recovery as { operationId?: string; phase?: string } | undefined;
     if (recovery?.operationId && recovery.phase !== "released") fail(`recovery operation ${recovery.operationId} is open in this hub; nothing was changed`);
-    const kept = "kept: the board, logs and audit, recovery records, execution budgets, configuration and pi-sessions/";
-    const memory = "claude-mem is not touched: notes saved with hub_remember stay in shared memory";
+    const ascii = asciiMarkers(process.env);
     if (!args.includes("--yes")) {
       // Planned only for the dry run: `--all --yes` archives a state directory it cannot read as it is.
       let plan: ResetPlan | undefined, unread: string | undefined;
@@ -3372,20 +3368,17 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
         if (!all) fail(`cannot read the state (${failureText(error)}); nothing was changed${damagedState(error) ? "; ahub reset --all --yes archives it as it is" : ""}`);
         unread = failureText(error);
       }
-      console.log(`ahub reset${all ? " --all" : ""}, dry run: the hub is ${live.state}${live.state === "stopped" ? "" : "; --yes stops it first, as ahub kill does"}`);
-      if (all) {
-        console.log(`  move ${stateDir}${plan ? ` (${plan.entries} entries)` : ""} to ${join(cwd, ".agenthub", "archive")}/state-<UTC time>/ (0700), then start an empty state directory holding only project.json; project ${project.id} keeps its id and registration`);
-        console.log(unread ? `  could not read the state (${unread}); it is archived as it is` : "  archived as they are:");
-      } else console.log('  settle as discard with reason "reset", clear and drop:');
-      for (const line of plan ? resetLines(plan) : []) console.log(`    ${line}`);
       const stale = live.state === "stopped" && !all ? MANIFEST.filter((name) => existsSync(join(stateDir, name))) : [];
-      if (stale.length) console.log(`  remove the manifest a hub left when it did not stop cleanly: ${stale.join(", ")}`);
-      console.log(`  ${all ? ".agenthub/config.json, config.local.json and routing.toml are outside the state directory and stay" : kept}`);
-      console.log(`  ${memory}`);
-      return console.log("nothing was changed; add --yes to apply");
+      return printOutput(renderResetPlan({ all, state: live.state, stateDir, archive: join(cwd, ".agenthub", "archive"),
+        projectId: project.id, plan, unread, stale }, undefined, undefined, ascii), false);
     }
     await stopProject(project);
-    if (live.state !== "stopped") console.log("hub stopped");
+    let receiptStarted = false;
+    const receipt = (...lines: string[]) => {
+      printOutput(renderLifecycleReceipt({ ...(receiptStarted ? {} : { title: all ? "Reset --all" : "Reset" }), lines }, undefined, undefined, ascii), false);
+      receiptStarted = true;
+    };
+    if (live.state !== "stopped") receipt("hub stopped");
     // Hold the claim a daemon takes to run: a hub started after the stop holds it (refused here), and none can start
     // while the reset acts. A reset that dies leaves a claim with a dead pid, which the next start takes over.
     const registry = new Registry();
@@ -3403,24 +3396,24 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
         let archived: string;
         try { archived = archiveState(cwd, stateDir); }
         catch (error) { throw new Error(`the hub is stopped; nothing was moved: ${failureText(error)}`); }
-        console.log(`moved the state directory to ${archived}`);
+        receipt(`moved the state directory to ${archived}`);
         try { startState(stateDir, archived); }
         catch (error) { throw new Error(`${(error as Error).message}; the state directory is archived at ${archived}: create ${stateDir} (0700) and copy project.json from the archive`); }
-        console.log(`the new state directory holds only project.json (to restore: ahub kill, move ${stateDir} into ${join(cwd, ".agenthub", "archive")}/, then move the archive back to ${stateDir})`);
+        receipt(`the new state directory holds only project.json (to restore: ahub kill, move ${stateDir} into ${join(cwd, ".agenthub", "archive")}/, then move the archive back to ${stateDir})`);
       } else {
         let result: ReturnType<typeof resetRuntime>;
         try { result = resetRuntime(stateDir, project); }
         catch (error) {
           throw new Error(`${failureText(error)}; the hub is stopped and the reset is incomplete: ${damagedState(error) ? "the state cannot be read, so a rerun fails the same way; ahub reset --all --yes archives it as it is" : "run ahub reset --yes again to finish it"}`);
         }
-        console.log(`settled ${result.settled.length} deliveries as discard with reason "reset"`);
-        for (const line of resetLines(result.plan).slice(1)) console.log(`cleared ${line}`);
-        if (result.stale.length) console.log(`removed the manifest a hub left when it did not stop cleanly: ${result.stale.join(", ")}`);
-        console.log(kept);
+        receipt(`settled ${result.settled.length} deliveries as discard with reason "reset"`);
+        for (const line of resetLines(result.plan).slice(1)) receipt(`cleared ${line}`);
+        if (result.stale.length) receipt(`removed the manifest a hub left when it did not stop cleanly: ${result.stale.join(", ")}`);
+        receipt(RESET_KEPT);
       }
     } finally { registry.release(project.id, claim); registry.close(); }
-    console.log(memory);
-    console.log("Claude Code sessions attached to this hub lost their hub session: relaunch them with ahub claude");
+    receipt(RESET_MEMORY);
+    receipt("Claude Code sessions attached to this hub lost their hub session: relaunch them with ahub claude");
   },
 
   role: async () => {
