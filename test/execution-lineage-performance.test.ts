@@ -50,7 +50,13 @@ test("a lineage read stays bounded in latency and size while the synthetic board
   try {
     const smallBoard = f.read({ taskId: f.root.id });
     const empty = sample(() => f.read({ taskId: f.root.id }));
-    f.filler(2000);
+    f.filler(200);
+    const medium = sample(() => f.read({ taskId: f.root.id }));
+    expect(medium.maxBytes).toBe(empty.maxBytes);
+    expect(f.read({ taskId: f.root.id })).toEqual(smallBoard);
+    expect(medium.p95).toBeLessThan(250);
+    expect(medium.maxBytes).toBeLessThanOrEqual(LINEAGE_LIMITS.bytes);
+    f.filler(1800);
     const large = sample(() => f.read({ taskId: f.root.id }));
     // The same admitted page on a board 2000 tasks deeper: this root's neighborhood is what the read costs, not the board.
     expect(large.maxBytes).toBe(empty.maxBytes);

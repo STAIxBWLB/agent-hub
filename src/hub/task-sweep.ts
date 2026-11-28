@@ -85,7 +85,7 @@ export const TASK_WAIT_MAX_MS = 14 * 24 * 3_600_000;
 /** #1454: the reason a wait carries is public text; longer text is refused, never cut. */
 export const TASK_WAIT_REASON_MAX = 200;
 /** History events that leave a recorded wait in force: bookkeeping that neither moves the task nor is owner activity on it. Anything else (done, decline, return, reassignment, cancel) ends it. */
-const WAIT_KEEPING_EVENTS = new Set(["wait recorded", "idle sweep", "answer", "reviewer changed", "memory reference started", "ready held", "plan observed", "planner changed", "claim verdict", "invocation", "shell branch bound"]);
+const WAIT_KEEPING_EVENTS = new Set(["wait recorded", "idle sweep", "answer", "reviewer changed", "memory reference started", "ready held", "plan observed", "planner changed", "claim verdict", "invocation", "shell branch bound", "check run passed", "check run failed"]);
 export interface TaskWait { until: number; at: number; by: string; owner: string }
 /** The wait that is still in force on an in_progress task: the latest `wait recorded` entry, for the current owner, with no state-changing entry after it. A passed `until` still counts (the planner groom view lists it); `nextSweep` is what lets the ladder restart. */
 export function taskWait(task: Pick<Task, "state" | "owner" | "history">): TaskWait | undefined {

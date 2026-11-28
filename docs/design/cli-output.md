@@ -131,6 +131,7 @@ Glyphs are semantic; each pairs with one role. Code uses named constants, never 
   In ahub, `warn()` in `main.ts` is `warnLine()` from `src/cli/warn-line.ts`, which prints `warningLines`, the one formatter (re-exported by `src/cli/error-format.ts`). A raw `console.log` or `console.error` in `src/cli` that bypasses Report, `printOutput`, `errorLines` or the warning printers is allowed only while `scripts/cli-raw-output.baseline.json` lists it with its reason; that list can only shrink, and `test/cli-output-conformance.test.ts` fails on a new call and on a stale entry.
 - Success confirmation (stdout): `✓ <what was done>`; omit it when the output already shows the result.
 - Usage error: the message, then `Usage: <tool> <command> <args>` and `Run '<tool> help <command>' for details.`, exit `2`.
+  Adoption gap: for its `usage:` diagnostic, ahub prints one `ahub: usage: ...` line and exits `2`.
 - Plain English sentences, no emoji, no exclamation marks. Relative times in human output (`47d ago`, `in 5d15h`).
 
 ## Help

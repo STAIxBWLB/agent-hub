@@ -3424,7 +3424,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!tasks.isPii(row)) { const edits = editEvidence.snapshot(row.id, taskRevision(side).revision); if (edits) facts.edits = [edits]; }
     const window = side.history.slice(taskRevision(side).from);
     // Hashing is only owed when this revision recorded a check pass over delivered ids; otherwise the rule says so itself.
-    if (!tasks.isPii(row) && window.some((entry) => entry.event === "check passed") && window.some((entry) => (entry.deliverables?.length ?? 0) > 0)) {
+    if (!tasks.isPii(row) && window.some((entry) => entry.event === "check passed" || entry.event === "check run passed") && window.some((entry) => (entry.deliverables?.length ?? 0) > 0)) {
       const status = await tasks.deliverableStatus(row);
       if (status) {
         facts.deliverables = [{

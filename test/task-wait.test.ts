@@ -137,6 +137,21 @@ test("an owner's own activity after a wait ends it: done, decline and a hub reas
   expect(taskWait(f.board.get(moved.id)!)).toBeUndefined();
 });
 
+test("isolated check results keep a wait until the task moves", async () => {
+  const f = await fixture();
+  for (const ending of ["done", "decline"] as const) {
+    const task = f.make(), until = T0 + 5 * HOUR;
+    await f.tasks.wait("codex", { id: task.id, until: iso(until), reason: "waiting for the release window" });
+    for (const event of ["check run passed", "check run failed"]) {
+      f.board.update(task.id, HUB, event, {});
+      expect(taskWait(f.board.get(task.id)!)).toMatchObject({ until });
+    }
+    if (ending === "done") f.board.update(task.id, "codex", "done", { state: "in_review" });
+    else await f.tasks.decline("codex", task.id, "cannot run it");
+    expect(taskWait(f.board.get(task.id)!)).toBeUndefined();
+  }
+});
+
 test("bookkeeping entries leave a wait in force; a sweep notice from another ladder does not end it", async () => {
   const f = await fixture();
   const task = f.make();
