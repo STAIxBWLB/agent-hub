@@ -704,7 +704,7 @@
  {
   "file": "src/cli/main.ts",
   "text": "print: line => console.log(terminalText(line)),",
-  "count": 2,
+  "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
  },
  {
@@ -716,114 +716,6 @@
  {
   "file": "src/cli/main.ts",
   "text": "console.log(`Machine autonomy default: ${action}.`);",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (Array.isArray(result.rejected)) for (const row of result.rejected.slice(0, 100)) console.log(terminalText(`${String(row.key).slice(0, 160)}: ${String(row.reason).slice(0, 1000)}`));",
-  "count": 2,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "console.log(\"Guarded settings awaiting confirmation:\");",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "console.log(`  ${terminalText(change.key)}: ${terminalText(change.before)} -> ${terminalText(change.after)}`);",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (change.effect !== undefined) console.log(`    ${terminalText(change.effect)}`);",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (!accepted) return console.log(\"guarded settings were not applied\");",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "return console.log(paint([{ text: result.text }], false));",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "return console.log(paint([{ text: (await request({ t: \"settings_undo\", ...(confirm ? { confirm } : {}) })).text }], false));",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "for (const line of preview.lines ?? []) console.log(paint([{ text: line }], false));",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "for (const task of preview.tasks ?? []) console.log([task.before[0], \"  before:\", ...task.before.slice(2).map((line: string) => `    ${line}`), \"  after:\", ...task.after.slice(2).map((line: string) => `    ${line}`)].join(\"\\n\"));",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (preview.hidden) console.log(`${preview.hidden} more open tasks are not shown`);",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "return console.log(\"preview only; nothing was changed\");",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "console.log(paint([{ text: reply.text }], false));",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (typeof reply.note === \"string\" && reply.note) console.log(paint([{ text: reply.note }], false));",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (sub === \"list\" && row.group !== group) console.log(`${group ? \"\\n\" : \"\"}${group = row.group}`);",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "console.log(`  ${row.key.padEnd(width)}  ${settingText(row.value).padEnd(valueWidth)}  ${facts.join(\"; \")}`);",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (sub === \"get\") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === \"boolean\" ? \"true, false\" : row.type === \"number-or-off\" ? `off or a number from ${row.min ?? 0} to ${row.max ?? \"the configured bound\"}` : row.type === \"integer\" || row.type === \"number\" ? `a number from ${row.min ?? 0} to ${row.max ?? \"the configured bound\"}` : row.type === \"peers\" ? \"a comma list of peer ids\" : row.type === \"roles\" ? \"up to two comma-separated catalog ids\" : (row.values ?? []).join(\", \")}${row.file === \"this hub run\" || row.key === \"instructed.mode\" ? \"\" : \", or inherit to remove the machine-local value\"}${row.risk === \"raises\" ? \"; a dashboard needs a settings session (ahub ui --settings) to raise it\" : \"\"}`);",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (sub === \"list\" && view.pendingRestart?.length) console.log(`\\npending restart: ${view.pendingRestart.map((entry: { key: string }) => entry.key).join(\", \")}`);",
-  "count": 1,
-  "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
- },
- {
-  "file": "src/cli/main.ts",
-  "text": "if (sub === \"list\" && view.undo) console.log(`\\nahub settings undo puts back the last write (${view.undo})`);",
   "count": 1,
   "reason": "#1654 items 13, 21, 27: ad hoc human output or a daemon text passed through; moves onto Report or a data-returning daemon op per view"
  },

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { terminalText } from "../src/cli/console-state.ts";
 
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const CONTROL = join(import.meta.dir, "../src/hub/control-client.ts");
@@ -79,7 +80,7 @@ test("#439 reload CLI confirmation timeout never sends the token", async () => {
 
 test("#439 reload CLI preserves safe reload output without prompting", async () => {
   const result = await cli({ reply: { ok: true, text: "configuration reloaded", applied: ["research.enabled"] } });
-  expect(result.code).toBe(0); expect(result.out).toBe("configuration reloaded\n"); expect(result.requests).toEqual([{ t: "settings_reload" }]);
+  expect(result.code).toBe(0); expect(result.out).toContain("Settings reload"); expect(result.out).toContain("configuration reloaded\n"); expect(result.requests).toEqual([{ t: "settings_reload" }]);
 });
 
 test("#439 reload CLI refuses --yes and inherited agent identity before any connection", async () => {
@@ -91,9 +92,12 @@ test("#439 reload CLI refuses --yes and inherited agent identity before any conn
 test("#439 reload CLI displays every full before and after value before accepting the token", async () => {
   const result = await cli({ tty: true, answer: "y\n" });
   expect(result.code, result.err).toBe(0);
-  expect(result.out).toContain(`${beforeArgv} -> ${afterArgv}`);
-  expect(result.out).toContain('"ask" -> "never-ask"');
-  expect(result.out).toContain("false -> true");
+  const plain = terminalText(result.out);
+  const fullText = plain.replace(/\n +/g, "");
+  expect(fullText).toContain(beforeArgv);
+  expect(fullText).toContain(afterArgv);
+  expect(plain).toMatch(/before: +"ask"\n +after: +"never-ask"/);
+  expect(plain).toMatch(/before: +false\n +after: +true/);
   expect(result.out).toContain("next native start uses this complete argv");
   expect(result.out.indexOf(beforeArgv)).toBeLessThan(result.out.indexOf("Apply guarded settings"));
   expect(result.requests).toEqual([{ t: "settings_reload" }, { t: "settings_reload", confirm: "fixture-bound-token" }]);

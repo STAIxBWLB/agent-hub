@@ -170,7 +170,7 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | permission | fail (3), console.log (3) |
 | roster | fail (5), console.log (3), printOutput (4), renderRoster (1) |
 | autonomy | console.log (4), fail (1) |
-| settings | fail (18), console.log (23) |
+| settings | printOutput (1), fail (18), process.stdout.write (1), console.log (2) |
 | permit | fail (1) |
 | answer | fail (3), console.log (8) |
 | results | fail (4), console.log (8) |
@@ -207,35 +207,32 @@ Interpolated and daemon-supplied strings require runtime fixtures. They are coun
 
 | Command | Text source | Stream | Literal width |
 | --- | --- | --- | ---: |
-| recovery | src/cli/main.ts:1045 | stdout | 29 |
-| recovery | src/cli/main.ts:1078 | stdout | 60 |
-| projects | src/cli/main.ts:1172 | stdout | 45 |
-| ui | src/cli/main.ts:1188 | stdout | 57 |
-| ui | src/cli/main.ts:1208 | stdout | 76 |
-| models | src/cli/main.ts:1596 | stdout | 11 |
-| say | src/cli/main.ts:1620 | stdout | 46 |
-| roadmap | src/cli/main.ts:1824 | stdout | 46 |
-| deliverables | src/cli/main.ts:2061 | stdout | 70 |
-| ask | src/cli/main.ts:2498 | stdout | 9 |
-| ask | src/cli/main.ts:2501 | stdout | 54 |
-| roster | src/cli/main.ts:2618 | stdout | 19 |
-| roster | src/cli/main.ts:2625 | stdout | 19 |
-| autonomy | src/cli/main.ts:2676 | stdout | 75 |
-| settings | src/cli/main.ts:2769 | stdout | 39 |
-| settings | src/cli/main.ts:2782 | stdout | 33 |
-| settings | src/cli/main.ts:2813 | stdout | 33 |
-| answer | src/cli/main.ts:2858 | stdout | 17 |
-| bench | src/cli/main.ts:2999 | stdout | 107 |
-| usage | src/cli/main.ts:3183 | stderr | 121 |
-| undo | src/cli/main.ts:3319 | stdout | 103 |
-| undo | src/cli/main.ts:3324 | stdout | 53 |
-| kill | src/cli/main.ts:3341 | stdout | 18 |
-| kill | src/cli/main.ts:3345 | stdout | 11 |
-| reset | src/cli/main.ts:3359 | stdout | 36 |
-| reset | src/cli/main.ts:3383 | stdout | 56 |
-| reset | src/cli/main.ts:3389 | stdout | 39 |
-| reset | src/cli/main.ts:3392 | stdout | 11 |
-| reset | src/cli/main.ts:3427 | stdout | 96 |
+| recovery | src/cli/main.ts:1046 | stdout | 29 |
+| recovery | src/cli/main.ts:1079 | stdout | 60 |
+| projects | src/cli/main.ts:1173 | stdout | 45 |
+| ui | src/cli/main.ts:1189 | stdout | 57 |
+| ui | src/cli/main.ts:1209 | stdout | 76 |
+| models | src/cli/main.ts:1597 | stdout | 11 |
+| say | src/cli/main.ts:1621 | stdout | 46 |
+| roadmap | src/cli/main.ts:1825 | stdout | 46 |
+| deliverables | src/cli/main.ts:2062 | stdout | 70 |
+| ask | src/cli/main.ts:2499 | stdout | 9 |
+| ask | src/cli/main.ts:2502 | stdout | 54 |
+| roster | src/cli/main.ts:2619 | stdout | 19 |
+| roster | src/cli/main.ts:2626 | stdout | 19 |
+| autonomy | src/cli/main.ts:2677 | stdout | 75 |
+| answer | src/cli/main.ts:2854 | stdout | 17 |
+| bench | src/cli/main.ts:2995 | stdout | 107 |
+| usage | src/cli/main.ts:3179 | stderr | 121 |
+| undo | src/cli/main.ts:3315 | stdout | 103 |
+| undo | src/cli/main.ts:3320 | stdout | 53 |
+| kill | src/cli/main.ts:3337 | stdout | 18 |
+| kill | src/cli/main.ts:3341 | stdout | 11 |
+| reset | src/cli/main.ts:3355 | stdout | 36 |
+| reset | src/cli/main.ts:3379 | stdout | 56 |
+| reset | src/cli/main.ts:3385 | stdout | 39 |
+| reset | src/cli/main.ts:3388 | stdout | 11 |
+| reset | src/cli/main.ts:3423 | stdout | 96 |
 
 ## Renderer candidates
 
@@ -304,6 +301,12 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/sdlc-output.ts:renderSdlcReadback | CLI | Direct | LayoutReport, Report | Unmeasured |
 | src/cli/sdlc-output.ts:renderSdlcTrain | CLI | Direct | LayoutReport, moment | Unmeasured |
 | src/cli/settings-edit.ts:renderEditPreview | CLI | - | Inline / indirect | 29 |
+| src/cli/settings-output.ts:renderSettingsRows | CLI | Direct | Report | Unmeasured |
+| src/cli/settings-output.ts:renderSdlcSetting | CLI | Direct | Report | Unmeasured |
+| src/cli/settings-output.ts:renderSettingsConfirmation | CLI | Direct | Report | Unmeasured |
+| src/cli/settings-output.ts:renderSettingsPreview | CLI | Direct | Report, heading | Unmeasured |
+| src/cli/settings-output.ts:renderSettingsReceipt | CLI | Direct | Report | Unmeasured |
+| src/cli/settings-output.ts:renderSettingsRejected | CLI | Direct | Report | Unmeasured |
 | src/cli/source-output.ts:renderSourceAdd | CLI | Direct | Report | 51 |
 | src/cli/source-output.ts:renderSourceList | CLI | Direct | Report, grid, moment | 62 |
 | src/cli/study-output.ts:renderStudyList | CLI | Direct | Report, grid | 114 |

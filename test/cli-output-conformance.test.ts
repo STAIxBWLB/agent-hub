@@ -1,3 +1,5 @@
+import { renderSettingsRows, renderSdlcSetting, renderSettingsConfirmation, renderSettingsPreview, renderSettingsReceipt, renderSettingsRejected } from "../src/cli/settings-output.ts";
+import type { SettingRow } from "../src/hub/settings.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -405,6 +407,8 @@ describe("CLI output standard v1: each converted view follows the grammar (#1654
   const peer = { state: "idle", doing: "", since: NOW - 60_000, tokens: 0 };
   const status = { version: "0.40.0", pid: 4242, controlPort: 12345, cwd: "/work/project", peers: { claude: peer }, tasks: { in_progress: 2 } } as any;
   const taskCard = { id: 7, title: "Implement the human output for every task command with a title long enough to need wrapping", detail: "A long detail line that wraps.", class: "implement", owner: "jcode", reviewer: "claude", planner: "claude", state: "in_review", refs: { repo: "owner/repo", branch: "feat/x", commit: A, paths: ["src/cli/task-output.ts"] }, plan: { paths: ["src/cli/task-output.ts"], symbols: ["renderTaskShow"] }, deps: [1, 2, 3], created: NOW - 7_200_000, updated: NOW - 60_000, rank: 3, priority: 1, planningRevision: 4, flowRevision: 9, approval: { head: A, latestHead: A, current: true }, symbolOverlaps: [{ task: 8, files: ["src/hub/tasks.ts"], sameFileDifferentSymbols: true }], deliverables: { state: "approved", changedSinceReview: true, files: [{ id: "d1", sha256: "b".repeat(64), state: "changed", path: "docs/report.md", format: "md" }] }, reviews: [{ kind: "approved", reviewer: "claude", at: NOW - 3_600_000 }], history: [{ at: NOW - 60_000, by: "claude", event: "changes_requested", note: "a note" }] };
+  const settingsRow: SettingRow = { key: "research.enabled", group: "Switches", label: "Research task tools", value: true, fileValue: false,
+    type: "boolean", source: "config.local.json", file: "config.local.json", applies: "live", risk: "raises" };
   const views: Record<string, (columns: number | undefined, ascii: boolean) => ReturnType<typeof renderSdlcMerge>> = {
     "status --verbose": (c, a) => renderStatus(status, c, NOW, false, a),
     "status": (c, a) => renderStatusDefault(status, c, NOW, a),
@@ -433,6 +437,17 @@ describe("CLI output standard v1: each converted view follows the grammar (#1654
     "sdlc train cut": (c, a) => renderSdlcTrain({ id: 2, name: "0.18.0", goal: "Release reports", state: "frozen", revision: 8, train: { scope: [7, 21] } }, c, NOW, a),
     "sdlc release-assign": (c, a) => renderTaskShow({ ...taskCard, release: 2 }, c, NOW, a),
     "sdlc plan-review": (c, a) => renderTaskShow(taskCard, c, NOW, a),
+    "settings list": (c, a) => renderSettingsRows({ rows: [settingsRow], pendingRestart: [{ key: "routing.classes.implement.peers" }], undo: settingsRow.key }, c, NOW, a),
+    "settings get": (c, a) => renderSettingsRows({ rows: [settingsRow], detail: true }, c, NOW, a),
+    "settings get sdlc": (c, a) => renderSdlcSetting({ key: "sdlc.required_checks", value: ["staged checks"], fileValue: ["planned checks"], problem: true }, c, NOW, a),
+    "settings reload rejected": (c, a) => renderSettingsRejected([{ key: "codex_bin", reason: "restart only" }], c, NOW, a),
+    "settings reload confirmation": (c, a) => renderSettingsConfirmation([{ key: "permission_modes.kimi", before: '"ask"', after: '"never-ask"', effect: "approval prompts are disabled" }], c, NOW, a),
+    "settings reload result": (c, a) => renderSettingsReceipt({ title: "Settings reload", lines: ["configuration reloaded"] }, c, NOW, a),
+    "settings undo": (c, a) => renderSettingsReceipt({ title: "Settings undo", lines: ["research.enabled: put back to false"] }, c, NOW, a),
+    "settings preview": (c, a) => renderSettingsPreview({ lines: ["routing.classes.implement.peers: kimi -> codex"], tasks: [{ before: ["task #7", "if it were assigned now:", "kimi selected"], after: ["task #7", "if it were assigned now:", "codex selected"] }], hidden: 1 }, c, NOW, a),
+    "settings set": (c, a) => renderSettingsReceipt({ title: "Settings set", lines: ["research.enabled: true (in force now)", "applies at once"] }, c, NOW, a),
+    "settings edit": (c, a) => renderSettingsReceipt({ title: "Settings edit", lines: ["config.local.json written: review.pool", "restart pending: sdlc.mode"] }, c, NOW, a),
+    "settings backups": (c, a) => renderSettingsReceipt({ title: "Settings backups", lines: ["config.local.json  90 bytes  fixture backup"] }, c, NOW, a),
     "task show": (c, a) => renderTaskShow(taskCard, c, NOW, a),
     "task cancel": (c, a) => renderTaskCancel({ ...taskCard, state: "cancelled", cancelled: { reason: "superseded by the new plan", supersededBy: "#8" } }, c, NOW, a),
     "backlog plan": (c, a) => renderBacklogResult("plan", { ...taskCard, state: "backlog", planningRevision: 0, history: [{ at: NOW - 1000, by: "claude", event: "planned", note: "priority 1" }] }, c, NOW, a),

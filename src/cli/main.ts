@@ -42,6 +42,7 @@ import { renderHandoffReceipt, renderHandoffs } from "./handoff-output.ts";
 import { parseHandoffArgs } from "./handoff-args.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
+import { renderSdlcSetting, renderSettingsConfirmation, renderSettingsPreview, renderSettingsReceipt, renderSettingsRejected, renderSettingsRows } from "./settings-output.ts";
 import { autonomyEnvironment, runAutonomy } from "./autonomy.ts";
 import { readAutonomyDefaults, writeAutonomyDefaults } from "../hub/autonomy-defaults.ts";
 import { inheritMachineAutonomy, prepareAutonomyProject, runAllProjectAutonomy, type PreparedAutonomyProject } from "./autonomy-projects.ts";
@@ -62,7 +63,7 @@ import { verifiedJcodeCommand } from "../adapters/jcode.ts";
 import { configureJcodeMcp, jcodeExtraMcpServers, splitJcodeMcpServers } from "./jcode-mcp.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
-import { parseSettingText, settingDef, settingText, undoableDef, type SettingRow } from "../hub/settings.ts";
+import { parseSettingText, settingDef, undoableDef, type SettingRow } from "../hub/settings.ts";
 import { startModeOf } from "../hub/start-mode.ts";
 import { rolesRow } from "./role-doctor.ts";
 import { classListRow, currentRouting, loadRouting, OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
@@ -2692,6 +2693,11 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
     } finally { prepared?.close(); rl?.close(); hub?.close(); registry.close(); }
   },
   settings: async () => {
+    const display = outputOptions([]);
+    const ascii = asciiMarkers(process.env, process.argv.includes("--ascii"));
+    const show = <T>(render: (data: T, columns?: number, now?: number, ascii?: boolean) => Span[][], data: T) =>
+      printOutput(render(data, display.columns, Date.now(), ascii), display.color);
+    const receipt = (title: string, ...lines: string[]) => show(renderSettingsReceipt, { title, lines });
     // #689: structural config edits (instances, review, snapshots, approvals, context.gate, sdlc.toml) and their backups. The hub validates and writes.
     if (args[0] === "edit" || args[0] === "backups") {
       // A command line the parser refuses never reaches the hub, not even as a connection.
@@ -2700,8 +2706,14 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
       const hub = await connect();
       try {
         const rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+        const lines: string[] = [];
+        const jsonBackups = args[0] === "backups" && args[1] === "--json";
+        const flush = () => {
+          if (lines.length) show(renderSettingsReceipt, { title: args[0] === "backups" ? "Settings backups" : "Settings edit", lines: lines.splice(0) });
+        };
         const usage = await runSettingsEdit(args, {
           request: async message => {
+            flush();
             const reply = await hub.request(message, 35_000);
             if (reply.ok !== true) {
               const error = String(reply.error ?? "config edit refused");
@@ -2709,9 +2721,12 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
             }
             return reply;
           },
-          ask: async prompt => { if (!rl) return null; try { return await rl.question(prompt); } catch { return null; } },
-          print: line => console.log(terminalText(line)),
-        }).finally(() => rl?.close());
+          ask: async prompt => { flush(); if (!rl) return null; try { return await rl.question(prompt); } catch { return null; } },
+          print: line => {
+            if (jsonBackups) process.stdout.write(terminalText(line) + "\n");
+            else lines.push(terminalText(line));
+          },
+        }).finally(() => { flush(); rl?.close(); });
         if (usage) fail(usage);
       } finally { hub.close(); }
       return;
@@ -2747,12 +2762,12 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
         const view = await request({ t: "settings_get" }), entry = view.sdlc?.[key!];
         if (!entry || !Object.hasOwn(entry, "value") || !Object.hasOwn(entry, "fileValue")) fail("running hub lacks SDLC settings reads; upgrade and restart it first");
         if (flags.includes("--json")) return console.log(JSON.stringify({ key, ...entry }, null, 2));
-        return console.log(terminalText(`${key}: running ${JSON.stringify(entry.value)}; file ${JSON.stringify(entry.fileValue)}${entry.problem ? "; file unavailable" : ""}`));
+        return show(renderSdlcSetting, { key: key!, value: entry.value, fileValue: entry.fileValue, problem: entry.problem });
       }
       if (sub === "reload") {
         let result = await request({ t: "settings_reload" });
         const confirmation = result.confirmation;
-        if (Array.isArray(result.rejected)) for (const row of result.rejected.slice(0, 100)) console.log(terminalText(`${String(row.key).slice(0, 160)}: ${String(row.reason).slice(0, 1000)}`));
+        if (Array.isArray(result.rejected) && result.rejected.length) show(renderSettingsRejected, result.rejected);
         if (confirmation !== undefined) {
           if (!confirmation || typeof confirmation.token !== "string" || !confirmation.token || confirmation.token.length > 256 || !Array.isArray(confirmation.keys) || !confirmation.keys.length || confirmation.keys.length > 200 || confirmation.keys.some((key: unknown) => typeof key !== "string" || key.length > 160)) fail("invalid reload confirmation; guarded settings were not applied");
           const fullValue = (value: unknown): boolean => {
@@ -2766,11 +2781,7 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
             return row.key !== confirmation.keys[index] || !fullValue(row.before) || !fullValue(row.after) || (row.effect !== undefined && (typeof row.effect !== "string" || Buffer.byteLength(row.effect, "utf8") > 2048));
           })) fail("reload preview is incomplete or unavailable; upgrade the running hub and run ahub settings reload again to review every full value; guarded settings were not applied");
           const token = confirmation.token;
-          console.log("Guarded settings awaiting confirmation:");
-          for (const change of confirmation.changes) {
-            console.log(`  ${terminalText(change.key)}: ${terminalText(change.before)} -> ${terminalText(change.after)}`);
-            if (change.effect !== undefined) console.log(`    ${terminalText(change.effect)}`);
-          }
+          show(renderSettingsConfirmation, confirmation.changes);
           if (!process.stdin.isTTY || !process.stdout.isTTY) fail("guarded settings need an interactive person's terminal; run ahub settings reload there; guarded settings were not applied");
           const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
           const ended = new AbortController();
@@ -2779,12 +2790,12 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
           try { accepted = (await rl.question("Apply guarded settings? [y/N] ", { signal: AbortSignal.any([AbortSignal.timeout(30_000), ended.signal]) })).trim().toLowerCase() === "y"; }
           catch { /* EOF, cancellation and a missed confirmation deadline grant nothing. */ }
           finally { rl.close(); }
-          if (!accepted) return console.log("guarded settings were not applied");
+          if (!accepted) return receipt("Settings reload", "guarded settings were not applied");
           result = await request({ t: "settings_reload", confirm: token });
           if (result.confirmation !== undefined) fail("reload candidate changed; run ahub settings reload again to review it; guarded settings were not applied");
-          if (Array.isArray(result.rejected)) for (const row of result.rejected.slice(0, 100)) console.log(terminalText(`${String(row.key).slice(0, 160)}: ${String(row.reason).slice(0, 1000)}`));
+          if (Array.isArray(result.rejected) && result.rejected.length) show(renderSettingsRejected, result.rejected);
         }
-        return console.log(paint([{ text: result.text }], false));
+        return receipt("Settings reload", result.text ?? "configuration reloaded");
       }
       if (sub === "undo") {
         const view = await request({ t: "settings_get" }), undoDef = undoableDef(view.undo, settingScope.instances, settingScope.catalog);
@@ -2802,35 +2813,20 @@ const commands: Record<string, (receiptOutput?: SdlcReceiptOutput) => Promise<vo
           const rl = createInterface({ input: process.stdin, output: process.stdout });
           try { confirm = (await rl.question(`Type ${rosterPeer} to confirm this roster undo: `)).trim(); } finally { rl.close(); }
         }
-        return console.log(paint([{ text: (await request({ t: "settings_undo", ...(confirm ? { confirm } : {}) })).text }], false));
+        return receipt("Settings undo", (await request({ t: "settings_undo", ...(confirm ? { confirm } : {}) })).text ?? "setting restored");
       }
       if (sub === "set" && flags.includes("--preview")) {
         const preview = await request({ t: "settings_preview", key, value });
-        for (const line of preview.lines ?? []) console.log(paint([{ text: line }], false));
-        // Each side is `route explain`: the task line, "if it were assigned now:", then the trace.
-        for (const task of preview.tasks ?? []) console.log([task.before[0], "  before:", ...task.before.slice(2).map((line: string) => `    ${line}`), "  after:", ...task.after.slice(2).map((line: string) => `    ${line}`)].join("\n"));
-        if (preview.hidden) console.log(`${preview.hidden} more open tasks are not shown`);
-        return console.log("preview only; nothing was changed");
+        return show(renderSettingsPreview, preview);
       }
       if (sub === "set") {
         const reply = await request({ t: "settings_set", key, value, now: flags.includes("--now"), ...(flags.includes("--yes") && peer ? { confirm: peer } : {}) });
-        console.log(paint([{ text: reply.text }], false));
-        if (typeof reply.note === "string" && reply.note) console.log(paint([{ text: reply.note }], false));
-        return;
+        return receipt("Settings set", reply.text ?? "setting saved", ...(typeof reply.note === "string" && reply.note ? [reply.note] : []));
       }
       const view = await request({ t: "settings_get" });
       const rows = (view.rows as SettingRow[]).filter((row) => sub === "list" || row.key === key);
       if (flags.includes("--json")) return console.log(JSON.stringify(sub === "get" ? rows[0] : { rows, pendingRestart: view.pendingRestart ?? [], ...(view.undo ? { undo: view.undo } : {}) }, null, 2));
-      const width = Math.max(...rows.map((row) => row.key.length)), valueWidth = Math.max(...rows.map((row) => settingText(row.value).length));
-      let group = "";
-      for (const row of rows) {
-        if (sub === "list" && row.group !== group) console.log(`${group ? "\n" : ""}${group = row.group}`);
-        const facts = [`from ${row.source}`, `file: ${settingText(row.fileValue === undefined ? row.pending ?? row.value : row.fileValue)}`, row.applies === "live" ? "applies at once" : row.applies === "next use" ? "applies at next use" : "pending restart", ...(row.restartReason ? [row.restartReason] : []), ...(row.note ? [row.note] : [])];
-        console.log(`  ${row.key.padEnd(width)}  ${settingText(row.value).padEnd(valueWidth)}  ${facts.join("; ")}`);
-        if (sub === "get") console.log(`  ${row.label}; written to ${row.file}; takes ${row.type === "boolean" ? "true, false" : row.type === "number-or-off" ? `off or a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "integer" || row.type === "number" ? `a number from ${row.min ?? 0} to ${row.max ?? "the configured bound"}` : row.type === "peers" ? "a comma list of peer ids" : row.type === "roles" ? "up to two comma-separated catalog ids" : (row.values ?? []).join(", ")}${row.file === "this hub run" || row.key === "instructed.mode" ? "" : ", or inherit to remove the machine-local value"}${row.risk === "raises" ? "; a dashboard needs a settings session (ahub ui --settings) to raise it" : ""}`);
-      }
-      if (sub === "list" && view.pendingRestart?.length) console.log(`\npending restart: ${view.pendingRestart.map((entry: { key: string }) => entry.key).join(", ")}`);
-      if (sub === "list" && view.undo) console.log(`\nahub settings undo puts back the last write (${view.undo})`);
+      show(renderSettingsRows, { rows, detail: sub === "get", ...(sub === "list" ? { pendingRestart: view.pendingRestart, undo: view.undo } : {}) });
     } finally { hub.close(); }
   },
 
