@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { hubHome, realPath } from "../hub/project.ts";
 import { Registry } from "../hub/registry.ts";
 import { AGENT_MEM_HOST_API_RANGE, agentMemHostApiOk, agentMemVersionInRange, isAgentMemFloorRange, readHostApiConstants } from "../hub/agent-mem-range.ts";
+import { MEMORY_RUNTIME_LAYOUTS } from "../hub/runtime-package-assets.ts";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
 export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string; pipeExitGraceMs?: number }) => Promise<CommandResult>;
@@ -43,12 +44,10 @@ export function exactVersion(version: string): string {
 }
 
 const MEMORY_ASSETS = ["src", "bin", "package.json", "README.md", "LICENSE"] as const;
-// Published top-level assets of the reviewed agent-mem dependencies. Keep the legacy output digest narrower.
-const MEMORY_RUNTIME_ASSETS = {
-  "@staix/cli-output": ["src", "package.json", "README.md", "LICENSE"],
-  "@staix/mcp-stdio": ["src", "fixtures", "package.json", "README.md", "LICENSE"],
-  "@staix/agent-hosts": ["src", "fixtures", "package.json", "README.md", "LICENSE"],
-} as const;
+function memoryRuntimeAssets(name: keyof typeof MEMORY_RUNTIME_LAYOUTS): readonly string[] {
+  const { directories, files } = MEMORY_RUNTIME_LAYOUTS[name];
+  return [...directories, ...files];
+}
 type RuntimePackage = { source: string; name: string; assets: readonly string[] };
 
 function memoryPinError(name: string, pin: unknown, reason: string): Error {
@@ -57,7 +56,7 @@ function memoryPinError(name: string, pin: unknown, reason: string): Error {
 }
 
 function memoryPinnedRuntime(memory: string, name: string, pin: unknown, outputPin: unknown): RuntimePackage {
-  if (!Object.hasOwn(MEMORY_RUNTIME_ASSETS, name) || typeof pin !== "string" || !/^\d+\.\d+\.\d+$/.test(pin)
+  if (!Object.hasOwn(MEMORY_RUNTIME_LAYOUTS, name) || typeof pin !== "string" || !/^\d+\.\d+\.\d+$/.test(pin)
     || name === "@staix/cli-output" && pin !== outputPin) throw memoryPinError(name, pin, "unsupported dependency or exact pin");
   const scope = dirname(memory), modules = dirname(scope), source = join(scope, basename(name));
   try {
@@ -86,7 +85,7 @@ function memoryPinnedRuntime(memory: string, name: string, pin: unknown, outputP
     }
   };
   inspect(source);
-  const assets = MEMORY_RUNTIME_ASSETS[name as keyof typeof MEMORY_RUNTIME_ASSETS];
+  const assets = memoryRuntimeAssets(name as keyof typeof MEMORY_RUNTIME_LAYOUTS);
   if (assets.some(asset => !existsSync(join(source, asset)))) throw memoryPinError(name, pin, "installed package lacks a reviewed runtime asset");
   return { source, name, assets };
 }
@@ -173,7 +172,7 @@ function runtimeDependencies(root: string, dependencyRoot?: string): RuntimePack
     throw memoryPinError(shared.name, pin, "agent-mem and the hub must resolve the same cli-output package");
   }
   const packages = memory ? [memory] : [];
-  if (output) packages.push({ source: output, name: "@staix/cli-output", assets: MEMORY_RUNTIME_ASSETS["@staix/cli-output"] });
+  if (output) packages.push({ source: output, name: "@staix/cli-output", assets: memoryRuntimeAssets("@staix/cli-output") });
   return packages.concat(pinned.filter(pkg => pkg.name !== "@staix/cli-output"));
 }
 

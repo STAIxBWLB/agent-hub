@@ -10,6 +10,7 @@ import { hubHome, realPath } from "./project.ts";
 import { readProjectRuntimeReference, projectRuntimeFile } from "./project-runtime-state.ts";
 import { Registry, REGISTRY_DB_BUSY_TIMEOUT_MS } from "./registry.ts";
 import { anyRecoveryHold, retireOperation } from "./recovery-store.ts";
+import { MEMORY_RUNTIME_LAYOUTS } from "./runtime-package-assets.ts";
 
 export interface RuntimeCapturePrunePlan { remove: string[]; kept: string[]; deferred?: string }
 export interface RuntimeCapturePruneResult { removed: string[]; kept: string[]; quarantined?: string[]; deferred?: string }
@@ -77,16 +78,17 @@ function entries(directory: string, observation?: Observation, budget?: LockBudg
   }
   return rows;
 }
-function metadata(file: string, observation: Observation): unknown {
+function metadata(file: string, observation?: Observation): unknown {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const info = fstatSync(fd);
-    if (!info.isFile() || info.nlink !== 1 || info.size > MAX_METADATA_BYTES || observation.bytes + info.size > MAX_INVENTORY_BYTES)
+    if (!info.isFile() || info.nlink !== 1 || info.size > MAX_METADATA_BYTES || (observation?.bytes ?? 0) + info.size > MAX_INVENTORY_BYTES)
       fail("runtime retention metadata is unreadable or oversized");
     const bytes = Buffer.alloc(MAX_METADATA_BYTES + 1), count = readSync(fd, bytes, 0, bytes.length, 0), after = fstatSync(fd);
     if (count > MAX_METADATA_BYTES || count !== info.size || stamp(after) !== stamp(info)
       || stamp(optionalInfo(file)) !== stamp(after)) fail("runtime retention metadata changed or exceeded its bound");
-    observation.bytes += count; remember(observation, file, stamp(after));
+    if (observation) observation.bytes += count;
+    remember(observation, file, stamp(after));
     try { return JSON.parse(bytes.subarray(0, count).toString("utf8")); } catch { return fail("runtime retention metadata is invalid"); }
   } finally { closeSync(fd); }
 }
@@ -276,9 +278,22 @@ function captureLayout(root: string): void {
   if (optionalInfo(join(root, "scripts"))) knownLayout(join(root, "scripts"), [], ["check-docs.mjs"]);
   const modules = join(root, "node_modules");
   if (optionalInfo(modules)) {
-    knownLayout(modules, ["@staix"], []); const scope = join(modules, "@staix"); knownLayout(scope, ["agent-mem"], [], ["cli-output"]);
-    knownLayout(join(scope, "agent-mem"), ["src", "bin"], ["package.json", "README.md", "LICENSE"]);
-    if (optionalInfo(join(scope, "cli-output"))) knownLayout(join(scope, "cli-output"), ["src"], ["package.json", "README.md", "LICENSE"]);
+    knownLayout(modules, ["@staix"], []);
+    const scope = join(modules, "@staix"), layouts = Object.entries(MEMORY_RUNTIME_LAYOUTS);
+    knownLayout(scope, ["agent-mem"], [], layouts.map(([name]) => basename(name)));
+    const memory = join(scope, "agent-mem");
+    knownLayout(memory, ["src", "bin"], ["package.json", "README.md", "LICENSE"]);
+    const present = layouts.filter(([name]) => optionalInfo(join(scope, basename(name))));
+    // New siblings must be part of the capture's hashed dependency graph. An unrelated directory
+    // using a reviewed package name must not become eligible for deletion.
+    if (present.some(([name]) => name !== "@staix/cli-output")) {
+      type Manifest = { dependencies?: Record<string, unknown> } | null;
+      const hub = metadata(join(root, "package.json")) as Manifest;
+      const manifest = metadata(join(memory, "package.json")) as Manifest;
+      if (typeof hub?.dependencies?.["@staix/agent-mem"] !== "string" || present.some(([name]) => name !== "@staix/cli-output" && !Object.hasOwn(manifest?.dependencies ?? {}, name)))
+        fail("a runtime capture contains an undeclared agent-mem dependency");
+    }
+    for (const [name, { directories, files }] of present) knownLayout(join(scope, basename(name)), directories, files);
   }
 }
 function verifyQuarantine(root: string, capture: Capture): void {
