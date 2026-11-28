@@ -5,6 +5,7 @@ import { parseMilestoneInput, parseMilestonePatch, milestoneId, milestoneRevisio
 import { milestoneViews, type MilestoneView, type RoadmapSnapshot } from "./roadmap-view.ts";
 import { readMirrorSnapshot, planRoadmapMirror, recoverMirrorBinding } from "./roadmap-sync.ts";
 import { roadmapExport } from "./roadmap-export.ts";
+import { roadmapIssueStates } from "./roadmap-issue-states.ts";
 import { checkRoadmap, type DriftMilestone, type RoadmapDrift } from "./roadmap-check.ts";
 import type { RoadmapConfig } from "./roadmap.ts";
 import { computeUnplaced, withTree, type ReadyToClose, type TreeRollup, type UnplacedResult } from "./roadmap-unplaced.ts";
@@ -3838,6 +3839,18 @@ export class Tasks {
       throw new PreEffectToolRefusal("GitHub roadmap writes require the person or the configured conductor with roadmap.github_write enabled");
   }
 
+  private roadmapIssueRefs(views: ReturnType<Tasks["milestoneList"]>): Set<string> {
+    const refs = new Set<string>();
+    for (const view of views) {
+      for (const issue of view.issues) refs.add(issue.ref);
+      for (const member of view.tasks) {
+        const task = this.d.board.get(member.id); if (!task) continue;
+        try { const source = this.planIssueIdentity(task); if (source && this.publicMetadataText(source.repo)) refs.add(`${source.repo.toLowerCase()}#${source.issue}`); } catch { /* ambiguous identity is unknown */ }
+      }
+    }
+    return refs;
+  }
+
   /** Render only screened views. Issue writes require an exact preview and fresh authority. */
   async roadmapExport(by: PeerId, input: { issue?: number; apply?: boolean; confirm?: string } = {}): Promise<{ json: string; markdown: string; fingerprint: string; call?: string[]; applied: boolean }> {
     const check = this.requestCheck(by, () => this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError ? "roadmap is held by recovery or storage" : undefined);
@@ -3846,7 +3859,27 @@ export class Tasks {
     if (input.issue !== undefined) this.roadmapParsed(() => milestoneId(input.issue));
     if (input.apply && input.issue === undefined) throw new PreEffectToolRefusal("roadmap export --apply needs an issue; preview with --issue first");
     if (input.apply) this.roadmapApplyAuthority(by);
-    const rendered = roadmapExport(this.milestoneList(by));
+    let pinned: { report: SpecsCheckReport | SpecsCoverReport | undefined } | undefined;
+    const specs = () => { if (!pinned) { pinned = { report: undefined }; pinned.report = this.roadmapSpecsFor(by); } return pinned.report; };
+    let checkedKey = this.roadmapBoardKey(by);
+    const views = this.milestoneList(by, specs), refs = this.roadmapIssueRefs(views);
+    const evidence = JSON.stringify([views, [...refs]]);
+    const privacy = JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]);
+    const current = () => {
+      check(); this.roadmapReadAuthority(by);
+      const key = this.roadmapBoardKey(by);
+      const sameViews = () => {
+        if (key === checkedKey) return true;
+        const latest = this.milestoneList(by, specs);
+        return JSON.stringify([latest, [...this.roadmapIssueRefs(latest)]]) === evidence;
+      };
+      if (JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy || !sameViews())
+        throw new PreEffectToolRefusal("roadmap or privacy policy changed while exporting; retry ahub roadmap export");
+      checkedKey = key;
+    };
+    const issueStates = await roadmapIssueStates(refs, this.roadmapGh(), current);
+    current();
+    const rendered = roadmapExport(views, issueStates);
     const repo = input.issue === undefined ? undefined : this.roadmapRepository();
     const call = repo === undefined ? undefined : ["api", `repos/${repo}/issues/${input.issue}`, "--hostname", "github.com", "--method", "PATCH", "-f", `body=${rendered.markdown}`];
     const fingerprint = createHash("sha256").update(JSON.stringify({ repo: repo ?? null, issue: input.issue ?? null, markdown: rendered.markdown })).digest("hex");
@@ -3857,7 +3890,7 @@ export class Tasks {
     try { result = await this.roadmapGh()(call!, 10_000, undefined, 64 * 1024); }
     catch { throw new Error("roadmap issue update outcome is unknown; inspect the issue before retrying"); }
     if (result.code !== 0) throw new Error("roadmap issue update was not confirmed; inspect the issue before retrying");
-    try { check(); this.roadmapApplyAuthority(by); if (this.roadmapRepository() !== repo || roadmapExport(this.milestoneList(by)).markdown !== rendered.markdown) throw new Error("changed"); }
+    try { current(); this.roadmapApplyAuthority(by); if (this.roadmapRepository() !== repo) throw new Error("changed"); }
     catch { throw new Error("roadmap or authority changed after issue update; inspect the issue and preview again"); }
     return { ...rendered, fingerprint, call, applied: true };
   }
@@ -3878,7 +3911,8 @@ export class Tasks {
     // and after each issue read. Rebuild only when a task write (statusRevision), a milestone, link or release row, or the caller's planner role (it screens backlog tasks) says the views can differ; config and privacy are compared on every call below.
     const sameViews = () => { const key = boardKey(); if (key === checkedKey) return true; if (snapshot(this.milestoneList(by, specs)) !== evidence) return false; checkedKey = key; return true; };
     const current = () => { check(); this.roadmapReadAuthority(by); if (!sameViews() || JSON.stringify(this.d.roadmapConfig?.() ?? { github_mirror: false, github_write: "off" }) !== JSON.stringify(config) || JSON.stringify([this.d.routing(), this.d.piiPaths, this.d.deny]) !== privacy) throw new PreEffectToolRefusal("roadmap or privacy policy changed while checking; retry ahub roadmap check"); };
-    const rendered = roadmapExport(views), exportStates: (boolean | undefined)[] = [];
+    const issueStates = await roadmapIssueStates(this.roadmapIssueRefs(views), this.roadmapGh(), current);
+    const rendered = roadmapExport(views, issueStates), exportStates: (boolean | undefined)[] = [];
     for (const [path, expected] of [["docs/roadmap.json", rendered.json], ["docs/roadmap.md", rendered.markdown]] as const) {
       try {
         const file = await readGuardedDeliverable(path, { cwd: this.d.cwd, deny: this.d.deny ?? [], private: name => matchesPolicy(this.d.cwd, name, this.d.piiPaths ?? [], true) });
@@ -3887,23 +3921,6 @@ export class Tasks {
     }
     const exportMatches = exportStates.includes(false) ? false : exportStates.every(value => value === true) ? true : undefined;
     current();
-    const refs = new Set<string>();
-    for (const view of views) {
-      for (const issue of view.issues) refs.add(issue.ref);
-      for (const member of view.tasks) {
-        const task = this.d.board.get(member.id); if (!task) continue;
-        try { const source = this.planIssueIdentity(task); if (source && this.publicMetadataText(source.repo)) refs.add(`${source.repo.toLowerCase()}#${source.issue}`); } catch { /* ambiguous identity is unknown */ }
-      }
-    }
-    const issueStates = new Map<string, "open" | "closed">(), issueDeadline = performance.now() + 20_000;
-    for (const ref of [...refs].sort().slice(0, 100)) {
-      const match = /^([^#]+)#([1-9][0-9]*)$/.exec(ref); if (!match || issueDeadline <= performance.now()) break;
-      const value = await readPlanIssueMetadata(match[1]!, Number(match[2]), async (args, timeout, cwd, cap) => {
-        current(); const remaining = issueDeadline - performance.now();
-        return remaining > 0 ? this.roadmapGh()([...args.slice(0, 2), "--hostname", "github.com", ...args.slice(2)], Math.min(timeout ?? remaining, remaining), cwd, cap) : { code: 1, stdout: "" };
-      });
-      current(); if (value) issueStates.set(ref, value.state === "CLOSED" ? "closed" : "open");
-    }
     let mirror: Awaited<ReturnType<typeof readMirrorSnapshot>> | undefined, repo: string | undefined;
     if (config.github_mirror) {
       try { repo = this.roadmapRepository(); mirror = await readMirrorSnapshot(repo, this.roadmapGh()); }
