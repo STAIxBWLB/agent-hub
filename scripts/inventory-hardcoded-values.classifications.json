@@ -870,6 +870,7 @@
   "src/cli/recovery-package.ts:append:inline:next.slice=-2_000_000#0": "safety floor",
   "src/cli/recovery-package.ts:hardTimer:inline:options.timeoutMs ?? 60_000=60_000#0": "operational",
   "src/cli/recovery-package.ts:hardTimer:inline:setTimeout=(options.timeoutMs ?? 60_000) + 3000#0": "operational",
+  "src/cli/recovery-package.ts:shown:inline:value.slice=256#0": "safety floor",
   "src/cli/recovery-package.ts:timeoutMs:inline:timeoutMs=180_000#0": "operational",
   "src/cli/recovery-package.ts:timeoutMs:inline:timeoutMs=30_000#0": "operational",
   "src/cli/recovery-package.ts:timeoutMs:inline:timeoutMs=30_000#1": "operational",

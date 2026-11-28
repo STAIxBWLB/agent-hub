@@ -105,6 +105,7 @@ test("a cached release never resolves a deleted dependency from an ancestor chec
   mkdirSync(runtime, { recursive: true });
   for (const name of ["src", "plugins", "templates", ".claude-plugin", "package.json"]) cpSync(join(f.root, name), join(runtime, name), { recursive: true });
   cpSync(f.dependency, memory, { recursive: true });
+  cpSync(join(f.root, "node_modules/@staix/cli-output"), join(install, "node_modules/@staix/cli-output"), { recursive: true });
   writeFileSync(join(install, "verified.json"), JSON.stringify({ integrity: "sha512-fixture", digest: verifyPackage(runtime, "0.0.0") }));
   rmSync(memory, { recursive: true });
   // A fresh coordinator must not inherit this process's module-resolution cache.
@@ -152,3 +153,84 @@ test("recovery accepts agent-mem declaring exactly the pinned cli-output and ref
   mkdirSync(join(f.dependency, "node_modules/nested"), { recursive: true });
   expect(() => packageDigest(f.root)).toThrow("identity/version mismatch");
 });
+
+const MCP_STDIO = "@staix/mcp-stdio", AGENT_HOSTS = "@staix/agent-hosts";
+const reviewedPins = { [MCP_STDIO]: "0.2.0", [AGENT_HOSTS]: "0.1.0" } as const;
+
+function declareMemoryPins(root: string, pins: Record<string, string>) {
+  const path = join(root, "package.json"), manifest = JSON.parse(readFileSync(path, "utf8"));
+  writeFileSync(path, JSON.stringify({ ...manifest, dependencies: { "@staix/cli-output": hubPackage.dependencies["@staix/cli-output"], ...pins } }));
+}
+
+function installPinnedFixture(root: string, name: string, version: string): string {
+  const installed = join(root, "node_modules", name);
+  for (const dir of ["src", "fixtures"]) mkdirSync(join(installed, dir), { recursive: true });
+  for (const asset of ["src/index.ts", "fixtures/example.json", "README.md", "LICENSE"])
+    writeFileSync(join(installed, asset), `fixture ${asset}\n`);
+  writeFileSync(join(installed, "package.json"), JSON.stringify({ name, version }));
+  return installed;
+}
+
+for (const names of [[MCP_STDIO], [AGENT_HOSTS], [MCP_STDIO, AGENT_HOSTS]] as const) {
+  test(`recovery stages and hashes agent-mem with ${names.join(" and ")} (#1737)`, () => {
+    const f = fixture();
+    declareMemoryPins(f.dependency, Object.fromEntries(names.map(name => [name, reviewedPins[name]])));
+    for (const name of names) installPinnedFixture(f.root, name, reviewedPins[name]);
+    mkdirSync(join(f.root, "plugins/agent-hub/.claude-plugin"), { recursive: true });
+    mkdirSync(join(f.root, "src/cli"));
+    writeFileSync(join(f.root, "src/cli/main.js"), "// fixture\n");
+    writeFileSync(join(f.root, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version: "0.0.0" }));
+    const source = plan(f.root);
+    const preserved = preserveSource(source, f.home);
+    expect(verifyPackage(preserved, "0.0.0", { ownDependencies: true })).toBe(source.sourceDigest);
+    const staged = join(f.home, "staged"), hub = join(staged, "node_modules/@staix/agent-hub");
+    mkdirSync(hub, { recursive: true });
+    for (const asset of ["src", "plugins", "templates", ".claude-plugin", "package.json"])
+      cpSync(join(f.root, asset), join(hub, asset), { recursive: true });
+    for (const name of ["agent-mem", "cli-output", ...names.map(name => name.slice("@staix/".length))])
+      cpSync(join(preserved, "node_modules/@staix", name), join(staged, "node_modules/@staix", name), { recursive: true });
+    expect(verifyPackage(hub, "0.0.0", { dependencyRoot: staged })).toBe(source.sourceDigest);
+    for (const name of names) {
+      const asset = join(staged, "node_modules", name, "fixtures/example.json");
+      const original = readFileSync(asset, "utf8");
+      writeFileSync(asset, original + "changed");
+      expect(verifyPackage(hub, "0.0.0", { dependencyRoot: staged })).not.toBe(source.sourceDigest);
+      writeFileSync(asset, original);
+    }
+  });
+}
+
+test("recovery refuses unsupported agent-mem dependency names and non-exact pins (#1737)", () => {
+  const f = fixture();
+  for (const [name, pin] of [["@staix/unreviewed", "1.0.0"], [MCP_STDIO, "^0.2.0"], [AGENT_HOSTS, "~0.1.0"]] as const) {
+    declareMemoryPins(f.dependency, { [name]: pin });
+    expect(() => packageDigest(f.root, { ownDependencies: true })).toThrow(`${JSON.stringify(name)} pin ${JSON.stringify(pin)}`);
+    expect(() => packageDigest(f.root)).toThrow("upgrade to an agent-hub release that accepts it");
+  }
+});
+
+for (const [name, pin] of Object.entries(reviewedPins)) {
+  test(`recovery refuses mismatched or unsafe installations of ${name} (#1737)`, () => {
+    const f = fixture();
+    declareMemoryPins(f.dependency, { [name]: pin });
+    const installed = installPinnedFixture(f.root, name, pin);
+    const manifest = join(installed, "package.json");
+    const fail = (cause: string) => {
+      expect(() => packageDigest(f.root, { ownDependencies: true })).toThrow(cause);
+      expect(() => packageDigest(f.root)).toThrow(`${JSON.stringify(name)} pin ${JSON.stringify(pin)}`);
+    };
+    writeFileSync(manifest, JSON.stringify({ name, version: "9.9.9" }));
+    fail("installed package name, version or declared dependencies");
+    writeFileSync(manifest, JSON.stringify({ name, version: pin, dependencies: { extra: "1.0.0" } }));
+    fail("installed package name, version or declared dependencies");
+    writeFileSync(manifest, JSON.stringify({ name, version: pin }));
+    mkdirSync(join(installed, "src/node_modules"));
+    fail("nested node_modules");
+    rmSync(join(installed, "src/node_modules"), { recursive: true });
+    symlinkSync("index.ts", join(installed, "src/linked.ts"));
+    fail("symlinks");
+    rmSync(installed, { recursive: true });
+    symlinkSync(f.dependency, installed);
+    fail("real sibling directory");
+  });
+}

@@ -43,13 +43,59 @@ export function exactVersion(version: string): string {
 }
 
 const MEMORY_ASSETS = ["src", "bin", "package.json", "README.md", "LICENSE"] as const;
-const OUTPUT_ASSETS = ["src", "package.json", "README.md", "LICENSE"] as const;
+// Published top-level assets of the reviewed agent-mem dependencies. Keep the legacy output digest narrower.
+const MEMORY_RUNTIME_ASSETS = {
+  "@staix/cli-output": ["src", "package.json", "README.md", "LICENSE"],
+  "@staix/mcp-stdio": ["src", "fixtures", "package.json", "README.md", "LICENSE"],
+  "@staix/agent-hosts": ["src", "fixtures", "package.json", "README.md", "LICENSE"],
+} as const;
+type RuntimePackage = { source: string; name: string; assets: readonly string[] };
+
+function memoryPinError(name: string, pin: unknown, reason: string): Error {
+  const shown = (value: unknown) => JSON.stringify(typeof value === "string" ? value.slice(0, 256) : "<invalid pin>");
+  return new Error(`memory runtime dependency identity/version mismatch: ${shown(name)} pin ${shown(pin)}: ${reason}; upgrade to an agent-hub release that accepts it`);
+}
+
+function memoryPinnedRuntime(memory: string, name: string, pin: unknown, outputPin: unknown): RuntimePackage {
+  if (!Object.hasOwn(MEMORY_RUNTIME_ASSETS, name) || typeof pin !== "string" || !/^\d+\.\d+\.\d+$/.test(pin)
+    || name === "@staix/cli-output" && pin !== outputPin) throw memoryPinError(name, pin, "unsupported dependency or exact pin");
+  const scope = dirname(memory), modules = dirname(scope), source = join(scope, basename(name));
+  try {
+    if (basename(scope) !== "@staix" || basename(modules) !== "node_modules"
+      || [modules, scope, source].some(path => !lstatSync(path).isDirectory())) throw new Error("layout");
+  } catch {
+    const reason = name === "@staix/cli-output" ? "output runtime dependency is unavailable or is not a real sibling directory"
+      : "installed package must be a real sibling directory beside agent-mem";
+    throw memoryPinError(name, pin, reason);
+  }
+  let installed;
+  try {
+    const manifest = join(source, "package.json");
+    if (!lstatSync(manifest).isFile()) throw new Error("manifest");
+    installed = JSON.parse(readFileSync(manifest, "utf8"));
+  } catch { throw memoryPinError(name, pin, "installed package manifest is unavailable"); }
+  if (installed?.name !== name || installed.version !== pin
+    || [installed.dependencies, installed.optionalDependencies, installed.peerDependencies].some(dependencies =>
+      dependencies !== undefined && (!dependencies || typeof dependencies !== "object" || Array.isArray(dependencies) || Object.keys(dependencies).length)))
+    throw memoryPinError(name, pin, "installed package name, version or declared dependencies do not match the reviewed layout");
+  const inspect = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.isSymbolicLink() || !entry.isDirectory() && !entry.isFile())
+        throw memoryPinError(name, pin, "installed package must not contain symlinks, special files or nested node_modules");
+      if (entry.isDirectory()) inspect(join(dir, entry.name));
+    }
+  };
+  inspect(source);
+  const assets = MEMORY_RUNTIME_ASSETS[name as keyof typeof MEMORY_RUNTIME_ASSETS];
+  if (assets.some(asset => !existsSync(join(source, asset)))) throw memoryPinError(name, pin, "installed package lacks a reviewed runtime asset");
+  return { source, name, assets };
+}
 
 /** Runtime dependencies are limited to the reviewed first-party packages, never an arbitrary dependency tree. */
-function memoryRuntime(root: string, dependencyRoot?: string): string | undefined {
+function memoryRuntime(root: string, dependencyRoot?: string): RuntimePackage[] {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const deps = pkg.dependencies ?? {};
-  if (!Object.keys(deps).length) return undefined;
+  if (!Object.keys(deps).length) return [];
   const declared = deps["@staix/agent-mem"];
   // #1611: a current package declares a floor range `>=X.Y.Z <M.0.0`; a package staged under #1605 declares `~X.Y.Z` and one before it an exact
   // version, so a cached release still verifies (legacy forms need no host API); compound ranges, `^`, `*` and prereleases stay refused.
@@ -75,13 +121,13 @@ function memoryRuntime(root: string, dependencyRoot?: string): string | undefine
           if (!agentMemHostApiOk(host.min, host.version))
             throw new Error(`memory runtime host API ${host.min ?? "missing"}..${host.version ?? "missing"} does not intersect the supported ${AGENT_MEM_HOST_API_RANGE[0]}..${AGENT_MEM_HOST_API_RANGE[1]}`);
         }
-        // #1664: agent-mem 0.37.0+ declares exactly the hub's own pinned @staix/cli-output (hashed once by outputRuntime); nothing else, and no nested node_modules the digest would not cover.
         const memoryDeps = Object.entries(memory.dependencies ?? {}), outputPin = deps["@staix/cli-output"];
-        // A ranged hub pin is the output package's refusal to make, not a memory mismatch (outputRuntime says the same).
+        // The output package owns the refusal for a ranged hub pin.
         if (memoryDeps.length && typeof outputPin === "string" && !/^\d+\.\d+\.\d+$/.test(outputPin)) throw new Error("output runtime dependency must be an exact version");
-        const depsOk = memoryDeps.length === 0 || (memoryDeps.length === 1 && typeof outputPin === "string" && memoryDeps[0]?.[0] === "@staix/cli-output" && memoryDeps[0][1] === outputPin);
-        if (!accepted || !depsOk || (memoryDeps.length > 0 && existsSync(join(dir, "node_modules")))) throw new Error("memory runtime dependency identity/version mismatch");
-        return realPath(dir);
+        if (!accepted || (memoryDeps.length > 0 && readdirSync(dir).includes("node_modules"))) throw new Error("memory runtime dependency identity/version mismatch");
+        const source = realPath(dir);
+        return [{ source, name: "@staix/agent-mem", assets: MEMORY_ASSETS },
+          ...memoryDeps.sort(([a], [b]) => a.localeCompare(b)).map(([name, pin]) => memoryPinnedRuntime(source, name, pin, outputPin))];
       }
     }
     const parent = dirname(dir);
@@ -117,15 +163,27 @@ function outputRuntime(root: string, dependencyRoot?: string): string | undefine
   }
 }
 
+/** Preserve the historical digest order, hashing shared cli-output only once. */
+function runtimeDependencies(root: string, dependencyRoot?: string): RuntimePackage[] {
+  const [memory, ...pinned] = memoryRuntime(root, dependencyRoot);
+  const output = outputRuntime(root, dependencyRoot);
+  const shared = pinned.find(pkg => pkg.name === "@staix/cli-output");
+  if (shared && shared.source !== output) {
+    const pin = JSON.parse(readFileSync(join(shared.source, "package.json"), "utf8")).version;
+    throw memoryPinError(shared.name, pin, "agent-mem and the hub must resolve the same cli-output package");
+  }
+  const packages = memory ? [memory] : [];
+  if (output) packages.push({ source: output, name: "@staix/cli-output", assets: MEMORY_RUNTIME_ASSETS["@staix/cli-output"] });
+  return packages.concat(pinned.filter(pkg => pkg.name !== "@staix/cli-output"));
+}
+
 export function preserveRuntimeDependencies(root: string, destination: string): void {
-  const memory = memoryRuntime(root), output = outputRuntime(root);
-  for (const [source, packageName, assets] of [[memory, "agent-mem", MEMORY_ASSETS], [output, "cli-output", OUTPUT_ASSETS]] as const) {
-    if (!source) continue;
-    const target = join(destination, "node_modules/@staix", packageName);
+  for (const { source, name, assets } of runtimeDependencies(root)) {
+    const target = join(destination, "node_modules", name);
     mkdirSync(target, { recursive: true });
-    for (const name of assets) {
-      if (lstatSync(join(source, name)).isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
-      cpSync(join(source, name), join(target, name), { recursive: true, dereference: false });
+    for (const asset of assets) {
+      if (lstatSync(join(source, asset)).isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
+      cpSync(join(source, asset), join(target, asset), { recursive: true, dereference: false });
     }
   }
 }
@@ -144,17 +202,12 @@ export function packageDigest(root: string, options: { ownDependencies?: boolean
   // Only runtime assets and the resolved first-party packages; never private state or unrelated dependencies.
   for (const name of ["src", "plugins", "templates", ".claude-plugin"]) visit(join(root, name), `${name}/`);
   hash.update(readFileSync(join(root, "package.json")));
-  const memory = memoryRuntime(root, options.ownDependencies ? root : options.dependencyRoot);
-  if (memory) for (const name of MEMORY_ASSETS) {
-    const path = join(memory, name), stat = lstatSync(path), prefix = `node_modules/@staix/agent-mem/${name}`;
-    if (stat.isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
-    if (stat.isDirectory()) visit(path, `${prefix}/`); else file(path, prefix);
-  }
-  const output = outputRuntime(root, options.ownDependencies ? root : options.dependencyRoot);
-  if (output) for (const name of OUTPUT_ASSETS) {
-    const path = join(output, name), stat = lstatSync(path), prefix = `node_modules/@staix/cli-output/${name}`;
-    if (stat.isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
-    if (stat.isDirectory()) visit(path, `${prefix}/`); else file(path, prefix);
+  for (const { source, name, assets } of runtimeDependencies(root, options.ownDependencies ? root : options.dependencyRoot)) {
+    for (const asset of assets) {
+      const path = join(source, asset), stat = lstatSync(path), prefix = `node_modules/${name}/${asset}`;
+      if (stat.isSymbolicLink()) throw new Error("runtime package must not contain symlinks");
+      if (stat.isDirectory()) visit(path, `${prefix}/`); else file(path, prefix);
+    }
   }
   return hash.digest("hex");
 }
