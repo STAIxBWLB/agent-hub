@@ -32777,7 +32777,7 @@ init_registry();
 init_registry();
 // src/hub/task-sweep.ts
 var TASK_WAIT_MAX_MS = 14 * 24 * 3600000;
-var WAIT_KEEPING_EVENTS = new Set(["wait recorded", "idle sweep", "answer", "reviewer changed", "memory reference started", "ready held", "plan observed", "planner changed", "claim verdict", "invocation", "shell branch bound"]);
+var WAIT_KEEPING_EVENTS = new Set(["wait recorded", "idle sweep", "answer", "reviewer changed", "memory reference started", "ready held", "plan observed", "planner changed", "claim verdict", "invocation", "shell branch bound", "check run passed", "check run failed"]);
 var GROOMING_CODES = new Set(["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "runner", "approvals", "quota", "dependency", "no-writes"]);
 
 // src/hub/ci-watch.ts

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { MAX_OBSERVATIONS, MAX_PER_REVISION, MAX_RECORDS, REPEAT_FLOOR, SUPERVISION_RULES, ShadowSupervisor, evaluateSupervision, taskRevision, type SupervisionFacts, type SupervisionHistoryFact } from "../src/hub/supervision-rules.ts";
+import { runInNewContext } from "node:vm";
+import { MAX_OBSERVATIONS, MAX_PER_REVISION, MAX_RECORDS, MAX_REFS, REPEAT_FLOOR, SUPERVISION_RULES, ShadowSupervisor, evaluateSupervision, taskRevision, type SupervisionFacts, type SupervisionHistoryFact } from "../src/hub/supervision-rules.ts";
 import type { TaskState } from "../src/hub/board.ts";
 
 // #1221 T1: the rules are a pure reading of admitted records, so every proof here is a fixture of records plus a count
@@ -307,4 +308,31 @@ test("#1555 isolated checks contribute invalidation but not the failure streak",
   expect(kinds({ tasks: [task(90, passed)], deliverables: [{ task: 90, checked: true, changed: [RECORD.id] }] })).toEqual(["deliverable_invalidated_check"]);
   const failed: readonly Item[] = ["proposed", "accepted", ["check run failed", { checkKey: "implement" }], ["check run failed", { checkKey: "implement" }]];
   expect(kinds({ tasks: [task(91, failed)] })).toEqual([]);
+});
+
+test("daemon proposal facts measure delivered files after an isolated check pass", async () => {
+  const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
+  const start = source.indexOf("  async function proposalFacts(");
+  const end = source.indexOf("\n  /**", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const build = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end));
+  let row = task(91, ["proposed", "accepted", ["lifecycle", { deliverables: [RECORD] }], "check run passed"]);
+  let measurements = 0;
+  const facts = () => runInNewContext(`${build}\nproposalFacts(91)`, {
+    board: { get: () => row },
+    tasks: {
+      overlapTasks: () => [], isPii: () => false,
+      deliverableStatus: async () => { measurements++; return { files: [{ id: RECORD.id, state: "changed" }] }; },
+    },
+    editEvidence: { snapshot: () => undefined },
+    taskRevision, MAX_REFS, reviewObserverHeld: () => false,
+  }) as Promise<SupervisionFacts>;
+  const observed = evaluateSupervision(await facts());
+  expect(measurements).toBe(1);
+  expect(observed.observations).toMatchObject([{ rule: "deliverable_invalidated_check", version: 2, reason: "stale_check" }]);
+  expect(observed.gap).toEqual([]);
+  row = task(91, ["proposed", "accepted", "check run passed"]);
+  await facts();
+  expect(measurements).toBe(1);
 });

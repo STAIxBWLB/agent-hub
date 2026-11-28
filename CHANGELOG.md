@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Roadmap check and export share a bounded live GitHub issue lookup, so exports report current issue states and mark unresolved refs unknown (Refs #1754).
+- A passed isolated check now enables supervision to detect changed deliverables. Isolated check results preserve an active task wait (Refs #1753).
 
 - Daemon startup runs the orphan check sweep and GitHub spec availability probe in the background. Isolated check requests wait for orphan recovery before reading receipts or starting a run (Refs #1445).
 - SDLC audit start, release train, plan review, acceptance, and read-back receipts use the shared CLI report layout (Refs #1724).
