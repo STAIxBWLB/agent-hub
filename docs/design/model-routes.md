@@ -68,9 +68,9 @@ behavior, configuration grammar or generic decision-evidence v1 payload.
 
 | Question | Owner | R1 status |
 | --- | --- | --- |
-| Which eligible model and reasoning effort should serve a stage or plan/execute request? | adec's configured policy, candidate constraints, pins and decider | Existing optional consumer for `decision`; S2 asks the stage question only inside the ambiguity band (below); plan/execute choice stays future |
-| Which model/effort should serve an optional judge choice? | adec where separately configured, with an in-house fallback | R2 question design and wiring; no R1 judge request |
-| Whether to escalate, request an advisor review, or issue redo feedback | Hub route policy | Preserve the caller boundary; implementation replacement belongs to R2 |
+| Which eligible model and reasoning effort should serve a stage or plan/execute request? | adec's configured policy, candidate constraints, pins and decider | Optional `decision` consumer. Stage choice runs inside the ambiguity band. R2 can ask the phase-model question for plan/execute |
+| Which model/effort should serve an optional judge choice? | adec where separately configured, with an in-house fallback | R2 supplies the optional judge request |
+| Whether to escalate, request an advisor review, or issue redo feedback | Hub route policy | The owned R2 host policy preserves the caller boundary |
 | Whether a task is PII and which peer receives it | PII screen and pure `assign()` | Outside model-choice routing; no adec delegation |
 | Which deterministic tier remains when no applicable service choice is applied? | Hub fallback | R1 pure, model-free implementation |
 | Whether a turn may execute, use a tool, cross a privacy boundary or spend budget | Current host admission | A route score or service proposal grants no authority |
@@ -82,7 +82,7 @@ effort and forwarded conversation. This is separate from `stay_switch`, whose
 existing off/shadow/enforce behavior remains supported. R1 adds no service-call
 path, classifier option, gateway effort application, service launch or credential
 reader. #554 S2 adds the opt-in stage classifier option and its ambiguity band
-below; judge/plan-execute choice questions require later reviewed wiring (R2).
+below. R2 supplies the separate optional judge and plan/execute choice requests.
 
 ## Route contracts and compatibility
 
@@ -98,11 +98,10 @@ source-port counterparts.
   proposal through the existing #813 consumer. A failed request, abstention,
   `no_candidate`, invalid pair or unavailable service leaves that fallback.
 - `plan_execute` retains its documented capable planning and efficient execution
-  boundary after the first mutation. Its replacement and optional adec question
-  belong to R2.
+  boundary after the first mutation. The R2 host implementation can ask adec for a phase-model choice.
 - `advisor` retains bounded APPROVE/REDO review of eligible no-tool answers;
   `escalation` retains efficient start and same-category confirmation before a
-  capable latch. Their triggers, parsing, prompts and judge backoff belong to R2.
+  capable latch. The R2 host implementation owns their triggers, parsing, prompts and judge backoff.
 - Explicit model overrides and class fixed-model selections bypass routes as
   before. A missing/retired route keeps the configured fixed-model fallback and
   existing diagnostics. Loading configuration never rewrites operator files.
@@ -138,7 +137,7 @@ new stage fields to it.
 ### Stage evidence, newly authored
 
 A separate pure builder produces `StageEvidence` for deterministic fallback and
-future stage-specific adec questions. This packet contains only closed numeric,
+optional stage-specific adec questions. This packet contains only closed numeric,
 boolean and categorical data. It contains no source fragments, transcript,
 command, tool argument, path, tool name, diagnostic text or service error prose.
 It is not sent through the generic decision route by this delivery.
@@ -216,7 +215,7 @@ A diagnostic fingerprint may be used transiently to detect repetition; neither
 its source text nor an unbounded fingerprint list is emitted. A later public
 projection uses the closed packet above. A sensitive projection contains only
 `schemaVersion`, `kind` and the four dimensions, with no turn category, counts,
-scores or incomplete-history information; R1 creates no transport for either.
+scores or incomplete-history information. The configured host route owns the separate service request.
 
 Reviewed classification contract:
 
@@ -508,9 +507,7 @@ A later discovered owned absolute pin must be preserved explicitly.
 
 ## Host route policies and model-choice observation (R2)
 
-This section defines the R2 integration contract for review before shared wiring.
-The self-contained helpers and focused receipts are separate from acceptance of
-that integration. It adds no permission to consult the protected route bodies,
+This section describes the shipped R2 host integration. Focused receipts cover the owned helpers and their host wiring. It adds no permission to consult the protected route bodies,
 source-port vectors or `src/hub/ports.ts`. R1's four stage units are owned inputs;
 R3 retires the derived implementations, provenance checker and corresponding
 license/notice, and preserves reserved port offset 3 under a neutral name.
@@ -548,7 +545,7 @@ The hub neither reads nor writes that home or a provider key.
 
 ### Numeric question evidence
 
-The proposed ordinary R2 packet is closed and contains no transcript or arguments:
+The ordinary R2 packet is closed and contains no transcript or arguments:
 
 ```ts
 type HostChoicePurpose = "plan_execute_model" |
@@ -907,7 +904,7 @@ optional native `turn`, for host callers; this adds no runtime or event field.
 ## Privacy, authority and events
 
 Off mode builds no service payload and sends no request. Local fallback features
-may still be computed. Before any future stage service payload is built or sent,
+may still be computed. Before any stage service payload is built or sent,
 the host must apply the current privacy/observer admission. Review-observer
 exclusion and remote turns skip the service. PII/private evidence requires
 positive `onCampus()` and remains dimensions only even on campus. The decider's

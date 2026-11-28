@@ -8,8 +8,8 @@ import type { DeliverableRecord } from "./deliverables.ts";
  * declared-overlap reading. No note, review finding, transcript, file body or private task is read, there is no clock,
  * no dependency object and no emit path, so an observation cannot turn a worker, write an action or notify anyone.
  * `src/hub/supervision.ts` is the neighbour: it turns board milestones into conductor notices and owns their batching.
- * This module decides only whether one of a closed set of conditions holds, and T2 (unauthorized here) is what would
- * carry a decision to a person. Nothing imports it yet, and that is the point of a shadow rule.
+ * This module evaluates a closed set of conditions. The daemon and the T2 proposal layer consume its readings
+ * and own decisions and effects.
  */
 
 export const SUPERVISION_RULES = ["repeated_failure", "deliverable_invalidated_check", "declared_overlap_without_integration"] as const;

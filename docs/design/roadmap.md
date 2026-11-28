@@ -142,14 +142,14 @@ No roadmap writer emits task text to logs, events, notices or memory.
 
 ## Tools and CLI
 
-The three tools are `hub_roadmap_list`, `hub_roadmap_show {id}` and
+The seven tools are `hub_roadmap_list`, `hub_roadmap_show {id}`, `hub_roadmap_check`,
+`hub_roadmap_unplaced`, `hub_roadmap_triage`, `hub_roadmap_decompose` and
 `hub_roadmap_edit {op, ...}`. The edit operations are new, edit, link, unlink,
-order and state; fields and operands are closed per operation. A schema grants
+order, state, accept and reject. Fields and operands are closed per operation. A schema grants
 no authority: Tasks and the daemon enforce current caller and read-only limits.
 Every control rid gets a response, including unknown roadmap operations.
 
-`ahub roadmap` defaults to list. `list` and `show <id>` support `--json`; default
-output is for a person. Mutations are:
+`ahub roadmap` defaults to list. `list`, `show <id>`, `check`, `sync`, `export`, `unplaced`, `triage`, `decompose` and `import-github` support `--json`. Default output is for a person. Mutations are:
 
 - `new --title <text> --outcome <text>` with optional horizon/order/target/parent.
 - `edit <id> --revision <n>` with those optional fields; target/parent `none`
@@ -259,7 +259,7 @@ no write verb, method flag or body. The first page failing is an error; a later 
 under the page limit is `partial: true` with what was read. Pull requests are left out and every row's URL must equal its
 canonical identity. `readGitHubImport` (the one-page Backlog intake) is unchanged.
 
-**Triage.** `ahub roadmap triage [--repo] [--list]` and `hub_roadmap_triage {repo?, list?}` (configured planner or unique
+**Triage.** `ahub roadmap triage [--repo] [--list] [--json]` and `hub_roadmap_triage {repo?, list?}` (configured planner or unique
 conductor, never during a PII or private turn) ask the hub's model, in one call for at most 25 unplaced items, where each belongs.
 The model sees only text that passed `publicMetadataText`, and everything it reads is labelled data. `parseTriage`
 (`src/hub/roadmap-triage.ts`) keeps an answer only when it names an item and a milestone it was shown (or a bounded new
@@ -308,7 +308,7 @@ A local milestone has at most one remote number per repository. R3's `milestone_
 
 `ahub roadmap export` renders deterministic JSON and Markdown from screened milestone views. `--write` writes only `docs/roadmap.md` and `docs/roadmap.json` in the caller's Git worktree after proving it shares the selected repository, enforcing its current deny, read-only and PII path policy and refusing symlinks or hardlinks. A partially completed two-file write is reported. `--issue <n> --apply --confirm <fingerprint>` updates that issue body only after a matching preview, under the same person/conductor policy. The fingerprint binds repository, issue and rendered body.
 
-Task state and merge changes schedule affected public milestones for an ids-only supervision notice. The existing five-minute merge-readback sweep rechecks unresolved findings, including the close-lag boundary. The hub's own pass reuses one working-tree spec check for up to 60 s across its milestone reads (#1738), so spec freshness in a finding can be up to a minute old. Reads by the person and peers check again, once per read: a roadmap check keeps the one spec check it started with across all of its issue reads. A durable marker suppresses a finding already delivered; an unavailable feed or evidence is retried on a later change or sweep. Private tasks are never named. `scripts/check-roadmap.mjs` is a standalone Node validator: it checks the generated JSON's schema, linked spec IDs and tracked spec paths, and checks known issue states when a GitHub token is available. `scripts/check.sh` and the hosted docs step run it. Only `docs/roadmap.md` is exempt from the documentation stamp because this validation covers the generated page; the standalone release docs checker retains its Node-only contract.
+Task state and merge changes schedule affected public milestones for an ids-only supervision notice. The existing five-minute merge-readback sweep rechecks unresolved findings, including the close-lag boundary. The hub's own pass reuses one working-tree spec check for up to 60 s across its milestone reads (#1738), so spec freshness in a finding can be up to a minute old. Reads by the person and peers check again, once per read: a roadmap check keeps the one spec check it started with across all of its issue reads. A durable marker suppresses a finding already delivered; an unavailable feed or evidence is retried on a later change or sweep. Private tasks are never named. `scripts/check-roadmap.mjs` is a standalone Node validator: it checks the generated JSON's schema, linked spec IDs and tracked spec paths, and checks known issue states when a GitHub token is available. `scripts/check.sh` and the hosted docs step run it. The Node-only release docs checker exempts three records from its stamp manifest: `docs/roadmap.md`, `docs/smoke.md` and `docs/gsd-collaboration-analysis.md`. The roadmap validator covers the generated roadmap page.
 
 ## Dashboard and console surfaces (R5)
 
@@ -344,6 +344,6 @@ the `roadmap` feature. Opening it reads `hub_roadmap_list` (5 s) and adds `hub_r
 held one is older than five minutes. A row is id, horizon, state, approved/total, the withheld count and title, sorted by lane and then
 by the milestone's own order; Enter opens the milestone through `hub_roadmap_show` into the labelled detail.
 
-**`ahub ui --all`.** `projectConsole` gains an opt-in `roadmap: true` summary per project (`total`, `byHorizon`, `byState`, `drift`),
+**`ahub ui --all`.** `projectConsole` gains an opt-in `roadmap: true` summary per project (`total`, `byHorizon`, `byState`, `drift`, `partial`),
 read at most once a minute per project with each read bounded. It is opt-in because the acon provider shares `projectConsole` with
-fixture hubs, and only the manager passes it. A read that fails shows "roadmap unavailable" rather than a zero.
+fixture hubs, and only the manager passes it. A failed read marks the summary `partial: true`; the UI shows "roadmap unavailable".

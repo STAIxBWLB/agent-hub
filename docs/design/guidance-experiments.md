@@ -24,6 +24,8 @@ paths:
   - test/guidance-control.test.ts
   - test/guidance-console.test.ts
   - test/guidance-pagination.test.ts
+  - src/hub/hub-tools.ts
+  - src/hub/daemon.ts
 ---
 
 # Immutable guidance variants
@@ -423,7 +425,7 @@ for automatic retry.
 
 The producer console has its own Guidance panel and dedicated pinned-project
 manager port, separate from the dashboard action whitelist and candidate inbox.
-Its dedicated manager port permits list/show only. No console mutation,
+The experiment manager port permits list/show. The separate `guidanceProbe` manager port forwards a read-only `guidance_probe_receipts` request for an exact probe ID and validates the returned export, which includes its status. No console mutation,
 confirmation, person-metadata adaptation or snapshot token is introduced;
 existing question/person/receipt helpers remain unchanged. A future console
 withdrawal requires its own contract. Fixed CLI instructions do not execute
