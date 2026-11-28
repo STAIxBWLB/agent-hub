@@ -152,3 +152,53 @@ test("#625 bound generation becomes stale on claim before attach, without adding
   const second = createClaudeLaunchProof({ stateDir: f.stateDir, cwd: f.cwd, instanceId: f.instanceId, definitionOf, peer: id => f.peers.get(id) });
   expect(second.verified("claude")).toBe(false);
 });
+
+test("managed Claude launch selects the native session before publishing the record", async () => {
+  const { runClaudeEntry } = await import("../src/adapters/definitions/native-cli-entry-claude.ts");
+  type Context = Parameters<typeof runClaudeEntry>[0];
+  const { isClaudeSessionUuid } = await import("../src/hub/claude-state.ts");
+  const previousLaunch = process.env.AGENTHUB_LAUNCH_ID, previousInstance = process.env.AGENTHUB_INSTANCE_ID;
+  const known = crypto.randomUUID();
+  const cases: { args: string[]; session?: string; fresh?: boolean }[] = [
+    { args: [], fresh: true },
+    { args: ["--resume", known], session: known },
+    { args: [`--session-id=${known}`], session: known },
+    { args: ["--resume"] },
+    { args: ["--continue"] },
+    { args: ["--resume", known, "--fork-session"] },
+    { args: ["--from-pr", "42"] },
+    { args: ["--teleport"] },
+  ];
+  try {
+    for (const { args, session, fresh } of cases) {
+      let recordedSession: string | undefined, launched = false;
+      const context = {
+        args, cwd: import.meta.dir, stateDir: import.meta.dir, cliDir: import.meta.dir, unattendedEnv: false,
+        projectConfig: () => ({}),
+        fail: (reason: string) => { throw new Error(reason); },
+        helpers: {
+          readControl: () => ({ instanceId: "fixture" }), prepareTerminalLaunch: async () => undefined,
+          claudeObservationHooks: () => undefined, buildLaunch: () => ({ cmd: "fixture", args: [...args] }),
+          processSignature: () => "fixture", recordClaudeLaunch: (_dir: string, record: { nativeSessionId?: string }) => { recordedSession = record.nativeSessionId; },
+          cleanupStaleClaudeSettings: () => {}, nativeLaunchEnv: () => ({}), childEnv: () => ({}), cleanupClaudeSettings: () => {},
+          runClaudeLaunch: async (launch: { args: string[] }) => {
+            launched = true;
+            if (fresh) {
+              if (!isClaudeSessionUuid(recordedSession)) throw new Error("fresh launch record lacks a UUID");
+              expect(launch.args).toEqual(["--session-id", recordedSession]);
+            } else {
+              expect(recordedSession).toBe(session);
+              expect(launch.args).toEqual(args);
+            }
+            throw new Error("fixture launch boundary");
+          },
+        },
+      } as unknown as Context;
+      await expect(runClaudeEntry(context)).rejects.toThrow("fixture launch boundary");
+      expect(launched).toBe(true);
+    }
+  } finally {
+    if (previousLaunch === undefined) delete process.env.AGENTHUB_LAUNCH_ID; else process.env.AGENTHUB_LAUNCH_ID = previousLaunch;
+    if (previousInstance === undefined) delete process.env.AGENTHUB_INSTANCE_ID; else process.env.AGENTHUB_INSTANCE_ID = previousInstance;
+  }
+});

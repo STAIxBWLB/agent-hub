@@ -315,6 +315,7 @@ async function connectLoop(): Promise<void> {
       const client = await ControlClient.connect(stateDir, { role: toolsMode || sessionJoin ? "tools" : "peer", peer: peerId, ...(toolsMode || sessionJoin ? {} : { channel, channelEvidence }),
         ...(!toolsMode && !sessionJoin ? { retainStandby: true, clientPid: process.pid } : {}),
         ...(sessionJoin ? { session: sessionJoin.label } : {}),
+        ...(process.env.CLAUDE_CODE_SESSION_ID ? { claudeSessionId: process.env.CLAUDE_CODE_SESSION_ID } : {}),
         ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
         ...(executionCwd !== undefined ? { cwd: executionCwd } : {}),
         ...(!toolsMode && standingBy ? { standby: true } : {}),

@@ -414,7 +414,8 @@ const lifecycle = { inspectProject, startProject, stopProject };
 const connect = async (timeoutMs = 3000) => {
   assertDelegatedAuditConsumer();
   if (delegatedAuditHub && !delegatedConnectionTaken) { delegatedConnectionTaken = true; return delegatedAuditHub; }
-  return ControlClient.connect(stateDir, identity.role === "tools" ? { role: "tools", peer: identity.peer, projectRoot: cwd }
+  return ControlClient.connect(stateDir, identity.role === "tools" ? { role: "tools", peer: identity.peer, projectRoot: cwd,
+      ...(process.env.CLAUDECODE === "1" && process.env.CLAUDE_CODE_SESSION_ID ? { claudeSessionId: process.env.CLAUDE_CODE_SESSION_ID } : {}) }
     : { role: "console", projectRoot: cwd, ...(delegatedAuditHub ? { instanceId: delegatedAuditHub.instanceId } : {}) }, timeoutMs);
 };
 

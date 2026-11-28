@@ -112,7 +112,7 @@ export function cleanupStaleClaudeSettings(stateDir: string, previous: unknown, 
 }
 
 export interface ClaudeLaunchRecord extends Record<string, unknown> {
-  instanceId: string; launchId: string; settingsFile?: string; launcherPid: number; launcherSignature?: string;
+  instanceId: string; launchId: string; nativeSessionId?: string; settingsFile?: string; launcherPid: number; launcherSignature?: string;
   /** A claude-<name> instance (#450 I3); absent for the builtin claude peer, whose file keeps its original name. */
   peer?: string;
   /** Validated terminal instance root; absent for legacy/canonical launches. */

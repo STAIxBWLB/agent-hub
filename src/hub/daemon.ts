@@ -94,7 +94,7 @@ import { agentVersionsAsync, type AgentVersionRow } from "../cli/agents.ts";
 import { driftedAgents, noticeDrift, type DriftedAgent } from "./agent-drift.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh, type SdlcConfig, type SdlcGh } from "./sdlc.ts";
-import { claudePeer as defaultChannelPeer, claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
+import { claudePeer as defaultChannelPeer, claudeStateFile, isClaudeSessionUuid, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
 import { peerRosterConfig, rosterAllows, staleInstanceKey, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
@@ -953,6 +953,7 @@ interface Client {
   /** agent-hub#1036: this connection is a distinct session; `peer` is the id the daemon minted for it (`<peer>~<origin>`), never a bus peer. */
   session?: true;
   launchId?: string;
+  claudeSessionId?: string;
   /** Display-only retained standby id; peer operations stay fenced until ownsSocket confirms attachment. */
   standbyId?: string;
   /** Host-minted per connection and durable only as a private replay comparator; never a token, live authority or wire claim. */
@@ -12369,6 +12370,7 @@ export async function startDaemon(opts: DaemonOptions) {
       c.role = msg.role;
       c.guidanceProbeConnectionId = randomUUID(); // Private comparator only; never sent, persisted separately or accepted from hello.
       c.clientVersion = displayVersion(msg.clientVersion);
+      if (isClaudeSessionUuid(msg.claudeSessionId)) c.claudeSessionId = msg.claudeSessionId;
       if (c.role === "console") { if (!c.instructed) consoles.add(sock); }
       else if (c.role === "tools" && sessionHello(msg)) {
         // agent-hub#1036: a connection that names a peer id but is not that peer's current session gets an id of its own instead of becoming the peer. It can send and read; it holds none of the
@@ -12427,7 +12429,12 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         let peer = bus.peers.get(c.peer);
         if (kimiPull && isAcpPeer(peer) && peer.state === "offline") peer = undefined;
-        if (!peer) bus.add((peer = new WsPeer(c.peer)));
+        if (!peer) {
+          const id = c.peer;
+          bus.add((peer = new WsPeer(id, definitionOf(id)?.transport === "claude-channel"
+            ? socket => claudeLaunchProof.attestedSession(id, socket.data.launchId, socket.data.claudeSessionId)
+            : undefined)));
+        }
         if (!isWsPeer(peer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
         const ws = peer;
         const channelEvidence = ["development-channel-launch", "inherited-marker", "launch-unverified", "unknown"].includes(msg.channelEvidence) ? msg.channelEvidence : msg.channelEvidence === undefined ? "unreported" : "unknown";
@@ -13943,6 +13950,12 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!executionText(requestConnectionId, EXECUTION_REFERENCE_LIMITS.id))
           return void reply({ ok: false, error: "guidance probe request identity is unavailable; reconnect through the authenticated project connection" });
         let generation: string | number, nativeSession: string | null, owner: PeerAdapter | undefined;
+        const claudeChannel = role === "tools" && definitionOf(actor)?.transport === "claude-channel";
+        const attestedClaude = () => {
+          const peer = claudeLaunchProof.owner(actor);
+          return peer === owner && peer
+            ? claudeLaunchProof.attestedSession(actor, peer.managedLaunchId, c.claudeSessionId) : undefined;
+        };
         if (role === "console") {
           generation = requestConnectionId;
           nativeSession = null;
@@ -13952,13 +13965,18 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!owner || !("sessionGeneration" in owner) || !probeSessionGeneration(peerGeneration)
             || !("nativeSession" in owner) || typeof peerNativeSession !== "string"
             || !executionText(peerNativeSession, EXECUTION_REFERENCE_LIMITS.id))
-            return void reply({ ok: false, error: "guidance probe conductor session identity is unavailable; reconnect the current native peer session" });
+            return void reply({ ok: false, error: claudeChannel
+              ? "guidance probe conductor session identity is unavailable; start a new session with ahub claude"
+              : "guidance probe conductor session identity is unavailable; reconnect the current native peer session" });
+          if (claudeChannel && attestedClaude() !== peerNativeSession)
+            return void reply({ ok: false, error: "guidance probe conductor session is not attested; start a new session with ahub claude" });
           generation = peerGeneration;
           nativeSession = peerNativeSession;
         }
         const current = (): void => {
           if (sock.data !== c || c.closed || sock.readyState !== WebSocket.OPEN || c.role !== role || c.guidanceProbeConnectionId !== requestConnectionId
-            || role === "tools" && (c.peer !== actor || bus.peers.get(actor) !== owner || owner!.sessionGeneration !== generation || owner!.nativeSession !== nativeSession))
+            || role === "tools" && (c.peer !== actor || bus.peers.get(actor) !== owner || owner!.sessionGeneration !== generation || owner!.nativeSession !== nativeSession
+              || claudeChannel && attestedClaude() !== nativeSession))
             throw new PreEffectToolRefusal("guidance probe request connection or native peer session changed; inspect retained state and reconnect");
           authorityCurrent();
         };

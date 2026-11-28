@@ -6934,7 +6934,7 @@ The selected project's configured conductor may run the commands below through i
 ### Run the preregistered guidance pilot
 
 1. Upgrade the project hub to a release with `guidance_probe_live`. Bind a local copy of the [committed preregistration](../test/fixtures/guidance-probe-live-1226.json) to the current public task revision, project namespace and catalog role. Use `localProbeFingerprints({ maxSteps: 8, maxOutputTokens: 512, tokenUpperBound: 8000 })` from the installed hub source, on the machine and Bun version that will run it. Copy the runtime, toolset and model config hashes into the manifest and bind the returned system policy snapshot by its UTF-8 byte count and SHA-256. Set `task.flowRevision` to the current task history length. Set `role.baselineSha256` to the catalog role hash and `guidance.baselineSha256` to the SHA-256 of `taskRoleText(role)`. The project namespace is `ahub-` followed by the SHA-256 of `memoryProjectKey(projectRoot)`. Keep the committed task text, baseline context, empty tree, data policy, slots, model and limits. Choose and record the current immutable G1 variant ID before the baseline. It supplies the candidate guidance.
-2. From the conductor session, set `probe_file` to that bound JSON and register it.
+2. For a Claude conductor, start a new session with `ahub claude` in the project. From the conductor session, set `probe_file` to that bound JSON and register it.
 
    ```sh
    ahub guidance probe register --file "$probe_file" --json

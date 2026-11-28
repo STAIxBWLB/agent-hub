@@ -165,3 +165,62 @@ test("daemon start reconciles nothing when no session was left open, and writes 
   try { expect(reader.integrity().digest).toBe(before); expect(reader.receipts(key)).toEqual([]); } finally { reader.close(); }
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).not.toContain("guidance probe reconcile");
 });
+
+test("Claude guidance probe requests require the current launcher-attested native session", async () => {
+  const { randomUUID } = await import("node:crypto");
+  const { processSignature } = await import("../src/pi/process-signature.ts");
+  const { recordClaudeLaunch } = await import("../src/cli/launch.ts");
+  const { isWsPeer } = await import("../src/adapters/channel-peer.ts");
+  const root = mkdtempSync(join(tmpdir(), "ahub-probe-claude-"));
+  const stateDir = join(root, "state"), instanceId = randomUUID(), launcherSignature = processSignature(process.pid);
+  const clients: ControlClient[] = [];
+  let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
+  try {
+    daemon = await startDaemon({ cwd: root, stateDir, instanceId, config: {
+      ...quietConfig(), roles: { claude: ["conductor"], codex: ["implementer"] }, roster: { claude: true, codex: true },
+    }, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, memorySyncTrigger: () => {} });
+    const connect = async (hello: Parameters<typeof ControlClient.connect>[1]) => {
+      const client = await ControlClient.connect(stateDir, hello);
+      clients.push(client);
+      return client;
+    };
+    const launch = (nativeSessionId?: string) => {
+      const launchId = randomUUID();
+      recordClaudeLaunch(stateDir, { instanceId, launchId, launcherPid: process.pid, launcherSignature,
+        permissionHook: false, unattended: false, ...(nativeSessionId ? { nativeSessionId } : {}) });
+      return launchId;
+    };
+    const attach = async (launchId: string, claudeSessionId?: string) => {
+      await connect({ role: "peer", peer: "claude", launchId, claudeSessionId });
+      const deadline = performance.now() + 3000;
+      while (performance.now() < deadline) {
+        const owner = daemon?.bus.peers.get("claude");
+        if (isWsPeer(owner) && owner.managedLaunchId === launchId) return;
+        await Bun.sleep(10);
+      }
+      throw new Error("Claude fixture channel did not attach");
+    };
+    const tools = (claudeSessionId?: string) => connect({ role: "tools", peer: "claude", claudeSessionId });
+    const show = (client: ControlClient) => client.request({ t: "guidance_probe_show", id: "f".repeat(64) });
+    const first = randomUUID(), second = randomUUID();
+    const firstTools = await tools(first), secondTools = await tools(second);
+
+    for (const [recorded, offered] of [[undefined, first], ["invalid", first], [first, undefined], [first, "invalid"], [first, second]] as const) {
+      await attach(launch(recorded), offered);
+      expect(await show(firstTools)).toMatchObject({ ok: false, error: expect.stringContaining("start a new session with ahub claude") });
+    }
+    await attach(launch(first), first);
+    expect(await show(firstTools)).toMatchObject({ ok: false, error: expect.stringContaining("guidance probe is unavailable") });
+    expect(await show(secondTools)).toMatchObject({ ok: false, error: expect.stringContaining("is not attested") });
+    const other = await connect({ role: "tools", peer: "codex", claudeSessionId: first });
+    expect(await show(other)).toMatchObject({ ok: false, error: expect.stringContaining("conductor") });
+
+    await attach(launch(second), second);
+    expect(await show(firstTools)).toMatchObject({ ok: false, error: expect.stringContaining("is not attested") });
+    expect(await show(secondTools)).toMatchObject({ ok: false, error: expect.stringContaining("guidance probe is unavailable") });
+  } finally {
+    for (const client of clients) client.close();
+    await daemon?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

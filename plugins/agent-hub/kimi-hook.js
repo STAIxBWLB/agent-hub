@@ -89,6 +89,7 @@ var init_native_channel_state = __esm(() => {
 });
 
 // src/hub/claude-state.ts
+var isClaudeSessionUuid = (value) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 var init_claude_state = __esm(() => {
   init_native_channel_state();
 });
@@ -21942,6 +21943,27 @@ function builtinCliEntries(definitions) {
 import { readFileSync as readFileSync11 } from "fs";
 import { join as join24 } from "path";
 import { randomUUID as randomUUID10 } from "crypto";
+function managedSession(nativeArgs) {
+  const separator = nativeArgs.indexOf("--");
+  const options = separator < 0 ? nativeArgs : nativeArgs.slice(0, separator);
+  const values = (names) => options.flatMap((arg, index) => {
+    if (names.includes(arg))
+      return [options[index + 1]];
+    const name = names.find((value) => arg.startsWith(value + "="));
+    return name ? [arg.slice(name.length + 1)] : [];
+  });
+  const explicit = values(["--session-id"]);
+  const resume = values(["--resume", "-r"]);
+  if (explicit.length)
+    return explicit.length === 1 && isClaudeSessionUuid(explicit[0]) ? explicit[0] : undefined;
+  if (options.some((arg) => ["-c", "--continue", "--from-pr", "--teleport", "--fork-session"].some((flag) => arg === flag || arg.startsWith(flag + "="))))
+    return;
+  if (resume.length)
+    return resume.length === 1 && isClaudeSessionUuid(resume[0]) ? resume[0] : undefined;
+  const id = randomUUID10();
+  nativeArgs.unshift("--session-id", id);
+  return id;
+}
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
   const peer = ctx.instance ?? "claude";
@@ -22007,6 +22029,9 @@ async function runClaudeEntry(ctx) {
     let launchRecord;
     if (control?.instanceId) {
       launchRecord = { ...ctx.instance ? { peer, executionCwd } : {}, instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
+      const nativeSessionId = managedSession(launch.args);
+      if (nativeSessionId)
+        launchRecord.nativeSessionId = nativeSessionId;
       recordClaudeLaunch(stateDir, launchRecord);
       cleanupStaleClaudeSettings(stateDir, previousLaunch);
     }
