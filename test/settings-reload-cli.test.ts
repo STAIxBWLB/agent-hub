@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { terminalText } from "../src/cli/console-state.ts";
 
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const CONTROL = join(import.meta.dir, "../src/hub/control-client.ts");
@@ -91,11 +92,12 @@ test("#439 reload CLI refuses --yes and inherited agent identity before any conn
 test("#439 reload CLI displays every full before and after value before accepting the token", async () => {
   const result = await cli({ tty: true, answer: "y\n" });
   expect(result.code, result.err).toBe(0);
-  const fullText = result.out.replace(/\n +/g, "");
+  const plain = terminalText(result.out);
+  const fullText = plain.replace(/\n +/g, "");
   expect(fullText).toContain(beforeArgv);
   expect(fullText).toContain(afterArgv);
-  expect(result.out).toMatch(/before: +"ask"\n +after: +"never-ask"/);
-  expect(result.out).toMatch(/before: +false\n +after: +true/);
+  expect(plain).toMatch(/before: +"ask"\n +after: +"never-ask"/);
+  expect(plain).toMatch(/before: +false\n +after: +true/);
   expect(result.out).toContain("next native start uses this complete argv");
   expect(result.out.indexOf(beforeArgv)).toBeLessThan(result.out.indexOf("Apply guarded settings"));
   expect(result.requests).toEqual([{ t: "settings_reload" }, { t: "settings_reload", confirm: "fixture-bound-token" }]);

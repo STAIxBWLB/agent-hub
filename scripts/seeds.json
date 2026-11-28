@@ -220,8 +220,8 @@
     {
       "id": "roster-terminal-safe-settings-preview",
       "file": "src/cli/main.ts",
-      "search": "for (const line of preview.lines ?? []) console.log(paint([{ text: line }], false));",
-      "replacement": "for (const line of preview.lines ?? []) console.log(line);",
+      "search": "return show(renderSettingsPreview, preview);",
+      "replacement": "for (const line of preview.lines ?? []) console.log(line); return;",
       "testFile": "test/roster.test.ts",
       "testName": "the real roster CLI uses settings for live changes, stable JSON, and refuses agent shells (#315)"
     },
