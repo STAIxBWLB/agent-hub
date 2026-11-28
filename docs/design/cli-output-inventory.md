@@ -192,10 +192,10 @@ A delegated call needs its own renderer or a fixture before the human-view width
 | facts | fail (1), console.log (1) |
 | check-path | fail (1), console.log (2) |
 | turns | console.log (1), printOutput (1), renderTurns (1) |
-| undo | fail (12), console.log (8) |
-| kill | console.log (2), fail (1) |
+| undo | fail (12), printOutput (5), renderUndoPlan (1), renderLifecycleReceipt (4) |
+| kill | printOutput (2), renderLifecycleReceipt (2), fail (1) |
 | down | Delegated / no direct output call |
-| reset | fail (7), console.log (19) |
+| reset | fail (7), printOutput (3), renderLifecycleReceipt (2), renderResetPlan (1) |
 | role | fail (7), console.log (3) |
 | agents | Delegated / no direct output call |
 | doctor | fail (2), console.log (3), formatMemoryStaleAnchors (1), printOutput (2), renderOrphanCleanup (1), renderDoctor (1) |
@@ -207,32 +207,23 @@ Interpolated and daemon-supplied strings require runtime fixtures. They are coun
 
 | Command | Text source | Stream | Literal width |
 | --- | --- | --- | ---: |
-| recovery | src/cli/main.ts:1046 | stdout | 29 |
-| recovery | src/cli/main.ts:1079 | stdout | 60 |
-| projects | src/cli/main.ts:1173 | stdout | 45 |
-| ui | src/cli/main.ts:1189 | stdout | 57 |
-| ui | src/cli/main.ts:1209 | stdout | 76 |
-| models | src/cli/main.ts:1597 | stdout | 11 |
-| say | src/cli/main.ts:1621 | stdout | 46 |
-| roadmap | src/cli/main.ts:1825 | stdout | 46 |
-| deliverables | src/cli/main.ts:2062 | stdout | 70 |
-| ask | src/cli/main.ts:2499 | stdout | 9 |
-| ask | src/cli/main.ts:2502 | stdout | 54 |
-| roster | src/cli/main.ts:2619 | stdout | 19 |
-| roster | src/cli/main.ts:2626 | stdout | 19 |
-| autonomy | src/cli/main.ts:2677 | stdout | 75 |
-| answer | src/cli/main.ts:2854 | stdout | 17 |
-| bench | src/cli/main.ts:2995 | stdout | 107 |
-| usage | src/cli/main.ts:3179 | stderr | 121 |
-| undo | src/cli/main.ts:3315 | stdout | 103 |
-| undo | src/cli/main.ts:3320 | stdout | 53 |
-| kill | src/cli/main.ts:3337 | stdout | 18 |
-| kill | src/cli/main.ts:3341 | stdout | 11 |
-| reset | src/cli/main.ts:3355 | stdout | 36 |
-| reset | src/cli/main.ts:3379 | stdout | 56 |
-| reset | src/cli/main.ts:3385 | stdout | 39 |
-| reset | src/cli/main.ts:3388 | stdout | 11 |
-| reset | src/cli/main.ts:3423 | stdout | 96 |
+| recovery | src/cli/main.ts:1047 | stdout | 29 |
+| recovery | src/cli/main.ts:1080 | stdout | 60 |
+| projects | src/cli/main.ts:1174 | stdout | 45 |
+| ui | src/cli/main.ts:1190 | stdout | 57 |
+| ui | src/cli/main.ts:1210 | stdout | 76 |
+| models | src/cli/main.ts:1598 | stdout | 11 |
+| say | src/cli/main.ts:1622 | stdout | 46 |
+| roadmap | src/cli/main.ts:1826 | stdout | 46 |
+| deliverables | src/cli/main.ts:2063 | stdout | 70 |
+| ask | src/cli/main.ts:2500 | stdout | 9 |
+| ask | src/cli/main.ts:2503 | stdout | 54 |
+| roster | src/cli/main.ts:2620 | stdout | 19 |
+| roster | src/cli/main.ts:2627 | stdout | 19 |
+| autonomy | src/cli/main.ts:2678 | stdout | 75 |
+| answer | src/cli/main.ts:2855 | stdout | 17 |
+| bench | src/cli/main.ts:2996 | stdout | 107 |
+| usage | src/cli/main.ts:3180 | stderr | 121 |
 
 ## Renderer candidates
 
@@ -279,6 +270,9 @@ The separate report-by-task fixture measures 79 cells.
 | src/cli/output.ts:renderLimits | CLI | - | Inline / indirect | 38 |
 | src/cli/output.ts:renderTotal | CLI | - | table | 78 |
 | src/cli/pet.ts:renderPet | CLI | - | Inline / indirect | 21 |
+| src/cli/reset-output.ts:renderResetPlan | CLI | Direct | Report | Unmeasured |
+| src/cli/reset-output.ts:renderUndoPlan | CLI | Direct | Report | Unmeasured |
+| src/cli/reset-output.ts:renderLifecycleReceipt | CLI | Direct | Report | Unmeasured |
 | src/cli/roadmap.ts:renderRoadmap | CLI | - | wrap | 23 |
 | src/cli/room-output.ts:renderRooms | CLI | Direct | Report | Unmeasured |
 | src/cli/room-output.ts:renderRoomInbox | CLI | Direct | Report, moment | Unmeasured |
